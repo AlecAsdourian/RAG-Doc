@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-01-08)
 
 **Core value:** The RAG pipeline gives accurate, relevant answers - not generic advice, not hallucinated answers. Accuracy over features.
-**Current focus:** Phase 3 — Vector Database
+**Current focus:** Phase 4 — Authentication System
 
 ## Current Position
 
-Phase: 2 of 16 (Database Setup)
-Plan: All plans complete (3/3)
+Phase: 3 of 16 (Vector Database)
+Plan: All plans complete (1/1)
 Status: Phase complete
-Last activity: 2026-01-08 — Phase 2 completed (Database Setup)
+Last activity: 2026-01-08 — Phase 3 completed (Vector Database)
 
-Progress: ██░░░░░░░░ 12% (2/16 phases)
+Progress: ███░░░░░░░ 18% (3/16 phases)
 
 ## Performance Metrics
 
@@ -53,11 +53,17 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-01-08
-Stopped at: Phase 2 complete (Database Setup - all 3 plans complete)
+Stopped at: Phase 3 complete (Vector Database - all 1 plans complete)
 Resume file: None
 
 ## Recent Decisions
 
+- **Vector DB technology:** Qdrant (self-hosted, zero cost, no vendor lock-in)
+- **Embedding dimension:** 1536 (OpenAI ada-002 standard)
+- **Distance metric:** Cosine similarity for semantic search
+- **Metadata schema:** chunk_id, repository_id, file_path, language
+- **Indexed fields:** repository_id and language for efficient filtering
+- **Client pattern:** Dependency injection with Config struct (testable)
 - **Database primary keys:** UUIDs over SERIAL for distributed-systems readiness
 - **Timestamp type:** TIMESTAMPTZ to always store timezone information
 - **Delete behavior:** CASCADE deletes for multi-tenant hierarchy (org → projects → repos)
