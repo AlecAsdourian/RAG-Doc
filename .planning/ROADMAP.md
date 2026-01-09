@@ -11,7 +11,7 @@ None
 ## Phases
 
 - [x] **Phase 1: Project Setup** - Initialize project structure, tooling, dev environment
-- [ ] **Phase 2: Database Setup** - Primary database for metadata and application data (1/3 plans complete)
+- [ ] **Phase 2: Database Setup** - Primary database for metadata and application data (2/3 plans complete)
 - [ ] **Phase 3: Vector Database** - Vector store for embeddings and similarity search
 - [ ] **Phase 4: Authentication System** - User auth and org-based access control
 - [ ] **Phase 5: API Framework** - REST/GraphQL foundation with middleware
@@ -46,7 +46,7 @@ Plans:
 
 Plans:
 - [x] 2-01: Database Infrastructure & Core Schema - Postgres setup, migrations, multi-tenant foundation
-- [ ] 2-02: Chunk Storage & Lineage Tracking - Ingestion runs and chunks with file/line citations
+- [x] 2-02: Chunk Storage & Lineage Tracking - Ingestion runs and chunks with file/line citations
 - [ ] 2-03: Query & Feedback Logging - Query, retrieval, and feedback tracking
 
 ### Phase 3: Vector Database

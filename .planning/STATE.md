@@ -10,9 +10,9 @@ See: .planning/PROJECT.md (updated 2026-01-08)
 ## Current Position
 
 Phase: 2 of 16 (Database Setup)
-Plan: 2-01 complete, ready for 2-02
+Plan: 2-02 complete, ready for 2-03
 Status: In progress
-Last activity: 2026-01-08 — Plan 2-01 completed (Database Infrastructure & Core Schema)
+Last activity: 2026-01-08 — Plan 2-02 completed (Chunk Storage & Lineage Tracking)
 
 Progress: █░░░░░░░░░ 6% (1/16 phases)
 
@@ -53,7 +53,7 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-01-08
-Stopped at: Plan 2-01 complete (Database Infrastructure & Core Schema)
+Stopped at: Plan 2-02 complete (Chunk Storage & Lineage Tracking)
 Resume file: None
 
 ## Recent Decisions
@@ -63,3 +63,6 @@ Resume file: None
 - **Delete behavior:** CASCADE deletes for multi-tenant hierarchy (org → projects → repos)
 - **Migration tool:** golang-migrate as the standard for Go projects
 - **Schema ownership:** Go backend owns all migrations and schema versioning
+- **Commit SHA storage:** VARCHAR(40) for exact Git SHA length
+- **Deduplication strategy:** SHA256 content_hash enables detection across files/commits
+- **Query optimization:** Denormalized repository_id on chunks avoids JOINs
