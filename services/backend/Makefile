@@ -1,4 +1,4 @@
-.PHONY: lint fmt test migrate-create migrate-up migrate-down migrate-version
+.PHONY: lint fmt test migrate-create migrate-up migrate-down migrate-version seed
 
 # Code quality
 lint:
@@ -25,3 +25,6 @@ migrate-down:
 
 migrate-version:
 	migrate -path migrations -database "$(DATABASE_URL)" version
+
+seed:
+	psql "$(DATABASE_URL)" -f scripts/seed.sql
