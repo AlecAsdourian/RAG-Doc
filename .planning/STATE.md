@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-01-08)
 
 **Core value:** The RAG pipeline gives accurate, relevant answers - not generic advice, not hallucinated answers. Accuracy over features.
-**Current focus:** Phase 1 — Project Setup
+**Current focus:** Phase 2 — Database Setup
 
 ## Current Position
 
-Phase: 1 of 16 (Project Setup)
-Plan: Not started
-Status: Ready to plan
-Last activity: 2026-01-08 — Roadmap created with 16 phases
+Phase: 2 of 16 (Database Setup)
+Plan: 2-01 complete, ready for 2-02
+Status: In progress
+Last activity: 2026-01-08 — Plan 2-01 completed (Database Infrastructure & Core Schema)
 
-Progress: ░░░░░░░░░░ 0%
+Progress: █░░░░░░░░░ 6% (1/16 phases)
 
 ## Performance Metrics
 
@@ -53,5 +53,13 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-01-08
-Stopped at: Roadmap initialization complete
+Stopped at: Plan 2-01 complete (Database Infrastructure & Core Schema)
 Resume file: None
+
+## Recent Decisions
+
+- **Database primary keys:** UUIDs over SERIAL for distributed-systems readiness
+- **Timestamp type:** TIMESTAMPTZ to always store timezone information
+- **Delete behavior:** CASCADE deletes for multi-tenant hierarchy (org → projects → repos)
+- **Migration tool:** golang-migrate as the standard for Go projects
+- **Schema ownership:** Go backend owns all migrations and schema versioning
