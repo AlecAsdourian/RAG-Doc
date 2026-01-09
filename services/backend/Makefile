@@ -1,4 +1,4 @@
-.PHONY: lint fmt test migrate-create migrate-up migrate-down migrate-version seed
+.PHONY: lint fmt test migrate-create migrate-up migrate-down migrate-version seed seed-lineage
 
 # Code quality
 lint:
@@ -28,3 +28,6 @@ migrate-version:
 
 seed:
 	psql "$(DATABASE_URL)" -f scripts/seed.sql
+
+seed-lineage:
+	psql "$(DATABASE_URL)" -f scripts/seed-lineage.sql
