@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-01-08)
 
 **Core value:** The RAG pipeline gives accurate, relevant answers - not generic advice, not hallucinated answers. Accuracy over features.
-**Current focus:** Phase 2 — Database Setup
+**Current focus:** Phase 3 — Vector Database
 
 ## Current Position
 
 Phase: 2 of 16 (Database Setup)
-Plan: 2-02 complete, ready for 2-03
-Status: In progress
-Last activity: 2026-01-08 — Plan 2-02 completed (Chunk Storage & Lineage Tracking)
+Plan: All plans complete (3/3)
+Status: Phase complete
+Last activity: 2026-01-08 — Phase 2 completed (Database Setup)
 
-Progress: █░░░░░░░░░ 6% (1/16 phases)
+Progress: ██░░░░░░░░ 12% (2/16 phases)
 
 ## Performance Metrics
 
@@ -53,7 +53,7 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-01-08
-Stopped at: Plan 2-02 complete (Chunk Storage & Lineage Tracking)
+Stopped at: Phase 2 complete (Database Setup - all 3 plans complete)
 Resume file: None
 
 ## Recent Decisions
@@ -66,3 +66,5 @@ Resume file: None
 - **Commit SHA storage:** VARCHAR(40) for exact Git SHA length
 - **Deduplication strategy:** SHA256 content_hash enables detection across files/commits
 - **Query optimization:** Denormalized repository_id on chunks avoids JOINs
+- **Feedback scope:** Feedback on retrievals (not queries) - users rate specific chunks
+- **Vector DB reference:** query_embedding_id as VARCHAR, not FK (separate system)
