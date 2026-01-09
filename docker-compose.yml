@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=smartdocs
+      - POSTGRES_USER=smartdocs
+      - POSTGRES_PASSWORD=dev_password_change_in_prod
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U smartdocs"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: ./services/backend
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./services/backend:/app
+    environment:
+      - ENV=development
+      - DATABASE_URL=postgres://smartdocs:dev_password_change_in_prod@postgres:5432/smartdocs?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  workers:
+    build: ./services/workers
+    volumes:
+      - ./services/workers:/app
+    environment:
+      - ENV=development
+
+  frontend:
+    build: ./services/frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./services/frontend:/app
+      - /app/node_modules
+    environment:
+      - ENV=development
+
+volumes:
+  postgres_data:
