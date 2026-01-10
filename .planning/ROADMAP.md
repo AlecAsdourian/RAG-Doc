@@ -136,8 +136,8 @@ Plans:
 
 Plans:
 - [x] 11-01: FTS Infrastructure & Retrieval - PostgreSQL full-text search with GIN indexes
-- [ ] 11-02: Vector Retrieval & Query Parser - Qdrant semantic search and query parsing
-- [ ] 11-03: Hybrid Ranking & Fusion - RRF fusion and metadata-based boosting
+- [x] 11-02: Vector Retrieval & Query Parser - Qdrant semantic search and query parsing
+- [x] 11-03: Hybrid Ranking & Fusion - RRF fusion and metadata-based boosting
 - [ ] 11-04: Context Assembly - Assemble ranked results into citeable context
 - [ ] 11-05: Query API - REST endpoint orchestrating full RAG pipeline
 
@@ -202,7 +202,7 @@ Plans:
 | 8. Embedding Pipeline | 0/TBD | Not started | - |
 | 9. AI Documentation Agent | 0/TBD | Not started | - |
 | 10. Manual Documentation System | 0/TBD | Not started | - |
-| 11. RAG Query Engine | 1/5 | In progress | - |
+| 11. RAG Query Engine | 3/5 | In progress | - |
 | 12. LLM Answer Generation | 0/TBD | Not started | - |
 | 13. Web UI - Search & Chat | 0/TBD | Not started | - |
 | 14. AI Context Export | 0/TBD | Not started | - |
