@@ -2,6 +2,7 @@
 
 from .fts_retriever import FTSRetriever
 from .query_parser import QueryParser
+from .rrf_fusion import RRFFusion
 from .vector_retriever import VectorRetriever
 
-__all__ = ["FTSRetriever", "QueryParser", "VectorRetriever"]
+__all__ = ["FTSRetriever", "QueryParser", "RRFFusion", "VectorRetriever"]
