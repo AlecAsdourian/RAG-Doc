@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-01-08)
 
 **Core value:** The RAG pipeline gives accurate, relevant answers - not generic advice, not hallucinated answers. Accuracy over features.
-**Current focus:** Phase 4 — Authentication System
+**Current focus:** Phase 11 — RAG Query Engine
 
 ## Current Position
 
-Phase: 3 of 16 (Vector Database)
-Plan: All plans complete (1/1)
-Status: Phase complete
-Last activity: 2026-01-08 — Phase 3 completed (Vector Database)
+Phase: 11 of 16 (RAG Query Engine)
+Plan: 1 of 5 in current phase
+Status: In progress
+Last activity: 2026-01-09 — Completed 11-01-PLAN.md (FTS Infrastructure)
 
-Progress: ███░░░░░░░ 18% (3/16 phases)
+Progress: ████████░░ 69% (11/16 phases)
 
 ## Performance Metrics
 
@@ -52,8 +52,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-01-08
-Stopped at: Phase 3 complete (Vector Database - all 1 plans complete)
+Last session: 2026-01-09
+Stopped at: Completed 11-01-PLAN.md (FTS Infrastructure & Retrieval)
 Resume file: None
 
 ## Recent Decisions
@@ -74,3 +74,6 @@ Resume file: None
 - **Query optimization:** Denormalized repository_id on chunks avoids JOINs
 - **Feedback scope:** Feedback on retrievals (not queries) - users rate specific chunks
 - **Vector DB reference:** query_embedding_id as VARCHAR, not FK (separate system)
+- **FTS configuration:** PostgreSQL GIN indexes with 'english' text search for stemming support
+- **FTS scoring:** ts_rank_cd (cover density) over ts_rank for proximity-aware relevance
+- **Breadcrumb storage:** Dedicated TEXT column for FTS indexing on qualified names
