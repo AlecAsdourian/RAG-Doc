@@ -4,15 +4,15 @@ services:
   postgres:
     image: postgres:16-alpine
     ports:
-      - "5432:5432"
+      - "5434:5432"
     environment:
-      - POSTGRES_DB=smartdocs
-      - POSTGRES_USER=smartdocs
-      - POSTGRES_PASSWORD=dev_password_change_in_prod
+      - POSTGRES_DB=coderag
+      - POSTGRES_USER=coderag
+      - POSTGRES_PASSWORD=coderag
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U smartdocs"]
+      test: ["CMD-SHELL", "pg_isready -U coderag"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -25,7 +25,7 @@ services:
       - ./services/backend:/app
     environment:
       - ENV=development
-      - DATABASE_URL=postgres://smartdocs:dev_password_change_in_prod@postgres:5432/smartdocs?sslmode=disable
+      - DATABASE_URL=postgres://coderag:coderag@postgres:5432/coderag?sslmode=disable
     depends_on:
       postgres:
         condition: service_healthy
@@ -56,6 +56,16 @@ services:
       - qdrant_data:/qdrant/storage
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:6333/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5

@@ -5,6 +5,9 @@ flake8>=6.0.0
 mypy>=1.5.0
 
 # Production dependencies
+# Core dependencies
+numpy>=1.24.0
+
 # Tree-sitter for AST parsing
 tree-sitter>=0.20.0
 tree-sitter-python>=0.20.0
@@ -19,3 +22,4 @@ tenacity>=8.2.0
 # Database clients
 psycopg2-binary>=2.9.0
 qdrant-client>=1.7.0
+redis[hiredis]>=5.0.0
