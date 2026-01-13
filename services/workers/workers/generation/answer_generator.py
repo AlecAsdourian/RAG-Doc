@@ -228,7 +228,7 @@ class AnswerGenerator:
         for idx, chunk in enumerate(chunks, start=1):
             file_path = chunk.get("file_path", "unknown")
             start_line = chunk.get("start_line", 0)
-            content = chunk.get("content", "")
+            content = chunk.get("content_preview", "")
             breadcrumb = chunk.get("breadcrumb", "")
 
             # Build citation header
