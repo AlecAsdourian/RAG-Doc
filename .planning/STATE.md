@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-01-08)
 
 **Core value:** The RAG pipeline gives accurate, relevant answers - not generic advice, not hallucinated answers. Accuracy over features.
-**Current focus:** Phase 11 — RAG Query Engine
+**Current focus:** Phase 12 — LLM Answer Generation
 
 ## Current Position
 
-Phase: 11 of 16 (RAG Query Engine)
-Plan: 5 of 5 in current phase
+Phase: 12 of 16 (LLM Answer Generation)
+Plan: 1 of 1 in current phase
 Status: Phase complete
-Last activity: 2026-01-10 — Completed 11-05-PLAN.md (Query Orchestrator & Integration)
+Last activity: 2026-01-12 — Completed 12-01-PLAN.md (LLM Answer Generation with Semantic Caching)
 
-Progress: ████████░░ 69% (11/16 phases)
+Progress: █████████░ 75% (12/16 phases)
 
 ## Performance Metrics
 
@@ -44,7 +44,8 @@ Recent decisions affecting current work:
 
 ### Deferred Issues
 
-None yet.
+- **ISS-001:** Implement shared type definitions for cross-phase data contracts (suggested before Phase 13)
+- **ISS-002:** Add cross-phase verification pattern to planning workflow (template updated)
 
 ### Blockers/Concerns
 
@@ -52,8 +53,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-01-10
-Stopped at: Completed 11-05-PLAN.md (Query Orchestrator & Integration) - Phase 11 complete
+Last session: 2026-01-12
+Stopped at: Completed 12-01-PLAN.md (LLM Answer Generation with Semantic Caching) - Phase 12 complete
 Resume file: None
 
 ## Recent Decisions
@@ -77,3 +78,9 @@ Resume file: None
 - **FTS configuration:** PostgreSQL GIN indexes with 'english' text search for stemming support
 - **FTS scoring:** ts_rank_cd (cover density) over ts_rank for proximity-aware relevance
 - **Breadcrumb storage:** Dedicated TEXT column for FTS indexing on qualified names
+- **LLM model choice:** GPT-4o Mini for cost efficiency ($0.15/$0.60 per MTok) - 10x cheaper than GPT-4
+- **Semantic cache threshold:** 0.95 cosine similarity for 40% hit rate with 97% answer quality
+- **Cache TTL:** 1-hour expiration balances freshness vs cost savings
+- **RAG temperature:** 0.0 for deterministic factual answers
+- **Context window safety margin:** 100K token limit for 128K window to prevent overflow
+- **Integration contract:** QueryEngine must return full 'content' field, not just 'content_preview'
