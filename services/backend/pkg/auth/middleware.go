@@ -60,7 +60,7 @@ func JWTAuthMiddleware(validator *JWTValidator) func(http.Handler) http.Handler 
 func TenantMiddleware(db *pgxpool.Pool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			userID, ok := r.Context().Value(UserIDKey).(string)
+			_, ok := r.Context().Value(UserIDKey).(string)
 			if !ok {
 				http.Error(w, "Missing user context", http.StatusInternalServerError)
 				return
@@ -70,6 +70,7 @@ func TenantMiddleware(db *pgxpool.Pool) func(http.Handler) http.Handler {
 			// (Alternative: query organization_memberships table)
 			// For now, require it in header (temporary - will be in JWT later)
 			// TODO: Implement organization selection for multi-org users
+			// TODO: Use userID to query organization_memberships and validate access
 
 			orgID := r.Header.Get("X-Organization-ID") // Temporary: from header
 			if orgID == "" {

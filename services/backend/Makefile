@@ -1,4 +1,4 @@
-.PHONY: lint fmt test migrate-create migrate-up migrate-down migrate-version seed seed-lineage seed-complete
+.PHONY: lint fmt test test-integration test-db-setup migrate-create migrate-up migrate-down migrate-version seed seed-lineage seed-complete
 
 # Code quality
 lint:
@@ -34,3 +34,14 @@ seed-lineage:
 
 seed-complete:
 	psql "$(DATABASE_URL)" -f scripts/seed-complete.sql
+
+# Integration tests
+DATABASE_TEST_URL ?= postgres://coderag:coderag@localhost:5434/coderag?sslmode=disable
+
+test-integration:
+	@echo "Running integration tests..."
+	DATABASE_TEST_URL="$(DATABASE_TEST_URL)" go test -v ./pkg/auth/...
+
+test-db-setup:
+	@echo "Test database uses same database as dev (coderag)"
+	@echo "Migrations already applied"

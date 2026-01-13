@@ -17,6 +17,7 @@ func HandleGitHubLogin(oauthConfig *OAuthConfig) http.HandlerFunc {
 		// Generate state token for CSRF protection
 		state := generateSecureToken()
 		// TODO: Store state in session/cookie for validation
+		_ = state // TODO: implement state validation
 
 		url := oauthConfig.GitHub.AuthCodeURL(state, oauth2.AccessTypeOffline)
 		http.Redirect(w, r, url, http.StatusTemporaryRedirect)
@@ -30,6 +31,7 @@ func HandleGitHubCallback(oauthConfig *OAuthConfig, provisioner *UserProvisioner
 		state := r.URL.Query().Get("state")
 
 		// TODO: Validate state token (check against stored value)
+		_ = state // TODO: implement state validation
 
 		if code == "" {
 			http.Error(w, "Missing authorization code", http.StatusBadRequest)
@@ -103,6 +105,7 @@ func HandleGitLabLogin(oauthConfig *OAuthConfig) http.HandlerFunc {
 		// Generate state token for CSRF protection
 		state := generateSecureToken()
 		// TODO: Store state in session/cookie for validation
+		_ = state // TODO: implement state validation
 
 		url := oauthConfig.GitLab.AuthCodeURL(state, oauth2.AccessTypeOffline)
 		http.Redirect(w, r, url, http.StatusTemporaryRedirect)
@@ -116,6 +119,7 @@ func HandleGitLabCallback(oauthConfig *OAuthConfig, provisioner *UserProvisioner
 		state := r.URL.Query().Get("state")
 
 		// TODO: Validate state token (check against stored value)
+		_ = state // TODO: implement state validation
 
 		if code == "" {
 			http.Error(w, "Missing authorization code", http.StatusBadRequest)

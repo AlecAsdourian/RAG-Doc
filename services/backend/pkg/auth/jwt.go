@@ -44,8 +44,8 @@ func (v *JWTValidator) ValidateToken(ctx context.Context, tokenString string) (j
 
 // ExtractUserID gets user_id from validated token
 func ExtractUserID(token jwt.Token) (string, error) {
-	userID := token.Subject()
-	if userID == "" {
+	userID, ok := token.Subject()
+	if !ok || userID == "" {
 		return "", fmt.Errorf("missing subject claim")
 	}
 	return userID, nil
@@ -53,10 +53,12 @@ func ExtractUserID(token jwt.Token) (string, error) {
 
 // ExtractOrganizationID gets organization_id from custom claims
 func ExtractOrganizationID(token jwt.Token) (string, error) {
-	claims := token.PrivateClaims()
-	orgID, ok := claims["organization_id"].(string)
-	if !ok || orgID == "" {
-		return "", fmt.Errorf("missing organization_id claim")
+	var orgID string
+	if err := token.Get("organization_id", &orgID); err != nil {
+		return "", fmt.Errorf("missing organization_id claim: %w", err)
+	}
+	if orgID == "" {
+		return "", fmt.Errorf("empty organization_id claim")
 	}
 	return orgID, nil
 }
