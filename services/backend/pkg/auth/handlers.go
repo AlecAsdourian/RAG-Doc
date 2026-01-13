@@ -12,12 +12,16 @@ import (
 )
 
 // HandleGitHubLogin redirects to GitHub OAuth
-func HandleGitHubLogin(oauthConfig *OAuthConfig) http.HandlerFunc {
+func HandleGitHubLogin(oauthConfig *OAuthConfig, stateStore *StateStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Generate state token for CSRF protection
 		state := generateSecureToken()
-		// TODO: Store state in session/cookie for validation
-		_ = state // TODO: implement state validation
+
+		// Store state in Redis for validation (5-minute TTL)
+		if err := stateStore.StoreState(r.Context(), state); err != nil {
+			http.Error(w, "Failed to initialize OAuth flow", http.StatusInternalServerError)
+			return
+		}
 
 		url := oauthConfig.GitHub.AuthCodeURL(state, oauth2.AccessTypeOffline)
 		http.Redirect(w, r, url, http.StatusTemporaryRedirect)
@@ -25,13 +29,26 @@ func HandleGitHubLogin(oauthConfig *OAuthConfig) http.HandlerFunc {
 }
 
 // HandleGitHubCallback processes OAuth callback
-func HandleGitHubCallback(oauthConfig *OAuthConfig, provisioner *UserProvisioner) http.HandlerFunc {
+func HandleGitHubCallback(oauthConfig *OAuthConfig, provisioner *UserProvisioner, stateStore *StateStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		code := r.URL.Query().Get("code")
 		state := r.URL.Query().Get("state")
 
-		// TODO: Validate state token (check against stored value)
-		_ = state // TODO: implement state validation
+		// Validate state token (CSRF protection)
+		if state == "" {
+			http.Error(w, "Missing state parameter", http.StatusBadRequest)
+			return
+		}
+
+		valid, err := stateStore.ValidateState(r.Context(), state)
+		if err != nil {
+			http.Error(w, "Failed to validate state", http.StatusInternalServerError)
+			return
+		}
+		if !valid {
+			http.Error(w, "Invalid or expired state token", http.StatusForbidden)
+			return
+		}
 
 		if code == "" {
 			http.Error(w, "Missing authorization code", http.StatusBadRequest)
@@ -100,12 +117,16 @@ func HandleGitHubCallback(oauthConfig *OAuthConfig, provisioner *UserProvisioner
 }
 
 // HandleGitLabLogin redirects to GitLab OAuth
-func HandleGitLabLogin(oauthConfig *OAuthConfig) http.HandlerFunc {
+func HandleGitLabLogin(oauthConfig *OAuthConfig, stateStore *StateStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Generate state token for CSRF protection
 		state := generateSecureToken()
-		// TODO: Store state in session/cookie for validation
-		_ = state // TODO: implement state validation
+
+		// Store state in Redis for validation (5-minute TTL)
+		if err := stateStore.StoreState(r.Context(), state); err != nil {
+			http.Error(w, "Failed to initialize OAuth flow", http.StatusInternalServerError)
+			return
+		}
 
 		url := oauthConfig.GitLab.AuthCodeURL(state, oauth2.AccessTypeOffline)
 		http.Redirect(w, r, url, http.StatusTemporaryRedirect)
@@ -113,13 +134,26 @@ func HandleGitLabLogin(oauthConfig *OAuthConfig) http.HandlerFunc {
 }
 
 // HandleGitLabCallback processes GitLab OAuth callback
-func HandleGitLabCallback(oauthConfig *OAuthConfig, provisioner *UserProvisioner) http.HandlerFunc {
+func HandleGitLabCallback(oauthConfig *OAuthConfig, provisioner *UserProvisioner, stateStore *StateStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		code := r.URL.Query().Get("code")
 		state := r.URL.Query().Get("state")
 
-		// TODO: Validate state token (check against stored value)
-		_ = state // TODO: implement state validation
+		// Validate state token (CSRF protection)
+		if state == "" {
+			http.Error(w, "Missing state parameter", http.StatusBadRequest)
+			return
+		}
+
+		valid, err := stateStore.ValidateState(r.Context(), state)
+		if err != nil {
+			http.Error(w, "Failed to validate state", http.StatusInternalServerError)
+			return
+		}
+		if !valid {
+			http.Error(w, "Invalid or expired state token", http.StatusForbidden)
+			return
+		}
 
 		if code == "" {
 			http.Error(w, "Missing authorization code", http.StatusBadRequest)
