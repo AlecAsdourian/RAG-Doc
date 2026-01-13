@@ -11,7 +11,7 @@ test:
 	go test ./... -v
 
 # Database migrations
-DATABASE_URL ?= postgres://smartdocs:dev_password_change_in_prod@localhost:5432/smartdocs?sslmode=disable
+DATABASE_URL ?= postgres://coderag:coderag@localhost:5434/coderag?sslmode=disable
 
 migrate-create:
 	@if [ -z "$(NAME)" ]; then echo "Usage: make migrate-create NAME=migration_name"; exit 1; fi
