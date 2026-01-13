@@ -1,0 +1,62 @@
+package auth
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/lestrrat-go/jwx/v3/jwk"
+	"github.com/lestrrat-go/jwx/v3/jwt"
+)
+
+type JWTValidator struct {
+	jwksURL string
+	issuer  string
+}
+
+func NewJWTValidator(config *Config) *JWTValidator {
+	return &JWTValidator{
+		jwksURL: config.JWKSUrl,
+		issuer:  config.SupabaseURL,
+	}
+}
+
+// ValidateToken validates JWT against Supabase JWKS
+func (v *JWTValidator) ValidateToken(ctx context.Context, tokenString string) (jwt.Token, error) {
+	// Fetch JWKs from Supabase (cached, auto-refreshed by library)
+	set, err := jwk.Fetch(ctx, v.jwksURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch JWKs: %w", err)
+	}
+
+	// Parse and validate token
+	token, err := jwt.Parse(
+		[]byte(tokenString),
+		jwt.WithKeySet(set),        // Use JWKs for verification
+		jwt.WithValidate(true),     // Validates exp, nbf, iat
+		jwt.WithIssuer(v.issuer),   // Validate issuer claim
+	)
+	if err != nil {
+		return nil, fmt.Errorf("invalid token: %w", err)
+	}
+
+	return token, nil
+}
+
+// ExtractUserID gets user_id from validated token
+func ExtractUserID(token jwt.Token) (string, error) {
+	userID := token.Subject()
+	if userID == "" {
+		return "", fmt.Errorf("missing subject claim")
+	}
+	return userID, nil
+}
+
+// ExtractOrganizationID gets organization_id from custom claims
+func ExtractOrganizationID(token jwt.Token) (string, error) {
+	claims := token.PrivateClaims()
+	orgID, ok := claims["organization_id"].(string)
+	if !ok || orgID == "" {
+		return "", fmt.Errorf("missing organization_id claim")
+	}
+	return orgID, nil
+}
