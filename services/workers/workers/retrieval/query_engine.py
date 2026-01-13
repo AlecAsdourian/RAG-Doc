@@ -335,6 +335,7 @@ class QueryEngine:
                         "breadcrumb": row["breadcrumb"] or "",
                         "chunk_type": row["chunk_type"],
                         "content_preview": row["content_preview"],
+                        "content": row["content"],  # Full content for LLM context
                         "score": result.get("boosted_score", 0.0),
                         "rrf_score": result.get("rrf_score", 0.0),
                         "boost_multiplier": result.get("boost_multiplier", 1.0),
