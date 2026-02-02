@@ -1,10 +1,13 @@
 """FastAPI route handlers for RAG API."""
 
+import asyncio
+import json
 import logging
 from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 
 from .models import (
     ChatRequest,
@@ -133,3 +136,83 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
     except Exception as e:
         logger.error(f"Chat error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/chat/stream")
+async def chat_stream(request: ChatRequest, req: Request):
+    """
+    Stream answer generation using RAG pipeline via Server-Sent Events.
+
+    Streams the answer in chunks as it's generated, then sends final
+    metadata including sources and cost information.
+    """
+    answer_generator = req.app.state.answer_generator
+
+    if answer_generator is None:
+        async def error_generator():
+            yield f"data: {json.dumps({'type': 'error', 'error': 'Answer generator not initialized'})}\n\n"
+
+        return StreamingResponse(
+            error_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
+        )
+
+    async def generate():
+        try:
+            # Generate full answer (will add true streaming when OpenAI streaming integrated)
+            result = answer_generator.generate(
+                query=request.query,
+                repository_id=request.repository_id,
+                top_k=request.top_k,
+            )
+
+            # Stream the answer in chunks (simulate streaming for better UX)
+            answer = result.get("answer", "")
+            chunk_size = 20  # characters per chunk
+
+            for i in range(0, len(answer), chunk_size):
+                chunk = answer[i : i + chunk_size]
+                yield f"data: {json.dumps({'type': 'chunk', 'content': chunk})}\n\n"
+                await asyncio.sleep(0.01)  # Small delay between chunks
+
+            # Build sources list for final event
+            sources = []
+            for source in result.get("sources", []):
+                sources.append({
+                    "number": source.get("number", 0),
+                    "file_path": source.get("file_path", ""),
+                    "start_line": source.get("start_line", 0),
+                    "end_line": source.get("end_line", 0),
+                    "breadcrumb": source.get("breadcrumb"),
+                    "chunk_type": source.get("chunk_type"),
+                })
+
+            # Send final metadata
+            done_event = {
+                "type": "done",
+                "sources": sources,
+                "query_id": str(result.get("query_id", "")),
+                "cost": result.get("total_cost", 0.0),
+                "tokens_in": result.get("prompt_tokens", 0),
+                "tokens_out": result.get("completion_tokens", 0),
+                "cache_hit": result.get("cache_hit", False),
+            }
+            yield f"data: {json.dumps(done_event)}\n\n"
+
+        except Exception as e:
+            logger.error(f"Chat stream error: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        },
+    )
