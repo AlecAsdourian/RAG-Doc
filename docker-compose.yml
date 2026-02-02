@@ -26,9 +26,36 @@ services:
     environment:
       - ENV=development
       - DATABASE_URL=postgres://coderag:coderag@postgres:5432/coderag?sslmode=disable
+      - RAG_SERVICE_URL=http://rag-api:8000
     depends_on:
       postgres:
         condition: service_healthy
+
+  rag-api:
+    build:
+      context: ./services/workers
+      dockerfile: Dockerfile.api
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./services/workers:/app
+    environment:
+      - DATABASE_URL=postgres://coderag:coderag@postgres:5432/coderag?sslmode=disable
+      - QDRANT_URL=http://qdrant:6333
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   workers:
     build: ./services/workers
