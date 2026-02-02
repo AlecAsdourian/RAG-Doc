@@ -62,10 +62,13 @@ type ChatResponse struct {
 
 // ChatChunk represents a streaming chat chunk for SSE
 type ChatChunk struct {
-	Type    string       `json:"type"`    // "chunk", "done", "error"
-	Content string       `json:"content,omitempty"`
-	Sources []SourceInfo `json:"sources,omitempty"`
-	QueryID string       `json:"query_id,omitempty"`
-	Cost    float64      `json:"cost,omitempty"`
-	Error   string       `json:"error,omitempty"`
+	Type      string       `json:"type"`    // "chunk", "done", "error"
+	Content   string       `json:"content,omitempty"`
+	Sources   []SourceInfo `json:"sources,omitempty"`
+	QueryID   string       `json:"query_id,omitempty"`
+	Cost      float64      `json:"cost,omitempty"`
+	TokensIn  int          `json:"tokens_in,omitempty"`
+	TokensOut int          `json:"tokens_out,omitempty"`
+	CacheHit  bool         `json:"cache_hit,omitempty"`
+	Error     string       `json:"error,omitempty"`
 }
