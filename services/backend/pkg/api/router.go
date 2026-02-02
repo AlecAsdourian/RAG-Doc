@@ -39,8 +39,14 @@ func NewRouter(dbpool *pgxpool.Pool, ragClient *client.RAGClient, authConfig *au
 	// Initialize webhook handler
 	webhookHandler := auth.NewWebhookHandler(dbpool)
 
+	// Initialize request validator
+	validate := validator.New()
+
 	// Initialize search handler
-	searchHandler := handlers.NewSearchHandler(ragClient, validator.New())
+	searchHandler := handlers.NewSearchHandler(ragClient, validate)
+
+	// Initialize chat handler
+	chatHandler := handlers.NewChatHandler(ragClient, validate)
 
 	r := chi.NewRouter()
 
@@ -71,14 +77,13 @@ func NewRouter(dbpool *pgxpool.Pool, ragClient *client.RAGClient, authConfig *au
 		r.Use(auth.TenantMiddleware(dbpool))
 
 		// Apply timeout to non-streaming routes only
-		// SSE/streaming routes should NOT have this timeout
 		r.With(middleware.Timeout(60*time.Second)).Route("/api", func(r chi.Router) {
 			// Search endpoint
 			r.Post("/search", searchHandler.Search)
-
-			// Chat endpoint (SSE - added in 05-04, no timeout)
-			// Note: Chat will be mounted separately without Timeout middleware
 		})
+
+		// SSE streaming route - no timeout middleware (streams are long-lived)
+		r.Post("/api/chat/stream", chatHandler.StreamChat)
 	})
 
 	return r
