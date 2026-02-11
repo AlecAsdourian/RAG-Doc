@@ -6,11 +6,10 @@ import { useAuth, isAuthEnabled } from '@/hooks/useAuth';
 import { initTheme } from '@/lib/theme';
 import type { SourceInfo } from '@/lib/api/types';
 
-// TODO: Replace with actual repository selector
 const DEFAULT_REPOSITORY_ID = 'demo-repo';
 
 function App() {
-  const [selectedRepo] = useState(DEFAULT_REPOSITORY_ID);
+  const [selectedRepo, setSelectedRepo] = useState(DEFAULT_REPOSITORY_ID);
   const { user, loading, signInWithGitHub, signInWithGitLab, signOut } = useAuth();
 
   useEffect(() => {
@@ -21,6 +20,11 @@ function App() {
   const handleSourceClick = (source: SourceInfo) => {
     // For now, just log it - could navigate to file or highlight
     console.log('Source clicked:', source.file_path);
+  };
+
+  // Handle repository selection change
+  const handleRepoChange = (repoId: string) => {
+    setSelectedRepo(repoId);
   };
 
   // Show loading state while checking auth
@@ -58,11 +62,13 @@ function App() {
       <MainLayout
         repositoryId={selectedRepo}
         onSourceClick={handleSourceClick}
+        onRepoChange={handleRepoChange}
       />
       {/* Mobile: stacked vertically */}
       <MainLayoutMobile
         repositoryId={selectedRepo}
         onSourceClick={handleSourceClick}
+        onRepoChange={handleRepoChange}
       />
     </Layout>
   );
