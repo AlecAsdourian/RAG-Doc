@@ -37,8 +37,11 @@ All three are equally important — can't compromise on any.
 <specifics>
 ## Specific Ideas
 
-**Look & Feel:**
-- Clean & minimal like Linear or Vercel — lots of whitespace, subtle colors
+**Look & Feel (PRIORITY):**
+- **Minimal** — ruthlessly simple, no visual clutter, only what's needed
+- **Professional** — polished, confident design that feels production-ready
+- **Clean transitions** — smooth, subtle animations (150-300ms), no jarring state changes
+- Inspired by Linear/Vercel — lots of whitespace, subtle colors, elegant typography
 
 **Tech Stack:**
 - React + Next.js
