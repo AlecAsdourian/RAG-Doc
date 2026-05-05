@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { User, Session } from '@supabase/supabase-js';
-import { supabase, signInWithGitHub, signInWithGitLab, signOut as authSignOut } from '@/lib/auth';
+import { supabase, signInWithGitHub, signInWithGitLab, signOut as authSignOut, isAuthConfigured } from '@/lib/auth';
 import { apiClient } from '@/lib/api/client';
 
 interface UseAuthResult {
@@ -11,9 +11,6 @@ interface UseAuthResult {
   signInWithGitLab: () => Promise<void>;
   signOut: () => Promise<void>;
 }
-
-// Check if we're in dev mode without Supabase configured
-const isDevMode = !import.meta.env.VITE_SUPABASE_URL;
 
 export function useAuth(): UseAuthResult {
   const [user, setUser] = useState<User | null>(null);
@@ -30,8 +27,8 @@ export function useAuth(): UseAuthResult {
   }, []);
 
   useEffect(() => {
-    // If in dev mode without Supabase, skip auth
-    if (isDevMode) {
+    // If Supabase is not configured, skip auth
+    if (!isAuthConfigured) {
       setLoading(false);
       return;
     }
@@ -41,6 +38,9 @@ export function useAuth(): UseAuthResult {
       setSession(initialSession);
       setUser(initialSession?.user ?? null);
       updateApiToken(initialSession);
+      setLoading(false);
+    }).catch((error) => {
+      console.error('Error getting session:', error);
       setLoading(false);
     });
 
@@ -93,5 +93,5 @@ export function useAuth(): UseAuthResult {
  * Check if auth is enabled (Supabase configured)
  */
 export function isAuthEnabled(): boolean {
-  return !isDevMode;
+  return isAuthConfigured;
 }

@@ -1,0 +1,35 @@
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+nul
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+
+# Dependencies
+node_modules/
+
+# Temp / junk
+tmpclaude-*
+ngrok.exe
+=*
+
+# Claude Code local settings (may contain API keys)
+.claude/settings.local.json
+
+# Stitch MCP generated reference HTML files (large, not needed in repo)
+.planning/frontend-ref/
+.planning/phases/*/front-end_reference/

@@ -1,62 +1,181 @@
 @import 'tailwindcss';
+@import 'tw-animate-css';
 
-@theme {
-  --color-background: hsl(0 0% 100%);
-  --color-foreground: hsl(240 10% 3.9%);
-  --color-card: hsl(0 0% 100%);
-  --color-card-foreground: hsl(240 10% 3.9%);
-  --color-popover: hsl(0 0% 100%);
-  --color-popover-foreground: hsl(240 10% 3.9%);
-  --color-primary: hsl(240 5.9% 10%);
-  --color-primary-foreground: hsl(0 0% 98%);
-  --color-secondary: hsl(240 4.8% 95.9%);
-  --color-secondary-foreground: hsl(240 5.9% 10%);
-  --color-muted: hsl(240 4.8% 95.9%);
-  --color-muted-foreground: hsl(240 3.8% 46.1%);
-  --color-accent: hsl(240 4.8% 95.9%);
-  --color-accent-foreground: hsl(240 5.9% 10%);
-  --color-destructive: hsl(0 84.2% 60.2%);
-  --color-destructive-foreground: hsl(0 0% 98%);
-  --color-border: hsl(240 5.9% 90%);
-  --color-input: hsl(240 5.9% 90%);
-  --color-ring: hsl(240 5.9% 10%);
-  --radius: 0.5rem;
+@custom-variant dark (&:is(.dark *));
 
-  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
-    'Helvetica Neue', Arial, sans-serif;
+:root {
+  /* Obsidian Flux canonical palette */
+  /* Level 0: Canvas / deepest background */
+  --of-canvas:                  #0B0E14;
+  /* Level 1: Panels */
+  --of-panel:                   #151921;
+  /* Surface scale */
+  --of-surface:                 #13131b;
+  --of-surface-dim:             #13131b;
+  --of-surface-container-lowest:#0d0d15;
+  --of-surface-container-low:   #1b1b23;
+  --of-surface-container:       #1f1f27;
+  --of-surface-container-high:  #292932;
+  --of-surface-container-highest:#34343d;
+  --of-surface-variant:         #34343d;
+  --of-surface-bright:          #393841;
+  /* Primary — lavender */
+  --of-primary:                 #c0c1ff;
+  --of-on-primary:              #1000a9;
+  --of-primary-container:       #8083ff;
+  --of-on-primary-container:    #0d0096;
+  --of-primary-fixed:           #e1e0ff;
+  --of-primary-fixed-dim:       #c0c1ff;
+  --of-inverse-primary:         #494bd6;
+  /* Secondary — emerald */
+  --of-secondary:               #4edea3;
+  --of-on-secondary:            #003824;
+  --of-secondary-container:     #00a572;
+  --of-on-secondary-container:  #00311f;
+  /* On-surface text */
+  --of-on-surface:              #e4e1ed;
+  --of-on-surface-variant:      #c7c4d7;
+  --of-inverse-surface:         #e4e1ed;
+  --of-inverse-on-surface:      #303038;
+  /* Outline */
+  --of-outline:                 #908fa0;
+  --of-outline-variant:         #464554;
+  /* Tint */
+  --of-surface-tint:            #c0c1ff;
+  /* Error */
+  --of-error:                   #ffb4ab;
+  --of-on-error:                #690005;
+  --of-error-container:         #93000a;
+  --of-on-error-container:      #ffdad6;
+
+  /* Tailwind semantic mapping */
+  --background:         var(--of-canvas);
+  --card:               var(--of-panel);
+  --popover:            var(--of-surface-container);
+  --foreground:         var(--of-on-surface);
+  --card-foreground:    var(--of-on-surface);
+  --popover-foreground: var(--of-on-surface);
+  --primary:            var(--of-primary);
+  --primary-foreground: var(--of-on-primary);
+  --secondary:          var(--of-secondary);
+  --secondary-foreground: var(--of-on-secondary);
+  --muted:              var(--of-surface-container-high);
+  --muted-foreground:   var(--of-on-surface-variant);
+  --accent:             var(--of-inverse-primary);
+  --accent-foreground:  #ffffff;
+  --destructive:        var(--of-error-container);
+  --destructive-foreground: var(--of-on-error-container);
+  --border:             var(--of-outline-variant);
+  --input:              var(--of-surface-container-low);
+  --ring:               var(--of-primary);
+  /* Sidebar */
+  --sidebar:            var(--of-panel);
+  --sidebar-foreground: var(--of-on-surface);
+  --sidebar-primary:    var(--of-primary);
+  --sidebar-primary-foreground: var(--of-on-primary);
+  --sidebar-accent:     var(--of-surface-container);
+  --sidebar-accent-foreground: var(--of-on-surface);
+  --sidebar-border:     var(--of-outline-variant);
+  --sidebar-ring:       var(--of-primary);
+  /* Status / glow */
+  --status-emerald:     var(--of-secondary);
+  --status-amber:       #ffb783;
+  --status-red:         var(--of-error);
+  --glow-emerald: 0 0 10px rgba(78, 222, 163, 0.5);
+  --glow-amber:   0 0 10px rgba(255, 183, 131, 0.5);
+  --glow-red:     0 0 10px rgba(255, 180, 171, 0.5);
+  --glow-accent:  0 0 10px rgba(192, 193, 255, 0.3);
+  /* Charts */
+  --chart-1: var(--of-primary);
+  --chart-2: var(--of-secondary);
+  --chart-3: #ffb783;
+  --chart-4: var(--of-error);
+  --chart-5: #c0c1ff;
+  --radius: 0.25rem;
 }
 
-.dark {
-  --color-background: hsl(240 10% 3.9%);
-  --color-foreground: hsl(0 0% 98%);
-  --color-card: hsl(240 10% 3.9%);
-  --color-card-foreground: hsl(0 0% 98%);
-  --color-popover: hsl(240 10% 3.9%);
-  --color-popover-foreground: hsl(0 0% 98%);
-  --color-primary: hsl(0 0% 98%);
-  --color-primary-foreground: hsl(240 5.9% 10%);
-  --color-secondary: hsl(240 3.7% 15.9%);
-  --color-secondary-foreground: hsl(0 0% 98%);
-  --color-muted: hsl(240 3.7% 15.9%);
-  --color-muted-foreground: hsl(240 5% 64.9%);
-  --color-accent: hsl(240 3.7% 15.9%);
-  --color-accent-foreground: hsl(0 0% 98%);
-  --color-destructive: hsl(0 62.8% 30.6%);
-  --color-destructive-foreground: hsl(0 0% 98%);
-  --color-border: hsl(240 3.7% 15.9%);
-  --color-input: hsl(240 3.7% 15.9%);
-  --color-ring: hsl(240 4.9% 83.9%);
+@theme inline {
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'Fira Code', 'Cascadia Code', monospace;
+  --font-display: 'Space Grotesk', system-ui, sans-serif;
+  /* Semantic color tokens */
+  --color-background:             var(--background);
+  --color-foreground:             var(--foreground);
+  --color-card:                   var(--card);
+  --color-card-foreground:        var(--card-foreground);
+  --color-popover:                var(--popover);
+  --color-popover-foreground:     var(--popover-foreground);
+  --color-primary:                var(--primary);
+  --color-primary-foreground:     var(--primary-foreground);
+  --color-secondary:              var(--secondary);
+  --color-secondary-foreground:   var(--secondary-foreground);
+  --color-muted:                  var(--muted);
+  --color-muted-foreground:       var(--muted-foreground);
+  --color-accent:                 var(--accent);
+  --color-accent-foreground:      var(--accent-foreground);
+  --color-destructive:            var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border:                 var(--border);
+  --color-input:                  var(--input);
+  --color-ring:                   var(--ring);
+  --color-chart-1:                var(--chart-1);
+  --color-chart-2:                var(--chart-2);
+  --color-chart-3:                var(--chart-3);
+  --color-chart-4:                var(--chart-4);
+  --color-chart-5:                var(--chart-5);
+  --radius-sm:  calc(var(--radius) - 2px);
+  --radius-md:  var(--radius);
+  --radius-lg:  calc(var(--radius) + 2px);
+  --radius-xl:  calc(var(--radius) + 4px);
+  --color-sidebar:                var(--sidebar);
+  --color-sidebar-foreground:     var(--sidebar-foreground);
+  --color-sidebar-primary:        var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent:         var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border:         var(--sidebar-border);
+  --color-sidebar-ring:           var(--sidebar-ring);
+  /* Obsidian Flux surface scale exposed to Tailwind */
+  --color-canvas:                 var(--of-canvas);
+  --color-panel:                  var(--of-panel);
+  --color-surface:                var(--of-surface);
+  --color-surface-dim:            var(--of-surface-dim);
+  --color-surface-container-lowest: var(--of-surface-container-lowest);
+  --color-surface-container-low:  var(--of-surface-container-low);
+  --color-surface-container:      var(--of-surface-container);
+  --color-surface-container-high: var(--of-surface-container-high);
+  --color-surface-container-highest: var(--of-surface-container-highest);
+  --color-surface-variant:        var(--of-surface-variant);
+  --color-on-surface:             var(--of-on-surface);
+  --color-on-surface-variant:     var(--of-on-surface-variant);
+  --color-outline:                var(--of-outline);
+  --color-outline-variant:        var(--of-outline-variant);
+  --color-inverse-primary:        var(--of-inverse-primary);
+  --color-primary-container:      var(--of-primary-container);
+  --color-on-primary-container:   var(--of-on-primary-container);
+  --color-secondary-container:    var(--of-secondary-container);
+  --color-error-container:        var(--of-error-container);
+  --color-on-error-container:     var(--of-on-error-container);
 }
 
-* {
-  border-color: var(--color-border);
-}
-
-body {
-  background-color: var(--color-background);
-  color: var(--color-foreground);
-  font-family: var(--font-sans);
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  font-feature-settings: 'rlig' 1, 'calt' 1;
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-canvas text-on-surface;
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: 'rlig' 1, 'calt' 1;
+  }
+  /* Material Symbols thin style */
+  .material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 24;
+  }
+  /* Obsidian Flux scrollbar */
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--of-outline-variant); border-radius: 2px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--of-outline); }
 }
