@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>RAG Codebase Explorer - Ingestion &amp; Settings</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&amp;family=Fira+Code:wght@400;500&amp;family=Space+Grotesk:wght@700&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "on-error-container": "#ffdad6",
+                    "surface-container": "#1f1f27",
+                    "outline-variant": "#464554",
+                    "tertiary-fixed": "#ffdcc5",
+                    "on-tertiary-container": "#452000",
+                    "surface-container-high": "#292932",
+                    "surface-container-lowest": "#0d0d15",
+                    "secondary": "#4edea3",
+                    "on-error": "#690005",
+                    "inverse-primary": "#494bd6",
+                    "on-secondary-fixed-variant": "#005236",
+                    "primary-container": "#8083ff",
+                    "on-primary-container": "#0d0096",
+                    "on-secondary-container": "#00311f",
+                    "surface-bright": "#393841",
+                    "on-primary": "#1000a9",
+                    "secondary-fixed": "#6ffbbe",
+                    "surface": "#13131b",
+                    "surface-dim": "#13131b",
+                    "error-container": "#93000a",
+                    "surface-container-low": "#1b1b23",
+                    "tertiary-fixed-dim": "#ffb783",
+                    "tertiary": "#ffb783",
+                    "primary": "#c0c1ff",
+                    "on-primary-fixed": "#07006c",
+                    "surface-tint": "#c0c1ff",
+                    "primary-fixed-dim": "#c0c1ff",
+                    "on-tertiary-fixed": "#301400",
+                    "on-surface-variant": "#c7c4d7",
+                    "on-secondary-fixed": "#002113",
+                    "surface-variant": "#34343d",
+                    "inverse-on-surface": "#303038",
+                    "inverse-surface": "#e4e1ed",
+                    "error": "#ffb4ab",
+                    "surface-container-highest": "#34343d",
+                    "secondary-container": "#00a572",
+                    "background": "#13131b",
+                    "tertiary-container": "#d97721",
+                    "on-tertiary-fixed-variant": "#703700",
+                    "on-primary-fixed-variant": "#2f2ebe",
+                    "on-background": "#e4e1ed",
+                    "outline": "#908fa0",
+                    "on-tertiary": "#4f2500",
+                    "primary-fixed": "#e1e0ff",
+                    "secondary-fixed-dim": "#4edea3",
+                    "on-secondary": "#003824",
+                    "on-surface": "#e4e1ed"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.125rem",
+                    "lg": "0.25rem",
+                    "xl": "0.5rem",
+                    "full": "0.75rem"
+            },
+            "spacing": {
+                    "xs": "4px",
+                    "sidebar-width": "260px",
+                    "lg": "24px",
+                    "md": "16px",
+                    "sm": "8px",
+                    "xl": "48px",
+                    "panel-gap": "1px",
+                    "unit": "4px"
+            },
+            "fontFamily": {
+                    "h2": [
+                            "Inter"
+                    ],
+                    "code-sm": [
+                            "Fira Code"
+                    ],
+                    "label-caps": [
+                            "Space Grotesk"
+                    ],
+                    "h1": [
+                            "Inter"
+                    ],
+                    "body-mono": [
+                            "Fira Code"
+                    ],
+                    "body-main": [
+                            "Inter"
+                    ]
+            },
+            "fontSize": {
+                    "h2": [
+                            "24px",
+                            {
+                                    "lineHeight": "1.3",
+                                    "letterSpacing": "-0.01em",
+                                    "fontWeight": "600"
+                            }
+                    ],
+                    "code-sm": [
+                            "12px",
+                            {
+                                    "lineHeight": "1.4",
+                                    "fontWeight": "400"
+                            }
+                    ],
+                    "label-caps": [
+                            "11px",
+                            {
+                                    "lineHeight": "1",
+                                    "letterSpacing": "0.08em",
+                                    "fontWeight": "700"
+                            }
+                    ],
+                    "h1": [
+                            "32px",
+                            {
+                                    "lineHeight": "1.2",
+                                    "letterSpacing": "-0.02em",
+                                    "fontWeight": "600"
+                            }
+                    ],
+                    "body-mono": [
+                            "13px",
+                            {
+                                    "lineHeight": "1.5",
+                                    "letterSpacing": "0",
+                                    "fontWeight": "450"
+                            }
+                    ],
+                    "body-main": [
+                            "14px",
+                            {
+                                    "lineHeight": "1.6",
+                                    "letterSpacing": "0",
+                                    "fontWeight": "400"
+                            }
+                    ]
+            }
+    },
+        },
+      }
+    </script>
+<style>
+        /* Custom ultra-thin scrollbar as per guidelines */
+        ::-webkit-scrollbar {
+            width: 4px;
+            height: 4px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #1F2937;
+            border-radius: 2px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #34343d;
+        }
+    </style>
+</head>
+<body class="bg-[#0B0E14] text-on-background font-body-main text-body-main antialiased selection:bg-primary-container selection:text-on-primary-container min-h-screen overflow-hidden">
+<!-- JSON Component: SideNavBar -->
+<nav class="bg-[#151921] dark:bg-[#151921] font-['Inter'] text-sm antialiased h-screen w-[260px] border-r border-white/10 fixed left-0 top-0 flex flex-col z-40">
+<div class="p-md border-b border-white/5 flex items-center gap-sm">
+<div class="w-8 h-8 rounded bg-primary-container/20 flex items-center justify-center text-[#6366F1]">
+<span class="material-symbols-outlined text-[20px]" style="font-variation-settings: 'FILL' 1;">workspaces</span>
+</div>
+<div>
+<h1 class="text-indigo-500 font-bold tracking-tight text-[15px]">RAG Explorer</h1>
+<p class="font-code-sm text-code-sm text-on-surface-variant/70">v1.2.0-stable</p>
+</div>
+</div>
+<div class="flex-1 overflow-y-auto py-sm">
+<ul class="flex flex-col gap-xs px-xs">
+<li>
+<a class="text-gray-400 hover:text-white hover:bg-white/5 transition-colors cursor-pointer active:scale-95 flex items-center gap-sm px-sm py-2 rounded-DEFAULT" href="#">
+<span class="material-symbols-outlined text-[18px]">workspaces</span>
+<span>Organization</span>
+</a>
+</li>
+<li>
+<a class="text-gray-400 hover:text-white hover:bg-white/5 transition-colors cursor-pointer active:scale-95 flex items-center gap-sm px-sm py-2 rounded-DEFAULT" href="#">
+<span class="material-symbols-outlined text-[18px]">folder_open</span>
+<span>Explorer</span>
+</a>
+</li>
+<li>
+<a class="text-gray-400 hover:text-white hover:bg-white/5 transition-colors cursor-pointer active:scale-95 flex items-center gap-sm px-sm py-2 rounded-DEFAULT" href="#">
+<span class="material-symbols-outlined text-[18px]">account_tree</span>
+<span>GraphView</span>
+</a>
+</li>
+<li>
+<a class="text-gray-400 hover:text-white hover:bg-white/5 transition-colors cursor-pointer active:scale-95 flex items-center gap-sm px-sm py-2 rounded-DEFAULT" href="#">
+<span class="material-symbols-outlined text-[18px]">description</span>
+<span>Documentation</span>
+</a>
+</li>
+<li>
+<a class="text-gray-400 hover:text-white hover:bg-white/5 transition-colors cursor-pointer active:scale-95 flex items-center gap-sm px-sm py-2 rounded-DEFAULT" href="#">
+<span class="material-symbols-outlined text-[18px]">forum</span>
+<span>Chat</span>
+</a>
+</li>
+<li>
+<a class="text-gray-400 hover:text-white hover:bg-white/5 transition-colors cursor-pointer active:scale-95 flex items-center gap-sm px-sm py-2 rounded-DEFAULT" href="#">
+<span class="material-symbols-outlined text-[18px]">search</span>
+<span>Search</span>
+</a>
+</li>
+<li>
+<a class="text-indigo-400 border-l-2 border-indigo-500 bg-white/5 cursor-pointer active:scale-95 flex items-center gap-sm px-sm py-2 rounded-r-DEFAULT -ml-[1px]" href="#">
+<span class="material-symbols-outlined text-[18px]" style="font-variation-settings: 'FILL' 1;">settings</span>
+<span>Settings</span>
+</a>
+</li>
+</ul>
+</div>
+<div class="p-md border-t border-white/5 flex flex-col gap-sm">
+<button class="w-full bg-[#6366F1] hover:bg-indigo-500 text-white font-medium py-2 rounded-DEFAULT transition-colors flex items-center justify-center gap-xs">
+<span class="material-symbols-outlined text-[18px]">add</span>
+                New Analysis
+            </button>
+<button class="w-full text-gray-400 hover:text-white hover:bg-white/5 font-medium py-2 rounded-DEFAULT transition-colors flex items-center justify-center gap-xs cursor-pointer">
+<span class="material-symbols-outlined text-[18px]">keyboard_double_arrow_left</span>
+                Collapse Sidebar
+            </button>
+</div>
+</nav>
+<!-- JSON Component: TopNavBar -->
+<header class="bg-[#151921]/80 backdrop-blur-xl font-['Inter'] text-xs font-medium uppercase tracking-wider h-16 border-b border-white/10 fixed top-0 right-0 z-30" style="width: calc(100% - 260px); left: 260px;">
+<div class="flex items-center justify-end h-full px-6 w-full">
+<div class="flex items-center gap-md">
+<button class="text-gray-500 hover:text-gray-300 cursor-pointer opacity-90 hover:opacity-100 hover:text-indigo-400 transition-colors flex items-center">
+<span class="material-symbols-outlined text-[20px]">notifications</span>
+</button>
+<button class="text-gray-500 hover:text-gray-300 cursor-pointer opacity-90 hover:opacity-100 hover:text-indigo-400 transition-colors flex items-center">
+<span class="material-symbols-outlined text-[20px]">cloud_done</span>
+</button>
+<div class="h-4 w-px bg-white/10 mx-xs"></div>
+<button class="text-[#6366F1] hover:text-indigo-400 font-bold normal-case text-sm px-2">Sync Status</button>
+<button class="text-gray-500 hover:text-white normal-case text-sm px-2">Settings</button>
+<div class="w-8 h-8 rounded-full bg-surface-container-highest ml-sm overflow-hidden border border-white/10">
+<img alt="User Avatar" class="w-full h-full object-cover" data-alt="A professional headshot of a software engineer. The person has a neutral, focused expression. The lighting is moody and dramatic, typical of a high-end tech environment, with cool blue and subtle purple rim lights outlining their silhouette against a dark background." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBJ_1aH2w1j6RfkoSc7xYKPGlp8Xw5wd7y60KTVar4wBZ9cdafnCyQs3bJUqOCXPLa4YzISxsf6WyOA5YH9_kwIBvdEaoDVQQ2uw5DpX1gT5sfn47V0ZBp7Lq_cSbUbdbqxAKBhfHHg3oUbhRbQiRC1czJpChw-rHxRssVAGcsPiz7L-nkLNgBYYJN3iHNzFREbDwIaRrgJDJnEURQ8YAu3X2HN4j0ELjOXgSUutSGl_H98XS3Vq0zLPHzWpHPiJCg4QkHujcqJ8Qw"/>
+</div>
+</div>
+</div>
+</header>
+<!-- Main Workspace Canvas -->
+<main class="ml-[260px] pt-20 h-screen overflow-y-auto bg-[#0B0E14] p-md flex flex-col gap-md relative z-10">
+<!-- Header -->
+<div class="flex justify-between items-end mb-sm px-xs">
+<div>
+<h2 class="font-h1 text-h1 text-on-surface mb-xs">Repository Settings</h2>
+<p class="font-body-main text-body-main text-on-surface-variant">Manage codebase connections, track indexing progress, and invite workspace collaborators.</p>
+</div>
+</div>
+<!-- Modular Grid Layout (Bento Style) -->
+<div class="grid grid-cols-1 lg:grid-cols-12 gap-md flex-grow">
+<!-- Left Column: Primary Actions & Active State -->
+<div class="col-span-1 lg:col-span-7 flex flex-col gap-md">
+<!-- Add Repository Panel -->
+<div class="bg-surface-container border border-outline-variant rounded-lg flex flex-col overflow-hidden">
+<div class="bg-surface-container-highest/20 px-md py-sm border-b border-outline-variant flex justify-between items-center">
+<span class="font-label-caps text-label-caps text-on-surface-variant">Connect Data Source</span>
+</div>
+<div class="p-md flex gap-md">
+<button class="flex-1 group bg-surface-container-lowest border border-outline-variant rounded hover:border-primary transition-colors p-md flex flex-col items-center justify-center gap-sm relative overflow-hidden h-32">
+<div class="absolute inset-0 bg-primary/5 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+<span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary text-[28px] transition-colors">code_blocks</span>
+<span class="font-h2 text-[16px] text-on-surface">Connect GitHub</span>
+<span class="font-body-main text-xs text-on-surface-variant">OAuth or PAT integration</span>
+</button>
+<button class="flex-1 group bg-surface-container-lowest border border-outline-variant rounded hover:border-secondary transition-colors p-md flex flex-col items-center justify-center gap-sm relative overflow-hidden h-32">
+<div class="absolute inset-0 bg-secondary/5 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+<span class="material-symbols-outlined text-on-surface-variant group-hover:text-secondary text-[28px] transition-colors">upload_file</span>
+<span class="font-h2 text-[16px] text-on-surface">Upload Local</span>
+<span class="font-body-main text-xs text-on-surface-variant">.zip or directory structure</span>
+</button>
+</div>
+</div>
+<!-- Active Indexing Status Panel -->
+<div class="bg-surface-container border border-primary/50 rounded-lg flex flex-col overflow-hidden relative shadow-[0_0_15px_rgba(192,193,255,0.05)]">
+<div class="bg-surface-container-highest/30 px-md py-sm border-b border-outline-variant flex justify-between items-center">
+<div class="flex items-center gap-xs text-primary">
+<span class="material-symbols-outlined text-[16px] animate-spin">data_usage</span>
+<span class="font-label-caps text-label-caps">Knowledge Indexing</span>
+</div>
+<span class="font-code-sm text-code-sm text-primary">68%</span>
+</div>
+<div class="p-md flex flex-col gap-md">
+<div class="flex justify-between items-center mb-xs">
+<span class="font-body-main text-body-main text-on-surface">core-api-service</span>
+<span class="font-body-mono text-body-mono text-on-surface-variant text-xs">Branch: feature/rag-impl</span>
+</div>
+<!-- Progress Track -->
+<div class="w-full h-1 bg-surface-container-lowest rounded-full overflow-hidden">
+<div class="h-full bg-primary relative" style="width: 68%;">
+<div class="absolute inset-0 bg-white/20 w-full h-full animate-[shimmer_2s_infinite]" style="background-image: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);"></div>
+</div>
+</div>
+<!-- Real-time Terminal Logs -->
+<div class="bg-surface-container-lowest border border-outline-variant rounded p-sm h-32 overflow-y-auto font-body-mono text-code-sm text-on-surface-variant flex flex-col gap-xs leading-relaxed">
+<div class="flex gap-xs"><span class="text-outline">14:02:11</span> <span class="text-secondary">[INFO]</span> <span>Initializing parser for /src/core/embeddings.py</span></div>
+<div class="flex gap-xs"><span class="text-outline">14:02:12</span> <span class="text-secondary">[INFO]</span> <span>Abstract Syntax Tree generated successfully.</span></div>
+<div class="flex gap-xs"><span class="text-outline">14:02:14</span> <span class="text-primary">[WORK]</span> <span>Extracting function definitions and docstrings...</span></div>
+<div class="flex gap-xs"><span class="text-outline">14:02:15</span> <span class="text-primary">[WORK]</span> <span>Linking class references to /src/models/vector.py</span></div>
+<div class="flex gap-xs"><span class="text-outline">14:02:18</span> <span class="text-primary-fixed-dim">[SYNC]</span> <span>Ingesting file.py... chunks: 42</span></div>
+<div class="flex gap-xs"><span class="text-outline">14:02:19</span> <span class="text-secondary">[DONE]</span> <span>Stored 42 chunks in vector index.</span></div>
+<div class="flex gap-xs animate-pulse"><span class="text-outline">14:02:20</span> <span class="text-primary">[WORK]</span> <span class="text-on-surface">Analyzing dependency graph...</span></div>
+</div>
+</div>
+</div>
+</div>
+<!-- Right Column: Lists & Settings -->
+<div class="col-span-1 lg:col-span-5 flex flex-col gap-md">
+<!-- Ingested Repositories Panel -->
+<div class="bg-surface-container border border-outline-variant rounded-lg flex flex-col overflow-hidden flex-grow max-h-[400px]">
+<div class="bg-surface-container-highest/20 px-md py-sm border-b border-outline-variant flex justify-between items-center sticky top-0 z-10 backdrop-blur-sm">
+<span class="font-label-caps text-label-caps text-on-surface-variant">Indexed Repositories</span>
+<span class="material-symbols-outlined text-on-surface-variant text-[16px] cursor-pointer hover:text-on-surface">filter_list</span>
+</div>
+<div class="overflow-y-auto flex-grow">
+<!-- Repo Item 1 -->
+<div class="px-md py-sm border-b border-surface-container-high flex items-center justify-between hover:bg-surface-container-high/50 transition-colors group cursor-pointer">
+<div class="flex items-center gap-sm">
+<span class="material-symbols-outlined text-outline text-[20px]">book</span>
+<div class="flex flex-col">
+<span class="font-body-main text-sm text-on-surface font-medium">frontend-dashboard</span>
+<span class="font-body-mono text-xs text-on-surface-variant">main • 2.4k files</span>
+</div>
+</div>
+<div class="flex items-center gap-sm">
+<div class="px-2 py-0.5 rounded-[2px] bg-secondary/10 border border-secondary/20 flex items-center gap-xs">
+<div class="w-1.5 h-1.5 rounded-full bg-secondary"></div>
+<span class="font-label-caps text-[9px] text-secondary">SYNCED</span>
+</div>
+<span class="material-symbols-outlined text-outline-variant text-[18px] group-hover:text-on-surface transition-colors">more_vert</span>
+</div>
+</div>
+<!-- Repo Item 2 -->
+<div class="px-md py-sm border-b border-surface-container-high flex items-center justify-between hover:bg-surface-container-high/50 transition-colors group cursor-pointer bg-primary/5">
+<div class="flex items-center gap-sm">
+<span class="material-symbols-outlined text-primary text-[20px]">book</span>
+<div class="flex flex-col">
+<span class="font-body-main text-sm text-primary font-medium">core-api-service</span>
+<span class="font-body-mono text-xs text-on-surface-variant">feature/rag-impl • 1.1k files</span>
+</div>
+</div>
+<div class="flex items-center gap-sm">
+<div class="px-2 py-0.5 rounded-[2px] bg-primary/10 border border-primary/20 flex items-center gap-xs">
+<div class="w-1.5 h-1.5 rounded-full bg-primary animate-pulse"></div>
+<span class="font-label-caps text-[9px] text-primary">INDEXING</span>
+</div>
+<span class="material-symbols-outlined text-outline-variant text-[18px] group-hover:text-on-surface transition-colors">more_vert</span>
+</div>
+</div>
+<!-- Repo Item 3 -->
+<div class="px-md py-sm border-b border-surface-container-high flex items-center justify-between hover:bg-surface-container-high/50 transition-colors group cursor-pointer">
+<div class="flex items-center gap-sm">
+<span class="material-symbols-outlined text-error text-[20px]">book</span>
+<div class="flex flex-col">
+<span class="font-body-main text-sm text-error font-medium">legacy-auth-v1</span>
+<span class="font-body-mono text-xs text-on-surface-variant">master • 840 files</span>
+</div>
+</div>
+<div class="flex items-center gap-sm">
+<div class="px-2 py-0.5 rounded-[2px] bg-error-container border border-error/20 flex items-center gap-xs">
+<div class="w-1.5 h-1.5 rounded-full bg-error"></div>
+<span class="font-label-caps text-[9px] text-error">ERROR</span>
+</div>
+<span class="material-symbols-outlined text-outline-variant text-[18px] group-hover:text-on-surface transition-colors">more_vert</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Workspace Settings Panel -->
+<div class="bg-surface-container border border-outline-variant rounded-lg flex flex-col overflow-hidden">
+<div class="bg-surface-container-highest/20 px-md py-sm border-b border-outline-variant flex justify-between items-center">
+<span class="font-label-caps text-label-caps text-on-surface-variant">Workspace Access</span>
+</div>
+<div class="p-md flex flex-col gap-md">
+<!-- Invite Input -->
+<div class="flex gap-sm">
+<div class="flex-grow relative">
+<span class="material-symbols-outlined absolute left-sm top-1/2 -translate-y-1/2 text-outline text-[16px]">mail</span>
+<input class="w-full bg-surface-container-lowest border border-outline-variant rounded pl-xl pr-sm py-1.5 font-body-main text-sm text-on-surface placeholder:text-outline focus:border-primary focus:ring-0 transition-colors focus:outline-none" placeholder="Developer email address" type="email"/>
+</div>
+<button class="bg-primary text-on-primary font-body-main text-sm px-md py-1.5 rounded font-medium hover:bg-primary-fixed transition-colors">Invite</button>
+</div>
+<div class="h-px w-full bg-outline-variant/30"></div>
+<!-- Team List -->
+<div class="flex flex-col gap-sm">
+<div class="flex items-center justify-between group">
+<div class="flex items-center gap-sm">
+<div class="w-6 h-6 rounded bg-primary/20 text-primary flex items-center justify-center font-label-caps text-xs">YOU</div>
+<div class="flex flex-col">
+<span class="font-body-main text-sm text-on-surface leading-tight">Alex Dev</span>
+<span class="font-body-mono text-xs text-outline leading-tight">alex@rag-explorer.dev</span>
+</div>
+</div>
+<span class="font-label-caps text-xs text-outline">OWNER</span>
+</div>
+<div class="flex items-center justify-between group">
+<div class="flex items-center gap-sm">
+<div class="w-6 h-6 rounded overflow-hidden">
+<img alt="Team Member Avatar" class="w-full h-full object-cover" data-alt="A close-up headshot of a female software developer with glasses, looking directly at the camera with a slight, confident smile. The environment is dimly lit with cool, technical aesthetic lighting, featuring subtle neon green reflections suggesting multiple monitors. The overall tone is professional and highly skilled." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDhRNJPz_xiFZI7VYb6wcQL3mk0VBi86ho9hPJxMt3hqv4vRtTNRBu1BKii4nSBIRnqRMUnl0nocreYSyxfwD31uqQS4ADdfE3QX2hYhLcQleUQ93ri8yYXG6KX5QpoOC2TpQszh6BrRWHgEcKmCAHTE0PPMc3bIbLvdgEaW-T_nuoY6ukMGPgMHfmGAXFP3K0dj3Nhcw_zGZEgZxvkkxHpmzKRLKEA2PUVNK0nKFTYqmADYbQnAUzda8Xqk6RbgPrrzcopJeCxYss"/>
+</div>
+<div class="flex flex-col">
+<span class="font-body-main text-sm text-on-surface leading-tight">Sarah Chen</span>
+<span class="font-body-mono text-xs text-outline leading-tight">sarah@rag-explorer.dev</span>
+</div>
+</div>
+<div class="flex items-center gap-xs cursor-pointer hover:text-on-surface text-outline transition-colors">
+<span class="font-label-caps text-xs">ADMIN</span>
+<span class="material-symbols-outlined text-[14px]">expand_more</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</main>
+</body></html>
