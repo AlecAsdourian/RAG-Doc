@@ -4,17 +4,17 @@
 
 See: .planning/PROJECT.md (updated 2026-01-08)
 
-**Core value:** The RAG pipeline gives accurate, relevant answers - not generic advice, not hallucinated answers. Accuracy over features.
-**Current focus:** Phase 13 — Web UI Search & Chat
+**Core value:** Persistent, shared, code-aware memory substrate for parallel AI coding agents (v2 reframe). v1 remains the RAG-powered smart docs platform that ships first.
+**Current focus:** Planning v1 MVP Completion milestone (Phase 4 auth wiring finish + Phase 6 repo integration), then v2 Memory Substrate milestone.
 
 ## Current Position
 
-Phase: 13 of 16 (Web UI Search & Chat)
-Plan: 3 of 4 complete
-Status: In progress
-Last activity: 2026-02-10 — Completed 13-03-PLAN.md (Chat Panel with SSE Streaming)
+Phase 13 of 16: Complete (all 4 plans shipped; retroactive summary written 2026-09-03)
+Milestone state: v1 build in progress — RAG + UI complete, auth wiring + repo integration still open
+Next milestone: v1 MVP Completion, then v2 Memory Substrate (GraphRAG + LangGraph agents + MCP server)
+Last activity: 2026-09-03 — Retroactive Phase 13-04 summary; pushed local master → GitHub main; product reframe to memory substrate
 
-Progress: █████████░ 81% (13/16 phases with dependencies)
+Progress: v1 build ~85% done (RAG pipeline complete, UI shell complete, missing: OAuth wiring, repo ingestion, admin endpoints)
 
 ## Performance Metrics
 
@@ -48,15 +48,19 @@ Recent decisions affecting current work:
 
 - **ISS-001:** Implement shared type definitions for cross-phase data contracts (suggested before Phase 13)
 - **ISS-002:** Add cross-phase verification pattern to planning workflow (template updated)
+- **ISS-004:** Organization selection mechanism for multi-org users (v1 MVP Completion milestone)
+- **ISS-005:** Supabase Native OAuth webhook handler (v1 MVP Completion milestone)
+- **ISS-006:** Test database connectivity configuration (LOW)
+- **Phase 13 carryovers:** frontend inline-style pollution; mocked repos/orgs/graph awaiting backend endpoints
 
 ### Blockers/Concerns
 
-None yet.
+- v1 MVP is not shippable end-to-end until Phase 4 OAuth handlers are wired into the router and Phase 6 (repo integration: GitHub OAuth app, clone, webhook sync) is built.
 
 ## Session Continuity
 
-Last session: 2026-02-10
-Stopped at: Completed 13-03-PLAN.md (Chat Panel with SSE Streaming)
+Last session: 2026-09-03
+Stopped at: Phase 13 formally closed, awaiting user go-ahead on v1 MVP Completion milestone scope
 Resume file: None
 
 ## Recent Decisions
