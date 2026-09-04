@@ -30,6 +30,5 @@ ngrok.exe
 # Claude Code local settings (may contain API keys)
 .claude/settings.local.json
 
-# Stitch MCP generated reference HTML files (large, not needed in repo)
-.planning/frontend-ref/
+# Stitch MCP generated reference HTML files in phase dirs (not the main ref)
 .planning/phases/*/front-end_reference/
