@@ -2,22 +2,22 @@ package isolation
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 )
 
-// TestOrg is a fully populated test tenant with three role members and a
-// starter repository. WithTwoOrgs produces two of them for cross-tenant tests.
+// TestOrg is a test tenant with three role members and a starter repository.
+// WithTwoOrgs produces two of them for cross-tenant tests.
+//
+// Tests that need a signed JWT for one of the users call
+// testjwt.Sign(org.OwnerID, org.ID, "owner") directly — the signer lives in
+// pkg/testing/isolation/testjwt to keep the signing secret out of this
+// package's public API. See package doc on testjwt for rationale.
 type TestOrg struct {
 	ID   string
 	Slug string
@@ -26,50 +26,8 @@ type TestOrg struct {
 	AdminID  string
 	MemberID string
 
-	OwnerJWT  string
-	AdminJWT  string
-	MemberJWT string
-
 	ProjectID string
 	RepoID    string
-}
-
-// TestJWTSecret is the HS256 signing key for TestJWT. It is only used to make
-// test-only tokens that a test-only middleware can accept; production JWT
-// validation goes through pkg/auth against Supabase JWKS.
-const TestJWTSecret = "isolation-test-jwt-secret-not-for-production"
-
-// TestJWT signs a minimal HS256 JWT carrying the claims the isolation test
-// middleware cares about: subject (user id), organization, role, and standard
-// timestamps. It is deliberately hand-rolled to avoid pulling a signing
-// library into the harness — one fewer moving part.
-//
-// Claim names match the production reader in pkg/auth/jwt.go:
-//   - "organization_id" is read by ExtractOrganizationID (jwt.go:57)
-//   - "organization_role" mirrors the naming; Phase 19 will read it here
-//
-// A drift-guard test (TestJWT_ClaimNamesMatchProduction in fixtures_test.go)
-// pins these keys so a future rename cannot silently break every downstream
-// isolation test signed with TestJWT.
-func TestJWT(userID, orgID, role string) string {
-	header := map[string]string{"alg": "HS256", "typ": "JWT"}
-	now := time.Now().Unix()
-	payload := map[string]any{
-		"sub":               userID,
-		"organization_id":   orgID,
-		"organization_role": role,
-		"iat":               now,
-		"exp":               now + 3600,
-	}
-	encode := func(v any) string {
-		b, _ := json.Marshal(v)
-		return base64.RawURLEncoding.EncodeToString(b)
-	}
-	signingInput := encode(header) + "." + encode(payload)
-	mac := hmac.New(sha256.New, []byte(TestJWTSecret))
-	mac.Write([]byte(signingInput))
-	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-	return signingInput + "." + sig
 }
 
 // WithTwoOrgs creates two isolated test tenants, each with owner/admin/member
@@ -109,10 +67,6 @@ func createOrg(t *testing.T, pool *pgxpool.Pool, slug string) *TestOrg {
 	org.OwnerID = createUserWithMembership(t, pool, org.ID, "owner", slug)
 	org.AdminID = createUserWithMembership(t, pool, org.ID, "admin", slug)
 	org.MemberID = createUserWithMembership(t, pool, org.ID, "member", slug)
-
-	org.OwnerJWT = TestJWT(org.OwnerID, org.ID, "owner")
-	org.AdminJWT = TestJWT(org.AdminID, org.ID, "admin")
-	org.MemberJWT = TestJWT(org.MemberID, org.ID, "member")
 
 	require.NoError(t, pool.QueryRow(ctx,
 		`INSERT INTO projects (organization_id, name, slug)

@@ -143,6 +143,24 @@ _This SUMMARY and the ISS-006 status change land in a follow-up docs commit._
 - **First-time diagnosis:** cross-process container reuse was silently not working because Ryuk was tearing down the container on session end. Resolved by disabling Ryuk (see decisions above); alternative would have been a longer-lived "keep alive" label but Ryuk-disable is the simpler, well-documented path.
 - **RLS enforcement gap:** discovered while designing the leak-synthesis self-test that a superuser connection would defeat every assertion. Fixed by introducing the `rag_doc_app` role.
 
+## Reviewer follow-ups (post-review, same branch)
+
+The reviewer subagent's `code-review` pass caught three findings I've addressed in follow-up commits before merge, per fleet doctrine on reviewer feedback:
+
+**Fix 1 — JWT claim-name contract with production (`113dbc8`)**
+- **Was:** `TestJWT` emitted `org_id`/`org_role`; production reads `organization_id` (pkg/auth/jwt.go:57). Latent today (self-tests don't drive HTTP) but would silently break every Phase 19+ endpoint test.
+- **Now:** Claims renamed to `organization_id`/`organization_role`. `TestSign_ClaimNamesMatchProduction` drift-guard test pins the contract.
+
+**Fix 2 — cleanupOrg SAVEPOINTs (`78a3401`)**
+- **Was:** Once one DELETE in the cleanup transaction errored (a future FK the fixture didn't know about), every subsequent DELETE silently no-op'd with "current transaction is aborted." Phantom rows leaked between runs of the reused container.
+- **Now:** Each DELETE runs inside a `SAVEPOINT cleanup_stmt`; failure rolls back to the savepoint and continues to the next stmt, preserving the outer `SET LOCAL app.current_tenant`. Two new tests: `TestCleanupOrg_SavepointIsolatesFailure` pins the primitive; `TestCleanupOrg_RemovesAllRows` covers the end-to-end happy path.
+
+**Fix 3 — testjwt subpackage (this commit)**
+- **Was:** `TestJWT`/`TestJWTSecret` lived in `fixtures.go` — a non-`_test.go` file, so they were part of the isolation package's public API and any production binary importing the package for the SetupTestDB primitive would carry the signing secret as a linker symbol.
+- **Now:** Extracted to `pkg/testing/isolation/testjwt` with a package doc that spells out "import only from test code." `WithTwoOrgs` no longer populates JWT fields on `TestOrg`; tests that need a token call `testjwt.Sign(userID, orgID, role)` directly. `OwnerJWT`/`AdminJWT`/`MemberJWT` fields removed from `TestOrg`.
+
+Post-fix state: 8/8 tests pass (7 in isolation, 1 in testjwt), `go vet` clean, container reuse behavior unchanged.
+
 ## Next Phase Readiness
 
 - Plan 17-02 (audit `/api/search` and `/api/chat/stream`) can import `pkg/testing/isolation` and write endpoint-level cross-tenant tests immediately.
