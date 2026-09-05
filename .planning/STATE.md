@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-01-08; product-vision reframe recorded i
 
 Milestone: v1.0 MVP (9 phases: 17-25)
 Phase: 17 of 25 — Multi-tenant Isolation Foundation
-Plan: Not started
-Status: Ready to plan
-Last activity: 2026-09-03 — Milestone v1.0 MVP created; roadmap restructured with milestone groupings and v0.9 disposition table
+Plan: 5 plans created (17-01 through 17-05), 0 executed
+Status: Ready to execute
+Last activity: 2026-09-03 — Phase 17 CONTEXT and all 5 PLAN.md files committed (PRs #3 and #4 merged to main)
 
-Progress: v1.0 MVP ░░░░░░░░░ 0/9 phases
+Progress: v1.0 MVP ░░░░░░░░░ 0/9 phases (17-01 next up for execution)
 
 ## Performance Metrics
 
@@ -83,12 +83,24 @@ Recent decisions still affecting current work:
 ## Session Continuity
 
 Last session: 2026-09-03
-Stopped at: v1.0 MVP milestone created; awaiting user go-ahead to start Phase 17 planning
+Stopped at: Phase 17 fully planned (5 PLAN.md files); ready for worker session to execute 17-01
 Resume file: None
 
-Next command suggested: `/gsd:discuss-phase 17` (gather context) or `/gsd:plan-phase 17` (jump straight to planning). Recommend the discuss step for Phase 17 since the isolation-test harness design has several choices worth pinning down.
+Next command suggested: `/gsd:execute-plan .planning/phases/17-tenant-isolation-foundation/17-01-PLAN.md` — recommend clearing context first (`/clear`), then spinning up a fresh worker session for execution. Reviewer session should be spun up before 17-01's PR opens (bootstrap prompt at `.planning/fleet/reviewer-session-prompt.md`).
+
+**Fleet handoff notes for the worker session:**
+- Read `.planning/phases/17-tenant-isolation-foundation/17-CONTEXT.md` first for vision context
+- The plans lock design decisions inline (testcontainers, PL/pgSQL trigger, regex-on-diff scanner) — don't re-litigate them without cause
+- Every commit follows `feedback_commit_convention.md`: one sentence, conventional prefix, no attribution trailers
+- Every PR references its plan file in the description
+- All work on a feature branch → PR → reviewer session comments → planner merges after approval
+
+**Fleet handoff notes for the reviewer session:**
+- Bootstrap prompt: `.planning/fleet/reviewer-session-prompt.md`
+- After 17-05 ships, the reviewer prompt gets updated with the isolation-test-coverage hard rule (a task inside 17-05 itself)
 
 ### Roadmap Evolution
 
 - 2026-09-03 — Milestone v1.0 MVP created: 9 phases (17-25); roadmap restructured with milestone groupings; v0.9 disposition table records disposition of original phases 1-16 (some shipped, some superseded, some deferred to v2)
 - 2026-09-03 — Product vision reframed: from "smart documentation platform" to "persistent shared memory substrate for parallel AI coding agents"; v1.0 remains RAG-over-code as the foundation, v2 adds GraphRAG + agents + MCP
+- 2026-09-03 — Phase 17 planned: 3 sub-plans in ROADMAP expanded to 5 executable plans (17-01 harness, 17-02 endpoint verification, 17-03 DB trigger migration, 17-04 Python harness + workers audit, 17-05 CI gate + docs); design decisions locked inline (testcontainers, PL/pgSQL BEFORE trigger, regex-on-diff scanner)
