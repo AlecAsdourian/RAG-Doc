@@ -2,26 +2,27 @@
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-01-08)
+See: .planning/PROJECT.md (updated 2026-01-08; product-vision reframe recorded in memory at `product_vision.md`, 2026-09-03)
 
-**Core value:** Persistent, shared, code-aware memory substrate for parallel AI coding agents (v2 reframe). v1 remains the RAG-powered smart docs platform that ships first.
-**Current focus:** Planning v1 MVP Completion milestone (Phase 4 auth wiring finish + Phase 6 repo integration), then v2 Memory Substrate milestone.
+**Core value:** Persistent, shared, code-aware memory substrate for parallel AI coding agents. v1.0 ships as a smart docs platform (hybrid RAG over connected code repos) — the foundation the substrate is built on.
+**Current focus:** Milestone v1.0 MVP — first shippable version. First phase up: Phase 17 (Multi-tenant Isolation Foundation).
 
 ## Current Position
 
-Phase 13 of 16: Complete (all 4 plans shipped; retroactive summary written 2026-09-03)
-Milestone state: v1 build in progress — RAG + UI complete, auth wiring + repo integration still open
-Next milestone: v1 MVP Completion, then v2 Memory Substrate (GraphRAG + LangGraph agents + MCP server)
-Last activity: 2026-09-03 — Retroactive Phase 13-04 summary; pushed local master → GitHub main; product reframe to memory substrate
+Milestone: v1.0 MVP (9 phases: 17-25)
+Phase: 17 of 25 — Multi-tenant Isolation Foundation
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-09-03 — Milestone v1.0 MVP created; roadmap restructured with milestone groupings and v0.9 disposition table
 
-Progress: v1 build ~85% done (RAG pipeline complete, UI shell complete, missing: OAuth wiring, repo ingestion, admin endpoints)
+Progress: v1.0 MVP ░░░░░░░░░ 0/9 phases
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 0
+- Total plans completed: — (v1.0 tracking starts here)
 - Average duration: —
-- Total execution time: 0 hours
+- Total execution time: —
 
 **By Phase:**
 
@@ -35,58 +36,59 @@ Progress: v1 build ~85% done (RAG pipeline complete, UI shell complete, missing:
 
 ## Accumulated Context
 
-### Decisions
+### Decisions (v1.0 MVP milestone)
+
+- **Milestone version:** `v1.0 MVP` (nothing has formally shipped; v0.9 = pre-milestone initial build)
+- **Sign-ups:** Public (open registration) with abuse protections in Phase 24
+- **Repository integration:** GitHub App (not OAuth App) — per-installation permissions, higher rate limits, built-in webhook signing
+- **Phase ordering:** Isolation → Observability → Auth → Repo → Job Infra → Ingestion → Frontend → Deploy → Launch. Cross-cutting concerns (isolation, observability) established BEFORE more endpoints ship so every new endpoint inherits them
+- **Cost controls:** Per-org rate limits + LLM cost caps included in v1.0 Phase 24 (mandatory; not optional)
+- **Billing:** Explicitly deferred to post-v1.0 (need traction data first)
+- **v2 door-keeping:** Every design decision noted for whether it closes GraphRAG/agent/MCP doors — chunking output events (Phase 22-04), job progress payload shape, etc.
+- **Reviewer session:** Not yet spun up; bootstrap prompt at `.planning/fleet/reviewer-session-prompt.md` will be pasted when the first code PR is about to open
+
+### Decisions (retained from v0.9)
 
 Decisions are logged in PROJECT.md Key Decisions table.
-Recent decisions affecting current work:
+Recent decisions still affecting current work:
 
-- **Tailwind v4 syntax:** Used @theme directive and CSS variable syntax for future-proof styling
+- **Tailwind v4 syntax:** `@theme` directive + CSS variable syntax
 - **SSE streaming:** AsyncGenerator pattern for chat responses
-- **Path aliases:** @/ import alias for clean imports
+- **Path aliases:** `@/` import alias for frontend
+- **Vector DB technology:** Qdrant (self-hosted, cosine similarity, 1536-dim)
+- **LLM model choice:** GPT-4o Mini (cost efficiency)
+- **Semantic cache threshold:** 0.95 cosine similarity, 1h TTL
+- **Database primary keys:** UUIDs over SERIAL
+- **Timestamps:** TIMESTAMPTZ
+- **RLS:** Enabled + FORCED in migration 000008 (verification pending Phase 17)
+- **Migration tool:** golang-migrate
+- **Deduplication:** SHA256 content_hash
 
 ### Deferred Issues
 
-- **ISS-001:** Implement shared type definitions for cross-phase data contracts (suggested before Phase 13)
-- **ISS-002:** Add cross-phase verification pattern to planning workflow (template updated)
-- **ISS-004:** Organization selection mechanism for multi-org users (v1 MVP Completion milestone)
-- **ISS-005:** Supabase Native OAuth webhook handler (v1 MVP Completion milestone)
-- **ISS-006:** Test database connectivity configuration (LOW)
-- **Phase 13 carryovers:** frontend inline-style pollution; mocked repos/orgs/graph awaiting backend endpoints
+- **ISS-001:** Shared type definitions for cross-phase data contracts — surface again during Phase 18 (structured logging conventions) or Phase 20 (repos API shape)
+- **ISS-002:** Cross-phase verification pattern in planning workflow — template updated; apply to all v1.0 plans
+- **ISS-004:** Org selection mechanism — **scheduled: Phase 19-03 and 19-04**
+- **ISS-005:** Supabase Native OAuth webhook handler — **scheduled: Phase 19-01**
+- **ISS-006:** Test database connectivity — **scheduled: Phase 17-01** (built into the isolation test harness)
+- **Frontend inline-style pollution** — ongoing rule, cleaned per component touched
+- **Mocked repos/orgs/graph in frontend** — **replaced in Phase 23**
 
 ### Blockers/Concerns
 
-- v1 MVP is not shippable end-to-end until Phase 4 OAuth handlers are wired into the router and Phase 6 (repo integration: GitHub OAuth app, clone, webhook sync) is built.
+- **User action needed:** GitHub App registration during Phase 20-01 (creating the App in GitHub UI is a manual step — planner will hand user a runbook when we get there)
+- **User action needed:** Deployment target choice in Phase 24-01 (recommend I bring back options + trade-offs at that point)
+- **User action needed:** Observability stack choice in Phase 18 (self-hosted vs SaaS — cost implications)
 
 ## Session Continuity
 
 Last session: 2026-09-03
-Stopped at: Phase 13 formally closed, awaiting user go-ahead on v1 MVP Completion milestone scope
+Stopped at: v1.0 MVP milestone created; awaiting user go-ahead to start Phase 17 planning
 Resume file: None
 
-## Recent Decisions
+Next command suggested: `/gsd:discuss-phase 17` (gather context) or `/gsd:plan-phase 17` (jump straight to planning). Recommend the discuss step for Phase 17 since the isolation-test harness design has several choices worth pinning down.
 
-- **Vector DB technology:** Qdrant (self-hosted, zero cost, no vendor lock-in)
-- **Embedding dimension:** 1536 (OpenAI ada-002 standard)
-- **Distance metric:** Cosine similarity for semantic search
-- **Metadata schema:** chunk_id, repository_id, file_path, language
-- **Indexed fields:** repository_id and language for efficient filtering
-- **Client pattern:** Dependency injection with Config struct (testable)
-- **Database primary keys:** UUIDs over SERIAL for distributed-systems readiness
-- **Timestamp type:** TIMESTAMPTZ to always store timezone information
-- **Delete behavior:** CASCADE deletes for multi-tenant hierarchy (org → projects → repos)
-- **Migration tool:** golang-migrate as the standard for Go projects
-- **Schema ownership:** Go backend owns all migrations and schema versioning
-- **Commit SHA storage:** VARCHAR(40) for exact Git SHA length
-- **Deduplication strategy:** SHA256 content_hash enables detection across files/commits
-- **Query optimization:** Denormalized repository_id on chunks avoids JOINs
-- **Feedback scope:** Feedback on retrievals (not queries) - users rate specific chunks
-- **Vector DB reference:** query_embedding_id as VARCHAR, not FK (separate system)
-- **FTS configuration:** PostgreSQL GIN indexes with 'english' text search for stemming support
-- **FTS scoring:** ts_rank_cd (cover density) over ts_rank for proximity-aware relevance
-- **Breadcrumb storage:** Dedicated TEXT column for FTS indexing on qualified names
-- **LLM model choice:** GPT-4o Mini for cost efficiency ($0.15/$0.60 per MTok) - 10x cheaper than GPT-4
-- **Semantic cache threshold:** 0.95 cosine similarity for 40% hit rate with 97% answer quality
-- **Cache TTL:** 1-hour expiration balances freshness vs cost savings
-- **RAG temperature:** 0.0 for deterministic factual answers
-- **Context window safety margin:** 100K token limit for 128K window to prevent overflow
-- **Integration contract:** QueryEngine must return full 'content' field, not just 'content_preview'
+### Roadmap Evolution
+
+- 2026-09-03 — Milestone v1.0 MVP created: 9 phases (17-25); roadmap restructured with milestone groupings; v0.9 disposition table records disposition of original phases 1-16 (some shipped, some superseded, some deferred to v2)
+- 2026-09-03 — Product vision reframed: from "smart documentation platform" to "persistent shared memory substrate for parallel AI coding agents"; v1.0 remains RAG-over-code as the foundation, v2 adds GraphRAG + agents + MCP
