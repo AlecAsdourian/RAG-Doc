@@ -54,12 +54,14 @@ The original 1-16 phase plan was pre-milestone monolithic planning. Some phases 
 **Goal:** Prove RLS works end-to-end, codify tenant isolation as a testable pattern, and build the integration-test harness that every future endpoint uses.
 **Depends on:** v0.9 foundation (migrations 000001-000008 exist)
 **Research:** Unlikely (patterns exist; needs verification tooling and process)
-**Plans:** TBD (target 3 plans)
+**Plans:** 5 (planned 2026-09-03)
 
 Plans:
-- [ ] 17-01: Integration test harness — Postgres test container, `SET app.current_tenant` per test, tenant-isolation assertion helpers, resolve ISS-006
-- [ ] 17-02: Verify existing endpoints — audit `/api/search` and `/api/chat/stream` for cross-tenant leaks with multi-org fixtures; fix any found
-- [ ] 17-03: Isolation pattern documentation — `pkg/auth/README.md` documents the middleware + test pattern every new handler must follow; add lint rule or CI check to enforce test coverage on mutation handlers
+- [ ] 17-01: Go test harness foundation — testcontainers-go + migration runner + `WithTwoOrgs` + `AssertNoCrossTenantLeak` primitives; resolves ISS-006
+- [ ] 17-02: Verify Go endpoints — isolation tests for `/api/search` and `/api/chat/stream`; audit RAG client tenant propagation; fix any leaks
+- [ ] 17-03: DB-level assertion migration — migration 000009 adds PL/pgSQL trigger on 9 tenant-scoped tables that raises when `app.current_tenant` not set
+- [ ] 17-04: Python isolation harness + workers audit — pytest testcontainers mirror + `require_tenant` primitive; audit `postgres_writer.py` and `query_engine.py`; verify cross-language trigger firing
+- [ ] 17-05: CI gate + documentation — `scripts/ci/check-isolation-tests.py` scanner, GitHub Action, `docs/isolation.md`, reviewer prompt updated
 
 ### Phase 18: Observability Foundation
 
@@ -191,7 +193,7 @@ Plans:
 | 14. AI Context Export | v0.9 | — | Superseded by v2.0 MCP server | - |
 | 15. Feedback & Analytics | v0.9 | — | Deferred to post-v1.0 | - |
 | 16. Multi-tenant & Deployment | v0.9 | — | Superseded by Phases 17, 24, 25 | - |
-| 17. Multi-tenant Isolation Foundation | v1.0 | 0/3 | Not started | - |
+| 17. Multi-tenant Isolation Foundation | v1.0 | 0/5 | Not started | - |
 | 18. Observability Foundation | v1.0 | 0/4 | Not started | - |
 | 19. Auth Wiring & Org Provisioning | v1.0 | 0/4 | Not started | - |
 | 20. Repository Integration Backend | v1.0 | 0/4 | Not started | - |
