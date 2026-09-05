@@ -84,23 +84,20 @@ Enhancements discovered during execution. Not critical - address in future phase
   - Configure webhook URL in Supabase dashboard
   - Update frontend to use Supabase JS client for OAuth
 
-### ISS-006: Test database connectivity configuration
+## Closed Enhancements
+
+### ISS-006: Test database connectivity configuration ✅
 
 - **Discovered:** Phase 4 Plan 4 (Integration Tests)
+- **Closed:** 2026-09-05 (Phase 17-01 — Go isolation harness)
 - **Type:** Infrastructure / Testing
-- **Priority:** LOW (tests compile and are structurally correct, just need infrastructure setup)
-- **Description:** Integration tests fail to authenticate to PostgreSQL in Docker container from host machine. Tests compile successfully and are structurally correct, but need database configuration (pg_hba.conf to allow host connections OR run tests inside Docker container). This is infrastructure/setup issue, not code issue.
-- **Impact:** Low (tests work inside Docker, just need documentation)
-- **Effort:** Low (documentation + pg_hba.conf config OR Docker exec approach)
-- **Suggested phase:** Document in Phase 4 or fix in CI/CD setup phase
-- **Current status:** Tests at `services/backend/pkg/auth/isolation_test.go` compile and run (5 tests), just need proper DB connectivity
-- **Resolution options:**
-  1. Run tests inside Docker: `docker exec -it backend go test ./pkg/auth/...`
-  2. Configure PostgreSQL pg_hba.conf to allow host machine connections
-  3. Use host networking mode for PostgreSQL container
-  4. Document test setup requirements in README
-
-## Closed Enhancements
+- **Priority:** LOW (superseded by a better approach)
+- **Original problem:** Integration tests could not connect to the docker-compose Postgres from the Windows host. Structurally the tests were correct but the connectivity story was flaky.
+- **Resolution:** Replaced the docker-compose dependency entirely with `testcontainers-go`. Every test now spins up (or reuses) an ephemeral Postgres via the Docker API — no host port binding, no `pg_hba.conf` tuning, no host-vs-container URL split. Migrations are applied programmatically via `golang-migrate`. Container reuse across `go test` invocations keeps the second-and-onward run under ~1.5s.
+- **Files created:**
+  - `services/backend/pkg/testing/isolation/container.go` — `SetupTestDB` and container reuse
+  - `services/backend/pkg/testing/isolation/migrator.go` — programmatic migration runner
+- **Verified:** Works from Windows host without docker-compose running; two consecutive `go test` invocations complete in <5s.
 
 ### ISS-003: OAuth state validation (CSRF protection) ✅
 
