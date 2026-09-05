@@ -43,15 +43,23 @@ const TestJWTSecret = "isolation-test-jwt-secret-not-for-production"
 // middleware cares about: subject (user id), organization, role, and standard
 // timestamps. It is deliberately hand-rolled to avoid pulling a signing
 // library into the harness — one fewer moving part.
+//
+// Claim names match the production reader in pkg/auth/jwt.go:
+//   - "organization_id" is read by ExtractOrganizationID (jwt.go:57)
+//   - "organization_role" mirrors the naming; Phase 19 will read it here
+//
+// A drift-guard test (TestJWT_ClaimNamesMatchProduction in fixtures_test.go)
+// pins these keys so a future rename cannot silently break every downstream
+// isolation test signed with TestJWT.
 func TestJWT(userID, orgID, role string) string {
 	header := map[string]string{"alg": "HS256", "typ": "JWT"}
 	now := time.Now().Unix()
 	payload := map[string]any{
-		"sub":      userID,
-		"org_id":   orgID,
-		"org_role": role,
-		"iat":      now,
-		"exp":      now + 3600,
+		"sub":               userID,
+		"organization_id":   orgID,
+		"organization_role": role,
+		"iat":               now,
+		"exp":               now + 3600,
 	}
 	encode := func(v any) string {
 		b, _ := json.Marshal(v)
