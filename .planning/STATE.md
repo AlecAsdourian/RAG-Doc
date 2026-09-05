@@ -70,7 +70,7 @@ Recent decisions still affecting current work:
 - **ISS-002:** Cross-phase verification pattern in planning workflow — template updated; apply to all v1.0 plans
 - **ISS-004:** Org selection mechanism — **scheduled: Phase 19-03 and 19-04**
 - **ISS-005:** Supabase Native OAuth webhook handler — **scheduled: Phase 19-01**
-- **ISS-006:** Test database connectivity — **scheduled: Phase 17-01** (built into the isolation test harness)
+- **ISS-006:** Test database connectivity — **✅ closed 2026-09-05** in Phase 17-01 via testcontainers-go harness (`pkg/testing/isolation`); see ISSUES.md
 - **Frontend inline-style pollution** — ongoing rule, cleaned per component touched
 - **Mocked repos/orgs/graph in frontend** — **replaced in Phase 23**
 
