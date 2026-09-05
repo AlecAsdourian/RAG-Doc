@@ -160,8 +160,13 @@ func createUserWithMembership(t *testing.T, pool *pgxpool.Pool, orgID, role, slu
 // cleanupOrg deletes every row a test fixture created for org. It runs inside
 // a transaction that sets app.current_tenant, so RLS allows the deletes on
 // tenant-scoped tables (chunks, ingestion_runs, repositories, etc.). It is
-// best-effort: errors are swallowed because a failing test's cleanup should
-// not overwrite the original failure.
+// best-effort: errors from a single DELETE are logged-and-skipped so a
+// failing test's cleanup does not overwrite the original failure.
+//
+// Each DELETE is wrapped in a SAVEPOINT so that one statement's failure
+// (e.g., a future FK the fixture doesn't know about) does not abort the
+// transaction and silently skip every subsequent DELETE — the bug the
+// naive `continue`-on-error version had.
 func cleanupOrg(ctx context.Context, pool *pgxpool.Pool, org *TestOrg) {
 	if org == nil {
 		return
@@ -195,10 +200,16 @@ func cleanupOrg(ctx context.Context, pool *pgxpool.Pool, org *TestOrg) {
 		{`DELETE FROM organizations WHERE id = $1`, []any{org.ID}},
 	}
 	for _, s := range stmts {
+		if _, err := tx.Exec(ctx, "SAVEPOINT cleanup_stmt"); err != nil {
+			// Transaction is unusable; nothing more we can do.
+			return
+		}
 		if _, err := tx.Exec(ctx, s.sql, s.args...); err != nil {
-			// keep going — cleanup is best-effort
+			// Un-poison the tx and keep going with the next stmt.
+			_, _ = tx.Exec(ctx, "ROLLBACK TO SAVEPOINT cleanup_stmt")
 			continue
 		}
+		_, _ = tx.Exec(ctx, "RELEASE SAVEPOINT cleanup_stmt")
 	}
 	_ = tx.Commit(ctx)
 }

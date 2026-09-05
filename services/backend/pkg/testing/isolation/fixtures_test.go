@@ -148,6 +148,96 @@ func TestFixtures_AssertNoCrossTenantLeak_PassesOnIsolation(t *testing.T) {
 	})
 }
 
+// TestCleanupOrg_SavepointIsolatesFailure documents the transaction primitive
+// cleanupOrg relies on. After a per-statement failure inside a SAVEPOINT,
+// ROLLBACK TO SAVEPOINT restores the transaction to a usable state so
+// subsequent statements execute normally. Without this the current-transaction
+// -is-aborted error propagates and every following statement silently no-ops
+// — the class of bug the reviewer flagged in the original cleanupOrg.
+func TestCleanupOrg_SavepointIsolatesFailure(t *testing.T) {
+	pool := SetupTestDB(t)
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	_, err = tx.Exec(ctx, "SAVEPOINT sp1")
+	require.NoError(t, err)
+
+	// A statement that fails inside the savepoint.
+	_, err = tx.Exec(ctx, "SELECT * FROM this_table_does_not_exist")
+	require.Error(t, err)
+
+	// Baseline: without ROLLBACK TO SAVEPOINT, the next Exec must fail
+	// because the transaction is aborted. This is the trap.
+	_, abortedErr := tx.Exec(ctx, "SELECT 1")
+	require.Error(t, abortedErr, "sanity: aborted tx must refuse further work")
+
+	// Fix: rolling back to the savepoint restores the transaction.
+	_, err = tx.Exec(ctx, "ROLLBACK TO SAVEPOINT sp1")
+	require.NoError(t, err)
+
+	var one int
+	require.NoError(t, tx.QueryRow(ctx, "SELECT 1").Scan(&one))
+	assert.Equal(t, 1, one, "tx must be usable after ROLLBACK TO SAVEPOINT")
+}
+
+// TestCleanupOrg_RemovesAllRows exercises cleanupOrg on an org with rows in
+// every table it targets. Regression guard: if the SAVEPOINT loop ever
+// regresses to per-statement transaction-abort, phantom rows would leak
+// between test runs against the reused container.
+func TestCleanupOrg_RemovesAllRows(t *testing.T) {
+	pool := SetupTestDB(t)
+	ctx := context.Background()
+
+	org := createOrg(t, pool, "iso-cleanup-e2e-"+shortToken())
+
+	// Populate leaf tables so cleanupOrg has real DELETEs to run.
+	tx, err := TenantScope(ctx, pool, org.ID)
+	require.NoError(t, err)
+	var runID string
+	require.NoError(t, tx.QueryRow(ctx,
+		`INSERT INTO ingestion_runs (repository_id, commit_sha, branch, status)
+		 VALUES ($1, 'abc', 'main', 'completed') RETURNING id`,
+		org.RepoID,
+	).Scan(&runID))
+	_, err = tx.Exec(ctx,
+		`INSERT INTO chunks
+		   (ingestion_run_id, repository_id, file_path, start_line, end_line, content, content_hash)
+		 VALUES ($1, $2, 'x.txt', 1, 1, 'x', 'xh')`,
+		runID, org.RepoID,
+	)
+	require.NoError(t, err)
+	require.NoError(t, tx.Commit(ctx))
+
+	cleanupOrg(ctx, pool, org)
+
+	// Every row created for this org must be gone.
+	var orgCount, projCount, repoCount, userCount int
+	require.NoError(t, pool.QueryRow(ctx,
+		"SELECT COUNT(*) FROM organizations WHERE id = $1", org.ID).Scan(&orgCount))
+	require.NoError(t, pool.QueryRow(ctx,
+		"SELECT COUNT(*) FROM projects WHERE id = $1", org.ProjectID).Scan(&projCount))
+	require.NoError(t, pool.QueryRow(ctx,
+		"SELECT COUNT(*) FROM users WHERE id = ANY($1)",
+		[]string{org.OwnerID, org.AdminID, org.MemberID},
+	).Scan(&userCount))
+
+	// repositories requires tenant scope to be visible under RLS. After
+	// cleanupOrg deletes the row and commits, a fresh unscoped SELECT
+	// returns 0 (RLS blocks) — check via a scoped tx to observe truthfully.
+	sTx, err := TenantScope(ctx, pool, org.ID)
+	require.NoError(t, err)
+	defer func() { _ = sTx.Rollback(ctx) }()
+	require.NoError(t, sTx.QueryRow(ctx,
+		"SELECT COUNT(*) FROM repositories WHERE id = $1", org.RepoID).Scan(&repoCount))
+
+	assert.Equal(t, 0, orgCount, "organization row must be deleted")
+	assert.Equal(t, 0, projCount, "project row must be deleted")
+	assert.Equal(t, 0, repoCount, "repository row must be deleted")
+	assert.Equal(t, 0, userCount, "user rows must be deleted")
+}
+
 // insertOneChunk writes a single chunk row into the repo, creating a scaffold
 // ingestion_run beforehand. It is used by the leak self-tests.
 func insertOneChunk(ctx context.Context, tx pgx.Tx, repoID, marker string) error {
