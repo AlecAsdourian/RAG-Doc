@@ -1,22 +1,30 @@
-"""Postgres writer for storing chunks and ingestion metadata."""
+"""Postgres writer for storing chunks and ingestion metadata.
+
+All writes to tenant-scoped tables (`ingestion_runs`, `chunks`) go
+through `workers.db.require_tenant` — the assert_tenant_scoped trigger
+from migration 000009 refuses raw writes and RLS filters SELECTs, so a
+missing tenant here means the ingestion silently loses data (or, without
+the trigger, silently leaks). Every public method takes `organization_id`
+so the caller cannot forget.
+"""
 
 import hashlib
-import json
 import logging
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Optional
 from uuid import UUID, uuid4
 
 import psycopg2
-from psycopg2.extras import execute_batch, Json
+from psycopg2.extras import Json, execute_batch
 
 from workers.chunker.models import Chunk
+from workers.db import require_tenant
 
 logger = logging.getLogger(__name__)
 
 
 class PostgresWriter:
-    """Writes chunks and ingestion metadata to Postgres."""
+    """Writes chunks and ingestion metadata to Postgres, tenant-scoped."""
 
     def __init__(self, connection_string: str):
         """
@@ -41,30 +49,28 @@ class PostgresWriter:
             logger.info("Closed Postgres connection")
 
     def _compute_content_hash(self, content: str) -> str:
-        """
-        Compute SHA256 hash of content.
-
-        Args:
-            content: Content to hash
-
-        Returns:
-            Hex string of SHA256 hash
-        """
+        """Return the SHA256 hex digest of content."""
         return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
     def create_ingestion_run(
-        self, repository_id: UUID, commit_sha: str = "local", branch: str = "main"
+        self,
+        organization_id: UUID,
+        repository_id: UUID,
+        commit_sha: str = "local",
+        branch: str = "main",
     ) -> UUID:
-        """
-        Create a new ingestion run record.
+        """Create an ingestion_runs row under the caller's tenant scope.
 
         Args:
-            repository_id: UUID of the repository
-            commit_sha: Git commit SHA (default: "local")
-            branch: Git branch name (default: "main")
+            organization_id: Tenant scope for the write (required).
+            repository_id: UUID of the repository. The repo must already
+                belong to `organization_id`; a mismatch is silently
+                filtered by RLS and no row is written.
+            commit_sha: Git commit SHA (default: "local").
+            branch: Git branch name (default: "main").
 
         Returns:
-            UUID of created ingestion run
+            UUID of created ingestion run.
         """
         self.connect()
 
@@ -76,7 +82,7 @@ class PostgresWriter:
             ) VALUES (%s, %s, %s, %s, %s, %s)
         """
 
-        with self.conn.cursor() as cur:
+        with require_tenant(self.conn, organization_id) as cur:
             cur.execute(
                 query,
                 (
@@ -88,24 +94,29 @@ class PostgresWriter:
                     datetime.utcnow(),
                 ),
             )
-            self.conn.commit()
 
-        logger.info(f"Created ingestion run: {ingestion_run_id}")
+        logger.info(
+            f"Created ingestion run {ingestion_run_id} for org {organization_id}"
+        )
         return ingestion_run_id
 
     def insert_chunks(
-        self, chunks: List[Chunk], ingestion_run_id: UUID, repository_id: UUID
+        self,
+        organization_id: UUID,
+        chunks: List[Chunk],
+        ingestion_run_id: UUID,
+        repository_id: UUID,
     ) -> Dict[str, UUID]:
-        """
-        Batch insert chunks into database.
+        """Batch-insert chunks under the caller's tenant scope.
 
         Args:
-            chunks: List of chunks to insert
-            ingestion_run_id: UUID of ingestion run
-            repository_id: UUID of repository
+            organization_id: Tenant scope for the write (required).
+            chunks: List of chunks to insert.
+            ingestion_run_id: UUID of the parent ingestion run.
+            repository_id: UUID of the repository (denormalized on chunks).
 
         Returns:
-            Dictionary mapping content_hash → chunk_id
+            Mapping content_hash → chunk_id for freshly-inserted chunks.
         """
         if not chunks:
             logger.info("No chunks to insert")
@@ -121,9 +132,8 @@ class PostgresWriter:
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
 
-        # Prepare batch data
         batch_data = []
-        content_hash_to_id = {}
+        content_hash_to_id: Dict[str, UUID] = {}
 
         for chunk in chunks:
             chunk_id = uuid4()
@@ -143,28 +153,32 @@ class PostgresWriter:
                     content_hash,
                     chunk.language,
                     chunk.chunk_type,
-                    Json(chunk.metadata),  # Convert dict to JSONB
+                    Json(chunk.metadata),
                 )
             )
 
-        # Batch insert
-        with self.conn.cursor() as cur:
+        with require_tenant(self.conn, organization_id) as cur:
             execute_batch(cur, query, batch_data, page_size=100)
-            self.conn.commit()
 
-        logger.info(f"Inserted {len(chunks)} chunks into Postgres")
+        logger.info(
+            f"Inserted {len(chunks)} chunks under org {organization_id}"
+        )
         return content_hash_to_id
 
     def complete_ingestion_run(
-        self, ingestion_run_id: UUID, chunks_count: int, error_message: str = None
+        self,
+        organization_id: UUID,
+        ingestion_run_id: UUID,
+        chunks_count: int,
+        error_message: Optional[str] = None,
     ):
-        """
-        Mark ingestion run as completed or failed.
+        """Mark an ingestion_runs row as completed or failed.
 
         Args:
-            ingestion_run_id: UUID of ingestion run
-            chunks_count: Number of chunks processed
-            error_message: Error message if failed (None if successful)
+            organization_id: Tenant scope for the write (required).
+            ingestion_run_id: UUID of the run to update.
+            chunks_count: Number of chunks the run produced.
+            error_message: If non-empty, marks the run as `failed`.
         """
         self.connect()
 
@@ -179,7 +193,7 @@ class PostgresWriter:
             WHERE id = %s
         """
 
-        with self.conn.cursor() as cur:
+        with require_tenant(self.conn, organization_id) as cur:
             cur.execute(
                 query,
                 (
@@ -190,10 +204,9 @@ class PostgresWriter:
                     str(ingestion_run_id),
                 ),
             )
-            self.conn.commit()
 
         logger.info(
-            f"Ingestion run {ingestion_run_id} {status} ({chunks_count} chunks)"
+            f"Ingestion run {ingestion_run_id} {status} ({chunks_count} chunks) under org {organization_id}"
         )
 
     def __enter__(self):

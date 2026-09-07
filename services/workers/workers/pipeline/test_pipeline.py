@@ -84,8 +84,9 @@ class TestIngestionPipeline:
 
         # Process files
         files = [("test.py", "def foo(): pass", "python")]
+        organization_id = uuid4()
         repository_id = uuid4()
-        stats = pipeline.process_files(files, repository_id)
+        stats = pipeline.process_files(files, organization_id, repository_id)
 
         # Verify results
         assert stats["status"] == "success"
@@ -121,8 +122,9 @@ class TestIngestionPipeline:
 
         # Process files
         files = [("empty.py", "", "python")]
+        organization_id = uuid4()
         repository_id = uuid4()
-        stats = pipeline.process_files(files, repository_id)
+        stats = pipeline.process_files(files, organization_id, repository_id)
 
         # Should fail gracefully
         assert stats["status"] == "failed"

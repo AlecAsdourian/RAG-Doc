@@ -1,4 +1,11 @@
-"""Full-text search retrieval using PostgreSQL FTS."""
+"""Full-text search retrieval using PostgreSQL FTS.
+
+All Postgres access here goes through `workers.db.require_tenant`. Without
+tenant scope, RLS on `chunks` and `ingestion_runs` returns zero rows and
+callers would see empty results with no indication anything is wrong.
+Every public method takes `organization_id` so a missing tenant is a
+programming error, not a silent empty-list bug.
+"""
 
 import logging
 from typing import Dict, List, Optional
@@ -6,6 +13,8 @@ from uuid import UUID
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
+
+from workers.db import require_tenant
 
 logger = logging.getLogger(__name__)
 
@@ -35,15 +44,18 @@ class FTSRetriever:
             self.conn.close()
             logger.info("FTSRetriever closed Postgres connection")
 
-    def _get_latest_run_id(self, repository_id: UUID) -> Optional[UUID]:
-        """
-        Get the latest successful ingestion run ID for a repository.
+    def _get_latest_run_id(
+        self, organization_id: UUID, repository_id: UUID
+    ) -> Optional[UUID]:
+        """Return the latest completed ingestion_runs.id under this tenant.
 
         Args:
-            repository_id: UUID of the repository
+            organization_id: Tenant scope (required).
+            repository_id: Repository UUID.
 
         Returns:
-            UUID of latest completed run, or None if no completed runs exist
+            UUID of the latest completed run, or None if none exist under
+            this tenant.
         """
         self.connect()
 
@@ -54,7 +66,7 @@ class FTSRetriever:
             LIMIT 1
         """
 
-        with self.conn.cursor() as cur:
+        with require_tenant(self.conn, organization_id) as cur:
             cur.execute(query, (str(repository_id),))
             result = cur.fetchone()
 
@@ -62,64 +74,42 @@ class FTSRetriever:
                 return UUID(result[0]) if isinstance(result[0], str) else result[0]
 
             logger.warning(
-                f"No completed ingestion runs found for repository {repository_id}"
+                f"No completed ingestion runs found for repository {repository_id} under org {organization_id}"
             )
             return None
 
     def search(
         self,
         query: str,
+        organization_id: UUID,
         repository_id: UUID,
         limit: int = 50,
         run_id: Optional[UUID] = None,
     ) -> List[Dict]:
-        """
-        Search chunks using full-text search.
+        """Full-text search on `chunks`, scoped to the caller's tenant.
 
         Args:
-            query: Search query string
-            repository_id: UUID of the repository to search
-            limit: Maximum number of results to return (default: 50)
-            run_id: Optional specific ingestion run ID to search.
-                   If None, searches latest completed run.
+            query: Search query string.
+            organization_id: Tenant scope (required).
+            repository_id: UUID of the repository to search.
+            limit: Maximum number of results (default: 50).
+            run_id: Optional specific ingestion_runs.id to search. If
+                unset, the latest completed run for the repository is
+                used.
 
         Returns:
-            List of dicts with chunk metadata and fts_score.
-            Each dict contains:
-            - chunk_id (UUID): Chunk identifier
-            - file_path (str): File path relative to repo root
-            - start_line (int): Starting line number
-            - end_line (int): Ending line number
-            - breadcrumb (str): Qualified name breadcrumb
-            - chunk_type (str): Type of chunk (function, class, etc.)
-            - content_preview (str): First 200 chars of content
-            - fts_score (float): Full-text search relevance score
-
-        Example:
-            >>> retriever = FTSRetriever("postgresql://...")
-            >>> results = retriever.search(
-            ...     "authentication error",
-            ...     repository_id=UUID("..."),
-            ...     limit=10
-            ... )
-            >>> for result in results:
-            ...     print(f"{result['breadcrumb']}: {result['fts_score']}")
+            List of dicts with chunk metadata and `fts_score`.
         """
         self.connect()
 
-        # If run_id not provided, get latest successful run
         if run_id is None:
-            run_id = self._get_latest_run_id(repository_id)
+            run_id = self._get_latest_run_id(organization_id, repository_id)
             if run_id is None:
                 logger.warning(
-                    f"No completed runs for repository {repository_id}, returning empty results"
+                    f"No completed runs for repository {repository_id} under org {organization_id}; returning empty"
                 )
                 return []
 
-        # Full-text search query with scoring
-        # Searches both content and breadcrumb fields
-        # Uses plainto_tsquery for simple query conversion (handles spaces/punctuation)
-        # Uses ts_rank_cd for scoring (considers proximity)
         query_sql = """
             SELECT
                 id::text as chunk_id,
@@ -145,28 +135,19 @@ class FTSRetriever:
         """
 
         try:
-            with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            with require_tenant(
+                self.conn, organization_id, cursor_factory=RealDictCursor
+            ) as cur:
                 cur.execute(
                     query_sql,
-                    (
-                        query,  # For content scoring
-                        query,  # For breadcrumb scoring
-                        str(run_id),  # Filter by run_id
-                        query,  # For content matching
-                        query,  # For breadcrumb matching
-                        limit,  # Result limit
-                    ),
+                    (query, query, str(run_id), query, query, limit),
                 )
-                results = cur.fetchall()
+                results = [dict(row) for row in cur.fetchall()]
 
-                # Convert RealDictRow to plain dict
-                results_list = [dict(row) for row in results]
-
-                logger.info(
-                    f"FTS search for '{query}' returned {len(results_list)} results"
-                )
-
-                return results_list
+            logger.info(
+                f"FTS search for '{query}' returned {len(results)} results under org {organization_id}"
+            )
+            return results
 
         except psycopg2.Error as e:
             logger.error(f"FTS search failed: {e}")

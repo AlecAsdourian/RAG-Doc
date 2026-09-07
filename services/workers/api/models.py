@@ -7,9 +7,17 @@ from pydantic import BaseModel, Field
 
 
 class SearchRequest(BaseModel):
-    """Request model for semantic search endpoint."""
+    """Request model for semantic search endpoint.
+
+    `organization_id` is the tenant the query runs under. Retrieval,
+    metadata enrichment, and any DB access it drives are all scoped by
+    it via workers.db.require_tenant. Callers (the Go backend today)
+    MUST set it — omitting it fails Pydantic validation, which is the
+    intended defense.
+    """
 
     query: str = Field(..., min_length=1, max_length=1000)
+    organization_id: UUID
     repository_id: UUID
     top_k: int = Field(default=10, ge=1, le=50)
 
@@ -40,9 +48,14 @@ class SearchResponse(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    """Request model for chat/answer generation endpoint."""
+    """Request model for chat/answer generation endpoint.
+
+    `organization_id` is the tenant the query runs under; see
+    SearchRequest for rationale.
+    """
 
     query: str = Field(..., min_length=1, max_length=2000)
+    organization_id: UUID
     repository_id: UUID
     top_k: int = Field(default=5, ge=1, le=20)
 
