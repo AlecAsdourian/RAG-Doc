@@ -123,6 +123,40 @@ The plan's spec test for `GET /auth/github/login → 302 with Location` requires
 - **19-03** — JWT hook can now be developed against a webhook that reliably verifies signatures. Any signup event that reaches provisioning has been signature-checked and is under the rate limit.
 - **19-04** — multi-org endpoints need OAuth wiring live; when tests can spin up Redis, the OAuth wiring behavior tests deferred from Task 3 land there naturally alongside the multi-org integration tests.
 
+## Reviewer follow-ups (post-review, same branch)
+
+Reviewer flagged two blockers and several mediums. Option 1 applied per user decision: H1 by removing the rate limit entirely (honest surface > security theater), H2 by adding a TestMain, plus the three mediums that ride the same code paths. Nits deferred.
+
+**H1 — dropped the per-IP rate limit; it was security theater (`c3cbb41`)**
+- **Was:** `middleware.RealIP` in the chain rewrites `RemoteAddr` from client-supplied headers, so `httprate.LimitByIP` was keyed off a value a bot could spoof (unbounded buckets) or point at a victim's real IP (targeted DoS out of signup). On top of that, the webhook's real defense is the HMAC signature check — an attacker without the shared secret cannot deliver ANY event, so rate-limiting the endpoint against signature-forging attackers is defense against nothing.
+- **Now:** rate limit removed. `httprate` dep removed via `go mod tidy`. Skip-marker rationale on the route updated to explain the removal. Edge rate limiting explicitly named as a Phase 24 concern (CDN/WAF at ingress). Disposable-email check retained — it's a policy check, not a rate limit, and Supabase's own throttling handles the upstream bot-signup vector.
+
+**H2 — TestMain unblocks 17-02 isolation tests (`ae4f802`)**
+- **Was:** the new `NewRouterWithValidator` panic on missing `SUPABASE_WEBHOOK_SECRET` broke `TestSearchIsolation` and `TestChatIsolation` from Phase 17-02 — neither set the env var, and there was no fixture that did.
+- **Now:** `pkg/api/handlers/main_test.go` seeds the env var before any test in the package runs. Verified: both isolation test suites green under the new constructor. The production panic stays — the fix is at the test-setup layer, not by softening the fail-loud in production code.
+
+**M3 — brittle body-error match → `errors.As(*http.MaxBytesError)` (`c3cbb41`)**
+- **Was:** `err.Error() == "http: request body too large"` — a Go stdlib rewording would silently degrade 413 to 400.
+- **Now:** `var maxErr *http.MaxBytesError; errors.As(err, &maxErr)`. Idiomatic since Go 1.19.
+
+**M4 — mailinator subdomain bypass closed (`c3cbb41`)**
+- **Was:** exact-match on the blocklist meant `alice@bot.mailinator.com` slipped through. Mailinator specifically delivers arbitrary subdomains to the same inbox pool.
+- **Now:** suffix-match with a dot boundary (`strings.HasSuffix(domain, "."+entry)`). Boundary-guard test pins that `evilmailinator.com` does NOT match `mailinator.com` (only genuine subdomains do). Blocklist also grew from 22 to 30 entries covering the missing Guerrilla aliases (`guerrillamail.info/biz/org`, `grr.la`) and Mailinator/Yopmail relatives.
+
+**M5 — deprecated `httprate.LimitByIP` avoided by dropping the whole path (`c3cbb41`)**
+- Same code deletion as H1 closes this.
+
+**Not applied (deferred):**
+- **M6** (5s Redis Ping inside router construction) — not fixed. The panic-vs-skip fallback still runs; construction still pays up to 5s if Redis is misconfigured. Worth revisiting when 19-04 lands and multi-org endpoints need Redis-backed session state.
+- **M7** (`WEBHOOK_RATE_LIMIT_PER_MIN` env test) — moot; env var and its reader deleted.
+- **L8** (rate-limit burst assertion tightening) — moot; deleted.
+- **L9** (more blocklist entries) — partially addressed by M4's list expansion.
+- **L10** (`go mod tidy`) — done as part of H1 (removed httprate).
+- **N11** (panic message asymmetry) — not fixed.
+- **N12** (double blank line) — not fixed.
+
+Post-fix state: 30/30 abuse-guard subtests pass, 9 isolation subtests still pass, `go vet` clean, `go build` clean.
+
 ---
 *Phase: 19-auth-wiring-org-provisioning*
 *Completed: 2026-09-07*
