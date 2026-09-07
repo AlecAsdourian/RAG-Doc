@@ -113,6 +113,20 @@ Scenarios 3 and 4 in `db_assertion_test.go` therefore assert the safety property
 - **17-05 (CI gate + docs):** `docs/isolation.md` should call out (a) the trigger's coverage list and how to extend it, (b) SQLSTATE 42501 as the canonical isolation-refusal code, (c) the empty-string GUC quirk so future contributors don't re-discover it.
 - **Phase 20+ handlers reading tenant-scoped tables:** paired with ISS-008 (17-02) — a request-scoped tenant transaction pattern must be in place before any handler runs a direct DB read on the trigger-protected tables. Without SET LOCAL, every write would 42501 and every UPDATE/DELETE would 22P02.
 
+## Reviewer follow-ups (post-review, same branch)
+
+Reviewer produced one medium and three lows, no blockers. Two applied here per the planner's request (option 2: medium + tightest low). L2 and L3 not applied — noted for a future janitorial sweep.
+
+**M1 — trigger HINT no longer points at a not-yet-existent doc (`3fb1559`)**
+- **Was:** trigger HINT read `Call TenantScope() (Go) or require_tenant() (Python) before this operation. See docs/isolation.md.` The doc doesn't exist until 17-05.
+- **Now:** HINT keeps the actionable inline advice and drops the dead reference. Verified against a fresh container via a manual raw INSERT — the HINT the DB now surfaces contains no reference to `docs/isolation.md`.
+
+**L1 — `requireIsolationRefusal` pins message shape for both paths (`2fe7a66`)**
+- **Was:** helper accepted any 42501 or any 22P02, so a coincidental error of either code would satisfy it (a permission-denied 42501, an unrelated bad-uuid 22P02).
+- **Now:** for 42501, the message must contain `tenant isolation violated`; for 22P02, the message must contain `invalid input syntax for type uuid` AND `""` — pinning it to the empty-string cast from the app.current_tenant GUC-leak path specifically.
+
+Post-fix state: 11/11 subtests still pass on a fresh container (`docker rm -f rag-doc-isolation-tests` + `go test`), no regression against 17-01 or 17-02 tests.
+
 ---
 *Phase: 17-tenant-isolation-foundation*
 *Completed: 2026-09-06*
