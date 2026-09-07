@@ -82,7 +82,29 @@ func NewRouterWithValidator(dbpool *pgxpool.Pool, ragClient *client.RAGClient, j
 
 	// Public routes (no auth required)
 	r.Get("/health", healthHandler)
-	r.Post("/webhooks/supabase", webhookHandler.HandleSupabaseWebhook())
+
+	// Supabase webhook — rate-limited per source IP to keep bot signup
+	// floods from exhausting provisioning. httprate uses RealIP
+	// (installed above) so X-Forwarded-For does the right thing.
+	// @skip-isolation-test: signature-verified webhook, provisions its own tenant (see 19-02)
+	r.With(auth.RateLimitWebhook()).Post("/webhooks/supabase", webhookHandler.HandleSupabaseWebhook())
+
+	// OAuth login/callback routes. StateStore is optional at
+	// construction time — if Redis is not reachable (typical in tests
+	// and offline dev), the routes are simply not mounted rather than
+	// panicking the whole router. Real deployments have Redis; the log
+	// line surfaces the miss.
+	if stateStore, err := auth.NewStateStore(); err == nil {
+		oauthConfig := auth.NewOAuthConfig()
+		provisioner := auth.NewUserProvisioner(dbpool)
+		r.Get("/auth/github/login", auth.HandleGitHubLogin(oauthConfig, stateStore))
+		r.Get("/auth/github/callback", auth.HandleGitHubCallback(oauthConfig, provisioner, stateStore))
+		r.Get("/auth/gitlab/login", auth.HandleGitLabLogin(oauthConfig, stateStore))
+		r.Get("/auth/gitlab/callback", auth.HandleGitLabCallback(oauthConfig, provisioner, stateStore))
+	} else {
+		slog.Warn("state store unavailable; OAuth routes not mounted",
+			slog.String("error", err.Error()))
+	}
 
 	// Protected routes (JWT auth + tenant isolation)
 	r.Group(func(r chi.Router) {

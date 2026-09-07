@@ -274,6 +274,53 @@ func TestWebhookHandler_BodyTooLarge(t *testing.T) {
 	assert.Equal(t, http.StatusRequestEntityTooLarge, rr.Code, "oversized body must return 413")
 }
 
+// TestWebhookHandler_DisposableEmailRejected verifies the webhook
+// refuses to provision a user whose email domain is on the blocklist.
+// Fires after signature verification succeeds so the blocklist isn't
+// leaked to callers who don't already have the secret.
+func TestWebhookHandler_DisposableEmailRejected(t *testing.T) {
+	db := SetupTestDB(t)
+	defer CleanupTestDB(t, db)
+
+	handler := NewWebhookHandler(db, "test-secret-key")
+
+	payload := SupabaseWebhookEvent{
+		Type:   "INSERT",
+		Table:  "auth_user_events",
+		Schema: "public",
+		Record: json.RawMessage(`{
+			"id": "550e8400-e29b-41d4-a716-446655440099",
+			"supabase_user_id": "550e8400-e29b-41d4-a716-446655440099",
+			"email": "throwaway@mailinator.com",
+			"event_type": "INSERT",
+			"raw_user_meta_data": {"full_name": "Throwaway"},
+			"created_at": "2026-09-07T12:00:00Z"
+		}`),
+	}
+	payloadBytes, err := json.Marshal(payload)
+	require.NoError(t, err)
+
+	mac := hmac.New(sha256.New, []byte("test-secret-key"))
+	mac.Write(payloadBytes)
+	signature := hex.EncodeToString(mac.Sum(nil))
+
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/supabase", bytes.NewReader(payloadBytes))
+	req.Header.Set("X-Webhook-Signature", signature)
+
+	rr := httptest.NewRecorder()
+	handler.HandleSupabaseWebhook()(rr, req)
+
+	assert.Equal(t, http.StatusUnprocessableEntity, rr.Code)
+
+	// Verify no user row was created.
+	var count int
+	err = db.QueryRow(req.Context(),
+		"SELECT COUNT(*) FROM users WHERE email = $1",
+		"throwaway@mailinator.com").Scan(&count)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count, "no user should be provisioned for disposable email")
+}
+
 // TestGenerateOrgSlugFromEmail verifies organization slug generation
 func TestGenerateOrgSlugFromEmail(t *testing.T) {
 	tests := []struct {

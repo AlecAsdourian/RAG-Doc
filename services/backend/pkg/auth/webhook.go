@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -13,6 +14,18 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// disposableEmailError is returned by handleAuthUserEvent when the email
+// domain is on the disposable-email blocklist. The webhook wrapper
+// converts this to a 422 response.
+type disposableEmailError struct {
+	email string
+}
+
+func (e *disposableEmailError) Error() string {
+	return fmt.Sprintf("disposable email domain refused: %s", e.email)
+}
+
 
 // MaxWebhookBodyBytes bounds the request body the webhook is willing to
 // read. 64KB is comfortably larger than a real Supabase user event
@@ -125,6 +138,11 @@ func (h *WebhookHandler) HandleSupabaseWebhook() http.HandlerFunc {
 		// This table is populated by a database trigger on auth.users
 		if event.Schema == "public" && event.Table == "auth_user_events" && event.Type == "INSERT" {
 			if err := h.handleAuthUserEvent(r, event.Record); err != nil {
+				var disposable *disposableEmailError
+				if errors.As(err, &disposable) {
+					http.Error(w, "email domain not allowed", http.StatusUnprocessableEntity)
+					return
+				}
 				http.Error(w, fmt.Sprintf("Failed to process user creation: %v", err), http.StatusInternalServerError)
 				return
 			}
@@ -180,6 +198,14 @@ func (h *WebhookHandler) handleAuthUserEvent(r *http.Request, recordData json.Ra
 	// Only process INSERT events (new user signups)
 	if event.EventType != "INSERT" {
 		return nil // Silently ignore UPDATE/DELETE events for now
+	}
+
+	// Refuse to provision throwaway-email signups. This runs AFTER signature
+	// verification so we're not leaking the blocklist to random callers —
+	// only Supabase itself can trigger this branch. Real anti-abuse ships
+	// in Phase 24; this list is the minimum viable stopgap.
+	if IsDisposableEmail(event.Email) {
+		return &disposableEmailError{email: event.Email}
 	}
 
 	// Extract full name from raw_user_meta_data
