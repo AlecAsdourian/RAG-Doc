@@ -143,6 +143,30 @@ Refactoring FTSRetriever surfaced the fact that its `search` returns `RealDictCu
 - **Phase 22 (ingestion orchestration):** `IngestionPipeline.process_files` now takes `organization_id` — the caller (a job runner, whichever phase adds it) has to supply it. Silently omitting is a TypeError, not a leak.
 - **v2 graph traversal:** the same `require_tenant` primitive wraps any future DB call. If v2 introduces new tenant-scoped tables, migration 000009's extension pattern (one ALTER TABLE plus one line in the Go test) handles the trigger side; Python doesn't need any change beyond passing `organization_id` through.
 
+## Reviewer follow-ups (post-review, same branch)
+
+Reviewer produced one critical, two mediums, four low/nit findings. Critical and both mediums applied per the planner's request (option 1: real bugs and the footgun, skip nits).
+
+**C1 — `/chat/stream` was broken by an incomplete refactor (`1b7da97`)**
+- **Was:** the refactor added `organization_id=request.organization_id` to `answer_generator.generate(...)` in `/chat` (line 105) and `query_engine.query(...)` in `/search` (line 50), but missed the third call site — inside `/chat/stream`'s nested `async def generate():` closure at line 169. The earlier `replace_all` Edit did not match that occurrence because the indentation was different (12 spaces vs 8). Every request to `/chat/stream` raised TypeError, which the closure caught and emitted as `{"type":"error"}`. Silent to logs, broken to clients, invisible to CI because there was no route-level test.
+- **Now:** the missing kwarg is in place, and a new `tests/api/test_routes_organization_id_propagation.py` covers all three routes (search, chat, chat/stream) plus a Pydantic-rejection test for a request missing `organization_id`. 4/4 pass. If a future refactor drops the arg on any route, one of these tests fails at CI time.
+
+**M2 — `require_tenant` outer-transaction footgun (`6ce117e`)**
+- **Was:** `with conn:` in psycopg2 does not open a nested transaction. If a caller invoked `require_tenant` while `conn` already had an in-progress tx, the `with conn:` boundary would silently commit or roll back that outer tx and discard whatever tenant state it had set. No current caller hits this, but Phase 22 and v2 graph traversal will layer things on top.
+- **Now:** entry-time assertion via `conn.info.transaction_status != TRANSACTION_STATUS_IDLE` raises `RuntimeError` with a message explaining the failure mode. Docstring's new "Preconditions" section documents it. Self-test `test_require_tenant_rejects_non_idle_connection` pins the behavior.
+
+**M3 — KeyboardInterrupt window between save-and-set autocommit (`6ce117e`)**
+- **Was:** `prev_autocommit = conn.autocommit; conn.autocommit = False` executed before the `try:`. A signal received between the save and the toggle would flip autocommit off but never enter the `finally`, leaving the connection in the wrong mode for its next reuse.
+- **Now:** both lines moved inside the `try:`. The `finally` wraps the restore in a `try/except NameError` for the still-narrower race where a signal arrives before `prev_autocommit` binds at all (in which case there's nothing to restore).
+
+**Not applied (low/nit — deferred):**
+- Docstring wording tweak on `test_writer_with_repo_id_from_other_org_writes_nothing_visible` (write-nothing-observable vs write-refused).
+- Extract a `_set_app_role(conn)` helper from the five copy-pasted `SET ROLE rag_doc_app` blocks.
+- Assert migration filenames match `^\d{6}_`.
+- Note Ryuk-dependency for container cleanup on SIGKILL in fixture docstring.
+
+Post-fix state: 16/16 tests still pass (5 harness + 3 writer + 3 read-path + 4 routes + 1 new precondition self-test), no regression against 17-01/02/03.
+
 ---
 *Phase: 17-tenant-isolation-foundation*
 *Completed: 2026-09-06*
