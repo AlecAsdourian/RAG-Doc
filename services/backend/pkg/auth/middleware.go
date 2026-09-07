@@ -15,8 +15,11 @@ const (
 	OrgIDKey  contextKey = "org_id"
 )
 
-// JWTAuthMiddleware validates JWT and extracts user_id
-func JWTAuthMiddleware(validator *JWTValidator) func(http.Handler) http.Handler {
+// JWTAuthMiddleware validates JWT and extracts user_id.
+//
+// Takes a TokenValidator interface so tests can inject an HS256 validator
+// while production uses *JWTValidator against Supabase JWKS.
+func JWTAuthMiddleware(validator TokenValidator) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Extract Bearer token from Authorization header

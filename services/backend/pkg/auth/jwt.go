@@ -8,6 +8,15 @@ import (
 	"github.com/lestrrat-go/jwx/v3/jwt"
 )
 
+// TokenValidator is the seam JWTAuthMiddleware uses to parse and verify
+// bearer tokens. The production implementation is *JWTValidator, which
+// pulls Supabase's JWKS at request time; test code substitutes an HS256
+// validator (see pkg/testing/isolation/testjwt) so router integration
+// tests can mint tokens without a live Supabase.
+type TokenValidator interface {
+	ValidateToken(ctx context.Context, tokenString string) (jwt.Token, error)
+}
+
 type JWTValidator struct {
 	jwksURL string
 	issuer  string
