@@ -161,6 +161,94 @@ def test_python_mutation_endpoint_with_matching_isolation_test_is_covered(tmp_pa
     assert report.covered[0].path == "/api/bar"
 
 
+def test_skip_marker_on_one_endpoint_does_not_leak_to_a_neighbor(tmp_path: Path):
+    """Reviewer finding H1 (PR #11): the original hunk-wide scan would
+    apply a single skip marker to every endpoint in the hunk. Verify that
+    a marker on `/health` does NOT excuse an unrelated `/api/new-mutation`
+    added in the same hunk.
+    """
+    diff = _diff(
+        "services/backend/pkg/api/router.go",
+        [
+            '\tr.Post("/health", healthHandler) // @skip-isolation-test: no tenant data',
+            '\tr.Post("/api/new-mutation", h.New)',
+        ],
+    )
+    report = scanner.build_report(diff, tmp_path)
+
+    assert not report.passed(), (
+        "the unrelated mutation endpoint must be reported as missing"
+    )
+    missing_paths = {e.path for e in report.missing}
+    skipped_paths = {s.endpoint.path for s in report.skipped}
+    assert missing_paths == {"/api/new-mutation"}
+    assert skipped_paths == {"/health"}
+
+
+def test_go_multi_line_route_registration_is_detected(tmp_path: Path):
+    """Reviewer finding H2 (PR #11): gofmt wraps long registrations
+    across lines. The scanner must still catch them.
+    """
+    diff = _diff(
+        "services/backend/pkg/api/handlers/foo.go",
+        [
+            '\tr.Post(',
+            '\t\t"/api/very-long-endpoint-name-that-forces-a-wrap",',
+            '\t\th.Foo,',
+            '\t)',
+        ],
+    )
+    report = scanner.build_report(diff, tmp_path)
+
+    assert not report.passed(), "wrapped route registration must not be invisible to the scanner"
+    assert len(report.missing) == 1
+    e = report.missing[0]
+    assert e.method == "POST"
+    assert e.path == "/api/very-long-endpoint-name-that-forces-a-wrap"
+
+
+def test_go_multi_line_handle_func_is_detected(tmp_path: Path):
+    """chi.HandleFunc has the same wrapping problem as the shorthand
+    method call; both must be caught by the multi-line join.
+    """
+    diff = _diff(
+        "services/backend/pkg/api/handlers/bar.go",
+        [
+            '\tchi.HandleFunc(',
+            '\t\t"POST /api/wrapped-handle-func",',
+            '\t\th.Bar,',
+            '\t)',
+        ],
+    )
+    report = scanner.build_report(diff, tmp_path)
+
+    assert not report.passed()
+    assert len(report.missing) == 1
+    e = report.missing[0]
+    assert e.method == "POST"
+    assert e.path == "/api/wrapped-handle-func"
+
+
+def test_skip_marker_on_line_above_route_still_applies(tmp_path: Path):
+    """A block comment on the line above the route registration is a
+    common Go pattern. The per-endpoint window must reach it.
+    """
+    diff = _diff(
+        "services/backend/pkg/api/router.go",
+        [
+            '\t// @skip-isolation-test: webhook validated by signature only',
+            '\tr.Post("/webhooks/vendor", h.Webhook)',
+        ],
+    )
+    report = scanner.build_report(diff, tmp_path)
+
+    assert report.passed(), (
+        "a skip marker on the line above the route must apply to that route"
+    )
+    assert len(report.skipped) == 1
+    assert report.skipped[0].endpoint.path == "/webhooks/vendor"
+
+
 def test_read_endpoints_are_not_reported(tmp_path: Path):
     # Neither Go GET nor Python GET should be flagged — read endpoints
     # are covered by RLS silent-filter, not by this scanner.

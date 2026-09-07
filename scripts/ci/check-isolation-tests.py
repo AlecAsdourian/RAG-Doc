@@ -176,36 +176,126 @@ def _lang_for_path(path: str) -> str:
     return "other"
 
 
-def added_endpoints(hunk: Hunk) -> Iterable[Endpoint]:
-    """Yield endpoints introduced or modified by added lines in this hunk."""
+def _iter_logical_added_lines(hunk: Hunk) -> Iterable[tuple[int, int, str]]:
+    """Yield (new_file_line_no, hunk_idx, logical_content) per added line.
+
+    For Go, consecutive added lines are joined into one logical line while
+    the running parenthesis balance is unclosed — so `r.Post(\\n\\t"/x",\\n)`
+    surfaces as a single logical event carrying the whole call, and the
+    endpoint regex can match a multi-line-wrapped registration. The event's
+    reported line number and `hunk_idx` are those of the FIRST line in the
+    joined sequence.
+
+    For Python and other languages, each added line is its own event —
+    multi-line decorators are exotic enough that the added complexity is
+    not worth it.
+    """
+    line_no = hunk.start_line
+    pending_start_no: int | None = None
+    pending_start_idx: int | None = None
+    pending_content: str | None = None
+
+    def _flush() -> Iterable[tuple[int, int, str]]:
+        nonlocal pending_start_no, pending_start_idx, pending_content
+        if pending_content is not None:
+            yield (
+                pending_start_no or 0,
+                pending_start_idx or 0,
+                pending_content,
+            )
+            pending_start_no = None
+            pending_start_idx = None
+            pending_content = None
+
+    for idx, raw in enumerate(hunk.lines):
+        if raw.startswith("+++"):
+            continue
+        if raw.startswith("+"):
+            content = raw[1:]
+            if pending_content is None:
+                pending_content = content
+                pending_start_no = line_no
+                pending_start_idx = idx
+            else:
+                # Continuation of a wrapped registration; strip leading
+                # indent to keep the joined content readable for the regex.
+                pending_content = pending_content + " " + content.lstrip()
+            line_no += 1
+            # If parens are balanced (Go multi-line join) OR we're not Go,
+            # emit this event and reset.
+            if hunk.lang != "go" or _parens_balanced(pending_content):
+                yield from _flush()
+        elif raw.startswith("-"):
+            # deleted line — flush any pending join, does not advance line no
+            yield from _flush()
+        else:
+            # context line — flush and advance
+            yield from _flush()
+            line_no += 1
+
+    yield from _flush()
+
+
+def _parens_balanced(text: str) -> bool:
+    """True if `(` count is <= `)` count. Cheap approximation — good enough
+    for detecting an unclosed function call at end of a diff line."""
+    return text.count("(") <= text.count(")")
+
+
+def added_endpoints(hunk: Hunk) -> Iterable[tuple[Endpoint, int]]:
+    """Yield (endpoint, hunk_line_idx) for each mutation route in this hunk.
+
+    The `hunk_line_idx` points to the first raw line of the registration
+    (so multi-line-wrapped routes report the line where `.Post(` begins,
+    not the line where the string literal happens to sit). It is used by
+    `endpoint_skip_reason` to scan for a per-endpoint skip marker.
+    """
     if hunk.lang == "other":
         return
-    line_no = hunk.start_line
-    for raw in hunk.lines:
-        if raw.startswith("+") and not raw.startswith("+++"):
-            for pat in ENDPOINT_PATTERNS[hunk.lang]:
-                m = pat.match(raw)
-                if m:
-                    yield Endpoint(
+    for line_no, hunk_idx, content in _iter_logical_added_lines(hunk):
+        # `content` has no leading `+`; re-add it so the same patterns
+        # (which anchor on `^\+`) match uniformly.
+        needle = "+" + content
+        for pat in ENDPOINT_PATTERNS[hunk.lang]:
+            m = pat.match(needle)
+            if m:
+                yield (
+                    Endpoint(
                         method=m.group(1).upper(),
                         path=m.group(2),
                         file=hunk.file,
                         line=line_no,
                         lang=hunk.lang,
-                    )
-                    break
-            line_no += 1
-        elif raw.startswith("-") and not raw.startswith("---"):
-            # deleted line: does not advance new-file line number
-            pass
-        else:
-            # context line: advances new-file line number
-            line_no += 1
+                    ),
+                    hunk_idx,
+                )
+                break
 
 
-def hunk_skip_reason(hunk: Hunk) -> str | None:
-    """Return the first non-empty @skip-isolation-test reason found in the hunk."""
-    for raw in hunk.lines:
+# How many lines *above* the endpoint's registration to scan for a
+# block-comment skip marker. Three lines matches the plan's ±3 window.
+_SKIP_LOOKBACK = 3
+
+
+def endpoint_skip_reason(hunk: Hunk, endpoint_idx: int) -> str | None:
+    """Return the non-empty @skip-isolation-test reason for this endpoint,
+    or None if there isn't one.
+
+    Scans the endpoint's own line first (inline `//` or `#` comment), then
+    up to `_SKIP_LOOKBACK` lines above (block comment above the route).
+    Bounded per-endpoint so one marker cannot bleed onto unrelated
+    endpoints — the lookback halts the moment it encounters a line that
+    itself is another route registration, so an endpoint at hunk index 1
+    does not inherit the marker from a different endpoint at index 0.
+    """
+    lo = max(0, endpoint_idx - _SKIP_LOOKBACK)
+    patterns = ENDPOINT_PATTERNS.get(hunk.lang, [])
+    for idx in range(endpoint_idx, lo - 1, -1):
+        raw = hunk.lines[idx]
+        if idx != endpoint_idx:
+            # A different route registration boundary — do not cross it.
+            if any(p.match(raw) for p in patterns):
+                return None
         m = SKIP_MARKER.search(raw)
         if m:
             reason = m.group(1).strip()
@@ -262,11 +352,11 @@ def build_report(diff_text: str, repo_root: Path) -> Report:
         # route shouldn't count as an unprotected mutation endpoint.
         if any(p.search(hunk.file) for p in TEST_FILE_PATTERNS):
             continue
-        skip_reason = hunk_skip_reason(hunk)
-        for endpoint in added_endpoints(hunk):
-            if skip_reason is not None:
+        for endpoint, hunk_idx in added_endpoints(hunk):
+            reason = endpoint_skip_reason(hunk, hunk_idx)
+            if reason is not None:
                 report.skipped.append(
-                    SkippedEndpoint(endpoint=endpoint, reason=skip_reason)
+                    SkippedEndpoint(endpoint=endpoint, reason=reason)
                 )
                 continue
             if test_files_reference(test_paths, endpoint, repo_root):
