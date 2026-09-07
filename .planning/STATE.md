@@ -71,6 +71,8 @@ Recent decisions still affecting current work:
 - **ISS-004:** Org selection mechanism — **scheduled: Phase 19-03 and 19-04**
 - **ISS-005:** Supabase Native OAuth webhook handler — **scheduled: Phase 19-01**
 - **ISS-006:** Test database connectivity — **✅ closed 2026-09-05** in Phase 17-01 via testcontainers-go harness (`pkg/testing/isolation`); see ISSUES.md
+- **ISS-007:** JWT-carried tenant claim + membership validation — **filed 2026-09-06** during 17-02; scheduled for Phase 19-03 (supersedes X-Organization-ID header trust). See ISSUES.md.
+- **ISS-008:** Request-scoped tenant transaction for DB-hitting endpoints — **filed 2026-09-06** during 17-02; must resolve before any Phase 20+ handler reads a tenant-scoped table directly from Go. See ISSUES.md.
 - **Frontend inline-style pollution** — ongoing rule, cleaned per component touched
 - **Mocked repos/orgs/graph in frontend** — **replaced in Phase 23**
 
