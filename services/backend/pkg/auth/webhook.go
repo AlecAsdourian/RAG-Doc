@@ -9,11 +9,16 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// MaxWebhookBodyBytes bounds the request body the webhook is willing to
+// read. 64KB is comfortably larger than a real Supabase user event
+// (~1-2KB) and small enough to hold the whole payload in memory without
+// concern. `http.MaxBytesReader` returns a 413 when exceeded.
+const MaxWebhookBodyBytes = 64 << 10
 
 // SupabaseWebhookEvent represents the structure of Supabase database webhook events
 type SupabaseWebhookEvent struct {
@@ -46,17 +51,29 @@ type SupabaseAuthUser struct {
 	ProviderID   string                 `json:"provider_id"`
 }
 
-// WebhookHandler handles Supabase webhook events
+// WebhookHandler handles Supabase webhook events.
+//
+// The webhook secret is required; a zero-value secret would fail-open on
+// every signature check and let unauthenticated callers trigger user
+// provisioning. Constructors must supply it explicitly — the caller
+// reads it from `SUPABASE_WEBHOOK_SECRET` and panics on empty.
 type WebhookHandler struct {
 	provisioner   *UserProvisioner
 	webhookSecret string
 }
 
-// NewWebhookHandler creates a new webhook handler
-func NewWebhookHandler(db *pgxpool.Pool) *WebhookHandler {
+// NewWebhookHandler creates a webhook handler with the given secret.
+//
+// Panics if webhookSecret is empty. Callers (currently pkg/api/router.go)
+// read the secret from env at startup and fail loudly rather than let a
+// misconfigured deployment silently accept unsigned payloads.
+func NewWebhookHandler(db *pgxpool.Pool, webhookSecret string) *WebhookHandler {
+	if webhookSecret == "" {
+		panic("auth.NewWebhookHandler: webhookSecret is empty; set SUPABASE_WEBHOOK_SECRET before constructing the router")
+	}
 	return &WebhookHandler{
 		provisioner:   NewUserProvisioner(db),
-		webhookSecret: os.Getenv("SUPABASE_WEBHOOK_SECRET"),
+		webhookSecret: webhookSecret,
 	}
 }
 
@@ -69,13 +86,23 @@ func (h *WebhookHandler) HandleSupabaseWebhook() http.HandlerFunc {
 			return
 		}
 
-		// Read request body
+		// Bound the body before reading. A malicious caller cannot exhaust
+		// server memory by streaming an arbitrarily large payload; a
+		// legitimate Supabase event is ~1-2KB.
+		r.Body = http.MaxBytesReader(w, r.Body, MaxWebhookBodyBytes)
+		defer r.Body.Close()
+
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
+			// MaxBytesReader wraps its overflow error; distinguish for a
+			// clearer response code.
+			if err.Error() == "http: request body too large" {
+				http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
 			http.Error(w, "Failed to read request body", http.StatusBadRequest)
 			return
 		}
-		defer r.Body.Close()
 
 		// Verify webhook signature
 		signature := r.Header.Get("X-Webhook-Signature")
@@ -102,41 +129,43 @@ func (h *WebhookHandler) HandleSupabaseWebhook() http.HandlerFunc {
 				return
 			}
 
-			w.WriteHeader(http.StatusOK)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
 			json.NewEncoder(w).Encode(map[string]string{
-				"status": "success",
+				"status":  "success",
 				"message": "User provisioned successfully",
 			})
 			return
 		}
 
 		// Ignore other events
-		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
 		json.NewEncoder(w).Encode(map[string]string{
-			"status": "ignored",
+			"status":  "ignored",
 			"message": "Event type not handled",
 		})
 	}
 }
 
-// verifySignature verifies the HMAC-SHA256 signature of the webhook payload
+// verifySignature verifies the HMAC-SHA256 signature of the webhook
+// payload against the shared secret.
+//
+// Fail-closed. Prior versions of this method had a
+// `if h.webhookSecret == "" { return true }` branch for "development
+// convenience" that turned into a production vulnerability the moment
+// SUPABASE_WEBHOOK_SECRET was ever unset. The constructor now panics on
+// empty secret, and this function has no bypass — every request must
+// present a valid signature.
 func (h *WebhookHandler) verifySignature(payload []byte, signature string) bool {
-	if h.webhookSecret == "" {
-		// No secret configured - skip verification in development
-		// WARNING: This should never happen in production
-		return true
-	}
-
 	if signature == "" {
 		return false
 	}
-
-	// Compute expected signature
 	mac := hmac.New(sha256.New, []byte(h.webhookSecret))
 	mac.Write(payload)
 	expectedSignature := hex.EncodeToString(mac.Sum(nil))
-
-	// Compare signatures (constant-time comparison to prevent timing attacks)
+	// hmac.Equal is constant-time; a naive `==` would leak signature
+	// prefix bytes via a timing side-channel.
 	return hmac.Equal([]byte(signature), []byte(expectedSignature))
 }
 

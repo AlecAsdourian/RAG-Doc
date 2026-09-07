@@ -3,6 +3,7 @@ package api
 import (
 	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -44,8 +45,14 @@ func NewRouterWithValidator(dbpool *pgxpool.Pool, ragClient *client.RAGClient, j
 		ResponseHeaders: false,
 	})
 
-	// Initialize webhook handler
-	webhookHandler := auth.NewWebhookHandler(dbpool)
+	// Initialize webhook handler. The secret is required at construction
+	// time so a deployment missing SUPABASE_WEBHOOK_SECRET panics at
+	// startup rather than silently accepting unsigned events.
+	webhookSecret := os.Getenv("SUPABASE_WEBHOOK_SECRET")
+	if webhookSecret == "" {
+		panic("api.NewRouterWithValidator: SUPABASE_WEBHOOK_SECRET must be set")
+	}
+	webhookHandler := auth.NewWebhookHandler(dbpool, webhookSecret)
 
 	// Initialize request validator
 	validate := validator.New()
