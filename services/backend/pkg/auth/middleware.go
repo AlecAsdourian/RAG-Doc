@@ -15,8 +15,11 @@ const (
 	OrgIDKey  contextKey = "org_id"
 )
 
-// JWTAuthMiddleware validates JWT and extracts user_id
-func JWTAuthMiddleware(validator *JWTValidator) func(http.Handler) http.Handler {
+// JWTAuthMiddleware validates JWT and extracts user_id.
+//
+// Takes a TokenValidator interface so tests can inject an HS256 validator
+// while production uses *JWTValidator against Supabase JWKS.
+func JWTAuthMiddleware(validator TokenValidator) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Extract Bearer token from Authorization header
@@ -56,8 +59,25 @@ func JWTAuthMiddleware(validator *JWTValidator) func(http.Handler) http.Handler 
 	}
 }
 
-// TenantMiddleware extracts organization and sets RLS context
+// TenantMiddleware extracts the caller's organization and stores it on the
+// request context under OrgIDKey so downstream handlers can propagate it
+// (currently to the RAG client; later, to per-request DB transactions).
+//
+// The tenant id comes from the X-Organization-ID header today. Phase 19-03
+// moves the source-of-truth to a JWT custom claim + membership check; that
+// change is scoped to this function's header-read block.
+//
+// Note on the db argument: earlier drafts of this middleware tried to
+// SET LOCAL app.current_tenant on a pool-acquired connection here. That
+// was broken twice over — SET LOCAL outside an explicit transaction is a
+// no-op, and pgx's extended protocol rejects parameterized SET — so it
+// crashed every request with 500. It has been removed. RLS-scoped queries
+// must open their own transaction via isolation.TenantScope (or a Phase
+// 17-03 request-scoped-tx equivalent); the pool argument is kept so a
+// future request-tx design can wire itself in without a middleware-chain
+// signature change.
 func TenantMiddleware(db *pgxpool.Pool) func(http.Handler) http.Handler {
+	_ = db // reserved for Phase 17-03 request-scoped transaction hookup
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			_, ok := r.Context().Value(UserIDKey).(string)
@@ -66,35 +86,13 @@ func TenantMiddleware(db *pgxpool.Pool) func(http.Handler) http.Handler {
 				return
 			}
 
-			// Get organization from JWT custom claims
-			// (Alternative: query organization_memberships table)
-			// For now, require it in header (temporary - will be in JWT later)
-			// TODO: Implement organization selection for multi-org users
-			// TODO: Use userID to query organization_memberships and validate access
-
-			orgID := r.Header.Get("X-Organization-ID") // Temporary: from header
+			orgID := r.Header.Get("X-Organization-ID")
 			if orgID == "" {
 				http.Error(w, "Missing organization context", http.StatusBadRequest)
 				return
 			}
 
 			ctx := context.WithValue(r.Context(), OrgIDKey, orgID)
-
-			// Set PostgreSQL RLS context (CRITICAL for tenant isolation)
-			conn, err := db.Acquire(ctx)
-			if err != nil {
-				http.Error(w, "Database error", http.StatusInternalServerError)
-				return
-			}
-			defer conn.Release()
-
-			// SET LOCAL ensures variable is cleared at end of transaction
-			_, err = conn.Exec(ctx, "SET LOCAL app.current_tenant = $1", orgID)
-			if err != nil {
-				http.Error(w, "Failed to set tenant context", http.StatusInternalServerError)
-				return
-			}
-
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

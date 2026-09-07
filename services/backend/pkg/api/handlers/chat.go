@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/go-playground/validator/v10"
+	"github.com/yourusername/smart-docs-platform/services/backend/pkg/auth"
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/client"
 )
 
@@ -73,12 +74,21 @@ func (h *ChatHandler) StreamChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. Call RAG streaming client with request context
+	// 4. Extract tenant from context (set by TenantMiddleware) and forward
+	// it to the RAG service so the Python side scopes retrieval to this
+	// org. Without this, cross-tenant chunks leak into the answer context.
 	ctx := r.Context()
+	orgID, ok := ctx.Value(auth.OrgIDKey).(string)
+	if !ok || orgID == "" {
+		writeSSEError(w, "tenant context missing from request; middleware chain misconfigured")
+		return
+	}
+
 	chatReq := client.ChatRequest{
-		Query:        req.Query,
-		RepositoryID: req.RepositoryID,
-		TopK:         req.TopK,
+		Query:          req.Query,
+		RepositoryID:   req.RepositoryID,
+		OrganizationID: orgID,
+		TopK:           req.TopK,
 	}
 
 	chunkChan, err := h.ragClient.StreamChat(ctx, chatReq)

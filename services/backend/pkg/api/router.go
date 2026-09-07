@@ -22,8 +22,19 @@ type Config struct {
 	LogLevel slog.Level
 }
 
-// NewRouter creates a Chi router with middleware chain and route groups
+// NewRouter creates a Chi router with middleware chain and route groups.
+//
+// Sugar over NewRouterWithValidator that builds the production Supabase
+// JWKS validator from authConfig. Tests that need to bypass Supabase
+// should call NewRouterWithValidator directly with a test validator.
 func NewRouter(dbpool *pgxpool.Pool, ragClient *client.RAGClient, authConfig *auth.Config, cfg Config) chi.Router {
+	return NewRouterWithValidator(dbpool, ragClient, auth.NewJWTValidator(authConfig), cfg)
+}
+
+// NewRouterWithValidator builds the router with a caller-supplied token
+// validator. Same middleware chain and routes as NewRouter; only the
+// bearer-token verifier is swappable.
+func NewRouterWithValidator(dbpool *pgxpool.Pool, ragClient *client.RAGClient, jwtValidator auth.TokenValidator, cfg Config) chi.Router {
 	// Initialize structured logger
 	logger := httplog.NewLogger("smart-docs-api", httplog.Options{
 		JSON:            cfg.LogJSON,
@@ -32,9 +43,6 @@ func NewRouter(dbpool *pgxpool.Pool, ragClient *client.RAGClient, authConfig *au
 		RequestHeaders:  true,
 		ResponseHeaders: false,
 	})
-
-	// Initialize JWT validator
-	jwtValidator := auth.NewJWTValidator(authConfig)
 
 	// Initialize webhook handler
 	webhookHandler := auth.NewWebhookHandler(dbpool)

@@ -84,6 +84,31 @@ Enhancements discovered during execution. Not critical - address in future phase
   - Configure webhook URL in Supabase dashboard
   - Update frontend to use Supabase JS client for OAuth
 
+### ISS-007: JWT-carried tenant claim + membership validation (supersedes header trust)
+
+- **Discovered:** Phase 17-02 (2026-09-06)
+- **Type:** Security / Authorization
+- **Priority:** HIGH before v1 public rollout, MEDIUM in current fleet-internal state
+- **Description:** `TenantMiddleware` currently sources the caller's tenant from the `X-Organization-ID` request header. Any authenticated user can set this header to any org id and the middleware forwards it downstream unchecked. The isolation harness pins this behavior in `search_isolation_test.go` scenario 5 (`Scenario5_HeaderTamper_HeaderCurrentlyTrusted_TODO_1903`) so a silent change in either direction is caught.
+- **Resolution plan (Phase 19-03):** Supabase Auth Hook stamps `organization_id` and `organization_role` on the JWT. TenantMiddleware reads from the claim, cross-checks against `organization_memberships`, and drops the `X-Organization-ID` header path. On completion of 19-03, update the scenario 5 assertion from 200/header-wins to 403 and add a fresh JWT-tampering scenario (sign a token with a mismatched `organization_id` claim and assert reject).
+- **Impact:** Cross-tenant access via crafted header; currently gated by "no untrusted client contact" but a leak in v1 rollout.
+- **Effort:** Medium (Supabase hook + middleware read path + membership query + fixture updates).
+- **Blocked by:** 19-01, 19-02 (auth-cluster prerequisites).
+- **Related tests to update in 19-03:** `services/backend/pkg/api/handlers/search_isolation_test.go` scenario 5, `chat_isolation_test.go` scenario 4 (add a JWT variant), `pkg/testing/isolation/testjwt` may need helpers for tampered claim minting.
+
+### ISS-008: Request-scoped tenant transaction for DB-hitting endpoints
+
+- **Discovered:** Phase 17-02 (2026-09-06)
+- **Type:** Architecture / Correctness
+- **Priority:** HIGH before any handler starts reading tenant-scoped tables directly
+- **Description:** The original `TenantMiddleware` tried to `SET LOCAL app.current_tenant` on a pool-acquired connection, then released the connection before the handler ran. That approach was broken twice over — `SET LOCAL` outside an explicit transaction is a no-op, and pgx's extended query protocol rejects parameterized `SET`. The block was removed in Phase 17-02 (the SET was crashing every request with 500 and blocking isolation tests). For today's endpoints this is fine — Search and StreamChat proxy to Python and never touch RLS-scoped tables from Go. But Phase 20+ handlers (repositories, chunks, queries) WILL query RLS-scoped tables from Go and need a real request-scoped tenant scope.
+- **Resolution options (pick in 17-03):**
+  1. Middleware begins a transaction, `SET LOCAL app.current_tenant` inside it, stashes the tx on request context, handler pulls tx from context for every query, tx commits on 2xx / rolls back on error.
+  2. Every handler that needs DB access calls `isolation.TenantScope` (or a production-equivalent) explicitly, opening its own transaction. Simpler wiring, more boilerplate per handler.
+- **Impact:** Correctness — without one of these, Phase 20+ handlers will either bypass RLS or return zero rows.
+- **Effort:** Medium (design decision + one refactor to the middleware chain).
+- **Related code:** `services/backend/pkg/auth/middleware.go` (TenantMiddleware, currently a context-only pass-through with a `_ = db` reserved for this work).
+
 ## Closed Enhancements
 
 ### ISS-006: Test database connectivity configuration ✅
