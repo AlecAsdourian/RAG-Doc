@@ -18,7 +18,6 @@ package handlers_test
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -40,8 +39,6 @@ func TestChatIsolation(t *testing.T) {
 	pool := isolation.SetupTestDB(t)
 
 	isolation.WithTwoOrgs(t, pool, func(orgA, orgB *isolation.TestOrg) {
-		ctx := context.Background()
-
 		_ = insertSearchChunk(t, pool, orgA, "orange marmalade recipe")
 		_ = insertSearchChunk(t, pool, orgB, "purple velvet cake")
 
@@ -58,7 +55,10 @@ func TestChatIsolation(t *testing.T) {
 				return
 			}
 
-			results, err := queryChunksUnderTenant(ctx, pool, req.OrganizationID, req.RepositoryID, req.Query)
+			// Use the request's context so a client cancellation propagates
+			// to the DB query — matches how the real Python side should
+			// behave.
+			results, err := queryChunksUnderTenant(r.Context(), pool, req.OrganizationID, req.RepositoryID, req.Query)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return

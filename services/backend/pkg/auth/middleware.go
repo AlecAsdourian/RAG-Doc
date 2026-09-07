@@ -77,7 +77,7 @@ func JWTAuthMiddleware(validator TokenValidator) func(http.Handler) http.Handler
 // future request-tx design can wire itself in without a middleware-chain
 // signature change.
 func TenantMiddleware(db *pgxpool.Pool) func(http.Handler) http.Handler {
-	_ = db // reserved for Phase 17-03 request-scoped transaction hookup
+	_ = db // TODO(17-03/ISS-008): wire request-scoped tenant tx here
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			_, ok := r.Context().Value(UserIDKey).(string)

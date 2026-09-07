@@ -38,11 +38,11 @@ func TestSearchIsolation(t *testing.T) {
 	pool := isolation.SetupTestDB(t)
 
 	isolation.WithTwoOrgs(t, pool, func(orgA, orgB *isolation.TestOrg) {
-		ctx := context.Background()
-
 		chunkA := insertSearchChunk(t, pool, orgA, "orange marmalade recipe")
-		chunkB := insertSearchChunk(t, pool, orgB, "purple velvet cake")
-		_ = chunkB // included so cleanup path is exercised; not asserted directly
+		// chunkB is required by scenario 2 (orgB queries "purple") — the id
+		// itself is not asserted, but the row must exist for that scenario
+		// to see exactly one match under RLS.
+		_ = insertSearchChunk(t, pool, orgB, "purple velvet cake")
 
 		// Stub Python RAG service. It reads OrganizationID and RepositoryID
 		// from the request body, opens a TenantScope tx against the shared
@@ -59,7 +59,10 @@ func TestSearchIsolation(t *testing.T) {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			results, err := queryChunksUnderTenant(ctx, pool, req.OrganizationID, req.RepositoryID, req.Query)
+			// Use the request's context so a client cancellation propagates
+			// to the DB query — matches how the real Python side should
+			// behave.
+			results, err := queryChunksUnderTenant(r.Context(), pool, req.OrganizationID, req.RepositoryID, req.Query)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
