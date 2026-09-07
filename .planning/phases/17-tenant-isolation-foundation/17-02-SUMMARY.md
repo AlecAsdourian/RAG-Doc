@@ -143,6 +143,25 @@ Test-time budget from plan (<60s cold, <10s warm) met with plenty of headroom.
 - **19-03** (JWT tenant claim + membership check): ISS-007 lists the exact test scenarios to flip and the code path to change.
 - **Phase 20+** (repos/chunks/queries handlers): ISS-008 must be resolved before any handler does a direct tenant-scoped DB read from Go. `TenantMiddleware` currently gives you `OrgIDKey` on context but no RLS-scoped transaction; a handler that queries under RLS today would get zero rows.
 
+## Reviewer follow-ups (post-review, same branch)
+
+The reviewer subagent's `code-review` pass produced two mediums and three low/nit findings — no criticals, no highs. All five applied on this branch before merge, per fleet doctrine on reviewer feedback:
+
+**M1 — pre-stream failures return HTTP error, not embedded SSE frames (`85c1f08`)**
+- **Was:** `StreamChat` set SSE headers before extracting `auth.OrgIDKey`. A future middleware regression would land as `200 text/event-stream` with an embedded `type:"error"` frame — clients expecting `200 → stream, non-2xx → abort` would misinterpret it.
+- **Now:** Body-decode / validate / tenant-extract all use `render.Render` with `ErrInvalidRequest` / `ErrInternal`. SSE headers only commit after those checks pass. Chat isolation subtests still 4/4 green — Scenario 4 (missing header) still gets a 4xx before any SSE frame is emitted.
+
+**M2 — dropped unused RAGClient.Chat / ChatResponse (`dbd80d8`)**
+- **Was:** `RAGClient.Chat` (non-streaming) was public but had no callers and no tenant-propagation test. A later phase could wire it into a handler, forget to set `OrganizationID` on the request, and no test would fail — defeating the whole point of the audit.
+- **Now:** Both `Chat` and `ChatResponse` deleted. `TestRAGClient_PropagatesTenant` continues to cover the two remaining methods (`Search`, `StreamChat`). If a non-streaming variant is genuinely needed later, the phase that adds it also adds its isolation subtest.
+
+**L1/L2/L3 — nit polish (`51ab8f9`)**
+- **L1:** The `_ = chunkB` comment in `search_isolation_test.go` claimed the insert exercised "the cleanup path" — but cleanup runs regardless via `WithTwoOrgs`'s `t.Cleanup`. Rewritten to say the real thing: chunkB is scenario 2's fixture requirement (its "purple velvet cake" content is what orgB matches on).
+- **L2:** Stub Python servers in both isolation tests captured `context.Background()` from the enclosing scope for their `TenantScope` transactions. Switched to `r.Context()` so a client disconnect propagates to the DB — harmless in the current tests but the right pattern to keep visible.
+- **L3:** The unused `db` parameter in `TenantMiddleware` had a docstring-only explanation; added an inline `// TODO(17-03/ISS-008)` at the `_ = db` line so it surfaces in editor code-lens / TODO listings.
+
+Post-fix state: all 19 isolation-related subtests still pass, `go vet` clean on all touched packages, container reuse unchanged (~1.5s warm).
+
 ---
 *Phase: 17-tenant-isolation-foundation*
 *Completed: 2026-09-06*
