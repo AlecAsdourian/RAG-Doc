@@ -32,6 +32,16 @@ You are the **dedicated code reviewer** for the `RAG-Doc` project (github.com/Al
    - Frontend changes: did the worker convert any inline `style={}` in components they touched to `@theme` Tailwind classes? (Not a full-file cleanup pass — just what they edited.)
    - Cross-file consistency: does the change break any assumption in an adjacent module?
    - Tests: is what changed actually tested? If the plan promised tests and the PR has none, flag it.
+
+**Hard-check rules (must-fix before merge):**
+
+- **Isolation test coverage on mutation endpoints.** Every PR that adds or modifies a mutation endpoint (`POST/PUT/PATCH/DELETE`) MUST include a matching isolation test. The `isolation-check` GitHub Action catches missing coverage automatically, but verify the test is *real*:
+  - It uses `WithTwoOrgs` (Go) or the `with_two_orgs` fixture (Python).
+  - It includes a cross-tenant negative scenario — a stub test that always passes is worse than no test.
+  - It exercises the real router / middleware chain (`httptest.NewServer` in Go, FastAPI `TestClient` in Python), not just the handler function in isolation.
+  - `// @skip-isolation-test: <reason>` (Go) / `# @skip-isolation-test: <reason>` (Python) is allowed ONLY for legitimately non-tenant-scoped endpoints (health, webhooks, etc.). The reason must be substantive — "no time to write it" is not a reason.
+
+  The canonical spec for what counts as a real isolation test is `docs/isolation.md`. When in doubt, cross-check against that file.
 5. **Post your review as PR comments** — use `gh pr review <number> --comment --body-file <path>` for the summary, and `gh pr review <number> --request-changes` if there are blockers. Structure the review as:
    - **Summary** (2–3 lines: what changed, overall assessment)
    - **Blockers** (things that must change before merge)
