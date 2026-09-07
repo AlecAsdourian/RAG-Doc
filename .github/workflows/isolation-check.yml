@@ -1,0 +1,84 @@
+name: Isolation Test Coverage
+
+# Runs on every PR to main. Fails the check if the diff adds a mutation
+# endpoint (POST/PUT/PATCH/DELETE) without a matching isolation test in
+# the same PR. See docs/isolation.md and scripts/ci/README.md.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  check-isolation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Checkout with full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run isolation-test scanner
+        id: scan
+        continue-on-error: true
+        run: |
+          python scripts/ci/check-isolation-tests.py \
+            --base-ref origin/${{ github.base_ref }} \
+            --head-ref HEAD \
+            --json > isolation-report.json
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Comment on PR when coverage is missing
+        if: steps.scan.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let report;
+            try {
+              report = JSON.parse(fs.readFileSync('isolation-report.json', 'utf8'));
+            } catch (e) {
+              core.setFailed(`Could not parse scanner report: ${e.message}`);
+              return;
+            }
+            const missing = (report.missing || []).map(
+              m => `- \`${m.method} ${m.path}\` in \`${m.file}:${m.line}\``
+            );
+            const skipped = (report.skipped || []).map(
+              s => `- \`${s.endpoint.method} ${s.endpoint.path}\` — reason: _${s.reason}_`
+            );
+            const body = [
+              '❌ **Isolation test coverage missing**',
+              '',
+              'The following mutation endpoints were added or modified without a matching isolation test:',
+              '',
+              ...missing,
+              '',
+              'Add a test in `*_isolation_test.go` (Go) or `test_*_isolation.py` (Python) that references the endpoint path or handler name.',
+              '',
+              'To intentionally skip (rare, health/webhook only): add `// @skip-isolation-test: <reason>` (Go) or `# @skip-isolation-test: <reason>` (Python) on the route line. The reason must be non-empty.',
+              '',
+              skipped.length ? '**Endpoints explicitly skipped in this PR (informational):**' : '',
+              ...skipped,
+              '',
+              'See `docs/isolation.md` for the full pattern.',
+            ].filter(Boolean).join('\n');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });
+
+      - name: Fail the check when coverage is missing
+        if: steps.scan.outcome == 'failure'
+        run: exit 1
