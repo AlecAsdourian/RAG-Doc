@@ -73,6 +73,7 @@ class AnswerGenerator:
     def generate(
         self,
         query: str,
+        organization_id: UUID,
         repository_id: UUID,
         top_k: int = 5,
         run_id: Optional[UUID] = None,
@@ -131,6 +132,7 @@ class AnswerGenerator:
         # Cache miss - retrieve chunks
         retrieval_result = self.query_engine.query(
             query_text=query,
+            organization_id=organization_id,
             repository_id=repository_id,
             top_k=top_k,
             run_id=run_id,

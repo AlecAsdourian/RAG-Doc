@@ -22,12 +22,16 @@ the extension recipe), and require_tenant keeps working unchanged.
 """
 
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any, Iterator, Optional
 from uuid import UUID
 
 
 @contextmanager
-def require_tenant(conn: Any, tenant_id: Any) -> Iterator[Any]:
+def require_tenant(
+    conn: Any,
+    tenant_id: Any,
+    cursor_factory: Optional[Any] = None,
+) -> Iterator[Any]:
     """Yield a psycopg2 cursor inside a tenant-scoped transaction.
 
     On successful exit the transaction commits; on any exception it rolls
@@ -39,6 +43,11 @@ def require_tenant(conn: Any, tenant_id: Any) -> Iterator[Any]:
         with require_tenant(conn, org_id) as cur:
             cur.execute("INSERT INTO chunks (...) VALUES (...)", (...,))
 
+        with require_tenant(conn, org_id, cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT ...")
+            for row in cur.fetchall():
+                ...
+
     Args:
         conn: An open psycopg2 connection. Its autocommit state is
               temporarily forced to False for the duration of the block
@@ -47,9 +56,12 @@ def require_tenant(conn: Any, tenant_id: Any) -> Iterator[Any]:
                    May be a `uuid.UUID` or a string; strings are validated
                    as UUIDs before interpolation because Postgres does
                    not accept bind parameters for GUC values in `SET`.
+        cursor_factory: Optional psycopg2 cursor factory (e.g.
+                        `RealDictCursor`). Passed through to
+                        `conn.cursor(cursor_factory=...)`.
 
     Yields:
-        The psycopg2 cursor for the caller to run statements against.
+        A psycopg2 cursor bound to the tenant-scoped transaction.
 
     Raises:
         ValueError: If `tenant_id` is not a valid UUID.
@@ -64,8 +76,16 @@ def require_tenant(conn: Any, tenant_id: Any) -> Iterator[Any]:
     conn.autocommit = False
     try:
         with conn:  # begins tx, commits on clean exit, rollbacks on raise
-            with conn.cursor() as cur:
-                cur.execute(f"SET LOCAL app.current_tenant = '{tenant_str}'")
-                yield cur
+            # SET LOCAL runs on any cursor bound to this tx; do it via a
+            # throwaway cursor so the yielded cursor is fresh with whatever
+            # factory the caller asked for.
+            with conn.cursor() as setup_cur:
+                setup_cur.execute(f"SET LOCAL app.current_tenant = '{tenant_str}'")
+            if cursor_factory is None:
+                with conn.cursor() as cur:
+                    yield cur
+            else:
+                with conn.cursor(cursor_factory=cursor_factory) as cur:
+                    yield cur
     finally:
         conn.autocommit = prev_autocommit

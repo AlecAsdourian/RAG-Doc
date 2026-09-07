@@ -39,6 +39,7 @@ class IngestionPipeline:
     def process_files(
         self,
         files: List[Tuple[str, str, str]],  # (file_path, content, language)
+        organization_id: UUID,
         repository_id: UUID,
         commit_sha: str = "local",
         branch: str = "main",
@@ -47,10 +48,16 @@ class IngestionPipeline:
         Process files through the complete pipeline.
 
         Args:
-            files: List of (file_path, content, language) tuples
-            repository_id: UUID of repository
-            commit_sha: Git commit SHA
-            branch: Git branch name
+            files: List of (file_path, content, language) tuples.
+            organization_id: Tenant scope for every Postgres write done
+                by this run (create_ingestion_run, insert_chunks,
+                complete_ingestion_run). Required — the assert_tenant_scoped
+                trigger from migration 000009 refuses raw writes.
+            repository_id: UUID of repository. Must belong to
+                `organization_id`; otherwise RLS silently filters the
+                write and the run drops rows.
+            commit_sha: Git commit SHA.
+            branch: Git branch name.
 
         Returns:
             Statistics dict with:
@@ -76,7 +83,7 @@ class IngestionPipeline:
             # Step 1: Create ingestion run
             logger.info(f"Creating ingestion run for repository {repository_id}")
             ingestion_run_id = self.postgres.create_ingestion_run(
-                repository_id, commit_sha, branch
+                organization_id, repository_id, commit_sha, branch
             )
             logger.info(f"✓ Created ingestion run: {ingestion_run_id}")
 
@@ -105,7 +112,7 @@ class IngestionPipeline:
             if not all_chunks:
                 logger.warning("No chunks created, aborting pipeline")
                 self.postgres.complete_ingestion_run(
-                    ingestion_run_id, 0, "No chunks created"
+                    organization_id, ingestion_run_id, 0, "No chunks created"
                 )
                 stats["status"] = "failed"
                 stats["error"] = "No chunks created"
@@ -124,7 +131,7 @@ class IngestionPipeline:
             # Step 4: Store chunks in Postgres
             logger.info(f"Storing {len(all_chunks)} chunks in Postgres...")
             content_hash_to_chunk_id = self.postgres.insert_chunks(
-                all_chunks, ingestion_run_id, repository_id
+                organization_id, all_chunks, ingestion_run_id, repository_id
             )
             logger.info(f"✓ Stored {len(all_chunks)} chunks in Postgres")
 
@@ -176,7 +183,9 @@ class IngestionPipeline:
             logger.info(f"✓ Stored {vectors_stored} vectors in Qdrant")
 
             # Step 6: Complete ingestion run
-            self.postgres.complete_ingestion_run(ingestion_run_id, len(all_chunks))
+            self.postgres.complete_ingestion_run(
+                organization_id, ingestion_run_id, len(all_chunks)
+            )
             logger.info(f"✓ Completed ingestion run")
 
         except Exception as e:
@@ -188,7 +197,10 @@ class IngestionPipeline:
             if ingestion_run_id:
                 try:
                     self.postgres.complete_ingestion_run(
-                        ingestion_run_id, stats["chunks_created"], error_message=str(e)
+                        organization_id,
+                        ingestion_run_id,
+                        stats["chunks_created"],
+                        error_message=str(e),
                     )
                 except Exception as complete_err:
                     logger.error(f"Failed to mark run as failed: {complete_err}")

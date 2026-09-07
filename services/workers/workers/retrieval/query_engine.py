@@ -10,6 +10,8 @@ from uuid import UUID
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
+from workers.db import require_tenant
+
 from .fts_retriever import FTSRetriever
 from .metadata_booster import MetadataBooster
 from .query_parser import QueryParser
@@ -102,6 +104,7 @@ class QueryEngine:
     def query(
         self,
         query_text: str,
+        organization_id: UUID,
         repository_id: UUID,
         top_k: int = 5,
         run_id: Optional[UUID] = None,
@@ -137,7 +140,7 @@ class QueryEngine:
 
         logger.info(
             f"Query pipeline starting: query='{query_text}', "
-            f"repository_id={repository_id}, top_k={top_k}"
+            f"organization_id={organization_id}, repository_id={repository_id}, top_k={top_k}"
         )
 
         # Step 1: Parse query
@@ -156,7 +159,7 @@ class QueryEngine:
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             # Submit both searches
             fts_future = executor.submit(
-                self._run_fts_search, query_text, repository_id, run_id
+                self._run_fts_search, query_text, organization_id, repository_id, run_id
             )
             vector_future = executor.submit(
                 self._run_vector_search, query_text, repository_id, run_id
@@ -196,7 +199,9 @@ class QueryEngine:
         top_results = boosted_results[:top_k]
 
         # Step 6: Fetch full metadata from Postgres for top results
-        enriched_results = self._enrich_results_with_metadata(top_results, repository_id)
+        enriched_results = self._enrich_results_with_metadata(
+            top_results, organization_id, repository_id
+        )
 
         # Calculate duration
         duration_ms = int((time.time() - start_time) * 1000)
@@ -204,6 +209,7 @@ class QueryEngine:
         # Build response
         response = {
             "query": query_text,
+            "organization_id": str(organization_id),
             "repository_id": str(repository_id),
             "run_id": str(run_id) if run_id else None,
             "results": enriched_results,
@@ -225,22 +231,31 @@ class QueryEngine:
         return response
 
     def _run_fts_search(
-        self, query_text: str, repository_id: UUID, run_id: Optional[UUID]
+        self,
+        query_text: str,
+        organization_id: UUID,
+        repository_id: UUID,
+        run_id: Optional[UUID],
     ) -> List[Dict]:
         """
         Run FTS search with error handling.
 
         Args:
-            query_text: Search query
-            repository_id: Repository UUID
-            run_id: Optional run UUID
+            query_text: Search query.
+            organization_id: Tenant scope for the FTS query.
+            repository_id: Repository UUID.
+            run_id: Optional run UUID.
 
         Returns:
-            List of FTS results
+            List of FTS results.
         """
         try:
             return self.fts_retriever.search(
-                query=query_text, repository_id=repository_id, limit=50, run_id=run_id
+                query=query_text,
+                organization_id=organization_id,
+                repository_id=repository_id,
+                limit=50,
+                run_id=run_id,
             )
         except Exception as e:
             logger.error(f"FTS search error: {e}")
@@ -269,35 +284,41 @@ class QueryEngine:
             raise
 
     def _enrich_results_with_metadata(
-        self, results: List[Dict], repository_id: UUID
+        self,
+        results: List[Dict],
+        organization_id: UUID,
+        repository_id: UUID,
     ) -> List[Dict]:
         """
-        Fetch full metadata from Postgres for result chunks.
+        Fetch full metadata from Postgres for result chunks, scoped to org.
 
         Args:
-            results: List of results with chunk_id and scores
-            repository_id: Repository UUID
+            results: List of results with chunk_id and scores.
+            organization_id: Tenant scope (required).
+            repository_id: Repository UUID.
 
         Returns:
-            List of enriched results with full metadata and provenance
+            List of enriched results with full metadata and provenance.
         """
         if not results:
             return []
 
         enriched = []
 
-        # Connect to Postgres
+        # Fresh connection; scoped inside require_tenant so RLS filters
+        # chunks and ingestion_runs to this tenant.
         conn = psycopg2.connect(self.postgres_conn)
 
         try:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            with require_tenant(
+                conn, organization_id, cursor_factory=RealDictCursor
+            ) as cur:
                 for result in results:
                     chunk_id = result.get("chunk_id")
                     if not chunk_id:
                         logger.warning("Result missing chunk_id, skipping")
                         continue
 
-                    # Fetch chunk metadata and provenance
                     query = """
                         SELECT
                             c.id::text as chunk_id,
@@ -322,11 +343,10 @@ class QueryEngine:
 
                     if not row:
                         logger.warning(
-                            f"Chunk {chunk_id} not found in database, skipping"
+                            f"Chunk {chunk_id} not found in database for tenant {organization_id}, skipping"
                         )
                         continue
 
-                    # Build enriched result
                     enriched_result = {
                         "chunk_id": row["chunk_id"],
                         "file_path": row["file_path"],
@@ -335,7 +355,7 @@ class QueryEngine:
                         "breadcrumb": row["breadcrumb"] or "",
                         "chunk_type": row["chunk_type"],
                         "content_preview": row["content_preview"],
-                        "content": row["content"],  # Full content for LLM context
+                        "content": row["content"],
                         "score": result.get("boosted_score", 0.0),
                         "rrf_score": result.get("rrf_score", 0.0),
                         "boost_multiplier": result.get("boost_multiplier", 1.0),
