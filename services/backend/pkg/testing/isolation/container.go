@@ -114,6 +114,16 @@ func setupContainer(ctx context.Context) error {
 		return fmt.Errorf("get connection string: %w", err)
 	}
 
+	// The wait-for-log strategy fires as soon as Postgres prints
+	// "ready to accept connections", but on cold container start the port
+	// mapping and startup handshake occasionally lag a few hundred ms.
+	// golang-migrate opens its own connection with no retry, so a first
+	// migrate.New hits EOF. Retry a plain ping until the connection is
+	// actually usable before handing off to the migrator.
+	if err := waitForDB(ctx, dsn, 10*time.Second); err != nil {
+		return fmt.Errorf("wait for db: %w", err)
+	}
+
 	if err := applyMigrations(dsn, migrationsDir()); err != nil {
 		return fmt.Errorf("apply migrations: %w", err)
 	}
@@ -155,6 +165,36 @@ func ensureAppRole(ctx context.Context, dsn string) error {
 		}
 	}
 	return nil
+}
+
+// waitForDB polls the given DSN with a short-timeout ping every 200ms
+// until either a ping succeeds or the overall deadline elapses. Returns
+// the last ping error if the deadline is hit.
+func waitForDB(ctx context.Context, dsn string, deadline time.Duration) error {
+	waitCtx, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
+
+	var lastErr error
+	for {
+		pingCtx, pingCancel := context.WithTimeout(waitCtx, 2*time.Second)
+		conn, err := pgx.Connect(pingCtx, dsn)
+		if err == nil {
+			err = conn.Ping(pingCtx)
+			_ = conn.Close(pingCtx)
+			if err == nil {
+				pingCancel()
+				return nil
+			}
+		}
+		pingCancel()
+		lastErr = err
+
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf("db not ready after %s: %w", deadline, lastErr)
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
 }
 
 func firstLine(s string) string {
