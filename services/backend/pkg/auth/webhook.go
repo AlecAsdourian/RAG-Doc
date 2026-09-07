@@ -107,9 +107,11 @@ func (h *WebhookHandler) HandleSupabaseWebhook() http.HandlerFunc {
 
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			// MaxBytesReader wraps its overflow error; distinguish for a
-			// clearer response code.
-			if err.Error() == "http: request body too large" {
+			// MaxBytesReader returns *http.MaxBytesError since Go 1.19;
+			// prefer errors.As over a string comparison so a stdlib
+			// message rewording doesn't silently degrade 413 to 400.
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
 				http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
 				return
 			}

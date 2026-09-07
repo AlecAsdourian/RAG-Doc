@@ -83,11 +83,14 @@ func NewRouterWithValidator(dbpool *pgxpool.Pool, ragClient *client.RAGClient, j
 	// Public routes (no auth required)
 	r.Get("/health", healthHandler)
 
-	// Supabase webhook — rate-limited per source IP to keep bot signup
-	// floods from exhausting provisioning. httprate uses RealIP
-	// (installed above) so X-Forwarded-For does the right thing.
+	// Supabase webhook — signature-verified, so an attacker without the
+	// shared secret cannot deliver ANY event. A per-IP rate limit was
+	// tried in the initial PR #13 cut; the reviewer flagged that with
+	// middleware.RealIP in the chain, the "IP" is a client-supplied
+	// header a bot can spoof or point at a victim. Edge rate limiting
+	// belongs at the CDN/WAF (Phase 24), not here.
 	// @skip-isolation-test: signature-verified webhook, provisions its own tenant (see 19-02)
-	r.With(auth.RateLimitWebhook()).Post("/webhooks/supabase", webhookHandler.HandleSupabaseWebhook())
+	r.Post("/webhooks/supabase", webhookHandler.HandleSupabaseWebhook())
 
 	// OAuth login/callback routes. StateStore is optional at
 	// construction time — if Redis is not reachable (typical in tests
