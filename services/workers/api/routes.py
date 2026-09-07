@@ -168,6 +168,7 @@ async def chat_stream(request: ChatRequest, req: Request):
             # Generate full answer (will add true streaming when OpenAI streaming integrated)
             result = answer_generator.generate(
                 query=request.query,
+                organization_id=request.organization_id,
                 repository_id=request.repository_id,
                 top_k=request.top_k,
             )
