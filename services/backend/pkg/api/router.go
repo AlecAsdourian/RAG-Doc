@@ -3,6 +3,7 @@ package api
 import (
 	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -44,8 +45,14 @@ func NewRouterWithValidator(dbpool *pgxpool.Pool, ragClient *client.RAGClient, j
 		ResponseHeaders: false,
 	})
 
-	// Initialize webhook handler
-	webhookHandler := auth.NewWebhookHandler(dbpool)
+	// Initialize webhook handler. The secret is required at construction
+	// time so a deployment missing SUPABASE_WEBHOOK_SECRET panics at
+	// startup rather than silently accepting unsigned events.
+	webhookSecret := os.Getenv("SUPABASE_WEBHOOK_SECRET")
+	if webhookSecret == "" {
+		panic("api.NewRouterWithValidator: SUPABASE_WEBHOOK_SECRET must be set")
+	}
+	webhookHandler := auth.NewWebhookHandler(dbpool, webhookSecret)
 
 	// Initialize request validator
 	validate := validator.New()
@@ -75,7 +82,32 @@ func NewRouterWithValidator(dbpool *pgxpool.Pool, ragClient *client.RAGClient, j
 
 	// Public routes (no auth required)
 	r.Get("/health", healthHandler)
+
+	// Supabase webhook — signature-verified, so an attacker without the
+	// shared secret cannot deliver ANY event. A per-IP rate limit was
+	// tried in the initial PR #13 cut; the reviewer flagged that with
+	// middleware.RealIP in the chain, the "IP" is a client-supplied
+	// header a bot can spoof or point at a victim. Edge rate limiting
+	// belongs at the CDN/WAF (Phase 24), not here.
+	// @skip-isolation-test: signature-verified webhook, provisions its own tenant (see 19-02)
 	r.Post("/webhooks/supabase", webhookHandler.HandleSupabaseWebhook())
+
+	// OAuth login/callback routes. StateStore is optional at
+	// construction time — if Redis is not reachable (typical in tests
+	// and offline dev), the routes are simply not mounted rather than
+	// panicking the whole router. Real deployments have Redis; the log
+	// line surfaces the miss.
+	if stateStore, err := auth.NewStateStore(); err == nil {
+		oauthConfig := auth.NewOAuthConfig()
+		provisioner := auth.NewUserProvisioner(dbpool)
+		r.Get("/auth/github/login", auth.HandleGitHubLogin(oauthConfig, stateStore))
+		r.Get("/auth/github/callback", auth.HandleGitHubCallback(oauthConfig, provisioner, stateStore))
+		r.Get("/auth/gitlab/login", auth.HandleGitLabLogin(oauthConfig, stateStore))
+		r.Get("/auth/gitlab/callback", auth.HandleGitLabCallback(oauthConfig, provisioner, stateStore))
+	} else {
+		slog.Warn("state store unavailable; OAuth routes not mounted",
+			slog.String("error", err.Error()))
+	}
 
 	// Protected routes (JWT auth + tenant isolation)
 	r.Group(func(r chi.Router) {

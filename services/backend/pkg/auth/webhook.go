@@ -5,15 +5,33 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// disposableEmailError is returned by handleAuthUserEvent when the email
+// domain is on the disposable-email blocklist. The webhook wrapper
+// converts this to a 422 response.
+type disposableEmailError struct {
+	email string
+}
+
+func (e *disposableEmailError) Error() string {
+	return fmt.Sprintf("disposable email domain refused: %s", e.email)
+}
+
+
+// MaxWebhookBodyBytes bounds the request body the webhook is willing to
+// read. 64KB is comfortably larger than a real Supabase user event
+// (~1-2KB) and small enough to hold the whole payload in memory without
+// concern. `http.MaxBytesReader` returns a 413 when exceeded.
+const MaxWebhookBodyBytes = 64 << 10
 
 // SupabaseWebhookEvent represents the structure of Supabase database webhook events
 type SupabaseWebhookEvent struct {
@@ -46,17 +64,29 @@ type SupabaseAuthUser struct {
 	ProviderID   string                 `json:"provider_id"`
 }
 
-// WebhookHandler handles Supabase webhook events
+// WebhookHandler handles Supabase webhook events.
+//
+// The webhook secret is required; a zero-value secret would fail-open on
+// every signature check and let unauthenticated callers trigger user
+// provisioning. Constructors must supply it explicitly — the caller
+// reads it from `SUPABASE_WEBHOOK_SECRET` and panics on empty.
 type WebhookHandler struct {
 	provisioner   *UserProvisioner
 	webhookSecret string
 }
 
-// NewWebhookHandler creates a new webhook handler
-func NewWebhookHandler(db *pgxpool.Pool) *WebhookHandler {
+// NewWebhookHandler creates a webhook handler with the given secret.
+//
+// Panics if webhookSecret is empty. Callers (currently pkg/api/router.go)
+// read the secret from env at startup and fail loudly rather than let a
+// misconfigured deployment silently accept unsigned payloads.
+func NewWebhookHandler(db *pgxpool.Pool, webhookSecret string) *WebhookHandler {
+	if webhookSecret == "" {
+		panic("auth.NewWebhookHandler: webhookSecret is empty; set SUPABASE_WEBHOOK_SECRET before constructing the router")
+	}
 	return &WebhookHandler{
 		provisioner:   NewUserProvisioner(db),
-		webhookSecret: os.Getenv("SUPABASE_WEBHOOK_SECRET"),
+		webhookSecret: webhookSecret,
 	}
 }
 
@@ -69,13 +99,25 @@ func (h *WebhookHandler) HandleSupabaseWebhook() http.HandlerFunc {
 			return
 		}
 
-		// Read request body
+		// Bound the body before reading. A malicious caller cannot exhaust
+		// server memory by streaming an arbitrarily large payload; a
+		// legitimate Supabase event is ~1-2KB.
+		r.Body = http.MaxBytesReader(w, r.Body, MaxWebhookBodyBytes)
+		defer r.Body.Close()
+
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
+			// MaxBytesReader returns *http.MaxBytesError since Go 1.19;
+			// prefer errors.As over a string comparison so a stdlib
+			// message rewording doesn't silently degrade 413 to 400.
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
 			http.Error(w, "Failed to read request body", http.StatusBadRequest)
 			return
 		}
-		defer r.Body.Close()
 
 		// Verify webhook signature
 		signature := r.Header.Get("X-Webhook-Signature")
@@ -98,45 +140,52 @@ func (h *WebhookHandler) HandleSupabaseWebhook() http.HandlerFunc {
 		// This table is populated by a database trigger on auth.users
 		if event.Schema == "public" && event.Table == "auth_user_events" && event.Type == "INSERT" {
 			if err := h.handleAuthUserEvent(r, event.Record); err != nil {
+				var disposable *disposableEmailError
+				if errors.As(err, &disposable) {
+					http.Error(w, "email domain not allowed", http.StatusUnprocessableEntity)
+					return
+				}
 				http.Error(w, fmt.Sprintf("Failed to process user creation: %v", err), http.StatusInternalServerError)
 				return
 			}
 
-			w.WriteHeader(http.StatusOK)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
 			json.NewEncoder(w).Encode(map[string]string{
-				"status": "success",
+				"status":  "success",
 				"message": "User provisioned successfully",
 			})
 			return
 		}
 
 		// Ignore other events
-		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
 		json.NewEncoder(w).Encode(map[string]string{
-			"status": "ignored",
+			"status":  "ignored",
 			"message": "Event type not handled",
 		})
 	}
 }
 
-// verifySignature verifies the HMAC-SHA256 signature of the webhook payload
+// verifySignature verifies the HMAC-SHA256 signature of the webhook
+// payload against the shared secret.
+//
+// Fail-closed. Prior versions of this method had a
+// `if h.webhookSecret == "" { return true }` branch for "development
+// convenience" that turned into a production vulnerability the moment
+// SUPABASE_WEBHOOK_SECRET was ever unset. The constructor now panics on
+// empty secret, and this function has no bypass — every request must
+// present a valid signature.
 func (h *WebhookHandler) verifySignature(payload []byte, signature string) bool {
-	if h.webhookSecret == "" {
-		// No secret configured - skip verification in development
-		// WARNING: This should never happen in production
-		return true
-	}
-
 	if signature == "" {
 		return false
 	}
-
-	// Compute expected signature
 	mac := hmac.New(sha256.New, []byte(h.webhookSecret))
 	mac.Write(payload)
 	expectedSignature := hex.EncodeToString(mac.Sum(nil))
-
-	// Compare signatures (constant-time comparison to prevent timing attacks)
+	// hmac.Equal is constant-time; a naive `==` would leak signature
+	// prefix bytes via a timing side-channel.
 	return hmac.Equal([]byte(signature), []byte(expectedSignature))
 }
 
@@ -151,6 +200,14 @@ func (h *WebhookHandler) handleAuthUserEvent(r *http.Request, recordData json.Ra
 	// Only process INSERT events (new user signups)
 	if event.EventType != "INSERT" {
 		return nil // Silently ignore UPDATE/DELETE events for now
+	}
+
+	// Refuse to provision throwaway-email signups. This runs AFTER signature
+	// verification so we're not leaking the blocklist to random callers —
+	// only Supabase itself can trigger this branch. Real anti-abuse ships
+	// in Phase 24; this list is the minimum viable stopgap.
+	if IsDisposableEmail(event.Email) {
+		return &disposableEmailError{email: event.Email}
 	}
 
 	// Extract full name from raw_user_meta_data

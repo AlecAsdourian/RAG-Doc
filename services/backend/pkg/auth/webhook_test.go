@@ -24,7 +24,7 @@ func TestWebhookHandler_SignatureVerification(t *testing.T) {
 	os.Setenv("SUPABASE_WEBHOOK_SECRET", "test-secret-key")
 	defer os.Unsetenv("SUPABASE_WEBHOOK_SECRET")
 
-	handler := NewWebhookHandler(db)
+	handler := NewWebhookHandler(db, "test-secret-key")
 
 	payload := []byte(`{"type":"INSERT","table":"users","schema":"auth","record":{}}`)
 
@@ -52,7 +52,7 @@ func TestWebhookHandler_UserCreatedEvent(t *testing.T) {
 	os.Setenv("SUPABASE_WEBHOOK_SECRET", "test-secret-key")
 	defer os.Unsetenv("SUPABASE_WEBHOOK_SECRET")
 
-	handler := NewWebhookHandler(db)
+	handler := NewWebhookHandler(db, "test-secret-key")
 
 	// Create webhook payload for user creation
 	webhookPayload := SupabaseWebhookEvent{
@@ -90,7 +90,7 @@ func TestWebhookHandler_UserCreatedEvent(t *testing.T) {
 	handler.HandleSupabaseWebhook()(rr, req)
 
 	// Verify response
-	assert.Equal(t, http.StatusOK, rr.Code, "Webhook should succeed")
+	assert.Equal(t, http.StatusAccepted, rr.Code, "Webhook should return 202 Accepted")
 
 	// Verify user was created in database
 	var count int
@@ -125,7 +125,7 @@ func TestWebhookHandler_InvalidSignature(t *testing.T) {
 	os.Setenv("SUPABASE_WEBHOOK_SECRET", "test-secret-key")
 	defer os.Unsetenv("SUPABASE_WEBHOOK_SECRET")
 
-	handler := NewWebhookHandler(db)
+	handler := NewWebhookHandler(db, "test-secret-key")
 
 	payload := []byte(`{"type":"INSERT","table":"users","schema":"auth","record":{}}`)
 
@@ -144,7 +144,7 @@ func TestWebhookHandler_InvalidMethod(t *testing.T) {
 	db := SetupTestDB(t)
 	defer CleanupTestDB(t, db)
 
-	handler := NewWebhookHandler(db)
+	handler := NewWebhookHandler(db, "test-secret-key")
 
 	// Try GET request
 	req := httptest.NewRequest(http.MethodGet, "/webhooks/supabase", nil)
@@ -164,7 +164,7 @@ func TestWebhookHandler_ExistingUser(t *testing.T) {
 	os.Setenv("SUPABASE_WEBHOOK_SECRET", "test-secret-key")
 	defer os.Unsetenv("SUPABASE_WEBHOOK_SECRET")
 
-	handler := NewWebhookHandler(db)
+	handler := NewWebhookHandler(db, "test-secret-key")
 
 	// Create user first
 	existingUser := CreateTestUser(t, db, "existing@example.com", "Existing User")
@@ -201,7 +201,7 @@ func TestWebhookHandler_ExistingUser(t *testing.T) {
 	rr := httptest.NewRecorder()
 	handler.HandleSupabaseWebhook()(rr, req)
 
-	assert.Equal(t, http.StatusOK, rr.Code, "Webhook should succeed for existing user")
+	assert.Equal(t, http.StatusAccepted, rr.Code, "Webhook should return 202 for existing user")
 
 	// Verify only one user record exists
 	var count int
@@ -236,6 +236,89 @@ func TestGenerateOrgNameFromEmail(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+// TestNewWebhookHandler_EmptySecretPanics verifies the constructor
+// fails-loud rather than silently accepting unsigned webhooks — the
+// prior behavior had a `webhookSecret == ""` bypass that would let any
+// caller trigger provisioning if the env var was ever unset.
+func TestNewWebhookHandler_EmptySecretPanics(t *testing.T) {
+	db := SetupTestDB(t)
+	defer CleanupTestDB(t, db)
+
+	assert.Panics(t, func() {
+		NewWebhookHandler(db, "")
+	}, "constructor must panic on empty secret")
+}
+
+// TestWebhookHandler_BodyTooLarge verifies the request body cap.
+// Callers cannot exhaust server memory by streaming a huge payload.
+func TestWebhookHandler_BodyTooLarge(t *testing.T) {
+	db := SetupTestDB(t)
+	defer CleanupTestDB(t, db)
+
+	handler := NewWebhookHandler(db, "test-secret-key")
+
+	// Payload just over the 64KB limit.
+	oversized := bytes.Repeat([]byte("A"), MaxWebhookBodyBytes+1)
+	mac := hmac.New(sha256.New, []byte("test-secret-key"))
+	mac.Write(oversized)
+	signature := hex.EncodeToString(mac.Sum(nil))
+
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/supabase", bytes.NewReader(oversized))
+	req.Header.Set("X-Webhook-Signature", signature)
+
+	rr := httptest.NewRecorder()
+	handler.HandleSupabaseWebhook()(rr, req)
+
+	assert.Equal(t, http.StatusRequestEntityTooLarge, rr.Code, "oversized body must return 413")
+}
+
+// TestWebhookHandler_DisposableEmailRejected verifies the webhook
+// refuses to provision a user whose email domain is on the blocklist.
+// Fires after signature verification succeeds so the blocklist isn't
+// leaked to callers who don't already have the secret.
+func TestWebhookHandler_DisposableEmailRejected(t *testing.T) {
+	db := SetupTestDB(t)
+	defer CleanupTestDB(t, db)
+
+	handler := NewWebhookHandler(db, "test-secret-key")
+
+	payload := SupabaseWebhookEvent{
+		Type:   "INSERT",
+		Table:  "auth_user_events",
+		Schema: "public",
+		Record: json.RawMessage(`{
+			"id": "550e8400-e29b-41d4-a716-446655440099",
+			"supabase_user_id": "550e8400-e29b-41d4-a716-446655440099",
+			"email": "throwaway@mailinator.com",
+			"event_type": "INSERT",
+			"raw_user_meta_data": {"full_name": "Throwaway"},
+			"created_at": "2026-09-07T12:00:00Z"
+		}`),
+	}
+	payloadBytes, err := json.Marshal(payload)
+	require.NoError(t, err)
+
+	mac := hmac.New(sha256.New, []byte("test-secret-key"))
+	mac.Write(payloadBytes)
+	signature := hex.EncodeToString(mac.Sum(nil))
+
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/supabase", bytes.NewReader(payloadBytes))
+	req.Header.Set("X-Webhook-Signature", signature)
+
+	rr := httptest.NewRecorder()
+	handler.HandleSupabaseWebhook()(rr, req)
+
+	assert.Equal(t, http.StatusUnprocessableEntity, rr.Code)
+
+	// Verify no user row was created.
+	var count int
+	err = db.QueryRow(req.Context(),
+		"SELECT COUNT(*) FROM users WHERE email = $1",
+		"throwaway@mailinator.com").Scan(&count)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count, "no user should be provisioned for disposable email")
 }
 
 // TestGenerateOrgSlugFromEmail verifies organization slug generation
