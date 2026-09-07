@@ -2,6 +2,15 @@
 
 Code ingestion and RAG processing pipeline for the Smart Documentation Platform.
 
+## Tenant isolation
+
+Every worker function that reads or writes a tenant-scoped table takes
+`organization_id` and calls `workers.db.require_tenant`. This is not
+optional — the DB-level trigger from migration 000009 refuses any write
+without `app.current_tenant` set. See
+[`docs/isolation.md`](../../docs/isolation.md) for the pattern, and
+`workers/db/tenant.py` for the primitive's docstring.
+
 ## Purpose
 
 - Code parsing with tree-sitter (Python, Go, TypeScript/JavaScript)
