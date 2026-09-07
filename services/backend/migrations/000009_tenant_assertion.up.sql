@@ -50,7 +50,7 @@ BEGIN
      OR current_setting('app.current_tenant', true) = '' THEN
     RAISE EXCEPTION 'tenant isolation violated: app.current_tenant must be set for % on %',
       TG_OP, TG_TABLE_NAME
-      USING HINT = 'Call TenantScope() (Go) or require_tenant() (Python) before this operation. See docs/isolation.md.',
+      USING HINT = 'Call TenantScope() (Go) or require_tenant() (Python) before this operation.',
             ERRCODE = '42501';
   END IF;
   -- BEFORE trigger convention: return NEW for INSERT/UPDATE, OLD for
@@ -60,7 +60,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 COMMENT ON FUNCTION assert_tenant_scoped() IS
-  'Second wall of tenant isolation. Fires BEFORE INSERT/UPDATE/DELETE on tenant-scoped tables. Middleware sets app.current_tenant; this function ensures no code path bypasses that requirement. Coverage: repositories, ingestion_runs, chunks, queries, retrievals, feedback. See migration 000009 header for the coverage-decision rationale.';
+  'Second wall of tenant isolation. Fires BEFORE INSERT/UPDATE/DELETE on tenant-scoped tables. Middleware sets app.current_tenant; this function ensures no code path bypasses that requirement. Coverage: repositories, ingestion_runs, chunks, queries, retrievals, feedback. See migration 000009_tenant_assertion.up.sql header for the coverage-decision rationale.';
 
 CREATE TRIGGER trg_assert_tenant BEFORE INSERT OR UPDATE OR DELETE ON repositories
   FOR EACH ROW EXECUTE FUNCTION assert_tenant_scoped();
