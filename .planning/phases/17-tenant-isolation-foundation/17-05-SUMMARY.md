@@ -116,7 +116,7 @@ The three walls are now all in place: middleware (Go handlers pull `auth.OrgIDKe
 
 ## Next phase
 
-**Phase 18 (Observability Foundation) deferred.** Per user decision on 2026-09-06 after 17-04 shipped: foundation work has diminishing returns before there's real traffic to observe. Coming back to observability once Phase 19 (Auth) and later phases put real users through the stack lets us shape it to actual traffic patterns. See `feedback_fleet_workflow.md` memory for the rationale and the trigger conditions for revisiting Phase 18.
+**Phase 18 (Observability Foundation) deferred.** Per user decision on 2026-09-06 after 17-04 shipped: foundation work has diminishing returns before there's real traffic to observe. Coming back to observability once Phase 19 (Auth) and later phases put real users through the stack lets us shape it to actual traffic patterns. See `project_phase18_deprioritized.md` memory for the rationale and the trigger conditions for revisiting Phase 18.
 
 **Next up: Phase 19 (Auth).** ROADMAP.md still lists Phase 18 — it stays as a returnable option, not deleted. When Phase 19 needs an observability primitive (structured logging on a hot path, a Grafana board), that's the moment to weigh whether to insert Phase 18 as a decimal phase (18.5 / 19.5) or fold pieces into the requesting phase.
 
@@ -140,6 +140,34 @@ The three walls are now all in place: middleware (Go handlers pull `auth.OrgIDKe
 
 - Reviewer session will be auto-launched by the worker per the 2026-09-06 rule change (`feedback_fleet_workflow.md`).
 - Docs-only sub-parts of this PR (17-05-SUMMARY.md, STATE.md update, README cross-links) would normally skip the reviewer under fleet doctrine, but this PR mixes code (scanner + workflow) with docs, so full reviewer pass applies.
+
+## Reviewer follow-ups (post-review, same branch)
+
+Reviewer produced two highs, two mediums, four low/nits. All four in option 1 (H1 + H2 + M3 + M4) applied; nits deferred.
+
+**H1 — per-endpoint skip marker (`4975de6`)**
+- **Was:** `hunk_skip_reason` returned the first non-empty reason found anywhere in the hunk, and `build_report` applied it to every endpoint in that hunk. A hunk that legitimately marked `/health` as skipped and, in the same edit, added `/api/new-mutation` a few lines away would silently pass CI.
+- **Now:** `endpoint_skip_reason(hunk, endpoint_idx)` scans only the endpoint's own line plus up to three preceding lines, and halts the lookback the moment it crosses another route registration. A marker on one route can no longer inherit onto its neighbor. Regression tests `test_skip_marker_on_one_endpoint_does_not_leak_to_a_neighbor` and `test_skip_marker_on_line_above_route_still_applies` pin both directions of the rule.
+
+**H2 — multi-line Go route detection (`4975de6`)**
+- **Was:** the single-line regex could not match `r.Post(\n\t"/api/foo",\n\th.Foo,\n)`. Anyone who let gofmt wrap a long path bypassed the gate entirely.
+- **Now:** `_iter_logical_added_lines` joins consecutive added lines in Go hunks while the running parenthesis balance is unclosed, so a wrapped registration surfaces as one logical event carrying the whole call. The endpoint regex matches on the joined content. Regression tests `test_go_multi_line_route_registration_is_detected` and `test_go_multi_line_handle_func_is_detected` cover both `.Post(\n...)` and `chi.HandleFunc(\n...)`.
+
+**M3 — PR-comment formatting (this docs commit)**
+- **Was:** the workflow built the comment as an array with `''` blank-line separators, then called `.filter(Boolean).join('\n')`, which stripped every separator. GitHub-flavored Markdown then rendered the intro paragraph fused to the first list item.
+- **Now:** the comment is built as an array of full blocks (each block is a self-contained paragraph or list) joined on `'\n\n'`, with `filter(Boolean)` removing only entire empty blocks. Blank-line paragraph breaks survive.
+
+**M4 — memory-file reference fix (this docs commit)**
+- **Was:** both STATE.md and 17-05-SUMMARY.md pointed at `feedback_fleet_workflow.md` for the Phase 18 deferral rationale; the actual memory file is `project_phase18_deprioritized.md`. A future planner following the reference would land in the wrong file.
+- **Now:** both references corrected.
+
+Post-fix state: 11/11 scanner tests pass (7 original + 4 regressions), workflow YAML still parses, docs references resolve.
+
+**Not applied (nits — deferred):**
+- README `--base-ref main` example should be `--base-ref origin/main` (only matters for contributors without a local main branch).
+- Reviewer-prompt Hard-check rules block breaks a numbered list visually.
+- Uncommon Python endpoint shapes (Flask, class-based) documented as unsupported.
+- Test fixture `-1,0` hunk header vs. real git's `-0,0` (regex tolerates both; cosmetic).
 
 ---
 *Phase: 17-tenant-isolation-foundation*

@@ -56,22 +56,22 @@ jobs:
             const skipped = (report.skipped || []).map(
               s => `- \`${s.endpoint.method} ${s.endpoint.path}\` — reason: _${s.reason}_`
             );
-            const body = [
+            // Build the body as an array of blocks. Blank lines between
+            // blocks are preserved by joining on `\n\n` — filter(Boolean)
+            // strips only entire empty blocks, not the blank-line
+            // separators we rely on for Markdown paragraph breaks.
+            const blocks = [
               '❌ **Isolation test coverage missing**',
-              '',
               'The following mutation endpoints were added or modified without a matching isolation test:',
-              '',
-              ...missing,
-              '',
+              missing.join('\n'),
               'Add a test in `*_isolation_test.go` (Go) or `test_*_isolation.py` (Python) that references the endpoint path or handler name.',
-              '',
-              'To intentionally skip (rare, health/webhook only): add `// @skip-isolation-test: <reason>` (Go) or `# @skip-isolation-test: <reason>` (Python) on the route line. The reason must be non-empty.',
-              '',
-              skipped.length ? '**Endpoints explicitly skipped in this PR (informational):**' : '',
-              ...skipped,
-              '',
+              'To intentionally skip (rare — health checks, webhooks that carry no tenant data): add `// @skip-isolation-test: <reason>` (Go) or `# @skip-isolation-test: <reason>` (Python) on the route line. The reason must be non-empty.',
+              skipped.length
+                ? '**Endpoints explicitly skipped in this PR (informational):**\n' + skipped.join('\n')
+                : '',
               'See `docs/isolation.md` for the full pattern.',
-            ].filter(Boolean).join('\n');
+            ].filter(Boolean);
+            const body = blocks.join('\n\n');
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,

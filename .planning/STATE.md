@@ -15,7 +15,7 @@ Plan: 5 of 5 executed (17-01 through 17-05)
 Status: Phase 17 closed 2026-09-06. Phase 18 deprioritized. Next: Phase 19 (Auth).
 Last activity: 2026-09-06 — 17-05 CI gate + docs shipped as PR #11
 
-Progress: v1.0 MVP █░░░░░░░░ 1/9 phases (Phase 19 next; Phase 18 Observability deferred — see feedback_fleet_workflow memory)
+Progress: v1.0 MVP █░░░░░░░░ 1/9 phases (Phase 19 next; Phase 18 Observability deferred — see project_phase18_deprioritized memory)
 
 ## Performance Metrics
 
