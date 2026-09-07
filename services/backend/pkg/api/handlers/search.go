@@ -2,10 +2,12 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/render"
 	"github.com/go-playground/validator/v10"
+	"github.com/yourusername/smart-docs-platform/services/backend/pkg/auth"
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/client"
 )
 
@@ -73,12 +75,21 @@ func (h *SearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Call RAG client with context
+	// 3. Extract tenant from context (set by TenantMiddleware) and forward
+	// it to the RAG service so the Python side scopes retrieval to this
+	// org. Without this, cross-tenant chunks leak into results.
 	ctx := r.Context()
+	orgID, ok := ctx.Value(auth.OrgIDKey).(string)
+	if !ok || orgID == "" {
+		render.Render(w, r, ErrInternal(errors.New("tenant context missing from request; middleware chain misconfigured")))
+		return
+	}
+
 	searchReq := client.SearchRequest{
-		Query:        req.Query,
-		RepositoryID: req.RepositoryID,
-		TopK:         req.TopK,
+		Query:          req.Query,
+		RepositoryID:   req.RepositoryID,
+		OrganizationID: orgID,
+		TopK:           req.TopK,
 	}
 
 	result, err := h.ragClient.Search(ctx, searchReq)

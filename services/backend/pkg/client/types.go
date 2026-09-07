@@ -1,10 +1,16 @@
 package client
 
-// SearchRequest represents a search request to the RAG service
+// SearchRequest represents a search request to the RAG service.
+//
+// OrganizationID is required: the Python side scopes chunk retrieval by
+// tenant, so omitting it leaks across orgs. The Go handler pulls this from
+// the auth.OrgIDKey context value set by TenantMiddleware; callers of the
+// RAG client directly (tests, scripts) must set it explicitly.
 type SearchRequest struct {
-	Query        string `json:"query"`
-	RepositoryID string `json:"repository_id"`
-	TopK         int    `json:"top_k,omitempty"`
+	Query          string `json:"query"`
+	RepositoryID   string `json:"repository_id"`
+	OrganizationID string `json:"organization_id"`
+	TopK           int    `json:"top_k,omitempty"`
 }
 
 // ChunkResult represents a single search result chunk
@@ -30,11 +36,15 @@ type SearchResponse struct {
 	Metadata     map[string]interface{} `json:"metadata,omitempty"`
 }
 
-// ChatRequest represents a chat/answer generation request
+// ChatRequest represents a chat/answer generation request.
+//
+// OrganizationID is required for tenant isolation; see SearchRequest for
+// the rationale.
 type ChatRequest struct {
-	Query        string `json:"query"`
-	RepositoryID string `json:"repository_id"`
-	TopK         int    `json:"top_k,omitempty"`
+	Query          string `json:"query"`
+	RepositoryID   string `json:"repository_id"`
+	OrganizationID string `json:"organization_id"`
+	TopK           int    `json:"top_k,omitempty"`
 }
 
 // SourceInfo represents source citation information
@@ -45,19 +55,6 @@ type SourceInfo struct {
 	EndLine   int     `json:"end_line"`
 	Breadcrumb *string `json:"breadcrumb,omitempty"`
 	ChunkType  *string `json:"chunk_type,omitempty"`
-}
-
-// ChatResponse represents the response from a chat request
-type ChatResponse struct {
-	Answer          string       `json:"answer"`
-	Sources         []SourceInfo `json:"sources"`
-	QueryID         string       `json:"query_id,omitempty"`
-	Cost            float64      `json:"cost"`
-	TokensIn        int          `json:"tokens_in"`
-	TokensOut       int          `json:"tokens_out"`
-	CacheHit        bool         `json:"cache_hit"`
-	Model           *string      `json:"model,omitempty"`
-	ChunksRetrieved *int         `json:"chunks_retrieved,omitempty"`
 }
 
 // ChatChunk represents a streaming chat chunk for SSE

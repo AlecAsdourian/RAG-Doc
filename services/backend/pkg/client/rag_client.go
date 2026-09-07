@@ -85,56 +85,6 @@ func (c *RAGClient) Search(ctx context.Context, req SearchRequest) (*SearchRespo
 	return &result, nil
 }
 
-// Chat executes an answer generation request against the RAG service
-func (c *RAGClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
-	// Marshal request body
-	body, err := json.Marshal(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal chat request: %w", err)
-	}
-
-	// Create POST request with context
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/chat", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	// Execute request
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("chat request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Read response body
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	// Check response status
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		bodySnippet := string(respBody)
-		if len(bodySnippet) > 200 {
-			bodySnippet = bodySnippet[:200] + "..."
-		}
-		return nil, fmt.Errorf("RAG service returned status %d: %s", resp.StatusCode, bodySnippet)
-	}
-
-	// Decode response
-	var result ChatResponse
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		bodySnippet := string(respBody)
-		if len(bodySnippet) > 200 {
-			bodySnippet = bodySnippet[:200] + "..."
-		}
-		return nil, fmt.Errorf("failed to decode chat response: %w (body: %s)", err, bodySnippet)
-	}
-
-	return &result, nil
-}
-
 // StreamChat executes a streaming chat request against the RAG service
 // Returns a channel that emits ChatChunk events as they arrive via SSE
 func (c *RAGClient) StreamChat(ctx context.Context, req ChatRequest) (<-chan ChatChunk, error) {

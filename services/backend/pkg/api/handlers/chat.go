@@ -2,10 +2,13 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
+	"github.com/go-chi/render"
 	"github.com/go-playground/validator/v10"
+	"github.com/yourusername/smart-docs-platform/services/backend/pkg/auth"
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/client"
 )
 
@@ -39,46 +42,64 @@ func (cr *ChatRequestBody) Bind(r *http.Request) error {
 	return nil
 }
 
-// StreamChat handles POST /api/chat/stream requests using SSE
+// StreamChat handles POST /api/chat/stream requests using SSE.
+//
+// Preconditions that must fail as a real HTTP error (not an SSE error
+// frame) are checked BEFORE any SSE headers or the flusher probe: request
+// parse, validation, and the tenant-context extraction. Once the SSE
+// headers land the response committed as `200 text/event-stream`, and any
+// subsequent failure gets a `type:"error"` frame — that shape is only
+// correct for post-stream-start failures like a broken RAG stream.
 func (h *ChatHandler) StreamChat(w http.ResponseWriter, r *http.Request) {
 	// 1. Decode request body
 	var req ChatRequestBody
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeSSEError(w, fmt.Sprintf("Invalid request: %v", err))
+		render.Render(w, r, ErrInvalidRequest(err))
 		return
 	}
 
 	// Call Bind to set defaults
 	if err := req.Bind(r); err != nil {
-		writeSSEError(w, fmt.Sprintf("Invalid request: %v", err))
+		render.Render(w, r, ErrInvalidRequest(err))
 		return
 	}
 
 	// 2. Validate with go-playground/validator
 	if err := h.validate.Struct(req); err != nil {
-		writeSSEError(w, fmt.Sprintf("Validation error: %v", err))
+		render.Render(w, r, ErrInvalidRequest(err))
 		return
 	}
 
-	// 3. Set SSE headers
+	// 3. Extract tenant from context (set by TenantMiddleware) and forward
+	// it to the RAG service so the Python side scopes retrieval to this
+	// org. Without this, cross-tenant chunks leak into the answer context.
+	// Kept here — above the SSE headers — so a missing tenant returns a
+	// real 5xx, not a 200 with an embedded error frame.
+	ctx := r.Context()
+	orgID, ok := ctx.Value(auth.OrgIDKey).(string)
+	if !ok || orgID == "" {
+		render.Render(w, r, ErrInternal(errors.New("tenant context missing from request; middleware chain misconfigured")))
+		return
+	}
+
+	// 4. Commit to SSE. From this point forward, failures become SSE
+	// error frames because the response is already `200 text/event-stream`.
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no") // Disable nginx buffering
 
-	// Get flusher for immediate writes
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeSSEError(w, "Streaming not supported")
 		return
 	}
 
-	// 4. Call RAG streaming client with request context
-	ctx := r.Context()
 	chatReq := client.ChatRequest{
-		Query:        req.Query,
-		RepositoryID: req.RepositoryID,
-		TopK:         req.TopK,
+		Query:          req.Query,
+		RepositoryID:   req.RepositoryID,
+		OrganizationID: orgID,
+		TopK:           req.TopK,
 	}
 
 	chunkChan, err := h.ragClient.StreamChat(ctx, chatReq)
