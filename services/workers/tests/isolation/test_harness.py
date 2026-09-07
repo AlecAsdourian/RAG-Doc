@@ -40,6 +40,29 @@ def test_require_tenant_rejects_non_uuid(db_conn):
             pass
 
 
+def test_require_tenant_rejects_non_idle_connection(db_conn, with_two_orgs):
+    """The primitive must fail loudly when the caller is mid-transaction —
+    psycopg2's `with conn:` does not open a nested tx, so entering
+    require_tenant on a non-idle conn would silently commit whatever the
+    caller had open at the inner scope's boundary. See docstring in
+    workers/db/tenant.py for the failure mode this guards against.
+    """
+    org_a, _ = with_two_orgs
+
+    # Start a transaction on the shared conn by running any statement
+    # while autocommit is off. Do NOT commit before calling require_tenant.
+    db_conn.autocommit = False
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT 1")
+
+    with pytest.raises(RuntimeError, match="idle connection"):
+        with require_tenant(db_conn, org_a.id):
+            pass
+
+    # Clean up so later tests get an idle conn.
+    db_conn.rollback()
+
+
 def test_assert_no_cross_tenant_leak_catches_a_real_leak(db_conn, with_two_orgs):
     """Synthesize a leak by writing under tenant A and reading under a
     lifted-role connection that bypasses RLS. Confirms the assertion helper

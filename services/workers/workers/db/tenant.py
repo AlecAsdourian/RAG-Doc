@@ -25,6 +25,8 @@ from contextlib import contextmanager
 from typing import Any, Iterator, Optional
 from uuid import UUID
 
+from psycopg2.extensions import TRANSACTION_STATUS_IDLE
+
 
 @contextmanager
 def require_tenant(
@@ -48,8 +50,18 @@ def require_tenant(
             for row in cur.fetchall():
                 ...
 
+    Preconditions:
+        `conn` MUST have no in-progress transaction on entry. psycopg2's
+        `with conn:` idiom does not open a nested transaction — it just
+        uses whatever transaction is already open — so calling
+        `require_tenant` mid-transaction would silently commit (or
+        rollback) the caller's outer work at the inner scope's boundary,
+        and discard whatever tenant state the outer scope had set. The
+        precondition is asserted at entry (RuntimeError) so a caller
+        that violates it fails loudly rather than corrupting state.
+
     Args:
-        conn: An open psycopg2 connection. Its autocommit state is
+        conn: An open, idle psycopg2 connection. Its autocommit state is
               temporarily forced to False for the duration of the block
               and restored on exit.
         tenant_id: The organization id to scope this transaction to.
@@ -65,6 +77,7 @@ def require_tenant(
 
     Raises:
         ValueError: If `tenant_id` is not a valid UUID.
+        RuntimeError: If `conn` is already inside a transaction on entry.
     """
     tenant_str = str(tenant_id)
     # Validate — Postgres does not accept bind params for SET LOCAL, so
@@ -72,13 +85,26 @@ def require_tenant(
     # TenantScope pattern (services/backend/pkg/testing/isolation/tenants.go).
     UUID(tenant_str)
 
-    prev_autocommit = conn.autocommit
-    conn.autocommit = False
+    if conn.info.transaction_status != TRANSACTION_STATUS_IDLE:
+        raise RuntimeError(
+            "require_tenant must be entered on an idle connection; "
+            "caller has an in-progress transaction that would be silently "
+            "committed by psycopg2's `with conn:` idiom. Commit or rollback "
+            "the outer transaction before opening a tenant scope."
+        )
+
+    # Save + toggle autocommit inside the try so a signal (KeyboardInterrupt)
+    # between saving and toggling still enters the finally and restores the
+    # original value. A signal that fires between the save and the toggle
+    # itself would leave prev_autocommit unbound; the try/except NameError
+    # below no-ops the restore in that specific race.
     try:
+        prev_autocommit = conn.autocommit
+        conn.autocommit = False
         with conn:  # begins tx, commits on clean exit, rollbacks on raise
-            # SET LOCAL runs on any cursor bound to this tx; do it via a
-            # throwaway cursor so the yielded cursor is fresh with whatever
-            # factory the caller asked for.
+            # SET LOCAL scopes to the outer transaction rather than to any
+            # particular cursor, so a throwaway setup cursor is fine — the
+            # yielded cursor below sees the GUC because it shares the tx.
             with conn.cursor() as setup_cur:
                 setup_cur.execute(f"SET LOCAL app.current_tenant = '{tenant_str}'")
             if cursor_factory is None:
@@ -88,4 +114,9 @@ def require_tenant(
                 with conn.cursor(cursor_factory=cursor_factory) as cur:
                     yield cur
     finally:
-        conn.autocommit = prev_autocommit
+        try:
+            conn.autocommit = prev_autocommit
+        except NameError:
+            # Signal fired before `prev_autocommit = conn.autocommit`
+            # executed; nothing to restore.
+            pass
