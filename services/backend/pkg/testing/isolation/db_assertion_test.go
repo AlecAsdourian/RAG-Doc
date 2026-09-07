@@ -345,12 +345,26 @@ func requireTenantViolation(t *testing.T, err error, op, table string) {
 // or the RLS uuid-cast 22P02 — both are "the write is refused." See the
 // long comment above TestDBAssertion_UpdateWithoutTenantIsRefusedOrNoOp
 // for why both are acceptable on UPDATE/DELETE.
+//
+// The message-shape assertions matter: they pin the error to one of the
+// two known isolation paths (trigger raise, or RLS ''::uuid cast on the
+// empty-string GUC). An unrelated 42501 or 22P02 from some future bug
+// would fail here rather than silently satisfy the test.
 func requireIsolationRefusal(t *testing.T, err error) {
 	t.Helper()
 	require.Error(t, err)
 	var pgErr *pgconn.PgError
 	require.True(t, errors.As(err, &pgErr), "expected *pgconn.PgError, got %T: %v", err, err)
-	if pgErr.Code != tenantIsolationSQLState && pgErr.Code != "22P02" {
+	switch pgErr.Code {
+	case tenantIsolationSQLState:
+		require.Contains(t, pgErr.Message, "tenant isolation violated",
+			"42501 must be the trigger's tenant-isolation raise, not a coincidental permission-denied error")
+	case "22P02":
+		require.Contains(t, pgErr.Message, "invalid input syntax for type uuid",
+			"22P02 must be the RLS uuid cast, not an unrelated bad-syntax error")
+		require.Contains(t, pgErr.Message, `""`,
+			"22P02 must be the empty-string cast (from an app.current_tenant GUC left empty after a prior SET LOCAL), not a cast of some other bogus uuid")
+	default:
 		t.Fatalf("expected SQLSTATE 42501 (trigger) or 22P02 (RLS uuid cast), got %s: %s", pgErr.Code, pgErr.Message)
 	}
 }
