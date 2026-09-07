@@ -10,12 +10,12 @@ See: .planning/PROJECT.md (updated 2026-01-08; product-vision reframe recorded i
 ## Current Position
 
 Milestone: v1.0 MVP (9 phases: 17-25)
-Phase: 17 of 25 — Multi-tenant Isolation Foundation
-Plan: 5 plans created (17-01 through 17-05), 0 executed
-Status: Ready to execute
-Last activity: 2026-09-03 — Phase 17 CONTEXT and all 5 PLAN.md files committed (PRs #3 and #4 merged to main)
+Phase: 17 COMPLETE — Multi-tenant Isolation Foundation
+Plan: 5 of 5 executed (17-01 through 17-05)
+Status: Phase 17 closed 2026-09-06. Phase 18 deprioritized. Next: Phase 19 (Auth).
+Last activity: 2026-09-06 — 17-05 CI gate + docs shipped as PR #11
 
-Progress: v1.0 MVP ░░░░░░░░░ 0/9 phases (17-01 next up for execution)
+Progress: v1.0 MVP █░░░░░░░░ 1/9 phases (Phase 19 next; Phase 18 Observability deferred — see feedback_fleet_workflow memory)
 
 ## Performance Metrics
 
