@@ -57,19 +57,6 @@ type SourceInfo struct {
 	ChunkType  *string `json:"chunk_type,omitempty"`
 }
 
-// ChatResponse represents the response from a chat request
-type ChatResponse struct {
-	Answer          string       `json:"answer"`
-	Sources         []SourceInfo `json:"sources"`
-	QueryID         string       `json:"query_id,omitempty"`
-	Cost            float64      `json:"cost"`
-	TokensIn        int          `json:"tokens_in"`
-	TokensOut       int          `json:"tokens_out"`
-	CacheHit        bool         `json:"cache_hit"`
-	Model           *string      `json:"model,omitempty"`
-	ChunksRetrieved *int         `json:"chunks_retrieved,omitempty"`
-}
-
 // ChatChunk represents a streaming chat chunk for SSE
 type ChatChunk struct {
 	Type      string       `json:"type"`    // "chunk", "done", "error"
