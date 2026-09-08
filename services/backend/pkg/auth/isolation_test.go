@@ -8,8 +8,39 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// supersededByHarness skips a test in this file.
+//
+// This file is the Phase-4 original tenant-isolation suite. Phase 17-01
+// built its replacement at services/backend/pkg/testing/isolation and
+// the 17-01 SUMMARY named this file as the "reference implementation"
+// to extend — but the extension went into the new package and this one
+// was never retired.
+//
+// It cannot pass as written. Every test here connects via SetupTestDB,
+// which uses the container superuser. Postgres superusers bypass RLS
+// even under FORCE ROW LEVEL SECURITY, so the assertions that a
+// cross-tenant read returns zero rows are structurally unsatisfiable —
+// that exact problem is why 17-01 introduced the dedicated
+// `rag_doc_app` NOSUPERUSER role. Several tests here also do raw
+// INSERTs on tenant-scoped tables, which migration 000009's trigger now
+// refuses.
+//
+// Skipping rather than deleting: removing a test file is a call for the
+// planner/user, not the worker mid-plan. Everything this file covers is
+// covered (correctly, under a non-superuser role) by:
+//   - pkg/testing/isolation/fixtures_test.go       — harness self-tests
+//   - pkg/testing/isolation/db_assertion_test.go   — trigger coverage
+//   - pkg/api/handlers/{search,chat}_isolation_test.go — endpoint coverage
+//
+// Recommended follow-up: delete this file.
+func supersededByHarness(t *testing.T) {
+	t.Helper()
+	t.Skip("superseded by pkg/testing/isolation (Phase 17-01); see supersededByHarness doc for why this cannot pass as written")
+}
+
 // TestCrossTenantIsolation verifies User A cannot access Org B's data
 func TestCrossTenantIsolation(t *testing.T) {
+	supersededByHarness(t)
 	db := SetupTestDB(t)
 	defer CleanupTestDB(t, db)
 
@@ -75,6 +106,7 @@ func TestCrossTenantIsolation(t *testing.T) {
 
 // TestRLSWithoutTenantContext verifies queries fail when tenant not set
 func TestRLSWithoutTenantContext(t *testing.T) {
+	supersededByHarness(t)
 	db := SetupTestDB(t)
 	defer CleanupTestDB(t, db)
 
@@ -100,6 +132,7 @@ func TestRLSWithoutTenantContext(t *testing.T) {
 
 // TestRoleBasedAccess verifies owner/admin vs member permissions
 func TestRoleBasedAccess(t *testing.T) {
+	supersededByHarness(t)
 	db := SetupTestDB(t)
 	defer CleanupTestDB(t, db)
 
@@ -138,6 +171,7 @@ func TestRoleBasedAccess(t *testing.T) {
 
 // TestMultipleOrganizationsPerUser verifies user can belong to multiple orgs
 func TestMultipleOrganizationsPerUser(t *testing.T) {
+	supersededByHarness(t)
 	db := SetupTestDB(t)
 	defer CleanupTestDB(t, db)
 
@@ -164,6 +198,7 @@ func TestMultipleOrganizationsPerUser(t *testing.T) {
 
 // TestChunksIsolation verifies RLS policies on chunks table
 func TestChunksIsolation(t *testing.T) {
+	supersededByHarness(t)
 	db := SetupTestDB(t)
 	defer CleanupTestDB(t, db)
 

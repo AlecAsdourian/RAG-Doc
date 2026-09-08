@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 
@@ -24,21 +25,71 @@ func SetupTestDB(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// CleanupTestDB closes connection and cleans up test data
-func CleanupTestDB(t *testing.T, db *pgxpool.Pool) {
-	// Clean up test data (delete in reverse FK order)
-	db.Exec(context.Background(), "DELETE FROM feedback")
-	db.Exec(context.Background(), "DELETE FROM retrievals")
-	db.Exec(context.Background(), "DELETE FROM queries")
-	db.Exec(context.Background(), "DELETE FROM chunks")
-	db.Exec(context.Background(), "DELETE FROM ingestion_runs")
-	db.Exec(context.Background(), "DELETE FROM repositories")
-	db.Exec(context.Background(), "DELETE FROM projects")
-	db.Exec(context.Background(), "DELETE FROM organization_memberships")
-	db.Exec(context.Background(), "DELETE FROM users")
-	db.Exec(context.Background(), "DELETE FROM organizations")
+// tenantScopedTables carries the assert_tenant_scoped trigger from
+// migration 000009. Cleanup spans every tenant at once, so it cannot
+// satisfy the trigger by setting a single app.current_tenant — the
+// trigger is disabled for the duration instead.
+//
+// Keep in sync with the trigger attachments in
+// migrations/000009_tenant_assertion.up.sql.
+var tenantScopedTables = []string{
+	"feedback",
+	"retrievals",
+	"queries",
+	"chunks",
+	"ingestion_runs",
+	"repositories",
+}
 
-	db.Close()
+// CleanupTestDB closes the connection and truncates test data.
+//
+// Migration 000009's trigger refuses DELETE on tenant-scoped tables
+// without `app.current_tenant` set. The original version of this
+// function issued bare cross-tenant DELETEs and — because it discards
+// the error from every `db.Exec` — silently stopped deleting anything
+// the moment Phase 17-03 landed. Rows leaked between tests, and the
+// next test using a hardcoded slug hit a
+// `organizations_slug_key` unique violation.
+//
+// The trigger is disabled and re-enabled around the deletes. RLS is not
+// an obstacle here: the test connection is the container superuser,
+// which bypasses RLS even under FORCE.
+func CleanupTestDB(t *testing.T, db *pgxpool.Pool) {
+	ctx := context.Background()
+
+	for _, tbl := range tenantScopedTables {
+		if _, err := db.Exec(ctx, fmt.Sprintf("ALTER TABLE %s DISABLE TRIGGER trg_assert_tenant", tbl)); err != nil {
+			t.Logf("CleanupTestDB: could not disable trigger on %s: %v", tbl, err)
+		}
+	}
+	defer func() {
+		for _, tbl := range tenantScopedTables {
+			if _, err := db.Exec(ctx, fmt.Sprintf("ALTER TABLE %s ENABLE TRIGGER trg_assert_tenant", tbl)); err != nil {
+				t.Logf("CleanupTestDB: could not re-enable trigger on %s: %v", tbl, err)
+			}
+		}
+		db.Close()
+	}()
+
+	// Delete in reverse FK order. Surface failures via t.Logf rather than
+	// discarding them — a silent cleanup failure is what let this rot
+	// undetected for two phases.
+	for _, stmt := range []string{
+		"DELETE FROM feedback",
+		"DELETE FROM retrievals",
+		"DELETE FROM queries",
+		"DELETE FROM chunks",
+		"DELETE FROM ingestion_runs",
+		"DELETE FROM repositories",
+		"DELETE FROM projects",
+		"DELETE FROM organization_memberships",
+		"DELETE FROM users",
+		"DELETE FROM organizations",
+	} {
+		if _, err := db.Exec(ctx, stmt); err != nil {
+			t.Logf("CleanupTestDB: %q failed: %v", stmt, err)
+		}
+	}
 }
 
 // CreateTestOrg creates test organization
@@ -87,14 +138,44 @@ func CreateTestProject(t *testing.T, db *pgxpool.Pool, orgID uuid.UUID, name, sl
 	return projectID
 }
 
-// CreateTestRepository creates test repository
+// CreateTestRepository creates a test repository under the given
+// project's owning organization.
+//
+// `repositories` is tenant-scoped: migration 000008 puts RLS on it and
+// migration 000009 attaches the assert_tenant_scoped trigger, which
+// refuses any INSERT without `app.current_tenant` set. The original
+// version of this helper did a bare INSERT and started failing with
+// SQLSTATE 42501 the moment Phase 17-03 landed — the failure went
+// unnoticed because the tests using it also need a live Redis and
+// Postgres that CI wasn't providing.
+//
+// The tenant is derived from the project rather than taken as a
+// parameter so existing call sites keep working unchanged.
 func CreateTestRepository(t *testing.T, db *pgxpool.Pool, projectID uuid.UUID, name, gitURL string) uuid.UUID {
+	ctx := context.Background()
+
+	var orgID uuid.UUID
+	require.NoError(t,
+		db.QueryRow(ctx, `SELECT organization_id FROM projects WHERE id = $1`, projectID).Scan(&orgID),
+		"CreateTestRepository: project %s not found (create it with CreateTestProject first)", projectID,
+	)
+
+	tx, err := db.Begin(ctx)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// SET LOCAL does not accept bind parameters for GUC values; orgID is
+	// a uuid.UUID from the DB so interpolation is safe here.
+	_, err = tx.Exec(ctx, fmt.Sprintf("SET LOCAL app.current_tenant = '%s'", orgID))
+	require.NoError(t, err)
+
 	var repoID uuid.UUID
-	err := db.QueryRow(context.Background(),
+	require.NoError(t, tx.QueryRow(ctx,
 		`INSERT INTO repositories (project_id, name, git_url)
          VALUES ($1, $2, $3) RETURNING id`,
 		projectID, name, gitURL,
-	).Scan(&repoID)
-	require.NoError(t, err)
+	).Scan(&repoID))
+
+	require.NoError(t, tx.Commit(ctx))
 	return repoID
 }
