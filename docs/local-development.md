@@ -202,15 +202,32 @@ into something eventually consistent.
 The isolation harness (`pkg/testing/isolation`) manages its own
 throwaway Postgres via testcontainers and needs no configuration.
 
-**Run test packages serially — `go test -p 1 ./pkg/...`.** Several
-packages share one reused container, and their setup routines race on
-the same `GRANT ... ON ALL TABLES` statement; in parallel this fails
-intermittently with `tuple concurrently updated (SQLSTATE XX000)`.
-Tracked as ISS-010.
+```bash
+docker compose up -d postgres redis
+go test -p 1 ./... -count=1
+```
 
-The older `pkg/auth` helpers do not — they read `DATABASE_TEST_URL`
-and fall back to a host that may not exist. To run those against the
-isolation harness's container:
+This is what CI runs (`.github/workflows/backend-ci.yml`), so a green run
+here means a green run there.
+
+**Why `-p 1`.** It serializes packages, not tests within a package.
+Several packages share one reused testcontainers Postgres and their role
+setup used to race on the same `GRANT`, failing intermittently with
+`tuple concurrently updated (SQLSTATE XX000)`. That is fixed — role setup
+now holds a Postgres advisory lock (ISS-010, closed) — and `-p 1` is
+belt-and-braces on a suite whose entire value is being trusted. It costs
+a few seconds.
+
+**Why compose is needed at all.** The 17-01 harness
+(`pkg/testing/isolation`) provisions its own throwaway Postgres and needs
+nothing. The older `pkg/auth` helpers predate it: they connect to a fixed
+DSN (`DATABASE_TEST_URL`, defaulting to the compose Postgres on 5434,
+which must have migrations applied) and the OAuth state-store tests need
+Redis. Migrating those helpers onto the testcontainers harness is a
+tracked follow-up in `19-02-SUMMARY.md`; doing it would remove the
+compose dependency and let CI drop its service containers.
+
+To point `pkg/auth` at the harness's container instead of compose:
 
 ```bash
 DATABASE_TEST_URL="postgres://isolation:isolation@localhost:<port>/isolation?sslmode=disable" \
@@ -218,5 +235,3 @@ DATABASE_TEST_URL="postgres://isolation:isolation@localhost:<port>/isolation?ssl
 ```
 
 Find `<port>` with `docker port rag-doc-isolation-tests 5432`.
-Migrating these helpers onto the testcontainers harness is tracked as a
-follow-up in `19-02-SUMMARY.md`.

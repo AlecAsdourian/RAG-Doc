@@ -1,0 +1,141 @@
+name: Backend CI
+
+# Builds, vets, and tests the Go backend on every PR.
+#
+# This did not exist until 2026-09-08, and its absence is why
+# `pkg/vectordb` sat uncompilable from Phase 3 (`3c47b7e`) until Phase 19
+# without anyone noticing: nothing in CI had ever built the Go code. The
+# isolation scanner runs a Python script over the diff and never invokes a
+# compiler.
+#
+# The gate is deliberately the WHOLE module — `./...`, not a curated list
+# of packages. A curated list is how the thing you forgot to add stops
+# being checked.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # pkg/auth's older test helpers (pre-17-01) talk to a fixed Postgres
+    # DSN and a Redis, rather than provisioning their own like the
+    # testcontainers harness does. Supplying both here is what lets
+    # `go test ./...` be the gate today; migrating those helpers onto the
+    # 17-01 harness is tracked as a follow-up in 19-02-SUMMARY.md and would
+    # let these services be dropped.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: coderag
+          POSTGRES_PASSWORD: coderag
+          POSTGRES_DB: coderag
+        ports:
+          # 5434 to match the docker-compose mapping the helper defaults to.
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U coderag"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_TEST_URL: postgres://coderag:coderag@localhost:5434/coderag?sslmode=disable
+      REDIS_URL: redis://localhost:6379
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: services/backend/go.mod
+          cache-dependency-path: services/backend/go.sum
+
+      - name: Verify go.mod and go.sum are tidy
+        working-directory: services/backend
+        # A missing go.sum entry breaks the build for everyone but the
+        # person whose module cache happens to be warm — which is how the
+        # qdrant bump first surfaced locally.
+        run: |
+          go mod download
+          go mod verify
+
+      - name: Install golang-migrate
+        run: |
+          curl -sSL https://github.com/golang-migrate/migrate/releases/download/v4.17.1/migrate.linux-amd64.tar.gz \
+            | tar xvz -C /tmp migrate
+          sudo mv /tmp/migrate /usr/local/bin/migrate
+          migrate -version
+
+      - name: Apply migrations to the test database
+        working-directory: services/backend
+        run: migrate -path migrations -database "$DATABASE_TEST_URL" up
+
+      - name: Build the whole module
+        working-directory: services/backend
+        run: go build ./...
+
+      - name: Vet the whole module
+        working-directory: services/backend
+        run: go vet ./...
+
+      # -p 1 serializes PACKAGES, not tests within a package.
+      #
+      # It is belt-and-braces after ISS-010: several packages share one
+      # reused testcontainers Postgres, and their role setup used to race
+      # on the same GRANT, failing with `tuple concurrently updated`. That
+      # is now serialized by a Postgres advisory lock in
+      # pkg/testing/isolation/container.go, and the fix was validated over
+      # five consecutive COLD-container parallel runs. Keeping -p 1 here
+      # costs a few seconds and removes a whole class of "CI is flaky"
+      # from a gate whose entire job is to be trusted.
+      #
+      # It matters that CI is always cold: the race was reproducible on a
+      # cold container and effectively never on a warm one, so the failure
+      # profile was "green locally, red in CI".
+      - name: Test the whole module
+        working-directory: services/backend
+        run: go test ./... -count=1 -p 1 -timeout 15m
+
+      # ADVISORY, NOT A GATE — yet. Deliberate.
+      #
+      # -race needs cgo and a C toolchain, which the machine this was
+      # authored on does not have (CGO_ENABLED=0, no gcc), so this step has
+      # never been executed anywhere. Shipping an unverified blocking step
+      # would mean the first PR after this one could go red for a reason
+      # nobody had ever seen — which is precisely the "CI is flaky, just
+      # re-run it" habit this workflow exists to prevent.
+      #
+      # It earns its place regardless: pkg/api/handlers now has a scenario
+      # that fires 16 concurrent requests through the real router
+      # (TestUserOrgsIsolation/Scenario5), and the shared testcontainers
+      # pool is exactly where a data race would hide.
+      #
+      # FOLLOW-UP: once this has run green on a few PRs, delete
+      # `continue-on-error` and let it gate. If it goes red, that is a real
+      # finding, not a reason to remove the step.
+      - name: Race detector on the concurrency-sensitive packages (advisory)
+        working-directory: services/backend
+        continue-on-error: true
+        # Scoped rather than module-wide: -race roughly doubles runtime,
+        # and these are the packages with concurrent tests worth the cost.
+        run: go test -race ./pkg/api/... ./pkg/testing/... -count=1 -p 1 -timeout 15m

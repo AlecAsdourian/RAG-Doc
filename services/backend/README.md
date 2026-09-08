@@ -59,14 +59,15 @@ make fmt
 # Run linter
 make lint
 
-# Run tests — use -p 1; several packages share one testcontainers
-# Postgres and race on its setup when run in parallel (ISS-010).
-go test -p 1 ./pkg/...
+# Run tests. -p 1 serializes packages that share the testcontainers
+# Postgres. Needs `docker compose up -d postgres redis` for the older
+# pkg/auth helpers — see docs/local-development.md.
+go test -p 1 ./... -count=1
 ```
 
-`go test ./...` at the module root is currently red for an unrelated
-reason: `pkg/vectordb` does not compile against its pinned Qdrant client
-(ISS-009). Run per-package until that is fixed.
+`.github/workflows/backend-ci.yml` runs exactly that, plus
+`go build ./...` and `go vet ./...`, on every PR — so a green run locally
+means a green run in CI.
 
 ## Tooling
 

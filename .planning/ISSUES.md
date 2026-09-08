@@ -79,40 +79,6 @@ Enhancements discovered during execution. Not critical - address in future phase
   - Configure webhook URL in Supabase dashboard
   - Update frontend to use Supabase JS client for OAuth
 
-### ISS-011: OAuth callback routes are live and broken, and bypass org-context push
-
-- **Discovered:** Phase 19-03 review (2026-09-08)
-- **Type:** Correctness / Dead-but-reachable code
-- **Priority:** MEDIUM — a live 500, on routes that are mounted whenever Redis is up
-- **Description:** `/auth/github/callback` and `/auth/gitlab/callback` are mounted by `pkg/api/router.go` whenever a Redis state store is reachable. They call `ProvisionOAuthUser` with `fmt.Sprintf("%d", githubUser.ID)` (`pkg/auth/handlers.go`), a numeric GitHub id. Since 19-02, `ProvisionOAuthUser` runs `uuid.Parse` on that argument, so the call cannot succeed — every completed GitHub OAuth callback is a 500.
-- **Second problem:** even if it worked, this is a provisioning path that never calls `pushOrgContext`, so a user created through it would have no `app_metadata.organization_id` and would be locked out of every tenant-scoped route.
-- **Impact:** Today, low — the intended signup path is Supabase-native (ISS-005), and these handlers were explicitly kept as "reference implementation" in Phase 4. But they are *mounted*, not commented out, so they are reachable in any environment with Redis.
-- **Options:** (a) unmount them until there is a real use, (b) delete them, (c) make them a genuine second provisioning path — which means a non-UUID identity column and a shared post-provision hook that includes the org-context push.
-- **Effort:** Low for (a) or (b); medium for (c).
-- **Related:** ISS-005.
-
-### ISS-010: Isolation harness setup races when test packages run in parallel
-
-- **Discovered:** Phase 19-03 (2026-09-08), running several packages in one `go test` invocation
-- **Type:** Test infrastructure / Flake
-- **Priority:** MEDIUM — makes any multi-package `go test` unreliable, which blocks CI gating
-- **Description:** `pkg/testing/isolation`'s container setup runs `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO rag_doc_app` against the shared, reused testcontainers Postgres. `go test` runs packages in parallel by default, so two packages' setup routines issue that GRANT concurrently and Postgres refuses with `tuple concurrently updated (SQLSTATE XX000)`. Reproduced twice, failing a *different* package each time — a race, not a deterministic break.
-- **Workaround:** `go test -p 1 ./pkg/...` (documented in `docs/local-development.md`).
-- **Fix options:** take a Postgres advisory lock around role setup; make the grant idempotent-by-construction and retry on XX000; or give each package its own container (costly — container reuse is what keeps the suite fast).
-- **Impact:** Any CI job running the whole tree in parallel will flake. Related in spirit to the 19-02 reviewer's note that this shared container makes cross-package interference possible.
-- **Effort:** Low (advisory lock is a few lines).
-
-### ISS-009: `pkg/vectordb` does not compile against its pinned Qdrant client
-
-- **Discovered:** Phase 19-03 (2026-09-08), while running the full backend suite
-- **Type:** Build / Dependency drift
-- **Priority:** LOW today, BLOCKING whenever vector search is wired up
-- **Description:** `go build ./...` fails with `pkg/vectordb/client.go:18:17: undefined: qdrant.Client`. `go.mod` pins `github.com/qdrant/go-client v1.7.0`, which predates the high-level `qdrant.Client` type the package imports (introduced in a later minor). The package has not been touched since Phase 3 (`3c47b7e`), so it has almost certainly never compiled since the dependency was pinned — nothing imports it yet, so nothing surfaced it.
-- **Why it went unnoticed:** no other package imports `pkg/vectordb`, and the phases since have run targeted `go test ./pkg/...` on specific packages rather than the whole module.
-- **Impact:** `go build ./...` and `go test ./...` are red at the module level, which means CI cannot use the whole-module form as a gate until this is fixed. No runtime impact — the package is dead code today.
-- **Effort:** Low-to-medium. Either bump `go-client` to a version that exports `qdrant.Client` and fix the call sites, or rewrite `pkg/vectordb` against the v1.7 gRPC-level API.
-- **Suggested phase:** whichever phase first wires vector search through Go (or an infrastructure cleanup pass before CI gating).
-- **Not fixed in 19-03:** out of scope and unrelated to auth; fixing it would have meant a dependency bump inside a security PR.
 
 ### ISS-008: Request-scoped tenant transaction for DB-hitting endpoints
 
@@ -128,6 +94,33 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Related code:** `services/backend/pkg/auth/middleware.go` (TenantMiddleware, currently a context-only pass-through with a `_ = db` reserved for this work).
 
 ## Closed Enhancements
+
+### ISS-009: `pkg/vectordb` does not compile against its pinned Qdrant client ✅
+
+- **Discovered:** Phase 19-03 (2026-09-08)
+- **Closed:** 2026-09-08 (CI gate work)
+- **Resolution:** bumped `github.com/qdrant/go-client` v1.7.0 → v1.19.2 and fixed three points of API drift — `CreateFieldIndex` now returns `(*UpdateResult, error)`, and `NewIDString` became `NewIDUUID`. The package was written against the high-level client API introduced in v1.9, so the pin had *always* been wrong. Never a regression; it simply never compiled.
+- **What fixing it exposed:** with the package building, its own unit tests ran for the first time and **panicked**. `TestUpsertVectorsValidation` builds a zero-value `Client{}`, and its "matching lengths" case — the one meant to prove validation *accepts* good input — necessarily proceeds past validation into the wire call, dereferencing a nil connection. `TestSearchSimilarValidation` had the identical latent bug and had never run at all, because the first panic killed the test binary.
+- **Also fixed:** validation split into `validateUpsertInput` / `validateQueryVector` so the rules are testable without a live Qdrant, plus an `ErrNotConnected` guard so a clientless call returns a legible error rather than panicking several frames inside the SDK.
+- **Root cause of the invisibility:** no CI job had ever built the Go code. Closed alongside the new `.github/workflows/backend-ci.yml`.
+
+### ISS-010: Isolation harness setup races when test packages run in parallel ✅
+
+- **Discovered:** Phase 19-03 (2026-09-08)
+- **Closed:** 2026-09-08 (CI gate work)
+- **Resolution:** `ensureAppRole` now runs its whole statement sequence in one transaction holding `pg_advisory_xact_lock`. All five statements are covered, not just the GRANTs — the `DO $$ … CREATE ROLE` block is check-then-act and races the same way, it just failed less visibly (SQLSTATE 42710 instead of XX000).
+- **Why transaction-scoped, not session-scoped:** `CREATE ROLE` and `GRANT` are both transactional in Postgres, so the sequence commits or rolls back as a unit, and the server releases an xact lock however the process dies. A session-level `pg_advisory_lock` leaks if a test binary panics between acquire and release.
+- **Precedent:** the same mechanism golang-migrate already uses around migrations — which is exactly why migrations survived the concurrency that broke role setup.
+- **Verified:** 5 consecutive **cold-container** parallel runs, zero failures. Cold is the case that matters: the race reproduced on roughly 40% of cold starts and effectively never on a warm container, so its failure profile was "green locally, red in CI".
+
+### ISS-011: OAuth callback routes are live and broken, and bypass org-context push ✅
+
+- **Discovered:** Phase 19-03 review (2026-09-08)
+- **Closed:** 2026-09-08 (CI gate work) — **unmounted, not repaired**
+- **Resolution:** `/auth/{github,gitlab}/{login,callback}` are no longer mounted. They were served whenever Redis happened to be reachable, and every completed callback returned 500 — GitHub's numeric user id fails the `uuid.Parse` provisioning has done since 19-02.
+- **Why unmount rather than fix:** repairing the 500 alone would have been worse. These handlers are a second provisioning path that never calls `pushOrgContext`, so a user created through them would have no organization claim and be refused by every tenant-scoped route — turning a loud 500 into a quiet broken account.
+- **Handlers kept, not deleted.** Deleting is a planner/user call, and they stay useful as reference if direct OAuth is ever wanted alongside Supabase-native. Reviving them needs a non-UUID identity column in provisioning plus routing through the same post-provision org-context push the webhook uses.
+- **The StateStore probe is retained** — it reports a real configuration gap, and Phase 20's GitHub App flow will want it.
 
 ### ISS-004: Organization selection mechanism for multi-org users ✅
 
