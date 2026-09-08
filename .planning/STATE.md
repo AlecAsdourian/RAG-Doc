@@ -10,10 +10,10 @@ See: .planning/PROJECT.md (updated 2026-01-08; product-vision reframe recorded i
 ## Current Position
 
 Milestone: v1.0 MVP (9 phases: 17-25)
-Phase: 19 IN PROGRESS — Auth Wiring & Org Provisioning
-Plan: 4 of 4 executed (19-01 through 19-04). Phase 19 closes when 19-04 merges.
-Status: Phase 17 closed 2026-09-06. Phase 18 deprioritized. 19-03 removed the last cross-tenant hole in the request path; 19-04 makes multi-org real and closes ISS-004. Next phase: 20 (Repository Integration Backend) — needs planning.
-Last activity: 2026-09-08 — 19-04 multi-org endpoints opened as a PR
+Phase: 19 COMPLETE — Auth Wiring & Org Provisioning. Phase 20 PLANNED, not started.
+Plan: 19-01 through 19-04 all merged. Phase 20 planned as 5 plans (see 20-CONTEXT.md).
+Status: Phase 17 closed 2026-09-06. Phase 18 deprioritized. Phase 19 closed 2026-09-08 — tenant identity now comes only from a Supabase-signed claim and multi-org switching works. An infrastructure pass then closed ISS-009/010/011 and gave the project its first CI job that compiles the Go code.
+Last activity: 2026-09-08 — Phase 20 planned; awaiting the GitHub App registration (user action)
 
 Progress: v1.0 MVP █░░░░░░░░ 1/9 phases complete, Phase 19 at 4/4 plans (Phase 18 Observability deferred — see project_phase18_deprioritized memory)
 
@@ -95,7 +95,13 @@ Last session: 2026-09-08
 Stopped at: 19-04 executed and opened as a PR; reviewer launched
 Resume file: None
 
-Next command suggested: plan Phase 20 (Repository Integration Backend) once 19-04 merges. Phase 19 is then complete. Note the ROADMAP flags a **user action** for 20-01: registering the GitHub App is a manual step in GitHub's UI, so the planner should hand over a runbook rather than assume it can be scripted.
+Next command suggested: `/gsd:execute-plan .planning/phases/20-repository-integration/20-01-PLAN.md`.
+
+**20-01 can start immediately** — it resolves ISS-008 and depends on nothing external.
+
+**20-02 onward are BLOCKED on a user action:** registering the GitHub App by following `docs/github-app-setup.md` (~20 minutes, needs an ngrok tunnel). This cannot be scripted — GitHub requires a human in their UI, and the private key is shown once. The runbook ends with a checklist of four things to hand back.
+
+**Why ISS-008 comes first, verified rather than assumed:** `repositories` is RLS-scoped (000008) and carries the 000009 trigger. The only Go handler touching the database today is `user_orgs.go`, which reads `users`/`organizations`/`organization_memberships` — none of which have RLS. So no Go handler has ever read an RLS-scoped table, and `GET /api/repositories` is the first. Without the request-scoped tenant transaction it returns zero rows with no error.
 
 **Environment note (new in 19-03):** local dev now has two separate Postgres instances — Supabase's (auth only) and docker-compose's on port 5434 (all application tables). They are NOT the same database, which is why 19-03 could not use a Supabase Auth Hook. Runbook: `docs/local-development.md`. The Go backend does not read `.env`; only docker-compose does.
 
