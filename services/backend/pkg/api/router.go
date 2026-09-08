@@ -26,8 +26,12 @@ type Config struct {
 // NewRouter creates a Chi router with middleware chain and route groups.
 //
 // Sugar over NewRouterWithValidator that builds the production Supabase
-// JWKS validator from authConfig. Tests that need to bypass Supabase
-// should call NewRouterWithValidator directly with a test validator.
+// JWKS validator from authConfig.
+//
+// Two seams exist below it for tests: NewRouterWithValidator swaps the
+// bearer-token verifier, and NewRouterWithValidatorAndAdmin additionally
+// swaps the Supabase admin client so a test can observe what gets written
+// to a user's app_metadata.
 func NewRouter(dbpool *pgxpool.Pool, ragClient *client.RAGClient, authConfig *auth.Config, cfg Config) chi.Router {
 	return NewRouterWithValidator(dbpool, ragClient, auth.NewJWTValidator(authConfig), cfg)
 }
@@ -169,8 +173,14 @@ func NewRouterWithValidatorAndAdmin(
 		r.Use(auth.JWTAuthMiddleware(jwtValidator))
 
 		r.With(middleware.Timeout(60*time.Second)).Route("/api/user", func(r chi.Router) {
-			// @skip-isolation-test: user-scoped read of the caller's own memberships, no tenant data (see 19-04)
 			r.Get("/organizations", userOrgsHandler.List)
+			// Covered by TestUserOrgsIsolation. Deliberately NOT marked
+			// @skip-isolation-test: this is the phase's authorization
+			// boundary and must stay gated by the 17-05 CI scanner. An
+			// earlier revision carried that marker on the GET above, where
+			// the scanner never looks — harmless today only because
+			// paren-balancing kept it out of the POST's lookback window,
+			// and one reformat away from silently un-gating this route.
 			r.Post("/select-organization", userOrgsHandler.Select)
 		})
 	})

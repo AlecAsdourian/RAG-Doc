@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/render"
 	"github.com/go-playground/validator/v10"
@@ -63,6 +64,12 @@ type OrgListResponse struct {
 }
 
 func (o *OrgListResponse) Render(w http.ResponseWriter, r *http.Request) error { return nil }
+
+// MaxSelectOrgBodyBytes bounds the select-organization request body. A
+// valid body is a single UUID in a JSON object — about 55 bytes — so 4KB
+// is generous by two orders of magnitude and still refuses to allocate on
+// behalf of a caller sending megabytes.
+const MaxSelectOrgBodyBytes = 4 << 10
 
 // SelectOrgRequest is the body of POST /api/user/select-organization.
 type SelectOrgRequest struct {
@@ -154,7 +161,13 @@ func (h *UserOrgsHandler) List(w http.ResponseWriter, r *http.Request) {
 			render.Render(w, r, ErrInternal(fmt.Errorf("scan organization row: %w", err)))
 			return
 		}
-		m.IsActive = activeOrgID != nil && m.ID == *activeOrgID
+		// EqualFold rather than ==. Postgres emits lowercase UUIDs, so the
+		// two sides match today — but the claim side is whatever was
+		// written to Supabase, and an uppercase value there would silently
+		// flag every row inactive rather than erroring. A UUID's case
+		// carries no meaning; comparing as if it did is a bug waiting for
+		// one careless writer.
+		m.IsActive = activeOrgID != nil && strings.EqualFold(m.ID, *activeOrgID)
 		orgs = append(orgs, m)
 	}
 	if err := rows.Err(); err != nil {
@@ -199,13 +212,28 @@ func (h *UserOrgsHandler) Select(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Bound the body before decoding it. A valid request here is about 55
+	// bytes; without a limit the decoder materializes whatever an
+	// authenticated caller sends into a string before the validator gets
+	// to reject it, at roughly 7x the wire size in allocations. Same guard
+	// pkg/auth/webhook.go applies, for the same reason.
+	r.Body = http.MaxBytesReader(w, r.Body, MaxSelectOrgBodyBytes)
+
 	var req SelectOrgRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		render.Render(w, r, ErrInvalidRequest(err))
 		return
 	}
 	if err := h.validate.Struct(req); err != nil {
-		render.Render(w, r, ErrInvalidRequest(err))
+		// Deliberately not the raw validator error. Its text names Go
+		// struct fields and tags — "Key: 'SelectOrgRequest.OrganizationID'
+		// Error:Field validation for 'OrganizationID' failed on the 'uuid'
+		// tag" — which tells a caller nothing useful and tells everyone
+		// else about our internals. (The other handlers still echo it;
+		// that's pre-existing and worth a sweep, not a change to shared
+		// error helpers inside this PR.)
+		render.Render(w, r, ErrInvalidRequest(
+			errors.New("organization_id must be a valid UUID")))
 		return
 	}
 
@@ -261,29 +289,50 @@ var errNoMembership = errors.New("caller is not a member of the target organizat
 
 // callerRoleIn returns the caller's role in orgID, or errNoMembership.
 func (h *UserOrgsHandler) callerRoleIn(ctx context.Context, supabaseUserID, orgID string) (string, error) {
-	// Parse before querying. `supabaseUserID` comes from a signed token and
-	// orgID is validator-checked, but both flow into a uuid comparison and
-	// an explicit parse turns a malformed value into a clean denial rather
-	// than a driver-level error surfaced as a 500.
+	// orgID is already validator-checked (`validate:"uuid"`); this is the
+	// belt to that suspenders, so removing the struct tag degrades to a
+	// clean denial rather than a driver error rendered as 500.
+	//
+	// `supabaseUserID` is NOT checked here — it is validated at the token
+	// boundary by auth.ExtractUserID, which is the right place: every route
+	// benefits, not just this one.
 	if _, err := uuid.Parse(orgID); err != nil {
 		return "", errNoMembership
 	}
 
-	var role string
-	err := h.db.QueryRow(ctx, `
+	// No ORDER BY / LIMIT. `organization_memberships` has
+	// UNIQUE(user_id, organization_id), so at most one row can match and a
+	// tiebreak is unreachable code pretending to be a decision.
+	//
+	// If that constraint is ever relaxed, this must fail rather than pick.
+	// The tempting fixes are both wrong: "oldest wins" is arbitrary, and
+	// "highest privilege wins" is backwards — for an authorization
+	// decision the fail-safe direction is least privilege. Ambiguous
+	// membership is a data-integrity bug, and quietly resolving it would
+	// write a role into the caller's token based on a guess.
+	rows, err := h.db.Query(ctx, `
 		SELECT om.role
 		FROM organization_memberships om
 		JOIN users u ON u.id = om.user_id
 		WHERE u.supabase_user_id = $1 AND om.organization_id = $2
-		ORDER BY om.created_at ASC
-		LIMIT 1
-	`, supabaseUserID, orgID).Scan(&role)
-
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", errNoMembership
-	}
+	`, supabaseUserID, orgID)
 	if err != nil {
 		return "", err
 	}
-	return role, nil
+	roles, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return "", err
+	}
+
+	switch len(roles) {
+	case 0:
+		return "", errNoMembership
+	case 1:
+		return roles[0], nil
+	default:
+		return "", fmt.Errorf(
+			"data integrity: user %s has %d membership rows in organization %s; "+
+				"refusing to guess which role to write into their token",
+			supabaseUserID, len(roles), orgID)
+	}
 }

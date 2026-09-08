@@ -14,10 +14,23 @@ import (
 // TestOrg is a test tenant with three role members and a starter repository.
 // WithTwoOrgs produces two of them for cross-tenant tests.
 //
-// Tests that need a signed JWT for one of the users call
-// testjwt.Sign(org.OwnerID, org.ID, "owner") directly — the signer lives in
-// pkg/testing/isolation/testjwt to keep the signing secret out of this
-// package's public API. See package doc on testjwt for rationale.
+// Tests that need a signed JWT call testjwt.Sign directly — the signer
+// lives in pkg/testing/isolation/testjwt to keep the signing secret out of
+// this package's public API. See the package doc on testjwt for rationale.
+//
+// Which id goes in the `sub` argument depends on what the test asserts,
+// and getting it wrong fails silently:
+//
+//   - testjwt.Sign(org.OwnerSupabaseID, org.ID, "owner") — required for
+//     any code path that resolves `sub` back to a user row, because a real
+//     Supabase token's `sub` is the Supabase id.
+//   - testjwt.Sign(org.OwnerID, org.ID, "owner") — fine for tests that
+//     only care about tenant scope and never look the caller up.
+//
+// This doc comment used to name only the second form. Nothing noticed
+// until 19-04 added the first code to read `sub`, at which point the
+// mismatch would have made every membership query return zero rows —
+// green tests, empty responses in production.
 type TestOrg struct {
 	ID   string
 	Slug string
@@ -190,16 +203,19 @@ func cleanupOrg(ctx context.Context, pool *pgxpool.Pool, org *TestOrg) {
 		{`DELETE FROM ingestion_runs WHERE repository_id IN (SELECT id FROM repositories WHERE project_id = $1)`, []any{org.ProjectID}},
 		{`DELETE FROM repositories WHERE project_id = $1`, []any{org.ProjectID}},
 		{`DELETE FROM projects WHERE id = $1`, []any{org.ProjectID}},
-		// Delete memberships by org AND by user. The `user_id` half matters
-		// once a test uses AddMembership to put one org's user into the
-		// other org: cleaning up orgA would delete orgA's memberships,
-		// then fail to delete orgA's owner (still referenced by the orgB
-		// membership row), and — because each statement runs in its own
-		// savepoint — skip silently, leaking an orphaned user row into the
-		// reused container.
-		{`DELETE FROM organization_memberships
-		  WHERE organization_id = $1 OR user_id = ANY($2)`,
-			[]any{org.ID, []string{org.OwnerID, org.AdminID, org.MemberID}}},
+		// A user granted a membership in the OTHER org via AddMembership
+		// still has a row there at this point, and that is fine:
+		// organization_memberships.user_id is
+		// `REFERENCES users(id) ON DELETE CASCADE` (migration 000007), so
+		// deleting the user below takes it with them.
+		//
+		// An earlier revision added `OR user_id = ANY(...)` here, on the
+		// theory that the leftover row would block the user delete and —
+		// each statement running in its own savepoint — get skipped
+		// silently, leaking a row into the reused container. The cascade
+		// makes that impossible. The clause was harmless; its stated
+		// reason was wrong, which is worse than no comment at all.
+		{`DELETE FROM organization_memberships WHERE organization_id = $1`, []any{org.ID}},
 		{`DELETE FROM users WHERE id = ANY($1)`, []any{[]string{org.OwnerID, org.AdminID, org.MemberID}}},
 		{`DELETE FROM organizations WHERE id = $1`, []any{org.ID}},
 	}

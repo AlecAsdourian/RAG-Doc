@@ -52,11 +52,27 @@ func (v *JWTValidator) ValidateToken(ctx context.Context, tokenString string) (j
 	return token, nil
 }
 
-// ExtractUserID gets user_id from validated token
+// ExtractUserID gets the caller's Supabase user id from the `sub` claim.
+//
+// The value must parse as a UUID, for the same reason ExtractOrganizationID
+// requires one: `sub` is an identifier that flows into queries comparing
+// against `users.supabase_user_id`, a uuid column. An unvalidated value
+// reaches the driver and comes back as a 500 — reported to the caller as
+// our bug rather than their bad token — and it discards the only
+// structural guarantee we have about a value the rest of the request
+// trusts completely.
+//
+// Supabase always issues a UUID here (it is `auth.users.id`), so this
+// rejects nothing a real token carries. "The identity provider would never
+// do that" is not a reason to skip the check; it is the assumption that
+// keeps holes alive through review.
 func ExtractUserID(token jwt.Token) (string, error) {
 	userID, ok := token.Subject()
 	if !ok || userID == "" {
 		return "", fmt.Errorf("missing subject claim")
+	}
+	if _, err := uuid.Parse(userID); err != nil {
+		return "", fmt.Errorf("subject claim is not a valid UUID: %w", err)
 	}
 	return userID, nil
 }
