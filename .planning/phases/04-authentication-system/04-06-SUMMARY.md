@@ -303,7 +303,14 @@ ngrok http 8080
 **Error Handling:**
 - Return 200 OK for ignored events (non-INSERT, non-auth.users)
 - Return 401 for invalid signatures (security)
-- Return 500 for provisioning failures (trigger Supabase retry)
+- Return 500 for provisioning failures ~~(trigger Supabase retry)~~
+  **Struck 2026-09-08 (Phase 19-03).** This contradicts "Known Limitations →
+  Webhook Reliability" in this same document, which says webhooks fire once
+  with no automatic retry. A 500 does not trigger anything. The status code
+  is still right — a provisioning failure IS a server error and should be
+  logged as one — but nothing retries on it, and treating a 5xx as a
+  self-healing mechanism is what produced the Phase 19-03 blocker. Repair
+  runs through `cmd/backfill-org-claims`.
 
 ## Testing
 

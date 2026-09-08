@@ -16,7 +16,8 @@ provides:
   - Tenant identity sourced exclusively from the Supabase-signed app_metadata.organization_id claim
   - X-Organization-ID header path deleted, including from CORS Access-Control-Allow-Headers
   - auth.AdminClient — writes organization context onto a Supabase user (reused by 19-04)
-  - Convergent org-context push (retried on every webhook delivery, not just fresh provisions)
+  - cmd/backfill-org-claims — the ONLY repair path for a failed org-context push, and the migration step for users provisioned before the claim existed
+  - Org-context push is replay-safe, but NOTHING replays it — the webhook delivers once per user for all time
   - Working local development environment + runbook
   - Supabase project no longer exposes application tables to the anon key
 affects: [19-04 (select-organization rewrites the same claim through AdminClient), 20+ (every new endpoint inherits a forgery-proof tenant)]
@@ -27,13 +28,15 @@ tech-stack:
     - "Org context is written to Supabase from the backend (raw_app_meta_data via admin API) rather than computed by a Supabase Auth Hook — the hook cannot reach the app's database"
     - "The claim is read nested at app_metadata.organization_id, verified by round-trip against the live project rather than assumed from docs"
     - "JWTAuthMiddleware stashes the whole validated jwt.Token on the request context so downstream middleware reads claims without re-verifying a signature"
-    - "Non-fatal side effects that must converge are retried on every delivery, not gated on an isNewUser-style flag"
+    - "Write side effects to be replay-safe (check actual end state, not an isNewUser-style flag) — but never assume anything replays them. Ship the replay driver, or the safety is theoretical. This plan shipped the safety without the driver and it took a reviewer to notice."
+    - "A test asserting a security property must assert a POSITIVE outcome and be shown to FAIL under a mutation that breaks the property"
 
 key-files:
   created:
     - services/backend/pkg/auth/supabase_admin.go
     - services/backend/pkg/auth/supabase_admin_test.go
     - services/backend/pkg/auth/jwt_test.go
+    - services/backend/pkg/auth/backfill_isolation_test.go
     - services/backend/cmd/backfill-org-claims/main.go
     - docs/local-development.md
     - scripts/supabase/001-remove-app-schema-from-supabase.sql
@@ -41,11 +44,11 @@ key-files:
   modified:
     - services/backend/pkg/auth/jwt.go (nested claim extraction, ExtractOrganizationID/Role)
     - services/backend/pkg/auth/middleware.go (header read deleted; TokenKey added)
-    - services/backend/pkg/auth/webhook.go (pushOrgContext on every delivery)
-    - services/backend/pkg/auth/provisioning.go (UserOwnerOrgID)
+    - services/backend/pkg/auth/webhook.go (pushOrgContext after provisioning; detached from the request context)
+    - services/backend/pkg/auth/provisioning.go (UserOwnerOrgID, ListOwnerOrgAssignments)
     - services/backend/pkg/api/router.go (admin client wiring, CORS header removal)
-    - services/backend/pkg/testing/isolation/testjwt/testjwt.go (nested shape + SignWithoutOrg)
-    - services/backend/pkg/api/handlers/search_isolation_test.go (scenarios 4/5 rewritten, 6 added)
+    - services/backend/pkg/testing/isolation/testjwt/testjwt.go (nested shape, SignWithoutOrg, SignWithNoAppMetadata)
+    - services/backend/pkg/api/handlers/search_isolation_test.go (scenarios 4/5 rewritten, 6 and 7 added)
     - services/backend/pkg/api/handlers/chat_isolation_test.go (scenario 4 rewritten)
     - services/backend/.env.example, docker-compose.yml
     - .planning/phases/19-auth-wiring-org-provisioning/19-03-PLAN.md (REVISION NOTICE)
@@ -255,6 +258,24 @@ Reviewer returned one blocker, six mediums and eight nits, verified empirically 
 
 **Also found while fixing:** running these packages in parallel races on the harness's `GRANT` statement (ISS-010). Use `go test -p 1`.
 
+## Reviewer round 2 (verification pass)
+
+Reviewer re-tested every round-1 fix rather than re-reading it — drove the backfill query against a genuinely stranded user, re-ran both mutations, and reverted each security fix to confirm its test fails. H1 and all six mediums confirmed closed. Nothing found at blocker level. Three new mediums, all documentation and operator ergonomics; all applied.
+
+**M-A — the correction didn't reach the fields future plans read.** The prose in this summary was fixed; the YAML frontmatter still said "retried on every webhook delivery" in `provides:`, `key-files:`, and worst, `tech-stack.patterns` — a *reuse this* field encoding the exact false model that caused H1. Three more stale copies survived in `19-03-PLAN.md` (Constraining Decisions, plus the code sketch showing `r.Context()`) and in `19-02-SUMMARY.md`, whose H3 and H4 justifications both rested on retries existing. All corrected, with the retractions left visible rather than quietly rewritten — the wrong reasoning is the useful artifact.
+
+**M-B — the "no retry" claim was load-bearing and under-evidenced.** It reached ~8 places sourced from `04-06-SUMMARY.md:282`, and that same Phase 4 document says at `:306` to "return 500 for provisioning failures (trigger Supabase retry)". It contradicts itself, and I cited one half of it as settled — in a plan whose whole methodological point was verifying the Supabase contract by round-trip instead of trusting docs.
+
+Two things done about it. The `:306` line is struck with an explanation. And the code no longer *depends* on the claim: `cmd/backfill-org-claims` now carries a doc section separating what is verified (the `AFTER INSERT` trigger writes exactly one event per user — checked in this repo) from what is inferred (that Supabase itself does not retry — consistent with pg_net being fire-and-forget, but not measured against this project). The operative rule is "do not rely on webhook retry", which holds either way: retries are finite, a user who exhausts them is stranded identically, and pre-existing users need the backfill regardless.
+
+**Still open, and it needs the live project:** actually measuring whether a 500 from `/webhooks/supabase` produces a second delivery. That requires a publicly reachable backend (ngrok) plus a real signup, so it is a deliberate exercise, not something to slip into a code change. It does not gate this PR — no behavior depends on the answer — but it should be settled before anyone designs around delivery semantics again.
+
+**M-C — the backfill loop ground past its own deadline.** Once the context expired, every remaining call failed instantly and the loop kept logging `FAILED`, so a timeout at user 400 of 10,000 reported 9,600 failures. That count is what an operator acts on, and it lied about how much was broken. Now breaks at the deadline and reports how far it got. Separately, the fixed 5-minute default was the real scaling cliff: runtime here is linear in user count, so any constant is both too long for a dev database and too short for a real one, and "too short" failed silently mid-repair. The budget is now derived from the number of users found, with `-timeout` as an explicit override.
+
+**L-a — the entire H1 remediation had no tests.** `ListOwnerOrgAssignments` and `cmd/backfill-org-claims` were verified once by hand and never again. Added `backfill_isolation_test.go`: the stranded-user case built through the real webhook with a failing admin client; a `DISTINCT ON` guard asserting backfill and the webhook resolve the *same* organization (if they disagreed, a backfill run would silently move a user between tenants); and a non-owner exclusion test, because the push writes `organization_role: "owner"` unconditionally, so a member leaking into that query would be privilege-escalated by the repair tool. Mutation-checked: removing the `role = 'owner'` filter turns the third red.
+
+**L-b, L-c** — leftover duplicate paragraph in `SignWithoutOrg`; `key-files` and `provides` missing scenario 7, `backfill_isolation_test.go`, and the backfill command.
+
 ## Next Phase Readiness
 
 - **19-04** — unblocked and cheaper than planned. `auth.AdminClient` already exists and is the exact mechanism `POST /api/user/select-organization` needs; the endpoint validates membership then rewrites the same claim. Two things 19-04 must solve that the original plan did not anticipate: forcing a token refresh so the new claim takes effect (Deviation 1), and rewriting the claim on **every** membership change, since nothing else expires a stale one (Deviation 2).
@@ -264,8 +285,9 @@ Reviewer returned one blocker, six mediums and eight nits, verified empirically 
   2. Migrate `pkg/auth/testing.go` onto the 17-01 testcontainers harness (carried over from 19-02 — and Deviation 5 is a fresh example of what that gap costs).
   3. Fix ISS-009 so whole-module `go build ./...` can become a CI gate, and ISS-010 so it can run in parallel.
   4. Decide on a token-refresh strategy for claim changes before 19-04 ships.
-  5. Schedule `backfill-org-claims` (cron or equivalent). It exists and is idempotent; running it periodically is what turns "one shot per user" into an eventually-consistent system rather than a manual incident response.
+  5. Schedule `backfill-org-claims` (cron or equivalent). It exists and is idempotent; running it periodically is what turns "one shot per user" into an eventually-consistent system rather than a manual incident response. When user count makes a full re-push wasteful, add a `WHERE u.created_at > now() - interval '...'` filter to the query — not a work queue.
   6. Resolve ISS-011 — the OAuth callback routes are mounted and returning 500.
+  7. Settle the webhook-retry question against the live project (see reviewer round 2, M-B). Nothing depends on the answer today; the point is that the assertion should meet the same evidence bar as the rest of this phase.
 
 ---
 *Phase: 19-auth-wiring-org-provisioning*
