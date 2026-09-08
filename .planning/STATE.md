@@ -11,11 +11,11 @@ See: .planning/PROJECT.md (updated 2026-01-08; product-vision reframe recorded i
 
 Milestone: v1.0 MVP (9 phases: 17-25)
 Phase: 19 IN PROGRESS — Auth Wiring & Org Provisioning
-Plan: 3 of 4 executed (19-01, 19-02, 19-03). Next: 19-04 (multi-org endpoints).
-Status: Phase 17 closed 2026-09-06. Phase 18 deprioritized. 19-03 removes the last cross-tenant hole in the request path.
-Last activity: 2026-09-08 — 19-03 JWT organization claim opened as a PR
+Plan: 4 of 4 executed (19-01 through 19-04). Phase 19 closes when 19-04 merges.
+Status: Phase 17 closed 2026-09-06. Phase 18 deprioritized. 19-03 removed the last cross-tenant hole in the request path; 19-04 makes multi-org real and closes ISS-004. Next phase: 20 (Repository Integration Backend) — needs planning.
+Last activity: 2026-09-08 — 19-04 multi-org endpoints opened as a PR
 
-Progress: v1.0 MVP █░░░░░░░░ 1/9 phases complete, Phase 19 at 3/4 plans (Phase 18 Observability deferred — see project_phase18_deprioritized memory)
+Progress: v1.0 MVP █░░░░░░░░ 1/9 phases complete, Phase 19 at 4/4 plans (Phase 18 Observability deferred — see project_phase18_deprioritized memory)
 
 **Note on this section's history:** 19-01 and 19-02 both shipped without updating STATE.md, so this file sat two plans stale. Brought current in 19-03.
 
@@ -70,7 +70,8 @@ Recent decisions still affecting current work:
 
 - **ISS-001:** Shared type definitions for cross-phase data contracts — surface again during Phase 18 (structured logging conventions) or Phase 20 (repos API shape)
 - **ISS-002:** Cross-phase verification pattern in planning workflow — template updated; apply to all v1.0 plans
-- **ISS-004:** Org selection mechanism — **security half closed 2026-09-08** in 19-03 (claim is JWT-carried, header gone); the switching UX (list orgs + select org) remains, **scheduled: Phase 19-04**
+- **ISS-004:** Org selection mechanism — **✅ closed 2026-09-08** across 19-03 (JWT-carried claim, header gone) and 19-04 (list + select endpoints). Frontend picker is Phase 23 work against `docs/auth-frontend-contract.md`.
+- **ISS-012:** A revoked membership does not revoke the organization claim — **filed 2026-09-08** during 19-04. Not exploitable today (nothing removes memberships), but **whatever ships membership removal must rewrite the claim** — short token TTLs do not bound this. See ISSUES.md.
 - **ISS-005:** Supabase Native OAuth webhook handler — **scheduled: Phase 19-01**
 - **ISS-006:** Test database connectivity — **✅ closed 2026-09-05** in Phase 17-01 via testcontainers-go harness (`pkg/testing/isolation`); see ISSUES.md
 - **ISS-007:** JWT-carried tenant claim — **✅ closed 2026-09-08** in Phase 19-03. Tenant identity now comes only from the Supabase-signed `app_metadata.organization_id` claim; the `X-Organization-ID` path is deleted, including from CORS. Closed without the per-request membership re-check the original filing called for — reasoning in ISSUES.md and 19-03-SUMMARY.md.
@@ -90,10 +91,10 @@ Recent decisions still affecting current work:
 ## Session Continuity
 
 Last session: 2026-09-08
-Stopped at: 19-03 executed and opened as a PR; reviewer launched
+Stopped at: 19-04 executed and opened as a PR; reviewer launched
 Resume file: None
 
-Next command suggested: `/gsd:execute-plan .planning/phases/19-auth-wiring-org-provisioning/19-04-PLAN.md` after 19-03 merges. Recommend `/clear` first — 19-03 burned a lot of context on live Supabase debugging that 19-04 does not need.
+Next command suggested: plan Phase 20 (Repository Integration Backend) once 19-04 merges. Phase 19 is then complete. Note the ROADMAP flags a **user action** for 20-01: registering the GitHub App is a manual step in GitHub's UI, so the planner should hand over a runbook rather than assume it can be scripted.
 
 **Environment note (new in 19-03):** local dev now has two separate Postgres instances — Supabase's (auth only) and docker-compose's on port 5434 (all application tables). They are NOT the same database, which is why 19-03 could not use a Supabase Auth Hook. Runbook: `docs/local-development.md`. The Go backend does not read `.env`; only docker-compose does.
 
