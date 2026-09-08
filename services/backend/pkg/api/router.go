@@ -52,7 +52,25 @@ func NewRouterWithValidator(dbpool *pgxpool.Pool, ragClient *client.RAGClient, j
 	if webhookSecret == "" {
 		panic("api.NewRouterWithValidator: SUPABASE_WEBHOOK_SECRET must be set")
 	}
-	webhookHandler := auth.NewWebhookHandler(dbpool, webhookSecret)
+	// Supabase admin client — used after provisioning to write
+	// organization context onto the Supabase user, which is what puts
+	// `app_metadata.organization_id` into the JWT that TenantMiddleware
+	// reads. Optional at construction: without SUPABASE_URL and
+	// SUPABASE_SERVICE_ROLE_KEY we warn loudly and run degraded rather
+	// than refusing to start, so tests and offline dev still work.
+	// Degraded means provisioned users receive no org claim, and every
+	// tenant-scoped request they make is denied.
+	var adminClient auth.AdminClient
+	supabaseURL := os.Getenv("SUPABASE_URL")
+	serviceRoleKey := os.Getenv("SUPABASE_SERVICE_ROLE_KEY")
+	if supabaseURL != "" && serviceRoleKey != "" {
+		adminClient = auth.NewAdminClient(supabaseURL, serviceRoleKey)
+	} else {
+		slog.Warn("SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY unset; provisioned users " +
+			"will NOT receive an organization_id claim and will be denied tenant-scoped routes")
+	}
+
+	webhookHandler := auth.NewWebhookHandler(dbpool, webhookSecret, adminClient)
 
 	// Initialize request validator
 	validate := validator.New()

@@ -130,17 +130,37 @@ func (p *UserProvisioner) ProvisionOAuthUser(
 // sees an existing user, skips org creation, and returns 202 — leaving
 // the user permanently organization-less with no further retries.
 func (p *UserProvisioner) UserHasOwnerOrg(ctx context.Context, userID uuid.UUID) (bool, error) {
-	var exists bool
+	_, found, err := p.UserOwnerOrgID(ctx, userID)
+	return found, err
+}
+
+// UserOwnerOrgID returns the organization userID owns, if any.
+//
+// The webhook needs the id on BOTH the fresh-provision and replay paths:
+// org context must be pushed to Supabase every delivery, not only when
+// the org was just created, because an earlier delivery may have created
+// the org and then failed the Supabase push. Returning the id rather than
+// a bare boolean lets the handler converge without a second query.
+//
+// If a user somehow owns more than one organization, the oldest wins.
+// That's the one provisioning created, and it keeps the choice
+// deterministic across retries rather than flapping between orgs.
+func (p *UserProvisioner) UserOwnerOrgID(ctx context.Context, userID uuid.UUID) (uuid.UUID, bool, error) {
+	var orgID uuid.UUID
 	err := p.db.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM organization_memberships
-			WHERE user_id = $1 AND role = 'owner'
-		)
-	`, userID).Scan(&exists)
-	if err != nil {
-		return false, fmt.Errorf("check existing owner org: %w", err)
+		SELECT organization_id
+		FROM organization_memberships
+		WHERE user_id = $1 AND role = 'owner'
+		ORDER BY created_at ASC
+		LIMIT 1
+	`, userID).Scan(&orgID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, false, nil
 	}
-	return exists, nil
+	if err != nil {
+		return uuid.Nil, false, fmt.Errorf("look up owner org: %w", err)
+	}
+	return orgID, true, nil
 }
 
 // CreateOrganizationForUser creates an organization and makes userID its

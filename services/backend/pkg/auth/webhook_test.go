@@ -24,7 +24,7 @@ func TestWebhookHandler_SignatureVerification(t *testing.T) {
 	os.Setenv("SUPABASE_WEBHOOK_SECRET", "test-secret-key")
 	defer os.Unsetenv("SUPABASE_WEBHOOK_SECRET")
 
-	handler := NewWebhookHandler(db, "test-secret-key")
+	handler := NewWebhookHandler(db, "test-secret-key", nil)
 
 	payload := []byte(`{"type":"INSERT","table":"users","schema":"auth","record":{}}`)
 
@@ -52,7 +52,7 @@ func TestWebhookHandler_UserCreatedEvent(t *testing.T) {
 	os.Setenv("SUPABASE_WEBHOOK_SECRET", "test-secret-key")
 	defer os.Unsetenv("SUPABASE_WEBHOOK_SECRET")
 
-	handler := NewWebhookHandler(db, "test-secret-key")
+	handler := NewWebhookHandler(db, "test-secret-key", nil)
 
 	// Webhook payload matching what the handler actually dispatches on:
 	// schema=public, table=auth_user_events (populated by a DB trigger on
@@ -132,7 +132,7 @@ func TestWebhookHandler_InvalidSignature(t *testing.T) {
 	os.Setenv("SUPABASE_WEBHOOK_SECRET", "test-secret-key")
 	defer os.Unsetenv("SUPABASE_WEBHOOK_SECRET")
 
-	handler := NewWebhookHandler(db, "test-secret-key")
+	handler := NewWebhookHandler(db, "test-secret-key", nil)
 
 	payload := []byte(`{"type":"INSERT","table":"users","schema":"auth","record":{}}`)
 
@@ -151,7 +151,7 @@ func TestWebhookHandler_InvalidMethod(t *testing.T) {
 	db := SetupTestDB(t)
 	defer CleanupTestDB(t, db)
 
-	handler := NewWebhookHandler(db, "test-secret-key")
+	handler := NewWebhookHandler(db, "test-secret-key", nil)
 
 	// Try GET request
 	req := httptest.NewRequest(http.MethodGet, "/webhooks/supabase", nil)
@@ -171,7 +171,7 @@ func TestWebhookHandler_ExistingUser(t *testing.T) {
 	os.Setenv("SUPABASE_WEBHOOK_SECRET", "test-secret-key")
 	defer os.Unsetenv("SUPABASE_WEBHOOK_SECRET")
 
-	handler := NewWebhookHandler(db, "test-secret-key")
+	handler := NewWebhookHandler(db, "test-secret-key", nil)
 
 	// Create user first
 	existingUser := CreateTestUser(t, db, "existing@example.com", "Existing User")
@@ -262,7 +262,7 @@ func TestNewWebhookHandler_EmptySecretPanics(t *testing.T) {
 	defer CleanupTestDB(t, db)
 
 	assert.Panics(t, func() {
-		NewWebhookHandler(db, "")
+		NewWebhookHandler(db, "", nil)
 	}, "constructor must panic on empty secret")
 }
 
@@ -272,7 +272,7 @@ func TestWebhookHandler_BodyTooLarge(t *testing.T) {
 	db := SetupTestDB(t)
 	defer CleanupTestDB(t, db)
 
-	handler := NewWebhookHandler(db, "test-secret-key")
+	handler := NewWebhookHandler(db, "test-secret-key", nil)
 
 	// Payload just over the 64KB limit.
 	oversized := bytes.Repeat([]byte("A"), MaxWebhookBodyBytes+1)
@@ -297,7 +297,7 @@ func TestWebhookHandler_DisposableEmailRejected(t *testing.T) {
 	db := SetupTestDB(t)
 	defer CleanupTestDB(t, db)
 
-	handler := NewWebhookHandler(db, "test-secret-key")
+	handler := NewWebhookHandler(db, "test-secret-key", nil)
 
 	payload := SupabaseWebhookEvent{
 		Type:   "INSERT",

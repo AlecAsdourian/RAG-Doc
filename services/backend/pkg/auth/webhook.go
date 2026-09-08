@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -73,20 +74,30 @@ type SupabaseAuthUser struct {
 type WebhookHandler struct {
 	provisioner   *UserProvisioner
 	webhookSecret string
+	admin         AdminClient
 }
 
-// NewWebhookHandler creates a webhook handler with the given secret.
+// NewWebhookHandler creates a webhook handler with the given secret and
+// Supabase admin client.
 //
 // Panics if webhookSecret is empty. Callers (currently pkg/api/router.go)
 // read the secret from env at startup and fail loudly rather than let a
 // misconfigured deployment silently accept unsigned payloads.
-func NewWebhookHandler(db *pgxpool.Pool, webhookSecret string) *WebhookHandler {
+//
+// `admin` may be nil, in which case the org-context push to Supabase is
+// skipped with a log line. That is a degraded mode, not a supported one:
+// without the push, provisioned users never receive an
+// `app_metadata.organization_id` claim and TenantMiddleware will 403
+// every request they make. It exists so tests and offline dev can
+// construct a handler without a live Supabase.
+func NewWebhookHandler(db *pgxpool.Pool, webhookSecret string, admin AdminClient) *WebhookHandler {
 	if webhookSecret == "" {
 		panic("auth.NewWebhookHandler: webhookSecret is empty; set SUPABASE_WEBHOOK_SECRET before constructing the router")
 	}
 	return &WebhookHandler{
 		provisioner:   NewUserProvisioner(db),
 		webhookSecret: webhookSecret,
+		admin:         admin,
 	}
 }
 
@@ -261,7 +272,7 @@ func (h *WebhookHandler) handleAuthUserEvent(r *http.Request, recordData json.Ra
 	// no error anywhere. Checking actual ownership makes the whole handler
 	// convergent: however many times it runs, the end state is one user
 	// with one owner org.
-	hasOrg, err := h.provisioner.UserHasOwnerOrg(r.Context(), provisionedUser.ID)
+	orgID, hasOrg, err := h.provisioner.UserOwnerOrgID(r.Context(), provisionedUser.ID)
 	if err != nil {
 		return fmt.Errorf("failed to check existing organization: %w", err)
 	}
@@ -269,18 +280,53 @@ func (h *WebhookHandler) handleAuthUserEvent(r *http.Request, recordData json.Ra
 		orgName := generateOrgNameFromEmail(event.Email)
 		orgSlug := generateOrgSlugFromEmail(event.Email)
 
-		if _, err := h.provisioner.CreateOrganizationForUser(
+		orgID, err = h.provisioner.CreateOrganizationForUser(
 			r.Context(),
 			provisionedUser.ID,
 			orgName,
 			orgSlug,
-		); err != nil {
+		)
+		if err != nil {
 			return fmt.Errorf("failed to create organization: %w", err)
 		}
 	}
 
+	// Project the org onto the Supabase user, so the next access token
+	// Supabase issues carries `app_metadata.organization_id` for
+	// TenantMiddleware to read. Runs on every delivery, not just fresh
+	// provisions — an earlier delivery may have created the org and then
+	// failed this push, and only re-running it converges.
+	//
+	// Deliberately non-fatal. Our database is the source of truth; this
+	// is a projection into a system we don't control. Failing the webhook
+	// here would make Supabase retry, which is fine, but it would also
+	// mask a successful provision behind a 500. A logged failure plus the
+	// next delivery (or 19-04's select-organization) repairs it.
+	h.pushOrgContext(r, event.SupabaseUserID, orgID)
+
 	_ = isNewUser // retained for readability at the call site above
 	return nil
+}
+
+// pushOrgContext writes organization context onto the Supabase user.
+// Never returns an error — see the call site for why failures here are
+// logged rather than propagated.
+func (h *WebhookHandler) pushOrgContext(r *http.Request, supabaseUserID string, orgID uuid.UUID) {
+	if h.admin == nil {
+		log.Printf("[Webhook] no Supabase admin client configured; skipping org-context push for user %s "+
+			"(this user will have no organization_id claim until it is pushed)", supabaseUserID)
+		return
+	}
+	if orgID == uuid.Nil {
+		log.Printf("[Webhook] no organization resolved for user %s; skipping org-context push", supabaseUserID)
+		return
+	}
+	if err := h.admin.UpdateUserAppMetadata(r.Context(), supabaseUserID, map[string]any{
+		"organization_id":   orgID.String(),
+		"organization_role": "owner",
+	}); err != nil {
+		log.Printf("[Webhook] failed to push org context to Supabase for user %s: %v", supabaseUserID, err)
+	}
 }
 
 // emailLocalPart returns the portion of an address before the `@`, and
