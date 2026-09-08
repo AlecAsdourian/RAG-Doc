@@ -33,9 +33,49 @@ func NewRouter(dbpool *pgxpool.Pool, ragClient *client.RAGClient, authConfig *au
 }
 
 // NewRouterWithValidator builds the router with a caller-supplied token
-// validator. Same middleware chain and routes as NewRouter; only the
-// bearer-token verifier is swappable.
+// validator, constructing the Supabase admin client from the environment.
+// Same middleware chain and routes as NewRouter; only the bearer-token
+// verifier is swappable.
 func NewRouterWithValidator(dbpool *pgxpool.Pool, ragClient *client.RAGClient, jwtValidator auth.TokenValidator, cfg Config) chi.Router {
+	// Supabase admin client — writes organization context onto the Supabase
+	// user, which is what puts `app_metadata.organization_id` into the JWT
+	// that TenantMiddleware reads. Optional: without SUPABASE_URL and
+	// SUPABASE_SERVICE_ROLE_KEY we warn loudly and run degraded rather than
+	// refusing to start, so tests and offline dev still work. Degraded means
+	// provisioned users receive no org claim, cannot switch organizations,
+	// and are denied every tenant-scoped route.
+	var adminClient auth.AdminClient
+	supabaseURL := os.Getenv("SUPABASE_URL")
+	serviceRoleKey := os.Getenv("SUPABASE_SERVICE_ROLE_KEY")
+	if supabaseURL != "" && serviceRoleKey != "" {
+		adminClient = auth.NewAdminClient(supabaseURL, serviceRoleKey)
+	} else {
+		slog.Warn("SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY unset; provisioned users " +
+			"will NOT receive an organization_id claim and will be denied tenant-scoped routes")
+	}
+	return NewRouterWithValidatorAndAdmin(dbpool, ragClient, jwtValidator, adminClient, cfg)
+}
+
+// NewRouterWithValidatorAndAdmin builds the router with both the token
+// validator and the Supabase admin client supplied by the caller.
+//
+// The admin seam exists for tests. Two endpoints write organization context
+// to Supabase — the signup webhook and POST /api/user/select-organization —
+// and what they write is a security property, not an implementation detail:
+// the claim decides which tenant's data the caller reaches on their next
+// token. A test that cannot observe that write cannot verify it, which is
+// how the role-carryover escalation in 19-04's original plan would have
+// shipped unnoticed.
+//
+// adminClient may be nil; the router runs degraded, and the endpoints that
+// need it refuse rather than reporting a success they did not perform.
+func NewRouterWithValidatorAndAdmin(
+	dbpool *pgxpool.Pool,
+	ragClient *client.RAGClient,
+	jwtValidator auth.TokenValidator,
+	adminClient auth.AdminClient,
+	cfg Config,
+) chi.Router {
 	// Initialize structured logger
 	logger := httplog.NewLogger("smart-docs-api", httplog.Options{
 		JSON:            cfg.LogJSON,
@@ -50,24 +90,7 @@ func NewRouterWithValidator(dbpool *pgxpool.Pool, ragClient *client.RAGClient, j
 	// startup rather than silently accepting unsigned events.
 	webhookSecret := os.Getenv("SUPABASE_WEBHOOK_SECRET")
 	if webhookSecret == "" {
-		panic("api.NewRouterWithValidator: SUPABASE_WEBHOOK_SECRET must be set")
-	}
-	// Supabase admin client — used after provisioning to write
-	// organization context onto the Supabase user, which is what puts
-	// `app_metadata.organization_id` into the JWT that TenantMiddleware
-	// reads. Optional at construction: without SUPABASE_URL and
-	// SUPABASE_SERVICE_ROLE_KEY we warn loudly and run degraded rather
-	// than refusing to start, so tests and offline dev still work.
-	// Degraded means provisioned users receive no org claim, and every
-	// tenant-scoped request they make is denied.
-	var adminClient auth.AdminClient
-	supabaseURL := os.Getenv("SUPABASE_URL")
-	serviceRoleKey := os.Getenv("SUPABASE_SERVICE_ROLE_KEY")
-	if supabaseURL != "" && serviceRoleKey != "" {
-		adminClient = auth.NewAdminClient(supabaseURL, serviceRoleKey)
-	} else {
-		slog.Warn("SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY unset; provisioned users " +
-			"will NOT receive an organization_id claim and will be denied tenant-scoped routes")
+		panic("api.NewRouterWithValidatorAndAdmin: SUPABASE_WEBHOOK_SECRET must be set")
 	}
 
 	webhookHandler := auth.NewWebhookHandler(dbpool, webhookSecret, adminClient)
@@ -80,6 +103,11 @@ func NewRouterWithValidator(dbpool *pgxpool.Pool, ragClient *client.RAGClient, j
 
 	// Initialize chat handler
 	chatHandler := handlers.NewChatHandler(ragClient, validate)
+
+	// Multi-org endpoints. They share the admin client with the webhook —
+	// both write the same organization claim, one at signup and one when
+	// the user switches.
+	userOrgsHandler := handlers.NewUserOrgsHandler(dbpool, adminClient, validate)
 
 	r := chi.NewRouter()
 
@@ -126,6 +154,26 @@ func NewRouterWithValidator(dbpool *pgxpool.Pool, ragClient *client.RAGClient, j
 		slog.Warn("state store unavailable; OAuth routes not mounted",
 			slog.String("error", err.Error()))
 	}
+
+	// User-scoped routes: authenticated, but deliberately NOT behind
+	// TenantMiddleware.
+	//
+	// These operate on the caller's own memberships, never on tenant-scoped
+	// data, and they are the way OUT of having no organization claim. Put
+	// them behind TenantMiddleware and a user whose claim is missing —
+	// mid-provisioning, or whose org-context push failed — would be 403'd
+	// by the very endpoints that exist to fix that. Each handler scopes its
+	// own queries to the caller's `sub`; there is no request-controlled
+	// input naming a user or an org to read.
+	r.Group(func(r chi.Router) {
+		r.Use(auth.JWTAuthMiddleware(jwtValidator))
+
+		r.With(middleware.Timeout(60*time.Second)).Route("/api/user", func(r chi.Router) {
+			// @skip-isolation-test: user-scoped read of the caller's own memberships, no tenant data (see 19-04)
+			r.Get("/organizations", userOrgsHandler.List)
+			r.Post("/select-organization", userOrgsHandler.Select)
+		})
+	})
 
 	// Protected routes (JWT auth + tenant isolation)
 	r.Group(func(r chi.Router) {
