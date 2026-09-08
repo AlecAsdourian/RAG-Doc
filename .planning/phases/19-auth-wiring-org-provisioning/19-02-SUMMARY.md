@@ -146,6 +146,36 @@ Local runs used `DATABASE_TEST_URL` pointed at the 17-01 testcontainers Postgres
   2. Migrate `pkg/auth/testing.go`'s `SetupTestDB` onto the 17-01 testcontainers harness so `pkg/auth` tests run without hand-set env vars — this is what would have surfaced the 17-03 breakage immediately.
   3. Consider a CI job that runs the full `go test ./...` with testcontainers, so "tests nobody runs" stops being a category.
 
+## Reviewer follow-ups (post-review, same branch)
+
+Reviewer returned four blockers and three mediums, all empirically verified against the live container rather than reasoned from docs. Option 2 applied per user decision: all four blockers plus the two substantive mediums. Two of the blockers were damage this PR's own "fixes" introduced.
+
+**H1 — the trigger-disable cleanup was worse than the bug it fixed**
+- **Was:** `CleanupTestDB` used `ALTER TABLE ... DISABLE TRIGGER`. Reviewer confirmed empirically that this writes `pg_trigger.tgenabled='D'` — durable catalog state surviving session close and process exit. Because the 17-01 container is reused across `go test` runs with Ryuk disabled, a panic or timeout between disable and re-enable would **permanently disarm tenant isolation** for every later run on that container, turning real failures into silent passes. Even on the happy path the window was global: parallel packages could observe a disabled trigger.
+- **Now:** `SET LOCAL session_replication_role = replica` inside a transaction. Same trigger suppression, but transaction-scoped — it cannot outlive the tx however the process dies. Verified post-run: all six `trg_assert_tenant` triggers report `tgenabled='O'`.
+
+**H2 — the repaired cleanup began executing unfiltered cross-tenant deletes**
+- **Was:** `DELETE FROM users` etc. with no `WHERE`. They previously no-opped because every error was discarded; repairing the error handling made them live. Pointed at the shared container they wipe every row, including concurrently-running packages' in-flight fixtures.
+- **Now:** `SetupTestDB` records a watermark from the database clock; every delete is scoped `WHERE created_at >= $1`. Residual caveat documented in the function doc: the watermark bounds by time window, not by ownership, so a package running concurrently *within that window* could still lose fixtures. The real fix remains follow-up 2 (migrate onto the 17-01 harness, which scopes by tenant id).
+
+**H3 — a user could end up permanently organization-less**
+- **Was:** org creation was gated on `isNewUser`. If it failed after the user row committed: 500 → Supabase retries → `created=false` → the branch is skipped → 202 returned. The user had no org, forever, and the success response stopped retries.
+- **Now:** gated on actual ownership via a new `UserHasOwnerOrg`. The handler is convergent — however many times it runs, the end state is one user with one owner org. Pinned by `TestProvisioningIsolation_OrgCreationRecoversAfterFailure`.
+
+**H4 — email-only conflict returned a different user's row**
+- **Was:** Supabase identity Y signing up with an address owned by identity X got X's row back with `created=false` and no signal. No live takeover (the caller ignored the row on that path) but a loaded gun for 19-03, and Y silently never got a row while the webhook returned 202.
+- **Now:** the post-conflict SELECT compares `user.SupabaseUserID` against the incoming id and returns `ErrEmailOwnedByAnotherIdentity` on mismatch. The webhook maps it to **409 Conflict** — not 5xx — so Supabase stops retrying something retries cannot fix. Pinned by `TestProvisioningIsolation_EmailOwnedByAnotherIdentityIsRefused`.
+
+**M5 — added the write-direction isolation test**
+- Reviewer verified the existing `NewTenantIsWalledOff` is not vacuous (it fails if RLS breaks) but noted it treats the new org as an opaque tenant id — a random UUID behaves identically, so it re-proves a 17-01 harness property rather than anything about provisioning. Added `TestProvisioningIsolation_CannotWriteIntoNewTenantsRepo`: gives the provisioned org a real project and repository, then attempts an `ingestion_runs` insert into that repo from orgA's scope. RLS's `WITH CHECK` must refuse it.
+
+**M7 — un-skipped the two RLS-independent tests**
+- The blanket skip of all five tests in `isolation_test.go` was over-broad, and my justification was factually wrong for two of them. `TestRoleBasedAccess` and `TestMultipleOrganizationsPerUser` touch only `organization_memberships` — no RLS, no trigger — so they pass fine, and reviewer confirmed they are the only coverage anywhere for role-value storage and multi-org membership. Both un-skipped and passing. Revised recommendation: delete the three genuinely-superseded tests, keep these two.
+
+**Not applied (nits):** non-ASCII email local parts degrade to `my-org` (cosmetic + retry pressure); org display name isn't suffixed on slug collision; `t.Cleanup` registered after assertions in two tests; `SlugCollisionRecovers` hand-passes the colliding slug rather than deriving it.
+
+Post-fix state: `pkg/auth` 100% green (24 tests, 3 skipped by design), `pkg/api/handlers` and `pkg/testing/...` green, CI scanner PASS, all six triggers verified enabled after a cleanup cycle.
+
 ---
 *Phase: 19-auth-wiring-org-provisioning*
 *Completed: 2026-09-07*

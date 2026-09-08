@@ -34,6 +34,13 @@ type User struct {
 // astronomically unlikely.
 const maxSlugCollisionRetries = 3
 
+// ErrEmailOwnedByAnotherIdentity is returned by ProvisionOAuthUser when
+// the incoming address is already registered to a DIFFERENT Supabase
+// user id. Callers must not treat the situation as a replay — mapping
+// the new identity onto the existing row would hand it someone else's
+// account and organization.
+var ErrEmailOwnedByAnotherIdentity = errors.New("email registered to a different supabase identity")
+
 // ProvisionOAuthUser inserts the user identified by supabaseUserID, or
 // returns the existing row if a prior webhook already provisioned them.
 //
@@ -99,7 +106,41 @@ func (p *UserProvisioner) ProvisionOAuthUser(
 		return nil, false, fmt.Errorf("failed to fetch existing user after conflict: %w", err)
 	}
 
+	// The conflict may have been on email rather than supabase_user_id —
+	// i.e. a DIFFERENT Supabase identity already owns this address (they
+	// deleted and re-created their Supabase account, or an address was
+	// recycled). Returning that row would hand the new identity someone
+	// else's account and organization. Refuse instead of silently
+	// aliasing the two.
+	if user.SupabaseUserID != parsedID {
+		return nil, false, fmt.Errorf(
+			"%w: address %q is registered to supabase user %s, not %s",
+			ErrEmailOwnedByAnotherIdentity, email, user.SupabaseUserID, parsedID,
+		)
+	}
+
 	return &user, false, nil
+}
+
+// UserHasOwnerOrg reports whether userID already owns an organization.
+//
+// Used by the webhook to decide whether a starter org still needs
+// creating. Gating that on "did we just create the user row" is wrong:
+// if org creation fails after the user row commits, the Supabase retry
+// sees an existing user, skips org creation, and returns 202 — leaving
+// the user permanently organization-less with no further retries.
+func (p *UserProvisioner) UserHasOwnerOrg(ctx context.Context, userID uuid.UUID) (bool, error) {
+	var exists bool
+	err := p.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM organization_memberships
+			WHERE user_id = $1 AND role = 'owner'
+		)
+	`, userID).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("check existing owner org: %w", err)
+	}
+	return exists, nil
 }
 
 // CreateOrganizationForUser creates an organization and makes userID its

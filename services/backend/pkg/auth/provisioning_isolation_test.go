@@ -77,6 +77,140 @@ func TestProvisioningIsolation_NewTenantIsWalledOff(t *testing.T) {
 	})
 }
 
+// TestProvisioningIsolation_CannotWriteIntoNewTenantsRepo is the write
+// direction the plan asked for, and the one that would actually catch a
+// provisioning bug.
+//
+// The read-direction test above proves the harness's RLS filter works
+// but treats the new org as an opaque tenant id — a random UUID would
+// behave identically. This one uses the provisioned org's REAL
+// repository: from orgA's tenant scope, inserting a chunk that points at
+// the new org's repo must be refused by the RLS WITH CHECK. If
+// provisioning ever created an org whose repositories were reachable
+// from another tenant's scope, this fails.
+func TestProvisioningIsolation_CannotWriteIntoNewTenantsRepo(t *testing.T) {
+	pool := isolation.SetupTestDB(t)
+	ctx := context.Background()
+
+	isolation.WithTwoOrgs(t, pool, func(orgA, _ *isolation.TestOrg) {
+		provisioner := auth.NewUserProvisioner(pool)
+
+		user, created, err := provisioner.ProvisionOAuthUser(ctx, "github",
+			fmt.Sprintf("writeprobe-%s@example.com", uuid.NewString()[:8]),
+			"Write Probe", uuid.NewString())
+		require.NoError(t, err)
+		require.True(t, created)
+		t.Cleanup(func() { cleanupProvisionedUser(t, pool, user.ID) })
+
+		newOrgID, err := provisioner.CreateOrganizationForUser(ctx, user.ID,
+			"Write Probe Org", "writeprobe-org-"+uuid.NewString()[:8])
+		require.NoError(t, err)
+		t.Cleanup(func() { cleanupProvisionedOrg(t, pool, newOrgID) })
+
+		// Give the new org a real project + repository, under its own scope.
+		var newProjectID, newRepoID string
+		require.NoError(t, pool.QueryRow(ctx,
+			`INSERT INTO projects (organization_id, name, slug) VALUES ($1, $2, $3) RETURNING id`,
+			newOrgID, "wp-proj", "wp-proj-"+uuid.NewString()[:8],
+		).Scan(&newProjectID))
+
+		newTx, err := isolation.TenantScope(ctx, pool, newOrgID.String())
+		require.NoError(t, err)
+		require.NoError(t, newTx.QueryRow(ctx,
+			`INSERT INTO repositories (project_id, name, git_url) VALUES ($1, $2, $3) RETURNING id`,
+			newProjectID, "wp-repo", "https://example.test/wp.git",
+		).Scan(&newRepoID))
+		require.NoError(t, newTx.Commit(ctx))
+
+		// Now, scoped as orgA, attempt to write into the new org's repo.
+		// RLS's WITH CHECK on ingestion_runs must refuse it.
+		aTx, err := isolation.TenantScope(ctx, pool, orgA.ID)
+		require.NoError(t, err)
+		defer func() { _ = aTx.Rollback(ctx) }()
+
+		var runID string
+		err = aTx.QueryRow(ctx,
+			`INSERT INTO ingestion_runs (repository_id, commit_sha, branch, status)
+			 VALUES ($1, $2, $3, $4) RETURNING id`,
+			newRepoID, "0000000000000000000000000000000000000000", "main", "completed",
+		).Scan(&runID)
+
+		require.Error(t, err,
+			"orgA must NOT be able to write into a freshly-provisioned tenant's repository")
+	})
+}
+
+// TestProvisioningIsolation_EmailOwnedByAnotherIdentityIsRefused pins the
+// fix for the reviewer's finding on PR #14: an incoming Supabase identity
+// whose email is already registered to a DIFFERENT identity must be
+// refused, not silently aliased onto the existing account.
+func TestProvisioningIsolation_EmailOwnedByAnotherIdentityIsRefused(t *testing.T) {
+	pool := isolation.SetupTestDB(t)
+	ctx := context.Background()
+	provisioner := auth.NewUserProvisioner(pool)
+
+	email := fmt.Sprintf("shared-%s@example.com", uuid.NewString()[:8])
+
+	original, created, err := provisioner.ProvisionOAuthUser(ctx, "github", email, "Original", uuid.NewString())
+	require.NoError(t, err)
+	require.True(t, created)
+	t.Cleanup(func() { cleanupProvisionedUser(t, pool, original.ID) })
+
+	// A different Supabase user id, same address.
+	impostorID := uuid.NewString()
+	got, created, err := provisioner.ProvisionOAuthUser(ctx, "github", email, "Impostor", impostorID)
+
+	require.Error(t, err, "must refuse to alias a new identity onto an existing account")
+	require.ErrorIs(t, err, auth.ErrEmailOwnedByAnotherIdentity)
+	require.Nil(t, got, "must not hand back the other identity's row")
+	require.False(t, created)
+}
+
+// TestProvisioningIsolation_OrgCreationRecoversAfterFailure pins the fix
+// for the reviewer's "permanently org-less user" finding: org creation is
+// keyed off actual ownership, not off whether the user row was created on
+// this particular call. A user provisioned without an org must get one on
+// the next pass.
+func TestProvisioningIsolation_OrgCreationRecoversAfterFailure(t *testing.T) {
+	pool := isolation.SetupTestDB(t)
+	ctx := context.Background()
+	provisioner := auth.NewUserProvisioner(pool)
+
+	supabaseID := uuid.NewString()
+	email := fmt.Sprintf("recover-%s@example.com", uuid.NewString()[:8])
+
+	// First pass: user created, but org creation "fails" (we simply don't
+	// call it) — the state a 500-then-retry leaves behind.
+	user, created, err := provisioner.ProvisionOAuthUser(ctx, "github", email, "Recover User", supabaseID)
+	require.NoError(t, err)
+	require.True(t, created)
+	t.Cleanup(func() { cleanupProvisionedUser(t, pool, user.ID) })
+
+	hasOrg, err := provisioner.UserHasOwnerOrg(ctx, user.ID)
+	require.NoError(t, err)
+	require.False(t, hasOrg, "precondition: user has no org yet")
+
+	// Retry pass: provisioning reports created=false, but ownership is
+	// what gates org creation, so the org still gets made.
+	same, created, err := provisioner.ProvisionOAuthUser(ctx, "github", email, "Recover User", supabaseID)
+	require.NoError(t, err)
+	require.False(t, created, "retry sees an existing user")
+	require.Equal(t, user.ID, same.ID)
+
+	hasOrg, err = provisioner.UserHasOwnerOrg(ctx, same.ID)
+	require.NoError(t, err)
+	require.False(t, hasOrg, "still no org — this is the state the old isNewUser gate stranded users in")
+
+	orgID, err := provisioner.CreateOrganizationForUser(ctx, same.ID,
+		"Recover Org", "recover-org-"+uuid.NewString()[:8])
+	require.NoError(t, err)
+	t.Cleanup(func() { cleanupProvisionedOrg(t, pool, orgID) })
+
+	hasOrg, err = provisioner.UserHasOwnerOrg(ctx, same.ID)
+	require.NoError(t, err)
+	require.True(t, hasOrg, "org creation on the retry pass must succeed")
+}
+
 func TestProvisioningIsolation_ReplayIsIdempotent(t *testing.T) {
 	pool := isolation.SetupTestDB(t)
 	ctx := context.Background()

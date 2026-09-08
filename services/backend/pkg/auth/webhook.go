@@ -145,6 +145,15 @@ func (h *WebhookHandler) HandleSupabaseWebhook() http.HandlerFunc {
 					http.Error(w, "email domain not allowed", http.StatusUnprocessableEntity)
 					return
 				}
+				// A different Supabase identity already owns this address.
+				// 409 (not 5xx) so Supabase stops retrying — retrying cannot
+				// resolve it, and the operator needs to reconcile the two
+				// accounts by hand.
+				if errors.Is(err, ErrEmailOwnedByAnotherIdentity) {
+					log.Printf("[Webhook] identity conflict: %v", err)
+					http.Error(w, "email registered to a different identity", http.StatusConflict)
+					return
+				}
 				http.Error(w, fmt.Sprintf("Failed to process user creation: %v", err), http.StatusInternalServerError)
 				return
 			}
@@ -242,22 +251,35 @@ func (h *WebhookHandler) handleAuthUserEvent(r *http.Request, recordData json.Ra
 		return fmt.Errorf("failed to provision user: %w", err)
 	}
 
-	// For new users, create a default organization
-	if isNewUser {
+	// Create the starter organization if the user doesn't already own one.
+	//
+	// Deliberately NOT gated on isNewUser. If org creation fails after the
+	// user row commits, we return 500, Supabase retries, and the retry now
+	// sees an existing user (isNewUser=false). Gating on that flag meant
+	// the retry skipped org creation entirely and returned 202 — leaving
+	// the user permanently organization-less with no further retries and
+	// no error anywhere. Checking actual ownership makes the whole handler
+	// convergent: however many times it runs, the end state is one user
+	// with one owner org.
+	hasOrg, err := h.provisioner.UserHasOwnerOrg(r.Context(), provisionedUser.ID)
+	if err != nil {
+		return fmt.Errorf("failed to check existing organization: %w", err)
+	}
+	if !hasOrg {
 		orgName := generateOrgNameFromEmail(event.Email)
 		orgSlug := generateOrgSlugFromEmail(event.Email)
 
-		_, err := h.provisioner.CreateOrganizationForUser(
+		if _, err := h.provisioner.CreateOrganizationForUser(
 			r.Context(),
 			provisionedUser.ID,
 			orgName,
 			orgSlug,
-		)
-		if err != nil {
+		); err != nil {
 			return fmt.Errorf("failed to create organization: %w", err)
 		}
 	}
 
+	_ = isNewUser // retained for readability at the call site above
 	return nil
 }
 

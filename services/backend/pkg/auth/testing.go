@@ -4,12 +4,23 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 )
+
+// setupStart records when each pool's test began, so CleanupTestDB can
+// scope its deletes to rows created during THIS test's window instead of
+// truncating shared tables.
+//
+// Keyed by pool pointer rather than *testing.T because CleanupTestDB
+// receives the pool and the two are 1:1 per test.
+var setupStart sync.Map // *pgxpool.Pool -> time.Time
 
 // SetupTestDB creates test database connection
 // Uses DATABASE_TEST_URL env var or defaults to test DB
@@ -22,74 +33,112 @@ func SetupTestDB(t *testing.T) *pgxpool.Pool {
 	pool, err := pgxpool.New(context.Background(), dbURL)
 	require.NoError(t, err, "Failed to connect to test database")
 
+	// Read the cutoff from the database clock, not the Go process clock —
+	// the two can differ and the comparison happens server-side.
+	var now time.Time
+	require.NoError(t,
+		pool.QueryRow(context.Background(), "SELECT NOW()").Scan(&now),
+		"Failed to read database clock for cleanup watermark",
+	)
+	setupStart.Store(pool, now)
+
 	return pool
 }
 
-// tenantScopedTables carries the assert_tenant_scoped trigger from
-// migration 000009. Cleanup spans every tenant at once, so it cannot
-// satisfy the trigger by setting a single app.current_tenant — the
-// trigger is disabled for the duration instead.
+// CleanupTestDB deletes the rows this test created, then closes the pool.
 //
-// Keep in sync with the trigger attachments in
-// migrations/000009_tenant_assertion.up.sql.
-var tenantScopedTables = []string{
-	"feedback",
-	"retrievals",
-	"queries",
-	"chunks",
-	"ingestion_runs",
-	"repositories",
-}
-
-// CleanupTestDB closes the connection and truncates test data.
+// Two properties this function must have, both learned the hard way:
 //
-// Migration 000009's trigger refuses DELETE on tenant-scoped tables
-// without `app.current_tenant` set. The original version of this
-// function issued bare cross-tenant DELETEs and — because it discards
-// the error from every `db.Exec` — silently stopped deleting anything
-// the moment Phase 17-03 landed. Rows leaked between tests, and the
-// next test using a hardcoded slug hit a
-// `organizations_slug_key` unique violation.
+//  1. It must not leave the migration-000009 tenant trigger disarmed.
+//     An earlier version used `ALTER TABLE ... DISABLE TRIGGER`, which
+//     writes `pg_trigger.tgenabled='D'` — durable catalog state that
+//     survives session close AND process exit. Because the 17-01
+//     testcontainers Postgres is reused across `go test` invocations
+//     (Ryuk disabled), a panic or timeout between disable and re-enable
+//     would permanently disarm tenant isolation for every later run on
+//     that container, turning real failures into silent passes.
+//     `SET LOCAL session_replication_role = replica` achieves the same
+//     trigger suppression but is transaction-scoped: it cannot outlive
+//     the transaction, however the process dies.
 //
-// The trigger is disabled and re-enabled around the deletes. RLS is not
-// an obstacle here: the test connection is the container superuser,
-// which bypasses RLS even under FORCE.
+//  2. It must not delete other packages' rows. An earlier version issued
+//     unfiltered `DELETE FROM users` etc. Those previously no-opped
+//     (every error was discarded), so making them work turned them into
+//     a hazard: `go test ./...` runs packages in parallel against the
+//     same container, so an unscoped truncate can wipe another package's
+//     in-flight fixtures. Deletes are now scoped to rows created after
+//     this pool's SetupTestDB watermark.
+//
+// Residual caveat: the watermark bounds deletes to this test's time
+// window, not to this test's rows, so a package running concurrently
+// *within that same window* could still lose fixtures. The real fix is
+// migrating this helper onto the 17-01 harness (which scopes cleanup by
+// tenant id) — tracked as follow-up 2 in 19-02-SUMMARY.md.
 func CleanupTestDB(t *testing.T, db *pgxpool.Pool) {
 	ctx := context.Background()
+	defer db.Close()
+	defer setupStart.Delete(db)
 
-	for _, tbl := range tenantScopedTables {
-		if _, err := db.Exec(ctx, fmt.Sprintf("ALTER TABLE %s DISABLE TRIGGER trg_assert_tenant", tbl)); err != nil {
-			t.Logf("CleanupTestDB: could not disable trigger on %s: %v", tbl, err)
-		}
+	since, ok := setupStart.Load(db)
+	if !ok {
+		t.Logf("CleanupTestDB: no setup watermark for this pool; skipping cleanup to avoid an unscoped delete")
+		return
 	}
-	defer func() {
-		for _, tbl := range tenantScopedTables {
-			if _, err := db.Exec(ctx, fmt.Sprintf("ALTER TABLE %s ENABLE TRIGGER trg_assert_tenant", tbl)); err != nil {
-				t.Logf("CleanupTestDB: could not re-enable trigger on %s: %v", tbl, err)
-			}
-		}
-		db.Close()
-	}()
+	watermark := since.(time.Time)
 
-	// Delete in reverse FK order. Surface failures via t.Logf rather than
-	// discarding them — a silent cleanup failure is what let this rot
-	// undetected for two phases.
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		t.Logf("CleanupTestDB: begin: %v", err)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Suppress user triggers (including assert_tenant_scoped) for this
+	// transaction only. Cleanup legitimately spans every tenant, so it
+	// cannot satisfy the trigger with a single app.current_tenant.
+	if _, err := tx.Exec(ctx, "SET LOCAL session_replication_role = replica"); err != nil {
+		t.Logf("CleanupTestDB: could not suppress triggers: %v", err)
+	}
+
+	// Delete in reverse FK order, scoped by creation time. Surface
+	// failures via t.Logf rather than discarding them — a silent cleanup
+	// failure is what let the 17-03 breakage rot undetected for two
+	// phases.
+	//
+	// retrievals and feedback have no created_at watermark of their own
+	// in the FK chain, so they are scoped through their parent query.
 	for _, stmt := range []string{
-		"DELETE FROM feedback",
-		"DELETE FROM retrievals",
-		"DELETE FROM queries",
-		"DELETE FROM chunks",
-		"DELETE FROM ingestion_runs",
-		"DELETE FROM repositories",
-		"DELETE FROM projects",
-		"DELETE FROM organization_memberships",
-		"DELETE FROM users",
-		"DELETE FROM organizations",
+		`DELETE FROM feedback WHERE retrieval_id IN (
+			SELECT r.id FROM retrievals r JOIN queries q ON r.query_id = q.id
+			WHERE q.created_at >= $1)`,
+		`DELETE FROM retrievals WHERE query_id IN (
+			SELECT id FROM queries WHERE created_at >= $1)`,
+		`DELETE FROM queries WHERE created_at >= $1`,
+		`DELETE FROM chunks WHERE created_at >= $1`,
+		`DELETE FROM ingestion_runs WHERE created_at >= $1`,
+		`DELETE FROM repositories WHERE created_at >= $1`,
+		`DELETE FROM projects WHERE created_at >= $1`,
+		`DELETE FROM organization_memberships WHERE created_at >= $1`,
+		`DELETE FROM users WHERE created_at >= $1`,
+		`DELETE FROM organizations WHERE created_at >= $1`,
 	} {
-		if _, err := db.Exec(ctx, stmt); err != nil {
-			t.Logf("CleanupTestDB: %q failed: %v", stmt, err)
+		if _, err := tx.Exec(ctx, stmt, watermark); err != nil {
+			t.Logf("CleanupTestDB: %q failed: %v", firstLineOf(stmt), err)
 		}
 	}
+
+	if err := tx.Commit(ctx); err != nil {
+		t.Logf("CleanupTestDB: commit: %v", err)
+	}
+}
+
+// firstLineOf trims a multi-line SQL statement to its first line for
+// readable log output.
+func firstLineOf(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i] + " ..."
+	}
+	return s
 }
 
 // CreateTestOrg creates test organization

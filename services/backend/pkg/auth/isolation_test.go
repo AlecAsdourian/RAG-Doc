@@ -26,13 +26,25 @@ import (
 // refuses.
 //
 // Skipping rather than deleting: removing a test file is a call for the
-// planner/user, not the worker mid-plan. Everything this file covers is
-// covered (correctly, under a non-superuser role) by:
+// planner/user, not the worker mid-plan.
+//
+// Scope note: only the RLS-dependent tests are skipped.
+// TestRoleBasedAccess and TestMultipleOrganizationsPerUser touch only
+// organization_memberships — no RLS policy, no 000009 trigger — so they
+// pass fine and are NOT skipped. An earlier revision skipped all five,
+// which was over-broad: those two are the only coverage anywhere for
+// role-value storage and multi-org membership (fixtures_test.go only
+// asserts distinct owner ids; db_assertion_test.go uses memberships
+// purely as an exemption fixture).
+//
+// The three tests that ARE skipped are covered, correctly and under a
+// non-superuser role, by:
 //   - pkg/testing/isolation/fixtures_test.go       — harness self-tests
 //   - pkg/testing/isolation/db_assertion_test.go   — trigger coverage
 //   - pkg/api/handlers/{search,chat}_isolation_test.go — endpoint coverage
 //
-// Recommended follow-up: delete this file.
+// Recommended follow-up: delete the three skipped tests and keep the two
+// membership tests, rather than deleting the whole file.
 func supersededByHarness(t *testing.T) {
 	t.Helper()
 	t.Skip("superseded by pkg/testing/isolation (Phase 17-01); see supersededByHarness doc for why this cannot pass as written")
@@ -132,7 +144,6 @@ func TestRLSWithoutTenantContext(t *testing.T) {
 
 // TestRoleBasedAccess verifies owner/admin vs member permissions
 func TestRoleBasedAccess(t *testing.T) {
-	supersededByHarness(t)
 	db := SetupTestDB(t)
 	defer CleanupTestDB(t, db)
 
@@ -171,7 +182,6 @@ func TestRoleBasedAccess(t *testing.T) {
 
 // TestMultipleOrganizationsPerUser verifies user can belong to multiple orgs
 func TestMultipleOrganizationsPerUser(t *testing.T) {
-	supersededByHarness(t)
 	db := SetupTestDB(t)
 	defer CleanupTestDB(t, db)
 
