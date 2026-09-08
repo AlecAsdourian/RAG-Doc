@@ -5,9 +5,34 @@
 //
 // A user's organization claim reaches their JWT exactly one way: the
 // signup webhook calls the Supabase admin API and writes
-// `raw_app_meta_data`. That happens once. Supabase database webhooks fire
-// once and never retry, and the trigger behind ours is AFTER INSERT on
-// auth.users — so there is one delivery per user, for all time.
+// `raw_app_meta_data`. That happens once.
+//
+// # On webhook retries — the evidence, stated honestly
+//
+// This command exists because a failed push has no automatic second
+// chance. Two facts underpin that, and they carry different weight:
+//
+//  1. VERIFIED, in this repo: the trigger is `AFTER INSERT ON auth.users`
+//     (scripts/supabase_user_trigger.sql), so exactly one
+//     `auth_user_events` row is written per user, ever. One event, one
+//     delivery attempt.
+//
+//  2. NOT INDEPENDENTLY VERIFIED: that Supabase does not retry a failed
+//     delivery. Phase 4 recorded "Supabase webhooks fire once (no
+//     automatic retry)" in 04-06-SUMMARY.md — but that same document also
+//     said to "return 500 for provisioning failures (trigger Supabase
+//     retry)", so it contradicts itself. The 500 line has been struck as
+//     the wrong half. Supabase Database Webhooks are built on pg_net,
+//     which is fire-and-forget, which is consistent with (1)'s
+//     conclusion — but that is inference, not a measurement against this
+//     project.
+//
+// The design deliberately does not depend on resolving (2). Even if
+// Supabase did retry, retries are finite and a user who exhausts them is
+// stranded identically, and users provisioned before the claim existed
+// need this command regardless. **Do not rely on webhook retry** is the
+// operative rule; whether the retry exists at all is a question worth
+// answering, tracked in 19-03-SUMMARY.md, not a load-bearing assumption.
 //
 // If that single push fails (a transient 5xx from the admin API, a network
 // blip, a deploy running without SUPABASE_SERVICE_ROLE_KEY), the user has
@@ -54,14 +79,26 @@ import (
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/auth"
 )
 
+const (
+	// setupTimeout bounds connecting and listing — one indexed query.
+	setupTimeout = 30 * time.Second
+	// minRunTimeout is the floor of the derived push budget, so a tiny
+	// database still tolerates one slow Supabase response.
+	minRunTimeout = 2 * time.Minute
+	// perUserBudget is deliberately ~20x a healthy admin PUT (~100ms). It
+	// is a ceiling that catches a genuinely wedged run, not a performance
+	// target.
+	perUserBudget = 2 * time.Second
+)
+
 func main() {
 	var (
 		dryRun = flag.Bool("dry-run", false,
 			"report what would be pushed without calling Supabase")
 		onlyUser = flag.String("user", "",
 			"repair a single Supabase user id instead of every owner")
-		timeout = flag.Duration("timeout", 5*time.Minute,
-			"overall deadline for the run")
+		timeout = flag.Duration("timeout", 0,
+			"overall deadline; 0 (default) derives one from the number of users to repair")
 	)
 	flag.Parse()
 
@@ -100,25 +137,58 @@ func run(dryRun bool, onlyUser string, timeout time.Duration) error {
 		filter = parsed
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
+	// Connecting and listing is bounded separately and tightly — it is one
+	// indexed query, and if the database is unreachable we want to know in
+	// seconds, not after the whole push budget drains.
+	setupCtx, cancelSetup := context.WithTimeout(context.Background(), setupTimeout)
+	defer cancelSetup()
 
-	pool, err := pgxpool.New(ctx, databaseURL)
+	pool, err := pgxpool.New(setupCtx, databaseURL)
 	if err != nil {
 		return fmt.Errorf("connect to database: %w", err)
 	}
 	defer pool.Close()
-	if err := pool.Ping(ctx); err != nil {
+	if err := pool.Ping(setupCtx); err != nil {
 		return fmt.Errorf("ping database: %w", err)
 	}
 
-	assignments, err := auth.NewUserProvisioner(pool).ListOwnerOrgAssignments(ctx)
+	assignments, err := auth.NewUserProvisioner(pool).ListOwnerOrgAssignments(setupCtx)
 	if err != nil {
 		return err
 	}
 
+	// Derive the push deadline from the work actually found, unless the
+	// operator pinned one.
+	//
+	// A fixed default is the wrong shape here: this command's runtime is
+	// linear in user count, so any constant is simultaneously too long for
+	// a 5-user dev database and too short for a real one — and "too short"
+	// fails silently in the worst way, stopping partway through a repair
+	// with no signal that the remaining users were never attempted. The
+	// budget below is a generous ceiling, not a target; a healthy run
+	// finishes in a fraction of it.
+	if timeout <= 0 {
+		timeout = minRunTimeout + time.Duration(len(assignments))*perUserBudget
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
 	var pushed, skipped, failed int
-	for _, a := range assignments {
+	for i, a := range assignments {
+		// Stop at the deadline instead of grinding through the remainder.
+		//
+		// Every call after the context expires fails instantly with
+		// "context deadline exceeded", so without this the run logs a
+		// FAILED line per remaining user and reports, say, 9,600 failures
+		// when the truth is "we ran out of time after 400". That number is
+		// the one an operator acts on, and it must not lie about how much
+		// is actually broken.
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("deadline reached after %d of %d users "+
+				"(%d pushed, %d failed) — re-run with a longer -timeout: %w",
+				i, len(assignments), pushed, failed, err)
+		}
+
 		if filter != uuid.Nil && a.SupabaseUserID != filter {
 			skipped++
 			continue

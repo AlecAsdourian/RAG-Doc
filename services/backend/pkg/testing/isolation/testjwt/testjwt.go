@@ -79,11 +79,12 @@ func Sign(userID, orgID, role string) string {
 // Both paths must 403, and both are now covered — this helper for the
 // realistic one, SignWithNoAppMetadata for the defensive one.
 //
-// This is the shape a real user has between "Supabase created the
-// account" and "our webhook pushed organization context back" — and the
-// shape they keep permanently if that push failed, since webhooks never
-// retry. Tests use it to assert that TenantMiddleware refuses such a
-// caller rather than defaulting them into somebody's organization.
+// Concretely, this is the shape a user holds between "Supabase created
+// the account" and "our webhook pushed organization context back", and
+// the shape they keep indefinitely if that push failed (nothing retries
+// it; see cmd/backfill-org-claims). Tests use it to assert that
+// TenantMiddleware refuses such a caller rather than defaulting them into
+// somebody's organization.
 func SignWithoutOrg(userID string) string {
 	header := map[string]string{"alg": "HS256", "typ": "JWT"}
 	now := time.Now().Unix()
