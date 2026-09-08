@@ -11,11 +11,32 @@ most common way to break auth:
 | | Holds | Where |
 |---|---|---|
 | **Application Postgres** | `users`, `organizations`, `organization_memberships`, `projects`, `repositories`, `chunks`, `ingestion_runs`, `queries`, `retrievals`, `feedback` — everything in `services/backend/migrations/` | docker-compose `postgres` service, host port **5434** |
-| **Supabase** | `auth.users` only | Hosted, `SUPABASE_URL` |
+| **Supabase** | `auth.users`, plus the signup bridge table `public.auth_user_events` | Hosted, `SUPABASE_URL` |
 
-They are bridged **one-directionally** by the webhook: Supabase fires
-`user.created` → `POST /webhooks/supabase` → our backend provisions a
-mirror user and starter organization in the application Postgres.
+`public.auth_user_events` is the one application-shaped table that
+legitimately lives in Supabase, and it is load-bearing — a trigger on
+`auth.users` writes a row, and a Supabase Database Webhook on that insert
+is what calls our backend. Supabase does not allow webhooks directly on
+the protected `auth` schema, so the bridge table exists to give the
+webhook something in `public` to fire on. It holds email,
+`supabase_user_id`, and raw signup metadata, so it is real user data:
+`scripts/supabase/001-remove-app-schema-from-supabase.sql` keeps it while
+dropping every other duplicated table, and revokes anon/authenticated
+access to it.
+
+The two stores are bridged **one-directionally**: Supabase inserts into
+`auth.users` → trigger writes `auth_user_events` → webhook POSTs
+`/webhooks/supabase` → our backend provisions a mirror user and starter
+organization in the application Postgres, then writes the organization
+back onto the Supabase user as `raw_app_meta_data`.
+
+**That webhook fires exactly once per user and never retries.** The
+trigger is `AFTER INSERT ON auth.users`, so there is one delivery per
+account for all time. If the org-context write back to Supabase fails,
+that user has no `app_metadata.organization_id` and gets a 403 on every
+tenant-scoped route, permanently — refreshing their token does not help.
+The repair is `go run ./cmd/backfill-org-claims`; see that command's doc
+comment.
 
 **Do not point `DATABASE_URL` at Supabase.** Two reasons: it mixes our
 schema into theirs, and Supabase's direct database host
@@ -150,10 +171,42 @@ with a logged warning rather than failing startup — so a missing
 docker compose up -d redis
 ```
 
+## Repairing missing organization claims
+
+A user whose org-context push failed holds a token with no
+`app_metadata.organization_id` and gets 403 on every tenant-scoped route.
+Nothing repairs this automatically — see "The two data stores" above for
+why. The fix:
+
+```bash
+# Audit first — no Supabase credentials needed, changes nothing.
+DATABASE_URL="postgres://coderag:coderag@localhost:5434/coderag?sslmode=disable" \
+  go run ./cmd/backfill-org-claims -dry-run
+
+# Repair everyone.
+DATABASE_URL=... SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
+  go run ./cmd/backfill-org-claims
+
+# Or one user, by Supabase user id.
+... go run ./cmd/backfill-org-claims -user 550e8400-e29b-41d4-a716-446655440000
+```
+
+The push is a merge, so this is idempotent and safe to run at any time,
+including against a healthy system or while the webhook is live. Run it
+after any incident touching Supabase or the webhook path — and consider
+scheduling it, since a periodic run is what turns "one shot per user"
+into something eventually consistent.
+
 ## Running tests
 
 The isolation harness (`pkg/testing/isolation`) manages its own
 throwaway Postgres via testcontainers and needs no configuration.
+
+**Run test packages serially — `go test -p 1 ./pkg/...`.** Several
+packages share one reused container, and their setup routines race on
+the same `GRANT ... ON ALL TABLES` statement; in parallel this fails
+intermittently with `tuple concurrently updated (SQLSTATE XX000)`.
+Tracked as ISS-010.
 
 The older `pkg/auth` helpers do not — they read `DATABASE_TEST_URL`
 and fall back to a host that may not exist. To run those against the

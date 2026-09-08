@@ -47,7 +47,7 @@ Progress: v1.0 MVP █░░░░░░░░ 1/9 phases complete, Phase 19 at 
 - **Cost controls:** Per-org rate limits + LLM cost caps included in v1.0 Phase 24 (mandatory; not optional)
 - **Billing:** Explicitly deferred to post-v1.0 (need traction data first)
 - **v2 door-keeping:** Every design decision noted for whether it closes GraphRAG/agent/MCP doors — chunking output events (Phase 22-04), job progress payload shape, etc.
-- **Reviewer session:** Not yet spun up; bootstrap prompt at `.planning/fleet/reviewer-session-prompt.md` will be pasted when the first code PR is about to open
+- **Reviewer session:** Live since Phase 17-01; bootstrap prompt at `.planning/fleet/reviewer-session-prompt.md`. Every code PR since has gone through it.
 
 ### Decisions (retained from v0.9)
 
@@ -76,6 +76,8 @@ Recent decisions still affecting current work:
 - **ISS-007:** JWT-carried tenant claim — **✅ closed 2026-09-08** in Phase 19-03. Tenant identity now comes only from the Supabase-signed `app_metadata.organization_id` claim; the `X-Organization-ID` path is deleted, including from CORS. Closed without the per-request membership re-check the original filing called for — reasoning in ISSUES.md and 19-03-SUMMARY.md.
 - **ISS-008:** Request-scoped tenant transaction for DB-hitting endpoints — **filed 2026-09-06** during 17-02; must resolve before any Phase 20+ handler reads a tenant-scoped table directly from Go. See ISSUES.md.
 - **ISS-009:** `pkg/vectordb` does not compile against its pinned Qdrant client — **filed 2026-09-08** during 19-03. Pre-existing since Phase 3; blocks whole-module `go build ./...` as a CI gate. See ISSUES.md.
+- **ISS-010:** Isolation harness setup races when test packages run in parallel — **filed 2026-09-08** during 19-03. Use `go test -p 1` until fixed; blocks parallel CI. See ISSUES.md.
+- **ISS-011:** OAuth callback routes are live and broken, and bypass the org-context push — **filed 2026-09-08** during 19-03 review. Mounted whenever Redis is up; every completed GitHub callback is a 500. See ISSUES.md.
 - **Frontend inline-style pollution** — ongoing rule, cleaned per component touched
 - **Mocked repos/orgs/graph in frontend** — **replaced in Phase 23**
 

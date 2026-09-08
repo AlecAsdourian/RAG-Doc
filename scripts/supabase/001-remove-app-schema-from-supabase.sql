@@ -59,23 +59,44 @@ ORDER BY c.relname;
 -- 1b. Anything referencing the tables we are about to drop, from OUTSIDE
 --     the set. If this returns rows, STOP and reassess — something you
 --     did not expect depends on this schema.
+--
+--     EVERY table reference here is schema-qualified, and that is the
+--     whole point. This database has a schema named `auth` containing
+--     Supabase's own `auth.users`. An earlier version of this query
+--     matched on `tgt.relname` alone, so `'users'` matched BOTH
+--     `public.users` (the duplicate we are dropping) and `auth.users`
+--     (load-bearing, never to be touched). It reported Supabase's own
+--     foreign keys as dependencies and read exactly like "dropping this
+--     will break authentication."
+--
+--     A false alarm here is expensive: it stops a correct cleanup, or
+--     worse, trains the operator to ignore the check.
 SELECT
-    con.conname            AS constraint_name,
-    src.relname            AS referencing_table,
-    tgt.relname            AS referenced_table
+    con.conname                       AS constraint_name,
+    sn.nspname || '.' || src.relname  AS referencing_table,
+    tn.nspname || '.' || tgt.relname  AS referenced_table
 FROM pg_constraint con
-JOIN pg_class src ON src.oid = con.conrelid
-JOIN pg_class tgt ON tgt.oid = con.confrelid
-JOIN pg_namespace sn ON sn.oid = src.relnamespace
+JOIN pg_class     src ON src.oid = con.conrelid
+JOIN pg_class     tgt ON tgt.oid = con.confrelid
+JOIN pg_namespace sn  ON sn.oid  = src.relnamespace
+JOIN pg_namespace tn  ON tn.oid  = tgt.relnamespace
 WHERE con.contype = 'f'
+  -- referenced side: only the public-schema duplicates we are dropping
+  AND tn.nspname = 'public'
   AND tgt.relname IN (
         'users','organizations','organization_memberships','projects',
         'repositories','ingestion_runs','chunks','queries','retrievals',
         'feedback','schema_migrations')
-  AND src.relname NOT IN (
-        'users','organizations','organization_memberships','projects',
-        'repositories','ingestion_runs','chunks','queries','retrievals',
-        'feedback','schema_migrations')
+  -- referencing side: anything that is NOT itself one of those tables.
+  -- A reference from another schema entirely is exactly what we want to
+  -- see, so the exclusion is scoped to public as well.
+  AND NOT (
+        sn.nspname = 'public'
+        AND src.relname IN (
+            'users','organizations','organization_memberships','projects',
+            'repositories','ingestion_runs','chunks','queries','retrievals',
+            'feedback','schema_migrations')
+      )
 ORDER BY 1;
 
 -- 1c. Confirm the signup bridge exists and note what feeds it. These

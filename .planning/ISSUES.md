@@ -81,6 +81,29 @@ Enhancements discovered during execution. Not critical - address in future phase
   - Configure webhook URL in Supabase dashboard
   - Update frontend to use Supabase JS client for OAuth
 
+### ISS-011: OAuth callback routes are live and broken, and bypass org-context push
+
+- **Discovered:** Phase 19-03 review (2026-09-08)
+- **Type:** Correctness / Dead-but-reachable code
+- **Priority:** MEDIUM — a live 500, on routes that are mounted whenever Redis is up
+- **Description:** `/auth/github/callback` and `/auth/gitlab/callback` are mounted by `pkg/api/router.go` whenever a Redis state store is reachable. They call `ProvisionOAuthUser` with `fmt.Sprintf("%d", githubUser.ID)` (`pkg/auth/handlers.go`), a numeric GitHub id. Since 19-02, `ProvisionOAuthUser` runs `uuid.Parse` on that argument, so the call cannot succeed — every completed GitHub OAuth callback is a 500.
+- **Second problem:** even if it worked, this is a provisioning path that never calls `pushOrgContext`, so a user created through it would have no `app_metadata.organization_id` and would be locked out of every tenant-scoped route.
+- **Impact:** Today, low — the intended signup path is Supabase-native (ISS-005), and these handlers were explicitly kept as "reference implementation" in Phase 4. But they are *mounted*, not commented out, so they are reachable in any environment with Redis.
+- **Options:** (a) unmount them until there is a real use, (b) delete them, (c) make them a genuine second provisioning path — which means a non-UUID identity column and a shared post-provision hook that includes the org-context push.
+- **Effort:** Low for (a) or (b); medium for (c).
+- **Related:** ISS-005.
+
+### ISS-010: Isolation harness setup races when test packages run in parallel
+
+- **Discovered:** Phase 19-03 (2026-09-08), running several packages in one `go test` invocation
+- **Type:** Test infrastructure / Flake
+- **Priority:** MEDIUM — makes any multi-package `go test` unreliable, which blocks CI gating
+- **Description:** `pkg/testing/isolation`'s container setup runs `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO rag_doc_app` against the shared, reused testcontainers Postgres. `go test` runs packages in parallel by default, so two packages' setup routines issue that GRANT concurrently and Postgres refuses with `tuple concurrently updated (SQLSTATE XX000)`. Reproduced twice, failing a *different* package each time — a race, not a deterministic break.
+- **Workaround:** `go test -p 1 ./pkg/...` (documented in `docs/local-development.md`).
+- **Fix options:** take a Postgres advisory lock around role setup; make the grant idempotent-by-construction and retry on XX000; or give each package its own container (costly — container reuse is what keeps the suite fast).
+- **Impact:** Any CI job running the whole tree in parallel will flake. Related in spirit to the 19-02 reviewer's note that this shared container makes cross-package interference possible.
+- **Effort:** Low (advisory lock is a few lines).
+
 ### ISS-009: `pkg/vectordb` does not compile against its pinned Qdrant client
 
 - **Discovered:** Phase 19-03 (2026-09-08), while running the full backend suite
@@ -118,13 +141,16 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Resolution:** Tenant identity now comes exclusively from `app_metadata.organization_id`, a Supabase-signed claim on the access token. The header path is **deleted**, not deprecated — including from the CORS `Access-Control-Allow-Headers` list, so a client cannot even send it. A token with no organization claim gets 403 rather than defaulting into anyone's org.
 - **Files:**
   - `services/backend/pkg/auth/supabase_admin.go` (new) — writes `app_metadata` onto the Supabase user via the admin API
-  - `services/backend/pkg/auth/jwt.go` — `ExtractOrganizationID` / `ExtractOrganizationRole` read the nested claim
+  - `services/backend/pkg/auth/jwt.go` — `ExtractOrganizationID` / `ExtractOrganizationRole` read the nested claim and require a UUID
   - `services/backend/pkg/auth/middleware.go` — header read replaced by claim read
-  - `services/backend/pkg/auth/webhook.go` — pushes org context on every delivery so a failed prior push converges
+  - `services/backend/pkg/auth/webhook.go` — pushes org context after provisioning
+  - `services/backend/cmd/backfill-org-claims` (new) — the repair path for a failed push
   - `services/backend/pkg/api/router.go` — wires the admin client, drops the header from CORS
 - **Deviation from the original plan, deliberate:** no Supabase Auth Hook, and no per-request membership re-check. See the 19-03 summary for the reasoning on both; the short version is that the hook cannot reach the app's database (separate Postgres instance), and re-querying membership on every request would add a DB round-trip to the hot path to defend against an attacker who would already need Supabase's signing key.
+- **Correction to an earlier version of this entry.** It described the org-context push as converging "on every webhook delivery". That is false and was caught in review: Supabase database webhooks fire once and never retry (recorded in `04-06-SUMMARY.md`), and the trigger behind ours is `AFTER INSERT ON auth.users`, so each user gets exactly one delivery for all time. A failed push therefore leaves that user permanently claim-less. The code is replay-safe, but nothing replays it — `cmd/backfill-org-claims` is the actual repair, and it is also the migration step for users provisioned before the claim existed.
+- **Second correction.** The residual risk of skipping the per-request membership check was described as "the token lifetime window". Also false: `raw_app_meta_data` is written once and never recomputed, so Supabase re-reads the same stale value at every mint and a *refreshed* token carries the *same* organization. Removing a user from an org does not expire their claim — short token TTLs do not mitigate this at all. Nothing removes memberships today, but **19-04 must rewrite the claim on every membership change**; that, not token expiry, is what bounds the exposure.
 - **Verified:** the claim shape was confirmed against the live Supabase project by round-trip (admin write → sign in → decode token), not assumed. `testjwt.Sign` now emits the same nested shape, with a drift-guard test asserting the flat shape is *not* emitted — the pre-19-03 harness signed flat claims, so every isolation test passed against tokens production could never receive.
-- **Tests:** 10 isolation scenarios across `search_isolation_test.go` (6) and `chat_isolation_test.go` (4), all on the JWT path, including a tampered-claim scenario and a no-claim scenario.
+- **Tests:** 11 isolation scenarios across `search_isolation_test.go` (7) and `chat_isolation_test.go` (4), plus unit coverage for claim extraction. Scenario 7 is the regression guard for this very issue: with the header path re-added to the middleware, it is the only test in the suite that fails. Both it and scenario 5 were confirmed non-vacuous by mutation — breaking the middleware turns them red.
 
 ### ISS-006: Test database connectivity configuration ✅
 
