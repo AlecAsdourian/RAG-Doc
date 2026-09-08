@@ -37,11 +37,26 @@ func Sign(userID, orgID, role string) string {
 	header := map[string]string{"alg": "HS256", "typ": "JWT"}
 	now := time.Now().Unix()
 	payload := map[string]any{
-		"sub":               userID,
-		"organization_id":   orgID,
-		"organization_role": role,
-		"iat":               now,
-		"exp":               now + 3600,
+		"sub": userID,
+		// NESTED under app_metadata, matching what Supabase actually
+		// issues. Verified against the live project 2026-09-08: writing
+		// organization_id through the admin API surfaces it at
+		// app_metadata.organization_id, and no top-level organization_id
+		// claim exists. Emitting the flat shape here would let every
+		// isolation test pass against a middleware that could never read
+		// a real Supabase token.
+		//
+		// provider/providers are included because Supabase always sets
+		// them, so test tokens exercise the same "our keys sit alongside
+		// Supabase's" shape that production sees.
+		"app_metadata": map[string]any{
+			"organization_id":   orgID,
+			"organization_role": role,
+			"provider":          "email",
+			"providers":         []string{"email"},
+		},
+		"iat": now,
+		"exp": now + 3600,
 	}
 	encode := func(v any) string {
 		b, _ := json.Marshal(v)

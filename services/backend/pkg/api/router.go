@@ -161,7 +161,10 @@ func corsMiddleware(next http.Handler) http.Handler {
 		// Set CORS headers
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Webhook-Signature, X-Organization-ID")
+		// X-Organization-ID intentionally absent: Phase 19-03 removed the
+		// header path entirely. Tenant identity comes from the JWT's
+		// app_metadata claim, which a client cannot forge.
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Webhook-Signature")
 
 		// Handle preflight requests
 		if r.Method == "OPTIONS" {
