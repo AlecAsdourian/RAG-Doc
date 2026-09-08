@@ -55,16 +55,13 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Discovered:** Phase 4 (Authentication System)
 - **Type:** User Experience / Authorization
 - **Priority:** MEDIUM (functional but not production-ready)
-- **Description:** Users belonging to multiple organizations currently use `X-Organization-ID` header to select which org context to operate in. This is temporary. Production needs: (1) API endpoint to list user's organizations, (2) Frontend UI to select organization, (3) Store selection in JWT custom claims or session, (4) Middleware reads org from JWT instead of header.
-- **Impact:** Medium (multi-org users can't switch contexts easily, security concern if header can be spoofed)
-- **Effort:** Medium (backend API + JWT claims + frontend UI)
-- **Suggested phase:** Phase 5 (API Framework) for backend API, Phase 6 for frontend UI
-- **Current code:** `services/backend/pkg/auth/middleware.go` line 75 (uses `X-Organization-ID` header)
-- **Implementation:**
-  - Create `GET /user/organizations` endpoint (query organization_memberships)
-  - Create `POST /user/select-organization` endpoint (validates membership, updates session/JWT)
-  - Add `organization_id` to JWT custom claims via Supabase Auth hook
-  - Update TenantMiddleware to read org from JWT instead of header
+- **Partially resolved:** Phase 19-03 (2026-09-08) — see "Remaining scope" below.
+- **Description:** Users belonging to multiple organizations had no way to choose which org context they operate in beyond the `X-Organization-ID` header. Production needs: (1) API endpoint to list user's organizations, (2) Frontend UI to select organization, (3) Store selection in JWT custom claims or session, (4) Middleware reads org from JWT instead of header.
+- **Done in 19-03:** items (3) and (4). `app_metadata.organization_id` is written onto the Supabase user at provisioning time and read back off the verified JWT by `TenantMiddleware`; the header path is deleted, not deprecated. This closes the *security* half of the issue.
+- **Remaining scope (19-04):** items (1) and (2) — a user with two organizations still gets whichever one provisioning stamped, with no way to switch. Needs `GET /api/user/organizations`, `POST /api/user/select-organization` (validates membership, then rewrites `app_metadata.organization_id` through the same `auth.AdminClient` 19-03 added), and the frontend picker.
+- **Note on the original implementation sketch:** it called for a Supabase Auth Hook to inject the claim at token-mint time. 19-03 deliberately did not use one — the hook is a Postgres function living in the Supabase instance, and the app's data lives in a *separate* Postgres, so the hook could not see `organization_memberships` to make the decision. Writing `raw_app_meta_data` from the backend achieves the same claim with no cross-instance dependency. Cost: the claim only refreshes on token refresh, which 19-04's select-organization endpoint has to account for.
+- **Impact:** Medium (multi-org users still can't switch contexts).
+- **Effort:** Medium (backend API + frontend UI).
 
 ### ISS-005: Supabase Native OAuth webhook handler
 
@@ -84,17 +81,17 @@ Enhancements discovered during execution. Not critical - address in future phase
   - Configure webhook URL in Supabase dashboard
   - Update frontend to use Supabase JS client for OAuth
 
-### ISS-007: JWT-carried tenant claim + membership validation (supersedes header trust)
+### ISS-009: `pkg/vectordb` does not compile against its pinned Qdrant client
 
-- **Discovered:** Phase 17-02 (2026-09-06)
-- **Type:** Security / Authorization
-- **Priority:** HIGH before v1 public rollout, MEDIUM in current fleet-internal state
-- **Description:** `TenantMiddleware` currently sources the caller's tenant from the `X-Organization-ID` request header. Any authenticated user can set this header to any org id and the middleware forwards it downstream unchecked. The isolation harness pins this behavior in `search_isolation_test.go` scenario 5 (`Scenario5_HeaderTamper_HeaderCurrentlyTrusted_TODO_1903`) so a silent change in either direction is caught.
-- **Resolution plan (Phase 19-03):** Supabase Auth Hook stamps `organization_id` and `organization_role` on the JWT. TenantMiddleware reads from the claim, cross-checks against `organization_memberships`, and drops the `X-Organization-ID` header path. On completion of 19-03, update the scenario 5 assertion from 200/header-wins to 403 and add a fresh JWT-tampering scenario (sign a token with a mismatched `organization_id` claim and assert reject).
-- **Impact:** Cross-tenant access via crafted header; currently gated by "no untrusted client contact" but a leak in v1 rollout.
-- **Effort:** Medium (Supabase hook + middleware read path + membership query + fixture updates).
-- **Blocked by:** 19-01, 19-02 (auth-cluster prerequisites).
-- **Related tests to update in 19-03:** `services/backend/pkg/api/handlers/search_isolation_test.go` scenario 5, `chat_isolation_test.go` scenario 4 (add a JWT variant), `pkg/testing/isolation/testjwt` may need helpers for tampered claim minting.
+- **Discovered:** Phase 19-03 (2026-09-08), while running the full backend suite
+- **Type:** Build / Dependency drift
+- **Priority:** LOW today, BLOCKING whenever vector search is wired up
+- **Description:** `go build ./...` fails with `pkg/vectordb/client.go:18:17: undefined: qdrant.Client`. `go.mod` pins `github.com/qdrant/go-client v1.7.0`, which predates the high-level `qdrant.Client` type the package imports (introduced in a later minor). The package has not been touched since Phase 3 (`3c47b7e`), so it has almost certainly never compiled since the dependency was pinned — nothing imports it yet, so nothing surfaced it.
+- **Why it went unnoticed:** no other package imports `pkg/vectordb`, and the phases since have run targeted `go test ./pkg/...` on specific packages rather than the whole module.
+- **Impact:** `go build ./...` and `go test ./...` are red at the module level, which means CI cannot use the whole-module form as a gate until this is fixed. No runtime impact — the package is dead code today.
+- **Effort:** Low-to-medium. Either bump `go-client` to a version that exports `qdrant.Client` and fix the call sites, or rewrite `pkg/vectordb` against the v1.7 gRPC-level API.
+- **Suggested phase:** whichever phase first wires vector search through Go (or an infrastructure cleanup pass before CI gating).
+- **Not fixed in 19-03:** out of scope and unrelated to auth; fixing it would have meant a dependency bump inside a security PR.
 
 ### ISS-008: Request-scoped tenant transaction for DB-hitting endpoints
 
@@ -110,6 +107,24 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Related code:** `services/backend/pkg/auth/middleware.go` (TenantMiddleware, currently a context-only pass-through with a `_ = db` reserved for this work).
 
 ## Closed Enhancements
+
+### ISS-007: JWT-carried tenant claim (supersedes header trust) ✅
+
+- **Discovered:** Phase 17-02 (2026-09-06)
+- **Closed:** 2026-09-08 (Phase 19-03)
+- **Type:** Security / Authorization
+- **Priority:** HIGH before v1 public rollout
+- **Original problem:** `TenantMiddleware` sourced the caller's tenant from the `X-Organization-ID` request header. Any authenticated user could set it to any org id and the middleware forwarded it downstream unchecked — a valid login for one organization could read another organization's data. 17-02 pinned the behavior in `search_isolation_test.go` scenario 5 rather than leaving it undetected.
+- **Resolution:** Tenant identity now comes exclusively from `app_metadata.organization_id`, a Supabase-signed claim on the access token. The header path is **deleted**, not deprecated — including from the CORS `Access-Control-Allow-Headers` list, so a client cannot even send it. A token with no organization claim gets 403 rather than defaulting into anyone's org.
+- **Files:**
+  - `services/backend/pkg/auth/supabase_admin.go` (new) — writes `app_metadata` onto the Supabase user via the admin API
+  - `services/backend/pkg/auth/jwt.go` — `ExtractOrganizationID` / `ExtractOrganizationRole` read the nested claim
+  - `services/backend/pkg/auth/middleware.go` — header read replaced by claim read
+  - `services/backend/pkg/auth/webhook.go` — pushes org context on every delivery so a failed prior push converges
+  - `services/backend/pkg/api/router.go` — wires the admin client, drops the header from CORS
+- **Deviation from the original plan, deliberate:** no Supabase Auth Hook, and no per-request membership re-check. See the 19-03 summary for the reasoning on both; the short version is that the hook cannot reach the app's database (separate Postgres instance), and re-querying membership on every request would add a DB round-trip to the hot path to defend against an attacker who would already need Supabase's signing key.
+- **Verified:** the claim shape was confirmed against the live Supabase project by round-trip (admin write → sign in → decode token), not assumed. `testjwt.Sign` now emits the same nested shape, with a drift-guard test asserting the flat shape is *not* emitted — the pre-19-03 harness signed flat claims, so every isolation test passed against tokens production could never receive.
+- **Tests:** 10 isolation scenarios across `search_isolation_test.go` (6) and `chat_isolation_test.go` (4), all on the JWT path, including a tampered-claim scenario and a no-claim scenario.
 
 ### ISS-006: Test database connectivity configuration ✅
 

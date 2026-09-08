@@ -5,17 +5,19 @@
 See: .planning/PROJECT.md (updated 2026-01-08; product-vision reframe recorded in memory at `product_vision.md`, 2026-09-03)
 
 **Core value:** Persistent, shared, code-aware memory substrate for parallel AI coding agents. v1.0 ships as a smart docs platform (hybrid RAG over connected code repos) — the foundation the substrate is built on.
-**Current focus:** Milestone v1.0 MVP — first shippable version. First phase up: Phase 17 (Multi-tenant Isolation Foundation).
+**Current focus:** Milestone v1.0 MVP — first shippable version. In flight: Phase 19 (Auth Wiring & Org Provisioning).
 
 ## Current Position
 
 Milestone: v1.0 MVP (9 phases: 17-25)
-Phase: 17 COMPLETE — Multi-tenant Isolation Foundation
-Plan: 5 of 5 executed (17-01 through 17-05)
-Status: Phase 17 closed 2026-09-06. Phase 18 deprioritized. Next: Phase 19 (Auth).
-Last activity: 2026-09-06 — 17-05 CI gate + docs shipped as PR #11
+Phase: 19 IN PROGRESS — Auth Wiring & Org Provisioning
+Plan: 3 of 4 executed (19-01, 19-02, 19-03). Next: 19-04 (multi-org endpoints).
+Status: Phase 17 closed 2026-09-06. Phase 18 deprioritized. 19-03 removes the last cross-tenant hole in the request path.
+Last activity: 2026-09-08 — 19-03 JWT organization claim opened as a PR
 
-Progress: v1.0 MVP █░░░░░░░░ 1/9 phases (Phase 19 next; Phase 18 Observability deferred — see project_phase18_deprioritized memory)
+Progress: v1.0 MVP █░░░░░░░░ 1/9 phases complete, Phase 19 at 3/4 plans (Phase 18 Observability deferred — see project_phase18_deprioritized memory)
+
+**Note on this section's history:** 19-01 and 19-02 both shipped without updating STATE.md, so this file sat two plans stale. Brought current in 19-03.
 
 ## Performance Metrics
 
@@ -68,11 +70,12 @@ Recent decisions still affecting current work:
 
 - **ISS-001:** Shared type definitions for cross-phase data contracts — surface again during Phase 18 (structured logging conventions) or Phase 20 (repos API shape)
 - **ISS-002:** Cross-phase verification pattern in planning workflow — template updated; apply to all v1.0 plans
-- **ISS-004:** Org selection mechanism — **scheduled: Phase 19-03 and 19-04**
+- **ISS-004:** Org selection mechanism — **security half closed 2026-09-08** in 19-03 (claim is JWT-carried, header gone); the switching UX (list orgs + select org) remains, **scheduled: Phase 19-04**
 - **ISS-005:** Supabase Native OAuth webhook handler — **scheduled: Phase 19-01**
 - **ISS-006:** Test database connectivity — **✅ closed 2026-09-05** in Phase 17-01 via testcontainers-go harness (`pkg/testing/isolation`); see ISSUES.md
-- **ISS-007:** JWT-carried tenant claim + membership validation — **filed 2026-09-06** during 17-02; scheduled for Phase 19-03 (supersedes X-Organization-ID header trust). See ISSUES.md.
+- **ISS-007:** JWT-carried tenant claim — **✅ closed 2026-09-08** in Phase 19-03. Tenant identity now comes only from the Supabase-signed `app_metadata.organization_id` claim; the `X-Organization-ID` path is deleted, including from CORS. Closed without the per-request membership re-check the original filing called for — reasoning in ISSUES.md and 19-03-SUMMARY.md.
 - **ISS-008:** Request-scoped tenant transaction for DB-hitting endpoints — **filed 2026-09-06** during 17-02; must resolve before any Phase 20+ handler reads a tenant-scoped table directly from Go. See ISSUES.md.
+- **ISS-009:** `pkg/vectordb` does not compile against its pinned Qdrant client — **filed 2026-09-08** during 19-03. Pre-existing since Phase 3; blocks whole-module `go build ./...` as a CI gate. See ISSUES.md.
 - **Frontend inline-style pollution** — ongoing rule, cleaned per component touched
 - **Mocked repos/orgs/graph in frontend** — **replaced in Phase 23**
 
@@ -84,22 +87,27 @@ Recent decisions still affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-03
-Stopped at: Phase 17 fully planned (5 PLAN.md files); ready for worker session to execute 17-01
+Last session: 2026-09-08
+Stopped at: 19-03 executed and opened as a PR; reviewer launched
 Resume file: None
 
-Next command suggested: `/gsd:execute-plan .planning/phases/17-tenant-isolation-foundation/17-01-PLAN.md` — recommend clearing context first (`/clear`), then spinning up a fresh worker session for execution. Reviewer session should be spun up before 17-01's PR opens (bootstrap prompt at `.planning/fleet/reviewer-session-prompt.md`).
+Next command suggested: `/gsd:execute-plan .planning/phases/19-auth-wiring-org-provisioning/19-04-PLAN.md` after 19-03 merges. Recommend `/clear` first — 19-03 burned a lot of context on live Supabase debugging that 19-04 does not need.
+
+**Environment note (new in 19-03):** local dev now has two separate Postgres instances — Supabase's (auth only) and docker-compose's on port 5434 (all application tables). They are NOT the same database, which is why 19-03 could not use a Supabase Auth Hook. Runbook: `docs/local-development.md`. The Go backend does not read `.env`; only docker-compose does.
+
+**Known-broken, unrelated:** `go test ./...` at the module root fails to build `pkg/vectordb` (ISS-009). Use per-package invocations until that is fixed.
 
 **Fleet handoff notes for the worker session:**
-- Read `.planning/phases/17-tenant-isolation-foundation/17-CONTEXT.md` first for vision context
-- The plans lock design decisions inline (testcontainers, PL/pgSQL trigger, regex-on-diff scanner) — don't re-litigate them without cause
+- Read the phase `-CONTEXT.md` first for vision context
+- Plans lock design decisions inline — don't re-litigate them without cause
 - Every commit follows `feedback_commit_convention.md`: one sentence, conventional prefix, no attribution trailers
 - Every PR references its plan file in the description
-- All work on a feature branch → PR → reviewer session comments → planner merges after approval
+- All work on a feature branch → PR → reviewer session comments → merge after approval
+- When a plan's stated approach turns out to be impossible against the real system, revise the PLAN file with a REVISION NOTICE recording what was actually verified, then execute the revised version — do not silently improvise (pattern established in 19-03)
 
 **Fleet handoff notes for the reviewer session:**
 - Bootstrap prompt: `.planning/fleet/reviewer-session-prompt.md`
-- After 17-05 ships, the reviewer prompt gets updated with the isolation-test-coverage hard rule (a task inside 17-05 itself)
+- Isolation-test-coverage hard rule is live as of 17-05
 
 ### Roadmap Evolution
 
