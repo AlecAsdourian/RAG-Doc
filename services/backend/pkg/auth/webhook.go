@@ -261,36 +261,116 @@ func (h *WebhookHandler) handleAuthUserEvent(r *http.Request, recordData json.Ra
 	return nil
 }
 
-// generateOrgNameFromEmail generates a default organization name from email
-// e.g., "alice@example.com" → "Alice's Organization"
-func generateOrgNameFromEmail(email string) string {
-	parts := strings.Split(email, "@")
-	if len(parts) == 0 {
-		return "My Organization"
+// emailLocalPart returns the portion of an address before the `@`, and
+// whether the address had a usable local part at all.
+//
+// The `ok` return exists because `strings.Split("", "@")` returns a
+// one-element slice containing the empty string — NOT an empty slice.
+// The prior implementations guarded with `if len(parts) == 0`, which is
+// unreachable for every input, so `""` fell through and produced
+// `"-org"` / `"'s Organization"` instead of the intended fallbacks.
+// That was the long-standing TestGenerateOrgSlugFromEmail failure.
+func emailLocalPart(email string) (string, bool) {
+	at := strings.Index(email, "@")
+	if at <= 0 {
+		// No `@` at all, or the address starts with `@` (empty local part).
+		return "", false
 	}
-
-	username := parts[0]
-	// Capitalize first letter
-	if len(username) > 0 {
-		username = strings.ToUpper(username[:1]) + username[1:]
-	}
-
-	return username + "'s Organization"
+	return email[:at], true
 }
 
-// generateOrgSlugFromEmail generates a URL-safe slug from email
-// e.g., "alice@example.com" → "alice-org"
+func isASCIIAlnum(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+}
+
+// firstNameFragment returns the first run of alphanumeric characters in
+// local, skipping any leading punctuation. "bob.smith" → "bob",
+// "_leading_underscore" → "leading", "___" → "".
+func firstNameFragment(local string) string {
+	start := 0
+	for start < len(local) && !isASCIIAlnum(local[start]) {
+		start++
+	}
+	end := start
+	for end < len(local) && isASCIIAlnum(local[end]) {
+		end++
+	}
+	return local[start:end]
+}
+
+// generateOrgNameFromEmail generates a default organization name from email.
+//
+//	"alice@example.com"     → "Alice's Organization"
+//	"bob.smith@company.io"  → "Bob's Organization"   (first fragment only)
+//	""                      → "My Organization"
+func generateOrgNameFromEmail(email string) string {
+	local, ok := emailLocalPart(email)
+	if !ok {
+		return "My Organization"
+	}
+	first := firstNameFragment(local)
+	if first == "" {
+		return "My Organization"
+	}
+	return strings.ToUpper(first[:1]) + strings.ToLower(first[1:]) + "'s Organization"
+}
+
+// maxSlugFragmentLen caps the sanitized email fragment so a pathological
+// 200-character local part doesn't produce an unwieldy slug. The
+// organizations.slug column is VARCHAR-free (TEXT) but the value ends up
+// in URLs.
+const maxSlugFragmentLen = 30
+
+// sanitizeSlugFragment lowercases local and collapses every run of
+// non-`[a-z0-9]` characters into a single dash, then trims dashes from
+// both ends. Satisfies the `organizations.slug` CHECK (`^[a-z0-9-]+$`)
+// from migration 000001 and additionally avoids leading, trailing, and
+// doubled dashes.
+func sanitizeSlugFragment(local string) string {
+	var b strings.Builder
+	lastWasDash := false
+	for i := 0; i < len(local); i++ {
+		c := local[i]
+		switch {
+		case c >= 'A' && c <= 'Z':
+			b.WriteByte(c - 'A' + 'a')
+			lastWasDash = false
+		case (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'):
+			b.WriteByte(c)
+			lastWasDash = false
+		default:
+			if !lastWasDash {
+				b.WriteByte('-')
+				lastWasDash = true
+			}
+		}
+	}
+	s := strings.Trim(b.String(), "-")
+	if len(s) > maxSlugFragmentLen {
+		// Trim again after truncation — the cut can land on a dash.
+		s = strings.TrimRight(s[:maxSlugFragmentLen], "-")
+	}
+	return s
+}
+
+// generateOrgSlugFromEmail generates a URL-safe slug from email.
+//
+//	"alice@example.com"      → "alice-org"
+//	"bob.smith@company.io"   → "bob-smith-org"
+//	"admin_user@test.org"    → "admin-user-org"
+//	""                       → "my-org"
+//
+// The result is a deterministic BASE. Two users sharing an email local
+// part produce the same slug, so CreateOrganizationForUser appends a
+// random suffix on conflict rather than failing.
 func generateOrgSlugFromEmail(email string) string {
-	parts := strings.Split(email, "@")
-	if len(parts) == 0 {
+	local, ok := emailLocalPart(email)
+	if !ok {
 		return "my-org"
 	}
-
-	username := parts[0]
-	// Replace non-alphanumeric characters with hyphens
-	slug := strings.ToLower(username)
-	slug = strings.ReplaceAll(slug, ".", "-")
-	slug = strings.ReplaceAll(slug, "_", "-")
-
-	return slug + "-org"
+	fragment := sanitizeSlugFragment(local)
+	if fragment == "" {
+		return "my-org"
+	}
+	return fragment + "-org"
 }
