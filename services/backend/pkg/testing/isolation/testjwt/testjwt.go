@@ -58,6 +58,29 @@ func Sign(userID, orgID, role string) string {
 		"iat": now,
 		"exp": now + 3600,
 	}
+	return sign(header, payload)
+}
+
+// SignWithoutOrg returns a validly-signed token that carries NO
+// app_metadata claim at all.
+//
+// This is the shape a real user has between "Supabase created the
+// account" and "our webhook pushed organization context back" — and the
+// shape they keep permanently if that push failed. Tests use it to assert
+// that TenantMiddleware refuses such a caller rather than defaulting them
+// into somebody's organization.
+func SignWithoutOrg(userID string) string {
+	header := map[string]string{"alg": "HS256", "typ": "JWT"}
+	now := time.Now().Unix()
+	payload := map[string]any{
+		"sub": userID,
+		"iat": now,
+		"exp": now + 3600,
+	}
+	return sign(header, payload)
+}
+
+func sign(header map[string]string, payload map[string]any) string {
 	encode := func(v any) string {
 		b, _ := json.Marshal(v)
 		return base64.RawURLEncoding.EncodeToString(b)

@@ -7,11 +7,16 @@ package handlers_test
 // pool under isolation.TenantScope, so the RLS policy in migration 8 is
 // the last line of defense inside every scenario.
 //
-// Scenario 5 (originally: JWT tampering) is reframed to tamper the
-// X-Organization-ID header, because the current TenantMiddleware pulls
-// tenant from that header rather than from the JWT claim. The JWT-carried
-// claim ships in Phase 19-03; a followup in .planning/ISSUES.md re-runs
-// the equivalent test against that mechanism when it lands.
+// Tenant identity travels in the signed JWT's `app_metadata` claim.
+// Phase 19-03 removed the X-Organization-ID header entirely, so these
+// tests carry tenant purely via testjwt.Sign — there is no request-
+// controlled input a caller could use to redirect their own scope.
+//
+// Scenarios 4-6 were rewritten in 19-03: scenario 4 previously asserted a
+// missing header returned 400 and now asserts a token with no
+// organization claim returns 403; scenario 5 previously PINNED the
+// header-trust vulnerability as expected behavior and now asserts the
+// claim is authoritative; scenario 6 is new.
 
 import (
 	"bytes"
@@ -89,7 +94,7 @@ func TestSearchIsolation(t *testing.T) {
 
 		t.Run("Scenario1_OrgAQueriesOwnRepo_SeesOnlyOwnChunk", func(t *testing.T) {
 			body := fmt.Sprintf(`{"query":"orange","repository_id":%q}`, orgA.RepoID)
-			status, resp := doSearch(t, server.URL, orgAToken, orgA.ID, body)
+			status, resp := doSearch(t, server.URL, orgAToken, body)
 			require.Equal(t, http.StatusOK, status, "body=%s", resp.raw)
 			require.Equal(t, 1, resp.TotalResults, "orgA should see 1 marmalade chunk")
 			require.Equal(t, chunkA, resp.Results[0].ChunkID)
@@ -98,7 +103,7 @@ func TestSearchIsolation(t *testing.T) {
 
 		t.Run("Scenario2_OrgBQueriesOwnRepo_SeesOnlyOwnChunk", func(t *testing.T) {
 			body := fmt.Sprintf(`{"query":"purple","repository_id":%q}`, orgB.RepoID)
-			status, resp := doSearch(t, server.URL, orgBToken, orgB.ID, body)
+			status, resp := doSearch(t, server.URL, orgBToken, body)
 			require.Equal(t, http.StatusOK, status, "body=%s", resp.raw)
 			require.Equal(t, 1, resp.TotalResults, "orgB should see 1 velvet-cake chunk")
 			require.Contains(t, resp.Results[0].Content, "velvet")
@@ -109,48 +114,81 @@ func TestSearchIsolation(t *testing.T) {
 			// means the stub's SELECT returns 0 rows. A 200 with any of orgA's
 			// data would be a leak — the assertion below catches that.
 			body := fmt.Sprintf(`{"query":"orange","repository_id":%q}`, orgA.RepoID)
-			status, resp := doSearch(t, server.URL, orgBToken, orgB.ID, body)
+			status, resp := doSearch(t, server.URL, orgBToken, body)
 			require.Equal(t, http.StatusOK, status, "body=%s", resp.raw)
 			require.Equal(t, 0, resp.TotalResults, "orgB must NOT see orgA's chunks — this is a cross-tenant leak")
 			require.Empty(t, resp.Results)
 		})
 
-		t.Run("Scenario4_MissingTenantHeader_Rejected", func(t *testing.T) {
-			// TenantMiddleware currently sources tenant from X-Organization-ID.
-			// Omit it and the middleware must reject before the handler runs.
+		t.Run("Scenario4_TokenWithoutOrgClaim_Rejected", func(t *testing.T) {
+			// A validly-signed token carrying no app_metadata at all — the
+			// shape a user has if provisioning never ran for them, or if the
+			// Supabase org-context push failed. The middleware must refuse
+			// before the handler sees the request.
+			//
+			// Pre-19-03 this tested a missing X-Organization-ID header and
+			// expected 400. That header no longer exists. Tenant comes only
+			// from the signed claim, and its absence is 403 (authenticated,
+			// but has no organization) rather than 400 (malformed request).
 			body := fmt.Sprintf(`{"query":"orange","repository_id":%q}`, orgA.RepoID)
-			req, err := http.NewRequest(http.MethodPost, server.URL+"/api/search", strings.NewReader(body))
+			req, err := http.NewRequest(http.MethodPost, server.URL+"/api/search",
+				strings.NewReader(body))
 			require.NoError(t, err)
-			req.Header.Set("Authorization", "Bearer "+orgAToken)
+			req.Header.Set("Authorization", "Bearer "+testjwt.SignWithoutOrg(orgA.OwnerID))
 			req.Header.Set("Content-Type", "application/json")
-			// Deliberately no X-Organization-ID header.
+
 			httpResp, err := http.DefaultClient.Do(req)
 			require.NoError(t, err)
 			defer httpResp.Body.Close()
-			require.Equal(t, http.StatusBadRequest, httpResp.StatusCode,
-				"middleware must reject a request with no tenant header (currently) or claim (after 19-03)")
+			require.Equal(t, http.StatusForbidden, httpResp.StatusCode,
+				"a token with no app_metadata.organization_id must be refused")
 		})
 
-		t.Run("Scenario5_HeaderTamper_HeaderCurrentlyTrusted_TODO_1903", func(t *testing.T) {
-			// Reframed from the plan's JWT-tampering scenario. The current
-			// TenantMiddleware trusts X-Organization-ID blindly, so a client
-			// authenticated as an orgA user CAN currently obtain orgB data by
-			// setting the header to orgB's id. This test pins that behavior
-			// so a change in either direction is caught:
+		t.Run("Scenario5_TamperedOrgClaim_CannotReachOtherTenantsData", func(t *testing.T) {
+			// Replaces the pre-19-03 header-tamper scenario, which asserted
+			// that a client authenticated as orgA could read orgB's data by
+			// setting X-Organization-ID. That path is gone.
 			//
-			//   - Regression (silently drop header): scenario 1/2 break.
-			//   - Fix in 19-03 (validate membership from JWT claim): update
-			//     this assertion to expect 403.
+			// What this proves: tenant scope now travels inside the signed
+			// token, so a caller cannot redirect it with anything they
+			// control on the wire. The request below carries orgA's owner as
+			// `sub` and orgB in the org claim — and the response is scoped to
+			// the claim, never to a mix of the two.
 			//
-			// Followup filed: .planning/ISSUES.md ISS-007.
+			// What this does NOT prove, stated plainly: the middleware trusts
+			// the claim wholesale, so this token is only mintable by
+			// something holding the signing key. In production that is
+			// Supabase alone, and the membership check happens where the
+			// claim is written (the webhook's org-context push and 19-04's
+			// select-organization), not per request. Adding a per-request
+			// membership query would be defense-in-depth against an attacker
+			// who by construction already controls token issuance — a real
+			// but lower-value trade against a database round-trip on every
+			// request. Deliberate non-goal; revisit if token-signing ever
+			// moves in-house.
 			body := fmt.Sprintf(`{"query":"purple","repository_id":%q}`, orgB.RepoID)
-			// JWT identifies user as orgA owner, header claims orgB.
-			status, resp := doSearch(t, server.URL, orgAToken, orgB.ID, body)
-			require.Equal(t, http.StatusOK, status,
-				"current behavior: header wins; 19-03 must flip this to 403 or membership-check")
-			require.Equal(t, 1, resp.TotalResults, "with header-trust, orgA JWT + orgB header currently reaches orgB data")
-			require.Contains(t, resp.Results[0].Content, "velvet",
-				"header-trusted path returned orgB's chunk to a user JWT'd for orgA")
+			tampered := testjwt.Sign(orgA.OwnerID, orgB.ID, "owner")
+
+			status, resp := doSearch(t, server.URL, tampered, body)
+			require.Equal(t, http.StatusOK, status, "body=%s", resp.raw)
+
+			// Scoped strictly to the claim: orgB's chunk, never orgA's.
+			for _, r := range resp.Results {
+				require.NotContains(t, r.Content, "marmalade",
+					"orgA's data must never appear under an orgB-scoped token")
+			}
+		})
+
+		t.Run("Scenario6_OrgAClaimNeverSeesOrgBData", func(t *testing.T) {
+			// The complement of scenario 5, and the one that would catch a
+			// middleware that ignored the claim entirely and fell back to
+			// something request-controlled. OrgA's token asking for orgB's
+			// repo must come back empty.
+			body := fmt.Sprintf(`{"query":"purple","repository_id":%q}`, orgB.RepoID)
+			status, resp := doSearch(t, server.URL, orgAToken, body)
+			require.Equal(t, http.StatusOK, status, "body=%s", resp.raw)
+			require.Equal(t, 0, resp.TotalResults,
+				"orgA's token must not reach orgB's repository")
 		})
 	})
 }
@@ -230,12 +268,11 @@ func queryChunksUnderTenant(ctx context.Context, pool *pgxpool.Pool, orgID, repo
 // doSearch POSTs a search request through the real router and decodes
 // the SearchResponseBody. Returns the raw status plus a partially decoded
 // response so tests can assert on TotalResults and Results.
-func doSearch(t *testing.T, baseURL, token, orgHeader, body string) (int, decodedSearch) {
+func doSearch(t *testing.T, baseURL, token, body string) (int, decodedSearch) {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, baseURL+"/api/search", strings.NewReader(body))
 	require.NoError(t, err)
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Organization-ID", orgHeader)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)
