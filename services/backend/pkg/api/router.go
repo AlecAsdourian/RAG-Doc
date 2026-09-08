@@ -52,7 +52,25 @@ func NewRouterWithValidator(dbpool *pgxpool.Pool, ragClient *client.RAGClient, j
 	if webhookSecret == "" {
 		panic("api.NewRouterWithValidator: SUPABASE_WEBHOOK_SECRET must be set")
 	}
-	webhookHandler := auth.NewWebhookHandler(dbpool, webhookSecret)
+	// Supabase admin client — used after provisioning to write
+	// organization context onto the Supabase user, which is what puts
+	// `app_metadata.organization_id` into the JWT that TenantMiddleware
+	// reads. Optional at construction: without SUPABASE_URL and
+	// SUPABASE_SERVICE_ROLE_KEY we warn loudly and run degraded rather
+	// than refusing to start, so tests and offline dev still work.
+	// Degraded means provisioned users receive no org claim, and every
+	// tenant-scoped request they make is denied.
+	var adminClient auth.AdminClient
+	supabaseURL := os.Getenv("SUPABASE_URL")
+	serviceRoleKey := os.Getenv("SUPABASE_SERVICE_ROLE_KEY")
+	if supabaseURL != "" && serviceRoleKey != "" {
+		adminClient = auth.NewAdminClient(supabaseURL, serviceRoleKey)
+	} else {
+		slog.Warn("SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY unset; provisioned users " +
+			"will NOT receive an organization_id claim and will be denied tenant-scoped routes")
+	}
+
+	webhookHandler := auth.NewWebhookHandler(dbpool, webhookSecret, adminClient)
 
 	// Initialize request validator
 	validate := validator.New()
@@ -143,7 +161,10 @@ func corsMiddleware(next http.Handler) http.Handler {
 		// Set CORS headers
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Webhook-Signature, X-Organization-ID")
+		// X-Organization-ID intentionally absent: Phase 19-03 removed the
+		// header path entirely. Tenant identity comes from the JWT's
+		// app_metadata claim, which a client cannot forge.
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Webhook-Signature")
 
 		// Handle preflight requests
 		if r.Method == "OPTIONS" {

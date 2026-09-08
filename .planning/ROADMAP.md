@@ -86,10 +86,16 @@ Plans:
 **Plans:** TBD (target 4 plans)
 
 Plans:
-- [ ] 19-01: Wire OAuth handlers + Supabase webhook — mount handlers in `pkg/api/router.go`, implement `POST /webhooks/supabase` receiver with HMAC signature verification (ISS-005)
-- [ ] 19-02: Org auto-provisioning — on `user.created` webhook, call `ProvisionOAuthUser` + `CreateOrganizationForUser`; idempotent so replays are safe
-- [ ] 19-03: JWT custom claim for org — Supabase Auth Hook adds `organization_id` and `organization_role` to JWT; backend middleware reads from JWT (removes `X-Organization-ID` header; resolves ISS-004)
+- [x] 19-01: Wire OAuth handlers + Supabase webhook — mount handlers in `pkg/api/router.go`, implement `POST /webhooks/supabase` receiver with HMAC signature verification (ISS-005)
+- [x] 19-02: Org auto-provisioning — on `user.created` webhook, call `ProvisionOAuthUser` + `CreateOrganizationForUser`; idempotent so replays are safe
+- [x] 19-03: JWT custom claim for org — **backend writes `raw_app_meta_data` via the Supabase admin API** (NOT an Auth Hook — see below); middleware reads `app_metadata.organization_id` from the verified JWT; `X-Organization-ID` header deleted. Closes ISS-007 and the security half of ISS-004.
 - [ ] 19-04: Multi-org handling — `GET /api/user/organizations`, `POST /api/user/select-organization`; frontend `OrgSelectPage` wires to real data (frontend work continues in Phase 23)
+
+**19-03 course correction — read before planning 19-04.** This line originally said "Supabase Auth Hook adds `organization_id`". That is impossible in this architecture: the hook is a Postgres function running inside Supabase's database, and `organization_memberships` lives in a *different* Postgres instance (docker-compose, port 5434), so the hook cannot query the table it would need. Verified during 19-03; full reasoning in `19-03-SUMMARY.md`.
+
+Two consequences 19-04 inherits:
+1. The claim is written once and never recomputed, so **changing a user's organization requires an explicit rewrite plus a token refresh** — `select-organization` must do both.
+2. There is no automatic repair if a write fails (Supabase webhooks never retry). `cmd/backfill-org-claims` is the repair path.
 
 ### Phase 20: Repository Integration Backend
 

@@ -6,13 +6,18 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lestrrat-go/jwx/v3/jwt"
 )
 
 type contextKey string
 
 const (
-	UserIDKey contextKey = "user_id"
-	OrgIDKey  contextKey = "org_id"
+	UserIDKey  contextKey = "user_id"
+	OrgIDKey   contextKey = "org_id"
+	OrgRoleKey contextKey = "org_role"
+	// TokenKey carries the validated jwt.Token so middleware downstream of
+	// JWTAuthMiddleware can read claims without re-parsing or re-verifying.
+	TokenKey contextKey = "jwt_token"
 )
 
 // JWTAuthMiddleware validates JWT and extracts user_id.
@@ -51,21 +56,34 @@ func JWTAuthMiddleware(validator TokenValidator) func(http.Handler) http.Handler
 				return
 			}
 
-			// Add to context
+			// Stash both the user id and the whole validated token.
+			// TenantMiddleware reads organization claims off the token, and
+			// re-parsing there would mean validating the signature twice.
 			ctx := context.WithValue(r.Context(), UserIDKey, userID)
+			ctx = context.WithValue(ctx, TokenKey, token)
 
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
 
-// TenantMiddleware extracts the caller's organization and stores it on the
-// request context under OrgIDKey so downstream handlers can propagate it
-// (currently to the RAG client; later, to per-request DB transactions).
+// TenantMiddleware reads the caller's organization out of the validated
+// JWT and stores it on the request context for downstream handlers.
 //
-// The tenant id comes from the X-Organization-ID header today. Phase 19-03
-// moves the source-of-truth to a JWT custom claim + membership check; that
-// change is scoped to this function's header-read block.
+// Tenant identity comes exclusively from `app_metadata.organization_id`,
+// a Supabase-issued, signature-verified claim. There is deliberately NO
+// header fallback: until Phase 19-03 this function read
+// `X-Organization-ID`, which any authenticated caller could set to any
+// value — meaning a valid login for one organization could read another
+// organization's data. That path is gone, not deprecated.
+//
+// The claim is trusted wholesale rather than re-checked against
+// organization_memberships on every request. The membership check happens
+// where the claim is WRITTEN (the webhook's org-context push, and 19-04's
+// select-organization endpoint), and only something holding Supabase's
+// signing key can mint a token at all. Re-querying per request would add
+// a database round-trip to the hot path to defend against an attacker who,
+// by construction, would already have to control token issuance.
 //
 // Note on the db argument: earlier drafts of this middleware tried to
 // SET LOCAL app.current_tenant on a pool-acquired connection here. That
@@ -80,19 +98,27 @@ func TenantMiddleware(db *pgxpool.Pool) func(http.Handler) http.Handler {
 	_ = db // TODO(17-03/ISS-008): wire request-scoped tenant tx here
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_, ok := r.Context().Value(UserIDKey).(string)
+			token, ok := r.Context().Value(TokenKey).(jwt.Token)
 			if !ok {
-				http.Error(w, "Missing user context", http.StatusInternalServerError)
+				// JWTAuthMiddleware must run first; if it didn't, that's a
+				// wiring bug rather than anything the caller did.
+				http.Error(w, "Missing token context", http.StatusInternalServerError)
 				return
 			}
 
-			orgID := r.Header.Get("X-Organization-ID")
-			if orgID == "" {
-				http.Error(w, "Missing organization context", http.StatusBadRequest)
+			orgID, err := ExtractOrganizationID(token)
+			if err != nil {
+				http.Error(w, "No active organization for this user", http.StatusForbidden)
 				return
 			}
+
+			// Role is advisory today — no handler gates on it yet — so a
+			// token carrying an org but no role is allowed through with an
+			// empty role rather than being refused outright.
+			role, _ := ExtractOrganizationRole(token)
 
 			ctx := context.WithValue(r.Context(), OrgIDKey, orgID)
+			ctx = context.WithValue(ctx, OrgRoleKey, role)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

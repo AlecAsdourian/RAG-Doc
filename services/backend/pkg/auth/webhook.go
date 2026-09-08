@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -73,20 +75,30 @@ type SupabaseAuthUser struct {
 type WebhookHandler struct {
 	provisioner   *UserProvisioner
 	webhookSecret string
+	admin         AdminClient
 }
 
-// NewWebhookHandler creates a webhook handler with the given secret.
+// NewWebhookHandler creates a webhook handler with the given secret and
+// Supabase admin client.
 //
 // Panics if webhookSecret is empty. Callers (currently pkg/api/router.go)
 // read the secret from env at startup and fail loudly rather than let a
 // misconfigured deployment silently accept unsigned payloads.
-func NewWebhookHandler(db *pgxpool.Pool, webhookSecret string) *WebhookHandler {
+//
+// `admin` may be nil, in which case the org-context push to Supabase is
+// skipped with a log line. That is a degraded mode, not a supported one:
+// without the push, provisioned users never receive an
+// `app_metadata.organization_id` claim and TenantMiddleware will 403
+// every request they make. It exists so tests and offline dev can
+// construct a handler without a live Supabase.
+func NewWebhookHandler(db *pgxpool.Pool, webhookSecret string, admin AdminClient) *WebhookHandler {
 	if webhookSecret == "" {
 		panic("auth.NewWebhookHandler: webhookSecret is empty; set SUPABASE_WEBHOOK_SECRET before constructing the router")
 	}
 	return &WebhookHandler{
 		provisioner:   NewUserProvisioner(db),
 		webhookSecret: webhookSecret,
+		admin:         admin,
 	}
 }
 
@@ -146,9 +158,15 @@ func (h *WebhookHandler) HandleSupabaseWebhook() http.HandlerFunc {
 					return
 				}
 				// A different Supabase identity already owns this address.
-				// 409 (not 5xx) so Supabase stops retrying — retrying cannot
-				// resolve it, and the operator needs to reconcile the two
-				// accounts by hand.
+				// 409 rather than 5xx because this is a permanent condition
+				// an operator must reconcile by hand, and the status code is
+				// what a human reading the delivery log sees.
+				//
+				// An earlier version of this comment justified 409 as
+				// "so Supabase stops retrying". That reasoning was wrong —
+				// Supabase database webhooks never retry (04-06-SUMMARY.md).
+				// The status choice is still right; only the stated reason
+				// was.
 				if errors.Is(err, ErrEmailOwnedByAnotherIdentity) {
 					log.Printf("[Webhook] identity conflict: %v", err)
 					http.Error(w, "email registered to a different identity", http.StatusConflict)
@@ -253,15 +271,18 @@ func (h *WebhookHandler) handleAuthUserEvent(r *http.Request, recordData json.Ra
 
 	// Create the starter organization if the user doesn't already own one.
 	//
-	// Deliberately NOT gated on isNewUser. If org creation fails after the
-	// user row commits, we return 500, Supabase retries, and the retry now
-	// sees an existing user (isNewUser=false). Gating on that flag meant
-	// the retry skipped org creation entirely and returned 202 — leaving
-	// the user permanently organization-less with no further retries and
-	// no error anywhere. Checking actual ownership makes the whole handler
-	// convergent: however many times it runs, the end state is one user
-	// with one owner org.
-	hasOrg, err := h.provisioner.UserHasOwnerOrg(r.Context(), provisionedUser.ID)
+	// Deliberately NOT gated on isNewUser. Gating on that flag meant a
+	// second run skipped org creation entirely and returned 202, leaving
+	// the user permanently organization-less with no error anywhere.
+	// Checking actual ownership makes this handler idempotent: however
+	// many times it runs, the end state is one user with one owner org.
+	//
+	// Note that "however many times it runs" is aspirational for the
+	// webhook path — Supabase delivers exactly once and never retries
+	// (04-06-SUMMARY.md), so in practice this runs once per user. The
+	// property still earns its keep: it is what makes a manual replay, or
+	// backfill-org-claims running alongside a live webhook, safe.
+	orgID, hasOrg, err := h.provisioner.UserOwnerOrgID(r.Context(), provisionedUser.ID)
 	if err != nil {
 		return fmt.Errorf("failed to check existing organization: %w", err)
 	}
@@ -269,18 +290,76 @@ func (h *WebhookHandler) handleAuthUserEvent(r *http.Request, recordData json.Ra
 		orgName := generateOrgNameFromEmail(event.Email)
 		orgSlug := generateOrgSlugFromEmail(event.Email)
 
-		if _, err := h.provisioner.CreateOrganizationForUser(
+		orgID, err = h.provisioner.CreateOrganizationForUser(
 			r.Context(),
 			provisionedUser.ID,
 			orgName,
 			orgSlug,
-		); err != nil {
+		)
+		if err != nil {
 			return fmt.Errorf("failed to create organization: %w", err)
 		}
 	}
 
+	// Project the org onto the Supabase user, so the next access token
+	// Supabase issues carries `app_metadata.organization_id` for
+	// TenantMiddleware to read.
+	//
+	// Deliberately non-fatal: our database is the source of truth and this
+	// is a projection into a system we don't control, so a failure here
+	// must not mask a successful provision behind a 500.
+	//
+	// READ THIS BEFORE RELYING ON RETRY. There is none. Supabase database
+	// webhooks fire once and never retry (recorded in 04-06-SUMMARY.md),
+	// and the trigger behind this one is AFTER INSERT on auth.users, so
+	// there is exactly one delivery per user for all time. This call is
+	// written to be replay-safe, and it would converge if it were ever
+	// re-delivered — but nothing re-delivers it. A push that fails here
+	// leaves that user with no organization claim until an operator runs
+	// `cmd/backfill-org-claims`, which is the actual repair path.
+	//
+	// Returning 500 instead would not help: with no retry, the only effect
+	// is a noisier log and a failed provision reported as failed.
+	h.pushOrgContext(r, event.SupabaseUserID, orgID)
+
 	_ = isNewUser // retained for readability at the call site above
 	return nil
+}
+
+// pushOrgContext writes organization context onto the Supabase user.
+// Never returns an error — see the call site for why failures here are
+// logged rather than propagated.
+//
+// Because there is no webhook retry, this is a user's only automatic
+// chance to get an organization claim. Every failure here is logged at a
+// level an operator should alert on, and names the repair command.
+func (h *WebhookHandler) pushOrgContext(r *http.Request, supabaseUserID string, orgID uuid.UUID) {
+	if h.admin == nil {
+		log.Printf("[Webhook] no Supabase admin client configured; skipping org-context push for user %s "+
+			"(this user will have no organization_id claim until it is pushed)", supabaseUserID)
+		return
+	}
+	if orgID == uuid.Nil {
+		log.Printf("[Webhook] no organization resolved for user %s; skipping org-context push", supabaseUserID)
+		return
+	}
+
+	// Detach from the request context, keeping its values but dropping its
+	// cancellation. The caller here is Supabase's webhook sender; if it
+	// hangs up — which is likeliest under exactly the load where this
+	// matters — cancelling the outbound push would abandon the user's only
+	// shot at a claim partway through. The admin client carries its own
+	// 10s timeout, so this cannot hang indefinitely.
+	ctx := context.WithoutCancel(r.Context())
+
+	if err := h.admin.UpdateUserAppMetadata(ctx, supabaseUserID, map[string]any{
+		"organization_id":   orgID.String(),
+		"organization_role": "owner",
+	}); err != nil {
+		log.Printf("[Webhook] ALERT: failed to push org context to Supabase for user %s: %v — "+
+			"this user has NO organization claim and webhooks do not retry; "+
+			"repair with: backfill-org-claims -user %s", supabaseUserID, err, supabaseUserID)
+	}
 }
 
 // emailLocalPart returns the portion of an address before the `@`, and

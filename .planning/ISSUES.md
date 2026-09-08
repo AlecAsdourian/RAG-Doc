@@ -55,16 +55,13 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Discovered:** Phase 4 (Authentication System)
 - **Type:** User Experience / Authorization
 - **Priority:** MEDIUM (functional but not production-ready)
-- **Description:** Users belonging to multiple organizations currently use `X-Organization-ID` header to select which org context to operate in. This is temporary. Production needs: (1) API endpoint to list user's organizations, (2) Frontend UI to select organization, (3) Store selection in JWT custom claims or session, (4) Middleware reads org from JWT instead of header.
-- **Impact:** Medium (multi-org users can't switch contexts easily, security concern if header can be spoofed)
-- **Effort:** Medium (backend API + JWT claims + frontend UI)
-- **Suggested phase:** Phase 5 (API Framework) for backend API, Phase 6 for frontend UI
-- **Current code:** `services/backend/pkg/auth/middleware.go` line 75 (uses `X-Organization-ID` header)
-- **Implementation:**
-  - Create `GET /user/organizations` endpoint (query organization_memberships)
-  - Create `POST /user/select-organization` endpoint (validates membership, updates session/JWT)
-  - Add `organization_id` to JWT custom claims via Supabase Auth hook
-  - Update TenantMiddleware to read org from JWT instead of header
+- **Partially resolved:** Phase 19-03 (2026-09-08) — see "Remaining scope" below.
+- **Description:** Users belonging to multiple organizations had no way to choose which org context they operate in beyond the `X-Organization-ID` header. Production needs: (1) API endpoint to list user's organizations, (2) Frontend UI to select organization, (3) Store selection in JWT custom claims or session, (4) Middleware reads org from JWT instead of header.
+- **Done in 19-03:** items (3) and (4). `app_metadata.organization_id` is written onto the Supabase user at provisioning time and read back off the verified JWT by `TenantMiddleware`; the header path is deleted, not deprecated. This closes the *security* half of the issue.
+- **Remaining scope (19-04):** items (1) and (2) — a user with two organizations still gets whichever one provisioning stamped, with no way to switch. Needs `GET /api/user/organizations`, `POST /api/user/select-organization` (validates membership, then rewrites `app_metadata.organization_id` through the same `auth.AdminClient` 19-03 added), and the frontend picker.
+- **Note on the original implementation sketch:** it called for a Supabase Auth Hook to inject the claim at token-mint time. 19-03 deliberately did not use one — the hook is a Postgres function living in the Supabase instance, and the app's data lives in a *separate* Postgres, so the hook could not see `organization_memberships` to make the decision. Writing `raw_app_meta_data` from the backend achieves the same claim with no cross-instance dependency. Cost: the claim only refreshes on token refresh, which 19-04's select-organization endpoint has to account for.
+- **Impact:** Medium (multi-org users still can't switch contexts).
+- **Effort:** Medium (backend API + frontend UI).
 
 ### ISS-005: Supabase Native OAuth webhook handler
 
@@ -84,17 +81,40 @@ Enhancements discovered during execution. Not critical - address in future phase
   - Configure webhook URL in Supabase dashboard
   - Update frontend to use Supabase JS client for OAuth
 
-### ISS-007: JWT-carried tenant claim + membership validation (supersedes header trust)
+### ISS-011: OAuth callback routes are live and broken, and bypass org-context push
 
-- **Discovered:** Phase 17-02 (2026-09-06)
-- **Type:** Security / Authorization
-- **Priority:** HIGH before v1 public rollout, MEDIUM in current fleet-internal state
-- **Description:** `TenantMiddleware` currently sources the caller's tenant from the `X-Organization-ID` request header. Any authenticated user can set this header to any org id and the middleware forwards it downstream unchecked. The isolation harness pins this behavior in `search_isolation_test.go` scenario 5 (`Scenario5_HeaderTamper_HeaderCurrentlyTrusted_TODO_1903`) so a silent change in either direction is caught.
-- **Resolution plan (Phase 19-03):** Supabase Auth Hook stamps `organization_id` and `organization_role` on the JWT. TenantMiddleware reads from the claim, cross-checks against `organization_memberships`, and drops the `X-Organization-ID` header path. On completion of 19-03, update the scenario 5 assertion from 200/header-wins to 403 and add a fresh JWT-tampering scenario (sign a token with a mismatched `organization_id` claim and assert reject).
-- **Impact:** Cross-tenant access via crafted header; currently gated by "no untrusted client contact" but a leak in v1 rollout.
-- **Effort:** Medium (Supabase hook + middleware read path + membership query + fixture updates).
-- **Blocked by:** 19-01, 19-02 (auth-cluster prerequisites).
-- **Related tests to update in 19-03:** `services/backend/pkg/api/handlers/search_isolation_test.go` scenario 5, `chat_isolation_test.go` scenario 4 (add a JWT variant), `pkg/testing/isolation/testjwt` may need helpers for tampered claim minting.
+- **Discovered:** Phase 19-03 review (2026-09-08)
+- **Type:** Correctness / Dead-but-reachable code
+- **Priority:** MEDIUM — a live 500, on routes that are mounted whenever Redis is up
+- **Description:** `/auth/github/callback` and `/auth/gitlab/callback` are mounted by `pkg/api/router.go` whenever a Redis state store is reachable. They call `ProvisionOAuthUser` with `fmt.Sprintf("%d", githubUser.ID)` (`pkg/auth/handlers.go`), a numeric GitHub id. Since 19-02, `ProvisionOAuthUser` runs `uuid.Parse` on that argument, so the call cannot succeed — every completed GitHub OAuth callback is a 500.
+- **Second problem:** even if it worked, this is a provisioning path that never calls `pushOrgContext`, so a user created through it would have no `app_metadata.organization_id` and would be locked out of every tenant-scoped route.
+- **Impact:** Today, low — the intended signup path is Supabase-native (ISS-005), and these handlers were explicitly kept as "reference implementation" in Phase 4. But they are *mounted*, not commented out, so they are reachable in any environment with Redis.
+- **Options:** (a) unmount them until there is a real use, (b) delete them, (c) make them a genuine second provisioning path — which means a non-UUID identity column and a shared post-provision hook that includes the org-context push.
+- **Effort:** Low for (a) or (b); medium for (c).
+- **Related:** ISS-005.
+
+### ISS-010: Isolation harness setup races when test packages run in parallel
+
+- **Discovered:** Phase 19-03 (2026-09-08), running several packages in one `go test` invocation
+- **Type:** Test infrastructure / Flake
+- **Priority:** MEDIUM — makes any multi-package `go test` unreliable, which blocks CI gating
+- **Description:** `pkg/testing/isolation`'s container setup runs `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO rag_doc_app` against the shared, reused testcontainers Postgres. `go test` runs packages in parallel by default, so two packages' setup routines issue that GRANT concurrently and Postgres refuses with `tuple concurrently updated (SQLSTATE XX000)`. Reproduced twice, failing a *different* package each time — a race, not a deterministic break.
+- **Workaround:** `go test -p 1 ./pkg/...` (documented in `docs/local-development.md`).
+- **Fix options:** take a Postgres advisory lock around role setup; make the grant idempotent-by-construction and retry on XX000; or give each package its own container (costly — container reuse is what keeps the suite fast).
+- **Impact:** Any CI job running the whole tree in parallel will flake. Related in spirit to the 19-02 reviewer's note that this shared container makes cross-package interference possible.
+- **Effort:** Low (advisory lock is a few lines).
+
+### ISS-009: `pkg/vectordb` does not compile against its pinned Qdrant client
+
+- **Discovered:** Phase 19-03 (2026-09-08), while running the full backend suite
+- **Type:** Build / Dependency drift
+- **Priority:** LOW today, BLOCKING whenever vector search is wired up
+- **Description:** `go build ./...` fails with `pkg/vectordb/client.go:18:17: undefined: qdrant.Client`. `go.mod` pins `github.com/qdrant/go-client v1.7.0`, which predates the high-level `qdrant.Client` type the package imports (introduced in a later minor). The package has not been touched since Phase 3 (`3c47b7e`), so it has almost certainly never compiled since the dependency was pinned — nothing imports it yet, so nothing surfaced it.
+- **Why it went unnoticed:** no other package imports `pkg/vectordb`, and the phases since have run targeted `go test ./pkg/...` on specific packages rather than the whole module.
+- **Impact:** `go build ./...` and `go test ./...` are red at the module level, which means CI cannot use the whole-module form as a gate until this is fixed. No runtime impact — the package is dead code today.
+- **Effort:** Low-to-medium. Either bump `go-client` to a version that exports `qdrant.Client` and fix the call sites, or rewrite `pkg/vectordb` against the v1.7 gRPC-level API.
+- **Suggested phase:** whichever phase first wires vector search through Go (or an infrastructure cleanup pass before CI gating).
+- **Not fixed in 19-03:** out of scope and unrelated to auth; fixing it would have meant a dependency bump inside a security PR.
 
 ### ISS-008: Request-scoped tenant transaction for DB-hitting endpoints
 
@@ -110,6 +130,27 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Related code:** `services/backend/pkg/auth/middleware.go` (TenantMiddleware, currently a context-only pass-through with a `_ = db` reserved for this work).
 
 ## Closed Enhancements
+
+### ISS-007: JWT-carried tenant claim (supersedes header trust) ✅
+
+- **Discovered:** Phase 17-02 (2026-09-06)
+- **Closed:** 2026-09-08 (Phase 19-03)
+- **Type:** Security / Authorization
+- **Priority:** HIGH before v1 public rollout
+- **Original problem:** `TenantMiddleware` sourced the caller's tenant from the `X-Organization-ID` request header. Any authenticated user could set it to any org id and the middleware forwarded it downstream unchecked — a valid login for one organization could read another organization's data. 17-02 pinned the behavior in `search_isolation_test.go` scenario 5 rather than leaving it undetected.
+- **Resolution:** Tenant identity now comes exclusively from `app_metadata.organization_id`, a Supabase-signed claim on the access token. The header path is **deleted**, not deprecated — including from the CORS `Access-Control-Allow-Headers` list, so a client cannot even send it. A token with no organization claim gets 403 rather than defaulting into anyone's org.
+- **Files:**
+  - `services/backend/pkg/auth/supabase_admin.go` (new) — writes `app_metadata` onto the Supabase user via the admin API
+  - `services/backend/pkg/auth/jwt.go` — `ExtractOrganizationID` / `ExtractOrganizationRole` read the nested claim and require a UUID
+  - `services/backend/pkg/auth/middleware.go` — header read replaced by claim read
+  - `services/backend/pkg/auth/webhook.go` — pushes org context after provisioning
+  - `services/backend/cmd/backfill-org-claims` (new) — the repair path for a failed push
+  - `services/backend/pkg/api/router.go` — wires the admin client, drops the header from CORS
+- **Deviation from the original plan, deliberate:** no Supabase Auth Hook, and no per-request membership re-check. See the 19-03 summary for the reasoning on both; the short version is that the hook cannot reach the app's database (separate Postgres instance), and re-querying membership on every request would add a DB round-trip to the hot path to defend against an attacker who would already need Supabase's signing key.
+- **Correction to an earlier version of this entry.** It described the org-context push as converging "on every webhook delivery". That is false and was caught in review: Supabase database webhooks fire once and never retry (recorded in `04-06-SUMMARY.md`), and the trigger behind ours is `AFTER INSERT ON auth.users`, so each user gets exactly one delivery for all time. A failed push therefore leaves that user permanently claim-less. The code is replay-safe, but nothing replays it — `cmd/backfill-org-claims` is the actual repair, and it is also the migration step for users provisioned before the claim existed.
+- **Second correction.** The residual risk of skipping the per-request membership check was described as "the token lifetime window". Also false: `raw_app_meta_data` is written once and never recomputed, so Supabase re-reads the same stale value at every mint and a *refreshed* token carries the *same* organization. Removing a user from an org does not expire their claim — short token TTLs do not mitigate this at all. Nothing removes memberships today, but **19-04 must rewrite the claim on every membership change**; that, not token expiry, is what bounds the exposure.
+- **Verified:** the claim shape was confirmed against the live Supabase project by round-trip (admin write → sign in → decode token), not assumed. `testjwt.Sign` now emits the same nested shape, with a drift-guard test asserting the flat shape is *not* emitted — the pre-19-03 harness signed flat claims, so every isolation test passed against tokens production could never receive.
+- **Tests:** 11 isolation scenarios across `search_isolation_test.go` (7) and `chat_isolation_test.go` (4), plus unit coverage for claim extraction. Scenario 7 is the regression guard for this very issue: with the header path re-added to the middleware, it is the only test in the suite that fails. Both it and scenario 5 were confirmed non-vacuous by mutation — breaking the middleware turns them red.
 
 ### ISS-006: Test database connectivity configuration ✅
 

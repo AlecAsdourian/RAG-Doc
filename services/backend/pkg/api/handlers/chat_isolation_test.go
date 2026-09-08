@@ -7,14 +7,14 @@ package handlers_test
 // isolation.TenantScope so RLS is the last line of defense on every
 // scenario.
 //
-// Scenario coverage differs from the plan in two places, documented on
-// each subtest:
+// Tenant identity comes from the JWT alone. Phase 19-03 deleted the
+// X-Organization-ID header path, so there is no per-request tenant header
+// anywhere in this file — the token IS the tenant claim.
 //
-//   - Scenario 3 (cross-tenant session_id) has no code to test yet — chat
-//     sessions land in a later phase. Reframed as the streaming analog of
-//     search's cross-tenant repo access.
-//   - Scenario 4 tests the missing X-Organization-ID header today; the
-//     JWT-carried variant lands in 19-03 alongside the search reframe.
+// Scenario coverage differs from the plan in one place, documented on the
+// subtest: scenario 3 (cross-tenant session_id) has no code to test yet —
+// chat sessions land in a later phase — so it is reframed as the streaming
+// analog of search's cross-tenant repo access.
 
 import (
 	"bufio"
@@ -105,7 +105,7 @@ func TestChatIsolation(t *testing.T) {
 
 		t.Run("Scenario1_StreamingAsOrgA_SourcesFromOwnRepoOnly", func(t *testing.T) {
 			body := fmt.Sprintf(`{"query":"orange","repository_id":%q}`, orgA.RepoID)
-			status, chunks := doChatStream(t, server.URL, orgAToken, orgA.ID, body)
+			status, chunks := doChatStream(t, server.URL, orgAToken, body)
 			require.Equal(t, http.StatusOK, status)
 			done := findDoneChunk(t, chunks)
 			require.Len(t, done.Sources, 1, "orgA streaming should surface 1 marmalade source")
@@ -116,7 +116,7 @@ func TestChatIsolation(t *testing.T) {
 			// Same query "orange" — orgB has no such chunk. Expect empty
 			// sources and the "no matching context" answer path.
 			body := fmt.Sprintf(`{"query":"orange","repository_id":%q}`, orgB.RepoID)
-			status, chunks := doChatStream(t, server.URL, orgBToken, orgB.ID, body)
+			status, chunks := doChatStream(t, server.URL, orgBToken, body)
 			require.Equal(t, http.StatusOK, status)
 			done := findDoneChunk(t, chunks)
 			require.Empty(t, done.Sources, "orgB has no orange chunks; sources must be empty (no leak from orgA)")
@@ -128,27 +128,35 @@ func TestChatIsolation(t *testing.T) {
 			// sessions aren't a table yet. The streaming analog of search
 			// scenario 3: orgB asks for orgA's repo. RLS returns 0 rows.
 			body := fmt.Sprintf(`{"query":"orange","repository_id":%q}`, orgA.RepoID)
-			status, chunks := doChatStream(t, server.URL, orgBToken, orgB.ID, body)
+			status, chunks := doChatStream(t, server.URL, orgBToken, body)
 			require.Equal(t, http.StatusOK, status)
 			done := findDoneChunk(t, chunks)
 			require.Empty(t, done.Sources, "orgB must not see any of orgA's chunks — cross-tenant leak")
 		})
 
-		t.Run("Scenario4_MissingTenantHeader_AbortsBeforeStream", func(t *testing.T) {
-			// TenantMiddleware rejects with 400 before the handler runs, so
-			// no SSE frames are emitted at all.
+		t.Run("Scenario4_TokenWithoutOrgClaim_AbortsBeforeStream", func(t *testing.T) {
+			// A correctly-signed token carrying no app_metadata at all —
+			// the shape a real user holds between "Supabase created the
+			// account" and "our webhook pushed org context back", and the
+			// shape they keep permanently if that push failed.
+			//
+			// Two things are asserted, and the second is the one that
+			// matters for streaming: the request is refused (403), and it is
+			// refused BEFORE any SSE frame is written. A rejection that
+			// arrives as an error event inside a 200 text/event-stream reads
+			// as success to every SSE client.
 			body := fmt.Sprintf(`{"query":"orange","repository_id":%q}`, orgA.RepoID)
 			req, err := http.NewRequest(http.MethodPost, server.URL+"/api/chat/stream", strings.NewReader(body))
 			require.NoError(t, err)
-			req.Header.Set("Authorization", "Bearer "+orgAToken)
+			req.Header.Set("Authorization", "Bearer "+testjwt.SignWithoutOrg(orgA.OwnerID))
 			req.Header.Set("Content-Type", "application/json")
-			// Deliberately no X-Organization-ID header.
+
 			resp, err := http.DefaultClient.Do(req)
 			require.NoError(t, err)
 			defer resp.Body.Close()
 
-			require.Equal(t, http.StatusBadRequest, resp.StatusCode,
-				"middleware must reject before opening SSE stream")
+			require.Equal(t, http.StatusForbidden, resp.StatusCode,
+				"a token with no organization claim must be refused before the stream opens")
 
 			raw, _ := io.ReadAll(resp.Body)
 			require.NotContains(t, string(raw), "data:",
@@ -170,12 +178,11 @@ func writeChunk(w http.ResponseWriter, flusher http.Flusher, c client.ChatChunk)
 // decodes every "data: {...}\n" line into a ChatChunk. Returns the HTTP
 // status and the ordered slice of decoded chunks (nil chunk slice on a
 // non-200 status).
-func doChatStream(t *testing.T, baseURL, token, orgHeader, body string) (int, []client.ChatChunk) {
+func doChatStream(t *testing.T, baseURL, token, body string) (int, []client.ChatChunk) {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, baseURL+"/api/chat/stream", strings.NewReader(body))
 	require.NoError(t, err)
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Organization-ID", orgHeader)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 

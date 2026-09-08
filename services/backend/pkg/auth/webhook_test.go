@@ -24,7 +24,7 @@ func TestWebhookHandler_SignatureVerification(t *testing.T) {
 	os.Setenv("SUPABASE_WEBHOOK_SECRET", "test-secret-key")
 	defer os.Unsetenv("SUPABASE_WEBHOOK_SECRET")
 
-	handler := NewWebhookHandler(db, "test-secret-key")
+	handler := NewWebhookHandler(db, "test-secret-key", nil)
 
 	payload := []byte(`{"type":"INSERT","table":"users","schema":"auth","record":{}}`)
 
@@ -52,7 +52,7 @@ func TestWebhookHandler_UserCreatedEvent(t *testing.T) {
 	os.Setenv("SUPABASE_WEBHOOK_SECRET", "test-secret-key")
 	defer os.Unsetenv("SUPABASE_WEBHOOK_SECRET")
 
-	handler := NewWebhookHandler(db, "test-secret-key")
+	handler := NewWebhookHandler(db, "test-secret-key", nil)
 
 	// Webhook payload matching what the handler actually dispatches on:
 	// schema=public, table=auth_user_events (populated by a DB trigger on
@@ -106,10 +106,22 @@ func TestWebhookHandler_UserCreatedEvent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, count, "User should be created in database")
 
-	// Verify organization was created
+	// Verify organization was created.
+	//
+	// Scoped through the membership join rather than `name LIKE 'Test%'`.
+	// The prefix match also caught the `Test Org` seed row that ships in
+	// the local dev database, so the count came back 2 and the test failed
+	// for a reason that had nothing to do with provisioning. It only
+	// started failing once the local dev Postgres was reachable again —
+	// before that, SetupTestDB never connected and the assertion was never
+	// reached. The join says the property we actually care about: this
+	// user got exactly one organization.
 	var orgCount int
 	err = db.QueryRow(req.Context(),
-		`SELECT COUNT(*) FROM organizations WHERE name LIKE 'Test%'`).Scan(&orgCount)
+		`SELECT COUNT(*) FROM organizations o
+		 JOIN organization_memberships om ON om.organization_id = o.id
+		 JOIN users u ON om.user_id = u.id
+		 WHERE u.email = $1`, "test@example.com").Scan(&orgCount)
 	require.NoError(t, err)
 	assert.Equal(t, 1, orgCount, "Organization should be created for new user")
 
@@ -132,7 +144,7 @@ func TestWebhookHandler_InvalidSignature(t *testing.T) {
 	os.Setenv("SUPABASE_WEBHOOK_SECRET", "test-secret-key")
 	defer os.Unsetenv("SUPABASE_WEBHOOK_SECRET")
 
-	handler := NewWebhookHandler(db, "test-secret-key")
+	handler := NewWebhookHandler(db, "test-secret-key", nil)
 
 	payload := []byte(`{"type":"INSERT","table":"users","schema":"auth","record":{}}`)
 
@@ -151,7 +163,7 @@ func TestWebhookHandler_InvalidMethod(t *testing.T) {
 	db := SetupTestDB(t)
 	defer CleanupTestDB(t, db)
 
-	handler := NewWebhookHandler(db, "test-secret-key")
+	handler := NewWebhookHandler(db, "test-secret-key", nil)
 
 	// Try GET request
 	req := httptest.NewRequest(http.MethodGet, "/webhooks/supabase", nil)
@@ -171,7 +183,7 @@ func TestWebhookHandler_ExistingUser(t *testing.T) {
 	os.Setenv("SUPABASE_WEBHOOK_SECRET", "test-secret-key")
 	defer os.Unsetenv("SUPABASE_WEBHOOK_SECRET")
 
-	handler := NewWebhookHandler(db, "test-secret-key")
+	handler := NewWebhookHandler(db, "test-secret-key", nil)
 
 	// Create user first
 	existingUser := CreateTestUser(t, db, "existing@example.com", "Existing User")
@@ -262,7 +274,7 @@ func TestNewWebhookHandler_EmptySecretPanics(t *testing.T) {
 	defer CleanupTestDB(t, db)
 
 	assert.Panics(t, func() {
-		NewWebhookHandler(db, "")
+		NewWebhookHandler(db, "", nil)
 	}, "constructor must panic on empty secret")
 }
 
@@ -272,7 +284,7 @@ func TestWebhookHandler_BodyTooLarge(t *testing.T) {
 	db := SetupTestDB(t)
 	defer CleanupTestDB(t, db)
 
-	handler := NewWebhookHandler(db, "test-secret-key")
+	handler := NewWebhookHandler(db, "test-secret-key", nil)
 
 	// Payload just over the 64KB limit.
 	oversized := bytes.Repeat([]byte("A"), MaxWebhookBodyBytes+1)
@@ -297,7 +309,7 @@ func TestWebhookHandler_DisposableEmailRejected(t *testing.T) {
 	db := SetupTestDB(t)
 	defer CleanupTestDB(t, db)
 
-	handler := NewWebhookHandler(db, "test-secret-key")
+	handler := NewWebhookHandler(db, "test-secret-key", nil)
 
 	payload := SupabaseWebhookEvent{
 		Type:   "INSERT",
