@@ -185,41 +185,85 @@ func TestUserOrgsIsolation(t *testing.T) {
 		t.Run("Scenario5_ConcurrentListsDoNotLeakAcrossCallers", func(t *testing.T) {
 			// Both owners list at once against the same pool and router.
 			// Each response must contain only its own caller's orgs — a
-			// shared-state bug (a cached tenant, a reused connection with
-			// leftover GUCs) would show up here and nowhere else.
+			// per-request-state leak (a cached tenant, a connection reused
+			// with leftover GUCs) shows up here and nowhere else, because
+			// every other scenario runs one request at a time.
+			//
+			// Three things about the mechanics below are deliberate, and
+			// the first is not optional:
+			//
+			//  1. Failures are collected under a mutex, never sent to a
+			//     channel. An earlier version used a buffered channel sized
+			//     to the goroutine count and sent one error PER LEAKED ROW.
+			//     A real leak produces more rows than goroutines, so the
+			//     senders blocked forever, `wg.Done` never ran, `wg.Wait`
+			//     never returned, and the package died on the 90s test
+			//     timeout — taking scenario 6 with it and skipping
+			//     t.Cleanup, which leaked fixture rows into the reused
+			//     container. A test that HANGS on the bug it exists to
+			//     catch is worse than no test: a timeout in CI reads as
+			//     infrastructure flake and gets re-run.
+			//
+			//  2. No require/assert inside the goroutines. testify's
+			//     require calls t.FailNow, which is runtime.Goexit, which
+			//     is documented misuse outside the test goroutine — it
+			//     would abandon the WaitGroup rather than fail cleanly.
+			//
+			//  3. A start barrier, so the requests actually overlap.
+			//     Without it the goroutines trickle out as they are
+			//     scheduled and may never be in flight together, which is
+			//     the only condition under which this scenario can observe
+			//     anything scenario 3 doesn't.
 			const rounds = 8
+
+			var (
+				mu       sync.Mutex
+				failures []string
+			)
+			fail := func(format string, args ...any) {
+				mu.Lock()
+				defer mu.Unlock()
+				failures = append(failures, fmt.Sprintf(format, args...))
+			}
+
+			start := make(chan struct{})
 			var wg sync.WaitGroup
-			errs := make(chan error, rounds*2)
+
+			check := func(token, callerLabel string, allowed map[string]bool) {
+				defer wg.Done()
+				<-start
+
+				resp, err := listOrgsNoFail(server.URL, token)
+				if err != nil {
+					fail("%s: %v", callerLabel, err)
+					return
+				}
+				for _, o := range resp.Organizations {
+					if !allowed[o.ID] {
+						fail("%s saw organization %s under concurrency — cross-caller leak",
+							callerLabel, o.ID)
+						return // one report per goroutine is enough
+					}
+				}
+			}
+
+			// orgA's owner was added to orgB in scenario 2, so both are
+			// legitimate for them. orgB's owner belongs to orgB alone —
+			// that asymmetry is what makes their side load-bearing.
+			allowedForA := map[string]bool{orgA.ID: true, orgB.ID: true}
+			allowedForB := map[string]bool{orgB.ID: true}
 
 			for i := 0; i < rounds; i++ {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					resp := doListOrgs(t, server.URL, ownerBToken)
-					for _, o := range resp.Organizations {
-						if o.ID == orgA.ID {
-							errs <- fmt.Errorf("orgB's owner saw orgA under concurrency")
-						}
-					}
-				}()
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					resp := doListOrgs(t, server.URL, ownerAToken)
-					// orgA's owner is a member of orgB by now (scenario 2),
-					// so both are legitimate here. What must never appear
-					// is an org they belong to neither of — there isn't
-					// one in this fixture, so assert the bound instead.
-					if len(resp.Organizations) > 2 {
-						errs <- fmt.Errorf("orgA's owner saw %d orgs, expected at most 2",
-							len(resp.Organizations))
-					}
-				}()
+				wg.Add(2)
+				go check(ownerAToken, "orgA's owner", allowedForA)
+				go check(ownerBToken, "orgB's owner", allowedForB)
 			}
+
+			close(start) // release them together
 			wg.Wait()
-			close(errs)
-			for err := range errs {
-				t.Error(err)
+
+			for _, f := range failures {
+				t.Error(f)
 			}
 		})
 
@@ -238,7 +282,115 @@ func TestUserOrgsIsolation(t *testing.T) {
 					"target %q should be refused with 400 or 403, got %d; body=%s", target, status, body)
 			}
 		})
+
+		t.Run("Scenario7_MalformedSubjectClaimIsRejectedAtTheTokenBoundary", func(t *testing.T) {
+			// The other identifier that reaches a uuid column: the `sub`
+			// claim, which both handlers compare against
+			// users.supabase_user_id.
+			//
+			// This was a real 500 before review caught it. A comment in
+			// callerRoleIn claimed both `sub` and the target org were
+			// parsed; only the target was, and the target was already
+			// covered by the struct validator — so the guard was on the
+			// input that didn't need it while the one that did went
+			// straight to the driver.
+			//
+			// Rejection belongs at the token boundary (auth.ExtractUserID),
+			// not in a handler, so every route inherits it. That makes this
+			// a 401: the token is malformed, not the request.
+			for _, sub := range []string{
+				"not-a-uuid",
+				"'; SELECT 1; --",
+				"12345",
+			} {
+				t.Run(sub, func(t *testing.T) {
+					bad := testjwt.Sign(sub, orgA.ID, "owner")
+
+					req, err := http.NewRequest(http.MethodGet,
+						server.URL+"/api/user/organizations", nil)
+					require.NoError(t, err)
+					req.Header.Set("Authorization", "Bearer "+bad)
+					resp, err := http.DefaultClient.Do(req)
+					require.NoError(t, err)
+					defer resp.Body.Close()
+					raw, _ := io.ReadAll(resp.Body)
+
+					require.Equal(t, http.StatusUnauthorized, resp.StatusCode,
+						"a non-UUID subject must be refused at the token boundary, "+
+							"not passed to a uuid column and returned as 500; body=%s", raw)
+
+					status, body := doSelectOrg(t, server.URL, bad, orgA.ID)
+					require.Equal(t, http.StatusUnauthorized, status,
+						"same for the mutating endpoint; body=%s", body)
+				})
+			}
+		})
+
+		t.Run("Scenario8_OversizedBodyIsRefusedWithoutAllocating", func(t *testing.T) {
+			// A valid body here is ~55 bytes. Without a limit the decoder
+			// materializes whatever an authenticated caller sends before
+			// the validator rejects it — measured at roughly 7x the wire
+			// size in allocations, repeatable at will.
+			lenBeforeOversized := len(admin.snapshot())
+			huge := fmt.Sprintf(`{"organization_id":%q}`, strings.Repeat("A", 2<<20))
+			req, err := http.NewRequest(http.MethodPost,
+				server.URL+"/api/user/select-organization", strings.NewReader(huge))
+			require.NoError(t, err)
+			req.Header.Set("Authorization", "Bearer "+ownerAToken)
+			req.Header.Set("Content-Type", "application/json")
+
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+			raw, _ := io.ReadAll(resp.Body)
+
+			require.Equal(t, http.StatusBadRequest, resp.StatusCode,
+				"an oversized body must be refused; body=%s", raw)
+			require.Len(t, admin.snapshot(), lenBeforeOversized,
+				"no Supabase write may result from a rejected body")
+
+			// Assert on the REASON, not just the status. Without the limit
+			// the oversized string decodes successfully and the validator
+			// rejects it for not being a UUID — also a 400. Checking only
+			// the status made this test pass with the guard removed, which
+			// is exactly the vacuous-test failure this suite is supposed to
+			// have stopped making.
+			require.Contains(t, string(raw), "too large",
+				"the body must be refused by the size limit before it is decoded, not by "+
+					"the validator after the whole thing has been materialized")
+		})
 	})
+}
+
+// listOrgsNoFail is doListOrgs for use from a goroutine: it returns errors
+// instead of calling t.FailNow, which is runtime.Goexit and must not be
+// invoked outside the test goroutine.
+func listOrgsNoFail(baseURL, token string) (handlers.OrgListResponse, error) {
+	var out handlers.OrgListResponse
+
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/api/user/organizations", nil)
+	if err != nil {
+		return out, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return out, err
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return out, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return out, fmt.Errorf("status %d: %s", resp.StatusCode, raw)
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return out, fmt.Errorf("decode %s: %w", raw, err)
+	}
+	return out, nil
 }
 
 func doListOrgs(t *testing.T, baseURL, token string) handlers.OrgListResponse {
