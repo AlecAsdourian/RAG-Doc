@@ -126,25 +126,82 @@ func (p *UserProvisioner) ProvisionOAuthUser(
 //
 // Used by the webhook to decide whether a starter org still needs
 // creating. Gating that on "did we just create the user row" is wrong:
-// if org creation fails after the user row commits, the Supabase retry
-// sees an existing user, skips org creation, and returns 202 — leaving
-// the user permanently organization-less with no further retries.
+// if org creation fails after the user row commits, any later run sees an
+// existing user, skips org creation, and returns 202 — leaving the user
+// permanently organization-less.
 func (p *UserProvisioner) UserHasOwnerOrg(ctx context.Context, userID uuid.UUID) (bool, error) {
 	_, found, err := p.UserOwnerOrgID(ctx, userID)
 	return found, err
 }
 
+// OwnerOrgAssignment pairs a user's Supabase identity with the
+// organization they own. It is what an org-context push needs and nothing
+// more.
+type OwnerOrgAssignment struct {
+	UserID         uuid.UUID
+	SupabaseUserID uuid.UUID
+	Email          string
+	OrganizationID uuid.UUID
+}
+
+// ListOwnerOrgAssignments returns every user who owns an organization,
+// oldest membership first.
+//
+// This exists for `cmd/backfill-org-claims`, which is the ONLY repair path
+// for a user whose org-context push failed. Supabase database webhooks
+// fire once and never retry, and the trigger behind them is AFTER INSERT
+// on auth.users, so a user gets exactly one automatic attempt at an
+// organization claim in their entire lifetime. When that attempt fails —
+// a transient 5xx from the admin API, a network blip, a deploy without
+// SUPABASE_SERVICE_ROLE_KEY set — nothing in the request path repairs it
+// and the user is locked out of every tenant-scoped route with a 403.
+//
+// Enumerating from OUR database rather than from Supabase is deliberate:
+// our database is the source of truth for org ownership, and this
+// project's Supabase admin READ endpoints currently return 500 anyway.
+//
+// The same query doubles as the migration step for users provisioned
+// before the claim existed at all.
+func (p *UserProvisioner) ListOwnerOrgAssignments(ctx context.Context) ([]OwnerOrgAssignment, error) {
+	rows, err := p.db.Query(ctx, `
+		SELECT DISTINCT ON (u.id)
+		       u.id, u.supabase_user_id, u.email, om.organization_id
+		FROM users u
+		JOIN organization_memberships om ON om.user_id = u.id
+		WHERE om.role = 'owner'
+		ORDER BY u.id, om.created_at ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list owner org assignments: %w", err)
+	}
+	defer rows.Close()
+
+	var out []OwnerOrgAssignment
+	for rows.Next() {
+		var a OwnerOrgAssignment
+		if err := rows.Scan(&a.UserID, &a.SupabaseUserID, &a.Email, &a.OrganizationID); err != nil {
+			return nil, fmt.Errorf("scan owner org assignment: %w", err)
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate owner org assignments: %w", err)
+	}
+	return out, nil
+}
+
 // UserOwnerOrgID returns the organization userID owns, if any.
 //
 // The webhook needs the id on BOTH the fresh-provision and replay paths:
-// org context must be pushed to Supabase every delivery, not only when
-// the org was just created, because an earlier delivery may have created
+// org context must be pushed to Supabase whenever the handler runs, not
+// only when the org was just created, because a prior run may have created
 // the org and then failed the Supabase push. Returning the id rather than
-// a bare boolean lets the handler converge without a second query.
+// a bare boolean lets the handler do that without a second query.
 //
 // If a user somehow owns more than one organization, the oldest wins.
 // That's the one provisioning created, and it keeps the choice
-// deterministic across retries rather than flapping between orgs.
+// deterministic across runs rather than flapping between orgs — which
+// matters for backfill-org-claims, whose whole job is to be re-runnable.
 func (p *UserProvisioner) UserOwnerOrgID(ctx context.Context, userID uuid.UUID) (uuid.UUID, bool, error) {
 	var orgID uuid.UUID
 	err := p.db.QueryRow(ctx, `
