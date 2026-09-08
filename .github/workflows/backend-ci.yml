@@ -26,7 +26,9 @@ permissions:
 # necessarily the last one reported.
 concurrency:
   group: backend-ci-${{ github.ref }}
-  cancel-in-progress: true
+  # PRs only. Cancelling on `push: main` too would let a rapid merge
+  # sequence leave an intermediate main commit with no verdict at all.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-and-test:
@@ -137,21 +139,25 @@ jobs:
         working-directory: services/backend
         run: go test ./... -count=1 -p 1 -timeout 15m
 
-      # The regression guard for ISS-010, and the reason the step above is
-      # allowed to be serial.
+      # Defense in depth for ISS-010 — NOT the primary regression guard.
       #
-      # Runs only the packages that share the reused testcontainers
-      # Postgres, at DEFAULT parallelism, so their setup routines contend
-      # for role creation exactly as they did when this raced. Against the
-      # pre-fix code this reproduces `tuple concurrently updated (XX000)`
-      # on the GRANT and `role already exists (42710)` on the CREATE ROLE
-      # block; against the advisory-lock fix it is clean.
+      # Runs the packages sharing the reused testcontainers Postgres at
+      # DEFAULT parallelism, so their setup routines contend the way they
+      # did when this raced. It is kept because real cross-package
+      # contention is a slightly different shape from a single-process
+      # test, and it costs about a minute.
       #
-      # This is a gate, not advisory. A failure here means the lock is
-      # gone or broken, which is a real defect — the suite would go back to
-      # failing roughly half the time on a cold container, i.e. always in
-      # CI and almost never on a warm developer machine.
-      - name: Harness under package parallelism (ISS-010 regression guard)
+      # Do not rely on it. Measured against the pre-fix code across
+      # sixteen runs, this command detected the missing advisory lock
+      # roughly ONE TIME IN EIGHT — cold and warm containers performing
+      # identically, so reordering the steps buys nothing. A green result
+      # here is not evidence the lock is present.
+      #
+      # The real guard is TestEnsureAppRoleIsConcurrencySafe in
+      # pkg/testing/isolation, which releases 16 callers through a barrier
+      # and detected the same breakage 8 times out of 8. It runs inside
+      # the step above, so it survives this step being deleted.
+      - name: Harness under package parallelism (ISS-010, defense in depth)
         working-directory: services/backend
         run: go test ./pkg/api/... ./pkg/auth/... ./pkg/testing/... -count=1 -timeout 15m
 

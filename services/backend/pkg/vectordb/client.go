@@ -26,6 +26,29 @@ type Config struct {
 // before, because every piece of configuration in the repo names 6333.
 const defaultGRPCPort = 6334
 
+// restPort is Qdrant's HTTP/REST port, which this client cannot speak to.
+const restPort = 6333
+
+// grpcPortFor maps a configured port to the one the Go SDK can actually
+// use.
+//
+// 6333 is Qdrant's REST port and this client is gRPC-only, so honouring
+// it literally would guarantee a connection that never works. Every
+// piece of configuration in this repo names 6333, so this redirect is
+// the common path, not an edge case.
+//
+// It lives in one function because it did not, once: the URL branch
+// applied it and the bare-host branch did not, so "http://qdrant:6333"
+// worked while "qdrant:6333" — the same value with the scheme dropped,
+// and the more likely thing to type — silently produced a client that
+// could never connect.
+func grpcPortFor(port int) int {
+	if port == restPort {
+		return defaultGRPCPort
+	}
+	return port
+}
+
 // parseEndpoint turns a Config.URL into the host and port the Qdrant SDK
 // wants.
 //
@@ -57,7 +80,7 @@ func parseEndpoint(raw string) (host string, port int, useTLS bool, err error) {
 			if convErr != nil {
 				return "", 0, false, fmt.Errorf("invalid port %q in %q", p, raw)
 			}
-			return h, n, false, nil
+			return h, grpcPortFor(n), false, nil
 		}
 		return raw, defaultGRPCPort, false, nil
 	}
@@ -77,11 +100,7 @@ func parseEndpoint(raw string) (host string, port int, useTLS bool, err error) {
 		if convErr != nil {
 			return "", 0, false, fmt.Errorf("invalid port %q in %q", p, raw)
 		}
-		// 6333 is the REST port. The Go SDK is gRPC-only, so honouring it
-		// would guarantee a connection that never works.
-		if n != 6333 {
-			port = n
-		}
+		port = grpcPortFor(n)
 	}
 	return u.Hostname(), port, useTLS, nil
 }
@@ -196,7 +215,9 @@ func (c *Client) CreateCollection(ctx context.Context, collectionName string) er
 //
 // Acknowledged is accepted deliberately. It means "queued, not yet
 // applied", which is what Qdrant returns whenever the request does not set
-// Wait; callers that need durability set Wait and get Completed.
+// Wait. No method here exposes Wait, so Completed is currently
+// unreachable; plumb it through when a caller has a durability
+// requirement to state.
 func checkUpdateStatus(op string, res *qdrant.UpdateResult) error {
 	if res == nil {
 		// No result and no error is not a shape the SDK produces today.
@@ -296,8 +317,13 @@ func (c *Client) UpsertVectors(ctx context.Context, collectionName string, vecto
 		}
 	}
 
-	// Batch upsert
-	_, err := c.qdrant.Upsert(ctx, &qdrant.UpsertPoints{
+	// Batch upsert.
+	//
+	// The status is checked, not discarded. This is the path M2 was
+	// actually about: Qdrant answers a rejected or abandoned write with
+	// err == nil and a non-success status, so ignoring it reports success
+	// for embeddings that were never stored.
+	res, err := c.qdrant.Upsert(ctx, &qdrant.UpsertPoints{
 		CollectionName: collectionName,
 		Points:         points,
 	})
@@ -305,7 +331,7 @@ func (c *Client) UpsertVectors(ctx context.Context, collectionName string, vecto
 		return fmt.Errorf("failed to upsert vectors: %w", err)
 	}
 
-	return nil
+	return checkUpdateStatus(fmt.Sprintf("upsert %d vectors", len(points)), res)
 }
 
 // EmbeddingDimension is the vector width the collection is created with
@@ -388,7 +414,7 @@ func (c *Client) DeleteByChunkID(ctx context.Context, collectionName string, chu
 	}
 
 	// Delete points by metadata filter
-	_, err := c.qdrant.Delete(ctx, &qdrant.DeletePoints{
+	res, err := c.qdrant.Delete(ctx, &qdrant.DeletePoints{
 		CollectionName: collectionName,
 		Points: &qdrant.PointsSelector{
 			PointsSelectorOneOf: &qdrant.PointsSelector_Filter{
@@ -415,7 +441,7 @@ func (c *Client) DeleteByChunkID(ctx context.Context, collectionName string, chu
 		return fmt.Errorf("failed to delete vectors for chunk %s: %w", chunkID, err)
 	}
 
-	return nil
+	return checkUpdateStatus("delete vectors for chunk "+chunkID, res)
 }
 
 // Close closes the client connection

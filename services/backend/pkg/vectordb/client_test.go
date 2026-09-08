@@ -33,6 +33,13 @@ func TestParseEndpoint(t *testing.T) {
 		{"https implies TLS", "https://qdrant.example.com", "qdrant.example.com", 6334, true, false},
 		{"bare host", "qdrant", "qdrant", 6334, false, false},
 		{"bare host:port", "localhost:6334", "localhost", 6334, false, false},
+		// The bare form of the REST port. This regressed once: the URL
+		// branch applied the 6333→6334 redirect and the bare-host branch
+		// did not, so "http://qdrant:6333" worked while "qdrant:6333" —
+		// the same value with the scheme dropped, and the more likely
+		// thing to type — produced a client that could never connect.
+		{"bare host with REST port", "qdrant:6333", "qdrant", 6334, false, false},
+		{"bare localhost with REST port", "localhost:6333", "localhost", 6334, false, false},
 		{"whitespace is trimmed", "  qdrant  ", "qdrant", 6334, false, false},
 		{"empty is an error", "", "", 0, false, true},
 		{"scheme with no host is an error", "http://", "", 0, false, true},

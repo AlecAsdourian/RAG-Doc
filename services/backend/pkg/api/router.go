@@ -169,8 +169,12 @@ func NewRouterWithValidatorAndAdmin(
 	//
 	// The StateStore probe stays because it still reports a genuine
 	// configuration gap, and Phase 20's GitHub App flow will want it.
-	if _, err := auth.NewStateStore(); err == nil {
-		slog.Info("state store reachable; direct OAuth routes remain unmounted pending ISS-011")
+	if stateStore, err := auth.NewStateStore(); err == nil {
+		// Close it. NewStateStore dials Redis and leaves a pooled client
+		// with background goroutines behind; this probe only wants the
+		// reachability answer, and routers are constructed per test.
+		_ = stateStore.Close()
+		slog.Info("state store reachable; direct OAuth routes remain unmounted (ISS-011)")
 	} else {
 		slog.Warn("state store unavailable (OAuth CSRF protection would be unavailable "+
 			"if direct OAuth routes were mounted; see ISS-011)",

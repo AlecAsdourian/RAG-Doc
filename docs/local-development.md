@@ -208,6 +208,14 @@ into something eventually consistent.
 The isolation harness (`pkg/testing/isolation`) manages its own
 throwaway Postgres via testcontainers and needs no configuration.
 
+The `migrate` CLI is needed. Install it once:
+
+```bash
+go install -tags postgres github.com/golang-migrate/migrate/v4/cmd/migrate@v4.19.1
+```
+
+Then, **from the repository root**:
+
 ```bash
 docker compose up -d postgres redis
 
@@ -217,7 +225,10 @@ docker compose up -d postgres redis
 export DATABASE_TEST_URL="postgres://coderag:coderag@localhost:5434/coderag?sslmode=disable"
 migrate -path services/backend/migrations -database "$DATABASE_TEST_URL" up
 
-go test -p 1 ./... -count=1 -timeout 15m
+# -C because the Go module lives under services/backend; running this
+# from the repo root without it fails with "directory prefix . does not
+# contain main module".
+go test -C services/backend ./... -count=1 -p 1 -timeout 15m
 ```
 
 **This is most of what CI runs, not all of it.** CI additionally runs
@@ -229,13 +240,21 @@ is a good signal, not a guarantee — check the PR.
 keeps the run deterministic: one process, one container, nothing
 cross-package to explain away.
 
-Note the trade-off, because it is not obvious: **`-p 1` also makes the
-run unable to observe the ISS-010 race.** With only one process calling
-`setupContainer`, the contention window never opens. Measured on the
-pre-fix code with a cold container, default parallelism failed 4 of 8
-runs and `-p 1` failed 0 of 5. That is why CI runs the harness packages a
-second time at default parallelism — that step, not this one, is what
-would catch the advisory lock going missing.
+Note the trade-off, because it is not obvious: **`-p 1` makes the run
+unable to observe the ISS-010 race through package contention.** With one
+process calling `setupContainer`, that window never opens. Measured on
+the pre-fix code with a cold container, default parallelism failed 4 of 8
+runs and `-p 1` failed 0 of 5.
+
+What actually guards it is `TestEnsureAppRoleIsConcurrencySafe` in
+`pkg/testing/isolation`: it releases 16 concurrent callers through a
+barrier rather than waiting for the scheduler to produce contention, and
+detected the missing advisory lock 8 times out of 8. That test runs under
+`-p 1` like any other, so this command does catch a regression.
+
+CI additionally runs the harness packages at default parallelism, but
+that step is defense in depth — it detected the same breakage only about
+one time in eight, so a green result there proves very little on its own.
 
 **Why compose is needed at all.** The 17-01 harness
 (`pkg/testing/isolation`) provisions its own throwaway Postgres and needs

@@ -103,7 +103,9 @@ Next command suggested: plan Phase 20 (Repository Integration Backend) once 19-0
 
 The workflow supplies Postgres and Redis service containers for `pkg/auth`'s pre-17-01 helpers. Migrating those onto the testcontainers harness would let both be dropped; tracked in `19-02-SUMMARY.md`.
 
-One step is **advisory, not gating**: `go test -race` on the concurrency-sensitive packages. It needs cgo and could not be executed on the authoring machine, so it is marked `continue-on-error` rather than shipped as an unverified gate. Promote it once it has run green a few times.
+The full gate is: `go mod download`/`verify`/`tidy -diff`, migrations applied, `go build ./...`, `go vet ./...`, `go test -p 1 ./...`, the harness packages again at default parallelism, and `go test -race` on the concurrency-sensitive packages. **All of them gate** — the `-race` step shipped as `continue-on-error` because it could not be executed on the authoring machine (no cgo), and was promoted once it ran green.
+
+**On ISS-010's regression guard:** the real one is `TestEnsureAppRoleIsConcurrencySafe` in `pkg/testing/isolation`, which releases 16 concurrent callers through a barrier and detected the missing advisory lock 8 times out of 8. The CI step that runs the harness packages at default parallelism is defense in depth only — measured at roughly one detection in eight, so a green result there proves little on its own. Do not replace the test with the step.
 
 **Fleet handoff notes for the worker session:**
 - Read the phase `-CONTEXT.md` first for vision context
