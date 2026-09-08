@@ -12,11 +12,17 @@ package handlers_test
 // tests carry tenant purely via testjwt.Sign — there is no request-
 // controlled input a caller could use to redirect their own scope.
 //
-// Scenarios 4-6 were rewritten in 19-03: scenario 4 previously asserted a
-// missing header returned 400 and now asserts a token with no
+// Scenarios 4-7 were rewritten or added in 19-03: scenario 4 previously
+// asserted a missing header returned 400 and now asserts a token with no
 // organization claim returns 403; scenario 5 previously PINNED the
 // header-trust vulnerability as expected behavior and now asserts the
-// claim is authoritative; scenario 6 is new.
+// claim is authoritative; scenarios 6 and 7 are new.
+//
+// Scenario 7 is the regression guard for the vulnerability this phase
+// closed, and it exists because a reviewer demonstrated its absence: with
+// the header path re-added to TenantMiddleware, every other scenario in
+// this file still passed. A suite that cannot detect the re-introduction
+// of the hole it was written for is not covering it.
 
 import (
 	"bytes"
@@ -144,22 +150,26 @@ func TestSearchIsolation(t *testing.T) {
 				"a token with no app_metadata.organization_id must be refused")
 		})
 
-		t.Run("Scenario5_TamperedOrgClaim_CannotReachOtherTenantsData", func(t *testing.T) {
+		t.Run("Scenario5_OrgClaimIsAuthoritative_SubIsIgnoredForScoping", func(t *testing.T) {
 			// Replaces the pre-19-03 header-tamper scenario, which asserted
 			// that a client authenticated as orgA could read orgB's data by
 			// setting X-Organization-ID. That path is gone.
 			//
-			// What this proves: tenant scope now travels inside the signed
-			// token, so a caller cannot redirect it with anything they
-			// control on the wire. The request below carries orgA's owner as
-			// `sub` and orgB in the org claim — and the response is scoped to
-			// the claim, never to a mix of the two.
+			// What this proves: the organization CLAIM decides tenant scope,
+			// and the `sub` claim has no say. The token below names orgA's
+			// owner as the subject and orgB in the org claim, and the
+			// response is orgB's data — cleanly, not a mixture, and not an
+			// error.
+			//
+			// The name is careful on purpose. An earlier revision called this
+			// "TamperedOrgClaim_CannotReachOtherTenantsData", which asserted
+			// the opposite of what happens: the token DOES reach orgB's data,
+			// and that is correct and intended. Only Supabase's signing key
+			// can mint this token, so "tampered" was never the right word.
 			//
 			// What this does NOT prove, stated plainly: the middleware trusts
-			// the claim wholesale, so this token is only mintable by
-			// something holding the signing key. In production that is
-			// Supabase alone, and the membership check happens where the
-			// claim is written (the webhook's org-context push and 19-04's
+			// the claim wholesale. The membership check happens where the
+			// claim is WRITTEN (the webhook's org-context push, and 19-04's
 			// select-organization), not per request. Adding a per-request
 			// membership query would be defense-in-depth against an attacker
 			// who by construction already controls token issuance — a real
@@ -167,16 +177,51 @@ func TestSearchIsolation(t *testing.T) {
 			// request. Deliberate non-goal; revisit if token-signing ever
 			// moves in-house.
 			body := fmt.Sprintf(`{"query":"purple","repository_id":%q}`, orgB.RepoID)
-			tampered := testjwt.Sign(orgA.OwnerID, orgB.ID, "owner")
+			crossSubject := testjwt.Sign(orgA.OwnerID, orgB.ID, "owner")
 
-			status, resp := doSearch(t, server.URL, tampered, body)
+			status, resp := doSearch(t, server.URL, crossSubject, body)
 			require.Equal(t, http.StatusOK, status, "body=%s", resp.raw)
 
-			// Scoped strictly to the claim: orgB's chunk, never orgA's.
-			for _, r := range resp.Results {
-				require.NotContains(t, r.Content, "marmalade",
-					"orgA's data must never appear under an orgB-scoped token")
-			}
+			// POSITIVE assertions. The previous version asserted only that no
+			// result contained "marmalade" — which every broken middleware
+			// also satisfies, because a broken middleware returns zero
+			// results and the loop body never runs. Verified: under a
+			// middleware whose claim read was replaced with a nonexistent
+			// org id, five other scenarios went red and this one stayed
+			// green. Requiring the orgB row to actually be there is what
+			// makes it able to fail.
+			require.Equal(t, 1, resp.TotalResults,
+				"the org claim must scope the request to orgB's data, not to nothing")
+			require.Contains(t, resp.Results[0].Content, "velvet",
+				"the row returned must be orgB's, selected by the claim")
+			require.NotContains(t, resp.Results[0].Content, "marmalade",
+				"orgA's data must never appear under an orgB-scoped token")
+		})
+
+		t.Run("Scenario7_TenantHeaderIsIgnored_CannotRedirectScope", func(t *testing.T) {
+			// The regression guard for the exact hole 19-03 closed.
+			//
+			// Before this phase, X-Organization-ID chose the tenant, so any
+			// authenticated user could read any organization's data by
+			// setting it. The header path is deleted — but nothing else in
+			// this suite would notice if it came back, because no other test
+			// sends the header. Verified: re-adding a header-with-claim-
+			// fallback read to TenantMiddleware left all other scenarios
+			// green.
+			//
+			// So: send orgA's token, ask for orgA's repo, and set the header
+			// to orgB. If the header has any influence at all, the result
+			// stops being orgA's marmalade row.
+			body := fmt.Sprintf(`{"query":"orange","repository_id":%q}`, orgA.RepoID)
+			status, resp := doSearch(t, server.URL, orgAToken, body, func(r *http.Request) {
+				r.Header.Set("X-Organization-ID", orgB.ID)
+			})
+			require.Equal(t, http.StatusOK, status, "body=%s", resp.raw)
+
+			require.Equal(t, 1, resp.TotalResults,
+				"the request must stay scoped to orgA — the header must not redirect it")
+			require.Contains(t, resp.Results[0].Content, "marmalade",
+				"orgA's own row must come back; a header-influenced scope would not return it")
 		})
 
 		t.Run("Scenario6_OrgAClaimNeverSeesOrgBData", func(t *testing.T) {
@@ -268,12 +313,21 @@ func queryChunksUnderTenant(ctx context.Context, pool *pgxpool.Pool, orgID, repo
 // doSearch POSTs a search request through the real router and decodes
 // the SearchResponseBody. Returns the raw status plus a partially decoded
 // response so tests can assert on TotalResults and Results.
-func doSearch(t *testing.T, baseURL, token, body string) (int, decodedSearch) {
+// The variadic mutators let a scenario add something to the request
+// without giving the helper a parameter for it. Scenario 7 uses this to
+// attach the deleted X-Organization-ID header: the header must have no
+// effect, so it belongs in the one test that proves that rather than in
+// the helper's signature, where its presence would imply it is part of
+// the protocol.
+func doSearch(t *testing.T, baseURL, token, body string, mutate ...func(*http.Request)) (int, decodedSearch) {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, baseURL+"/api/search", strings.NewReader(body))
 	require.NoError(t, err)
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
+	for _, m := range mutate {
+		m(req)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)

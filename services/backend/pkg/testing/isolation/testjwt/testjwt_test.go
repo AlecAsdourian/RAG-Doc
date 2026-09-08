@@ -86,3 +86,45 @@ func TestSign_IncludesSupabaseOwnedKeys(t *testing.T) {
 	assert.NotEmpty(t, am["providers"],
 		"real Supabase tokens carry providers alongside our keys")
 }
+
+// TestSignWithoutOrg_MatchesTheRealUnprovisionedShape is the drift guard
+// for the negative case, and it is the one that was missing.
+//
+// The distinction it pins is not pedantry. Supabase always writes
+// provider/providers, so a user whose org-context push failed holds a
+// token with app_metadata PRESENT and our key ABSENT. That travels a
+// different branch of pkg/auth.extractAppMetadataString than "no
+// app_metadata at all" — different error, different operator remediation.
+// A helper that emitted the wrong one would leave the realistic path
+// untested while looking like it covered it.
+func TestSignWithoutOrg_MatchesTheRealUnprovisionedShape(t *testing.T) {
+	claims := decodeClaims(t, SignWithoutOrg("user-1"))
+
+	am, ok := claims["app_metadata"].(map[string]any)
+	require.True(t, ok,
+		"a real un-provisioned Supabase user still HAS app_metadata; got %T",
+		claims["app_metadata"])
+
+	assert.Equal(t, "email", am["provider"],
+		"Supabase populates provider on every account it creates")
+	assert.NotEmpty(t, am["providers"])
+
+	_, hasOrg := am["organization_id"]
+	assert.False(t, hasOrg,
+		"the whole point of this helper is a token with no organization_id")
+	_, hasRole := am["organization_role"]
+	assert.False(t, hasRole)
+}
+
+// TestSignWithNoAppMetadata_OmitsTheClaimEntirely pins the defensive
+// shape. Supabase does not issue it, but the middleware must still refuse
+// it — "the identity provider would never do that" is how holes survive.
+func TestSignWithNoAppMetadata_OmitsTheClaimEntirely(t *testing.T) {
+	claims := decodeClaims(t, SignWithNoAppMetadata("user-1"))
+
+	_, present := claims["app_metadata"]
+	assert.False(t, present,
+		"this helper exists precisely to produce a token with no app_metadata claim")
+	assert.Equal(t, "user-1", claims["sub"],
+		"it must still be a well-formed token, or the test proves nothing about claims")
+}
