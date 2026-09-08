@@ -21,6 +21,13 @@ on:
 permissions:
   contents: read
 
+# Supersede in-flight runs for the same ref. Without this, rapid pushes
+# stack redundant multi-minute runs and the newest result is not
+# necessarily the last one reported.
+concurrency:
+  group: backend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
@@ -70,19 +77,37 @@ jobs:
           go-version-file: services/backend/go.mod
           cache-dependency-path: services/backend/go.sum
 
-      - name: Verify go.mod and go.sum are tidy
+      # Three distinct checks that all fail the same way — "works on the
+      # machine with a warm module cache":
+      #   download+verify — every dependency resolves and matches go.sum
+      #   tidy -diff      — go.mod/go.sum have no missing or stray entries
+      # A missing go.sum entry is how the qdrant bump first surfaced.
+      - name: Verify modules resolve and go.mod is tidy
         working-directory: services/backend
-        # A missing go.sum entry breaks the build for everyone but the
-        # person whose module cache happens to be warm — which is how the
-        # qdrant bump first surfaced locally.
         run: |
           go mod download
           go mod verify
+          go mod tidy -diff
 
+      # Version-matched to the golang-migrate LIBRARY in go.mod. Two
+      # different migrate versions applying the same migrations is a
+      # difference nobody would think to look for.
+      #
+      # The checksum is pinned because this pipes a release tarball
+      # straight into tar and sudo. Blast radius is already small — the job
+      # has contents:read, no secrets, and `pull_request` (not
+      # `pull_request_target`) gives forks a read-only token — but GitHub
+      # permits re-uploading release assets, so "the tag didn't change"
+      # is not the same as "the bytes didn't change".
       - name: Install golang-migrate
+        env:
+          MIGRATE_VERSION: v4.19.1
+          MIGRATE_SHA256: 2ac648fbd1b127b69ab5a7b33cf96212178f71e22379fc50573630c6f4c7ce18
         run: |
-          curl -sSL https://github.com/golang-migrate/migrate/releases/download/v4.17.1/migrate.linux-amd64.tar.gz \
-            | tar xvz -C /tmp migrate
+          curl -sSLo /tmp/migrate.tar.gz \
+            "https://github.com/golang-migrate/migrate/releases/download/${MIGRATE_VERSION}/migrate.linux-amd64.tar.gz"
+          echo "${MIGRATE_SHA256}  /tmp/migrate.tar.gz" | sha256sum -c -
+          tar xzf /tmp/migrate.tar.gz -C /tmp migrate
           sudo mv /tmp/migrate /usr/local/bin/migrate
           migrate -version
 
@@ -98,44 +123,57 @@ jobs:
         working-directory: services/backend
         run: go vet ./...
 
-      # -p 1 serializes PACKAGES, not tests within a package.
+      # -p 1 serializes PACKAGES, not tests within a package. It keeps the
+      # primary gate deterministic — one process, one container, no
+      # cross-package interference to explain away when something fails.
       #
-      # It is belt-and-braces after ISS-010: several packages share one
-      # reused testcontainers Postgres, and their role setup used to race
-      # on the same GRANT, failing with `tuple concurrently updated`. That
-      # is now serialized by a Postgres advisory lock in
-      # pkg/testing/isolation/container.go, and the fix was validated over
-      # five consecutive COLD-container parallel runs. Keeping -p 1 here
-      # costs a few seconds and removes a whole class of "CI is flaky"
-      # from a gate whose entire job is to be trusted.
-      #
-      # It matters that CI is always cold: the race was reproducible on a
-      # cold container and effectively never on a warm one, so the failure
-      # profile was "green locally, red in CI".
+      # READ THE NEXT STEP BEFORE CHANGING THIS ONE. `-p 1` cannot observe
+      # the ISS-010 race at all, because only one process ever calls
+      # setupContainer. Measured on the pre-fix code, cold container each
+      # run: default parallelism failed 4 of 8 runs; `-p 1` failed 0 of 5.
+      # On its own this step would let a future removal of the advisory
+      # lock sail through CI forever while developers hit flakes locally.
       - name: Test the whole module
         working-directory: services/backend
         run: go test ./... -count=1 -p 1 -timeout 15m
 
-      # ADVISORY, NOT A GATE — yet. Deliberate.
+      # The regression guard for ISS-010, and the reason the step above is
+      # allowed to be serial.
       #
-      # -race needs cgo and a C toolchain, which the machine this was
-      # authored on does not have (CGO_ENABLED=0, no gcc), so this step has
-      # never been executed anywhere. Shipping an unverified blocking step
-      # would mean the first PR after this one could go red for a reason
-      # nobody had ever seen — which is precisely the "CI is flaky, just
-      # re-run it" habit this workflow exists to prevent.
+      # Runs only the packages that share the reused testcontainers
+      # Postgres, at DEFAULT parallelism, so their setup routines contend
+      # for role creation exactly as they did when this raced. Against the
+      # pre-fix code this reproduces `tuple concurrently updated (XX000)`
+      # on the GRANT and `role already exists (42710)` on the CREATE ROLE
+      # block; against the advisory-lock fix it is clean.
       #
-      # It earns its place regardless: pkg/api/handlers now has a scenario
-      # that fires 16 concurrent requests through the real router
-      # (TestUserOrgsIsolation/Scenario5), and the shared testcontainers
-      # pool is exactly where a data race would hide.
-      #
-      # FOLLOW-UP: once this has run green on a few PRs, delete
-      # `continue-on-error` and let it gate. If it goes red, that is a real
-      # finding, not a reason to remove the step.
-      - name: Race detector on the concurrency-sensitive packages (advisory)
+      # This is a gate, not advisory. A failure here means the lock is
+      # gone or broken, which is a real defect — the suite would go back to
+      # failing roughly half the time on a cold container, i.e. always in
+      # CI and almost never on a warm developer machine.
+      - name: Harness under package parallelism (ISS-010 regression guard)
         working-directory: services/backend
-        continue-on-error: true
+        run: go test ./pkg/api/... ./pkg/auth/... ./pkg/testing/... -count=1 -timeout 15m
+
+      # This shipped as `continue-on-error: true` in the first cut of this
+      # workflow, because -race needs cgo and the authoring machine had no
+      # C toolchain (CGO_ENABLED=0, no gcc) — so the step had never been
+      # executed anywhere and an unverified blocking gate would have been a
+      # coin flip on the next PR.
+      #
+      # It has now run: 61 seconds, all packages ok, zero data races.
+      # The condition for promoting it is met, so it gates.
+      #
+      # Promoting it also removes a trap: with `continue-on-error`, GitHub
+      # reports the step's conclusion as SUCCESS even when it fails. A
+      # future data race would not merely have been non-blocking — it would
+      # have been invisible without reading the raw log.
+      #
+      # It earns the runtime: pkg/api/handlers fires 16 concurrent requests
+      # through the real router (TestUserOrgsIsolation/Scenario5), and the
+      # shared testcontainers pool is exactly where a race would hide.
+      - name: Race detector on the concurrency-sensitive packages
+        working-directory: services/backend
         # Scoped rather than module-wide: -race roughly doubles runtime,
         # and these are the packages with concurrent tests worth the cost.
         run: go test -race ./pkg/api/... ./pkg/testing/... -count=1 -p 1 -timeout 15m

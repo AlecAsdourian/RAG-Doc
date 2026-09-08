@@ -141,10 +141,6 @@ The inconsistency is known.)
 curl -s http://localhost:8080/health
 # {"service":"backend-api","status":"ok"}
 
-# OAuth wiring — 307 to GitHub with a state token (requires Redis).
-curl -s -o /dev/null -w "%{http_code} %{redirect_url}\n" \
-  http://localhost:8080/auth/github/login
-
 # Webhook rejects unsigned payloads.
 curl -s -o /dev/null -w "%{http_code}\n" -X POST \
   -H "Content-Type: application/json" -d '{}' \
@@ -156,16 +152,26 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST \
   http://localhost:8080/api/search          # expect 401
 ```
 
-If port 8080 is occupied by something else, set `PORT` to a free port —
-note that `BASE_URL` (used to build the OAuth `redirect_uri`) is
-independent and must match whatever GitHub has registered.
+If port 8080 is occupied by something else, set `PORT` to a free port.
+
+**There are no `/auth/github/*` or `/auth/gitlab/*` routes.** Sign-in goes
+through Supabase directly from the frontend
+(`supabase.auth.signInWithOAuth`), which redirects to Supabase's hosted
+endpoint and back to the app — the Go backend is never in that path. The
+one thing the backend does at signup is receive Supabase's webhook. See
+[`auth-frontend-contract.md`](auth-frontend-contract.md).
+
+The Go handlers for direct OAuth still exist as Phase-4 reference code but
+are deliberately not mounted (ISS-011): they returned 500 on every
+completed callback, and repairing that alone would have produced users
+with no organization claim.
 
 ## Redis
 
-Required for the OAuth state store (CSRF protection). If it's
-unreachable, the OAuth routes are **skipped at router construction**
-with a logged warning rather than failing startup — so a missing
-`/auth/github/login` route means Redis, not routing.
+Required by the OAuth state store (CSRF protection for the direct OAuth
+flow). Since those routes are unmounted, nothing in the request path uses
+Redis today — but `pkg/auth`'s state-store tests do, so it is needed to
+run the full test suite, and Phase 20's GitHub App flow will want it.
 
 ```bash
 docker compose up -d redis
@@ -204,19 +210,32 @@ throwaway Postgres via testcontainers and needs no configuration.
 
 ```bash
 docker compose up -d postgres redis
-go test -p 1 ./... -count=1
+
+# pkg/auth's helpers use this database directly and do NOT apply
+# migrations themselves. On a fresh volume, skipping this makes every
+# pkg/auth test fail on a missing table.
+export DATABASE_TEST_URL="postgres://coderag:coderag@localhost:5434/coderag?sslmode=disable"
+migrate -path services/backend/migrations -database "$DATABASE_TEST_URL" up
+
+go test -p 1 ./... -count=1 -timeout 15m
 ```
 
-This is what CI runs (`.github/workflows/backend-ci.yml`), so a green run
-here means a green run there.
+**This is most of what CI runs, not all of it.** CI additionally runs
+`go build ./...`, `go vet ./...`, `go mod verify`, `go mod tidy -diff`, a
+`-race` pass, and a parallel-harness regression guard. A green run here
+is a good signal, not a guarantee — check the PR.
 
-**Why `-p 1`.** It serializes packages, not tests within a package.
-Several packages share one reused testcontainers Postgres and their role
-setup used to race on the same `GRANT`, failing intermittently with
-`tuple concurrently updated (SQLSTATE XX000)`. That is fixed — role setup
-now holds a Postgres advisory lock (ISS-010, closed) — and `-p 1` is
-belt-and-braces on a suite whose entire value is being trusted. It costs
-a few seconds.
+**Why `-p 1`.** It serializes packages, not tests within a package, which
+keeps the run deterministic: one process, one container, nothing
+cross-package to explain away.
+
+Note the trade-off, because it is not obvious: **`-p 1` also makes the
+run unable to observe the ISS-010 race.** With only one process calling
+`setupContainer`, the contention window never opens. Measured on the
+pre-fix code with a cold container, default parallelism failed 4 of 8
+runs and `-p 1` failed 0 of 5. That is why CI runs the harness packages a
+second time at default parallelism — that step, not this one, is what
+would catch the advisory lock going missing.
 
 **Why compose is needed at all.** The 17-01 harness
 (`pkg/testing/isolation`) provisions its own throwaway Postgres and needs

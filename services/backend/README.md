@@ -60,14 +60,17 @@ make fmt
 make lint
 
 # Run tests. -p 1 serializes packages that share the testcontainers
-# Postgres. Needs `docker compose up -d postgres redis` for the older
-# pkg/auth helpers — see docs/local-development.md.
-go test -p 1 ./... -count=1
+# Postgres. Needs `docker compose up -d postgres redis` AND migrations
+# applied to that database first — see docs/local-development.md for the
+# full sequence.
+go test -p 1 ./... -count=1 -timeout 15m
 ```
 
-`.github/workflows/backend-ci.yml` runs exactly that, plus
-`go build ./...` and `go vet ./...`, on every PR — so a green run locally
-means a green run in CI.
+`.github/workflows/backend-ci.yml` gates every PR on `go build ./...`,
+`go vet ./...`, `go mod verify`, `go mod tidy -diff`, the test command
+above, a `-race` pass, and a parallel-harness regression guard. A green
+local run is a good signal but not the whole gate — `make lint` in
+particular is not yet part of it.
 
 ## Tooling
 
