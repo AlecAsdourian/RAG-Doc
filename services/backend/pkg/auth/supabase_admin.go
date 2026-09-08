@@ -53,14 +53,29 @@ func NewAdminClient(baseURL, serviceRoleKey string) AdminClient {
 	return &httpAdminClient{
 		baseURL:        strings.TrimRight(baseURL, "/"),
 		serviceRoleKey: serviceRoleKey,
-		httpClient:     &http.Client{Timeout: 10 * time.Second},
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+			// Never follow a redirect. Go strips `Authorization` when a
+			// redirect crosses to a different host, but its sensitive-header
+			// list does not include GoTrue's custom `apikey` header — which
+			// carries the same service-role secret. A redirect to an
+			// attacker-controlled host would hand them the key verbatim.
+			//
+			// The admin API has no legitimate reason to redirect, so
+			// refusing to follow costs nothing: the 3xx surfaces as a
+			// non-2xx error below.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
 }
 
 // UpdateUserAppMetadata merges meta into the user's app_metadata.
 //
-// The service-role key is never included in an error message — errors
-// carry the status and a truncated response body only.
+// Errors carry the status and a truncated response body. The response body
+// is scrubbed of the service-role key before it goes anywhere — see
+// redactSecret.
 func (c *httpAdminClient) UpdateUserAppMetadata(
 	ctx context.Context,
 	supabaseUserID string,
@@ -99,9 +114,28 @@ func (c *httpAdminClient) UpdateUserAppMetadata(
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 300))
 		return fmt.Errorf(
 			"supabase admin returned %d updating user %s: %s",
-			resp.StatusCode, supabaseUserID, strings.TrimSpace(string(snippet)),
+			resp.StatusCode, supabaseUserID,
+			c.redactSecret(strings.TrimSpace(string(snippet))),
 		)
 	}
 
 	return nil
+}
+
+// redactSecret removes the service-role key from text that is about to be
+// embedded in an error — and therefore, at the only call site, written to
+// the log.
+//
+// This is not paranoia about our own format string. The response body is
+// written by whatever answered the request, which on a bad day is a proxy,
+// WAF, or CDN error page rather than GoTrue. Several of those echo the
+// request headers back in the body for debugging, and this client sends the
+// key in `apikey` and `Authorization`. Without this, one 502 from a
+// header-echoing intermediary puts the service-role key in the application
+// log in plaintext.
+func (c *httpAdminClient) redactSecret(s string) string {
+	if c.serviceRoleKey == "" {
+		return s
+	}
+	return strings.ReplaceAll(s, c.serviceRoleKey, "[REDACTED]")
 }

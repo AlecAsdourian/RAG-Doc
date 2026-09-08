@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -114,11 +113,23 @@ func TestUpdateUserAppMetadata_NonSuccessReturnsError(t *testing.T) {
 // TestUpdateUserAppMetadata_NeverLeaksServiceKey is the one that matters
 // for incident hygiene: the service-role key is a full-project credential
 // and must never reach a log line or an error surfaced to a caller.
+//
+// The failing server here echoes the key into its response body, which is
+// not a contrived scenario — proxies, WAFs and CDN error pages routinely
+// dump request headers into their bodies, and this client sends the key in
+// both `apikey` and `Authorization`.
+//
+// This assertion deliberately covers the WHOLE error string. An earlier
+// version split on the first colon and inspected only the prefix, which
+// tested the format string and nothing else: the response body — the only
+// part that could ever carry the key — was the half being thrown away, and
+// the test passed while the key flowed straight into the error.
 func TestUpdateUserAppMetadata_NeverLeaksServiceKey(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
-		// Even if Supabase echoed the key back, we must not propagate it.
-		_, _ = w.Write([]byte(`{"msg":"forbidden","echoed":"` + testServiceKey + `"}`))
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(
+			`<html>502 Bad Gateway. Request headers: apikey=` + testServiceKey +
+				` authorization=Bearer ` + testServiceKey + `</html>`))
 	}))
 	t.Cleanup(srv.Close)
 
@@ -126,12 +137,45 @@ func TestUpdateUserAppMetadata_NeverLeaksServiceKey(t *testing.T) {
 	err := c.UpdateUserAppMetadata(context.Background(), "u-1", map[string]any{"k": "v"})
 	require.Error(t, err)
 
-	// The body snippet is included for debuggability, so a server that
-	// echoes the key would surface it. Assert on our own construction:
-	// nothing we add contains the key.
-	withoutBody := strings.SplitN(err.Error(), ":", 2)[0]
-	assert.NotContains(t, withoutBody, testServiceKey,
-		"our own error construction must never embed the service-role key")
+	assert.NotContains(t, err.Error(), testServiceKey,
+		"the service-role key must not appear anywhere in the error, including the echoed body")
+	assert.Contains(t, err.Error(), "[REDACTED]",
+		"the key should be replaced in place, so the rest of the body stays debuggable")
+	assert.Contains(t, err.Error(), "502",
+		"redaction must not cost us the status code")
+}
+
+// TestUpdateUserAppMetadata_DoesNotFollowRedirects guards the second way
+// the key can walk out the door.
+//
+// Go's http.Client strips `Authorization` when a redirect crosses to a
+// different host — but its sensitive-header list knows nothing about
+// GoTrue's custom `apikey` header, which carries the very same secret. A
+// redirect to an attacker-controlled host would hand it over verbatim.
+//
+// The admin API has no legitimate reason to redirect, so the client
+// refuses to follow one at all and surfaces the 3xx as an error.
+func TestUpdateUserAppMetadata_DoesNotFollowRedirects(t *testing.T) {
+	var redirectTargetSawKey bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("apikey") == testServiceKey {
+			redirectTargetSawKey = true
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(target.Close)
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/auth/v1/admin/users/u-1", http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(redirector.Close)
+
+	c := NewAdminClient(redirector.URL, testServiceKey)
+	err := c.UpdateUserAppMetadata(context.Background(), "u-1", map[string]any{"k": "v"})
+
+	require.Error(t, err, "a redirect must surface as an error, not be followed silently")
+	assert.False(t, redirectTargetSawKey,
+		"the service-role key must never be sent to a redirect target")
 }
 
 // fakeAdmin records calls and can be told to fail.
