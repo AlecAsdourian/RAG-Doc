@@ -40,11 +40,32 @@ ngrok http 8080
 
 | Field | Value |
 |---|---|
-| **Callback URL** | `https://<your-ngrok>.ngrok-free.app/api/github/callback` |
-| **Request user authorization (OAuth) during installation** | ☑ **checked** |
+| **Callback URL** | leave **blank** |
+| **Request user authorization (OAuth) during installation** | ☐ **unchecked** |
+| **Setup URL** (under "Post installation") | `https://<your-ngrok>.ngrok-free.app/api/github/callback` |
+| **Redirect on update** | ☑ **checked** |
 | **Webhook → Active** | ☑ **checked** |
 | **Webhook URL** | `https://<your-ngrok>.ngrok-free.app/webhooks/github` |
 | **Webhook secret** | Generate a random string and keep it — see step 3 |
+
+> **Setup URL, not Callback URL** — an earlier draft of this runbook said
+> the opposite, and it was wrong.
+>
+> The two fields do different jobs. **Callback URL** is where GitHub sends
+> a user after an *OAuth authorization*, and it only fires if "Request
+> user authorization" is checked. **Setup URL** is where GitHub sends a
+> user after they *install the App*, with `installation_id`,
+> `setup_action`, and the `state` we put on the install link.
+>
+> Installation is what this flow needs. Users already authenticate through
+> Supabase, so adding an OAuth dance would hand us an authorization code
+> we have no use for, and a second identity for the same person.
+>
+> That `state` passes through to the Setup URL is what makes the flow
+> safe — it is how the callback knows which organization started the
+> install. **20-02 finding E verifies it empirically**; if it turns out
+> GitHub does not pass `state` through, 20-04's design needs revisiting
+> before it is built, which is exactly why verification comes first.
 
 > Generate the secret with:
 > ```bash
