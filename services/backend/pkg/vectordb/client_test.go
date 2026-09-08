@@ -2,6 +2,7 @@ package vectordb
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -64,10 +65,15 @@ func TestVectorMetadata(t *testing.T) {
 	}
 }
 
-// TestUpsertVectorsValidation tests input validation
+// TestUpsertVectorsValidation tests input validation.
+//
+// It calls validateUpsertInput rather than UpsertVectors on a zero-value
+// Client. The old form could not express its own third case: "matching
+// lengths" is meant to prove validation ACCEPTS the input, but on a
+// clientless Client accepted input proceeds to the wire call, which
+// panicked on the nil connection. The package had never compiled, so the
+// panic sat undiscovered from Phase 3 until the dependency was fixed.
 func TestUpsertVectorsValidation(t *testing.T) {
-	client := &Client{} // Mock client for validation testing
-
 	tests := []struct {
 		name     string
 		vectors  [][]float32
@@ -96,24 +102,46 @@ func TestUpsertVectorsValidation(t *testing.T) {
 				{ChunkID: "1"},
 				{ChunkID: "2"},
 			},
-			wantErr: false, // Would fail on actual upsert, but validation passes
+			wantErr: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := client.UpsertVectors(context.Background(), "test", tt.vectors, tt.metadata)
+			err := validateUpsertInput(tt.vectors, tt.metadata)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("UpsertVectors() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("validateUpsertInput() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}
 }
 
-// TestSearchSimilarValidation tests query vector validation
-func TestSearchSimilarValidation(t *testing.T) {
-	client := &Client{} // Mock client for validation testing
+// TestClientlessOperationsReturnErrNotConnected pins the guard that
+// replaced the panic. A zero-value Client is what a caller holds if they
+// ignored NewClient's error, and it must fail with something legible
+// rather than dereferencing nil several frames inside the SDK.
+func TestClientlessOperationsReturnErrNotConnected(t *testing.T) {
+	var client *Client // nil receiver, the worst case
 
+	err := client.UpsertVectors(context.Background(), "test",
+		[][]float32{{0.1}}, []VectorMetadata{{ChunkID: "1"}})
+	if !errors.Is(err, ErrNotConnected) {
+		t.Errorf("UpsertVectors on a nil client = %v, want ErrNotConnected", err)
+	}
+
+	_, err = client.SearchSimilar(context.Background(), "test",
+		make([]float32, EmbeddingDimension), 10, "")
+	if !errors.Is(err, ErrNotConnected) {
+		t.Errorf("SearchSimilar on a nil client = %v, want ErrNotConnected", err)
+	}
+}
+
+// TestSearchSimilarValidation tests query vector validation. Same
+// restructuring as TestUpsertVectorsValidation, and for the same reason —
+// its "valid dimension" case had the identical latent panic; it simply
+// never ran, because the Upsert test panicked first and took the binary
+// down with it.
+func TestSearchSimilarValidation(t *testing.T) {
 	tests := []struct {
 		name        string
 		queryVector []float32
@@ -126,16 +154,16 @@ func TestSearchSimilarValidation(t *testing.T) {
 		},
 		{
 			name:        "valid dimension",
-			queryVector: make([]float32, 1536),
-			wantErr:     false, // Would fail on actual search, but validation passes
+			queryVector: make([]float32, EmbeddingDimension),
+			wantErr:     false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := client.SearchSimilar(context.Background(), "test", tt.queryVector, 10, "")
+			err := validateQueryVector(tt.queryVector)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("SearchSimilar() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("validateQueryVector() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}
