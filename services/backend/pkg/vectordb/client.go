@@ -2,15 +2,107 @@ package vectordb
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
+	"net/url"
+	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 	qdrant "github.com/qdrant/go-client/qdrant"
 )
 
-// Config holds vector database client configuration
+// Config holds vector database client configuration.
 type Config struct {
-	URL string // Qdrant server URL (e.g., "http://localhost:6333")
+	// URL is the Qdrant endpoint. Both a bare host ("qdrant",
+	// "localhost:6334") and a full URL ("http://qdrant:6333") are
+	// accepted; see NewClient for how it is interpreted.
+	URL string
+}
+
+// defaultGRPCPort is Qdrant's gRPC port. The Go client speaks gRPC, not
+// the REST API on 6333 — a distinction that has bitten this package
+// before, because every piece of configuration in the repo names 6333.
+const defaultGRPCPort = 6334
+
+// restPort is Qdrant's HTTP/REST port, which this client cannot speak to.
+const restPort = 6333
+
+// grpcPortFor maps a configured port to the one the Go SDK can actually
+// use.
+//
+// 6333 is Qdrant's REST port and this client is gRPC-only, so honouring
+// it literally would guarantee a connection that never works. Every
+// piece of configuration in this repo names 6333, so this redirect is
+// the common path, not an edge case.
+//
+// It lives in one function because it did not, once: the URL branch
+// applied it and the bare-host branch did not, so "http://qdrant:6333"
+// worked while "qdrant:6333" — the same value with the scheme dropped,
+// and the more likely thing to type — silently produced a client that
+// could never connect.
+func grpcPortFor(port int) int {
+	if port == restPort {
+		return defaultGRPCPort
+	}
+	return port
+}
+
+// parseEndpoint turns a Config.URL into the host and port the Qdrant SDK
+// wants.
+//
+// This exists because qdrant.Config takes a bare Host and a separate Port,
+// while everything in this repo — QDRANT_URL in docker-compose, the
+// example in example_usage.go, the old doc comment — supplies a full URL.
+// Handing "http://localhost:6333" straight through produced a dial target
+// of "http://localhost:6333:6334", and the failure surfaced only at the
+// first RPC ("too many colons in address"), long after NewClient had
+// returned a non-nil client and no error.
+//
+// Note the port default: a URL naming Qdrant's REST port (6333) is
+// redirected to the gRPC port (6334), because the Go client cannot speak
+// to 6333 at all. Passing 6333 explicitly and getting a connection to
+// 6334 is surprising, so it is logged by the caller rather than done
+// silently... except there is no logger here, so it is documented instead
+// and pinned by TestParseEndpoint.
+func parseEndpoint(raw string) (host string, port int, useTLS bool, err error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", 0, false, fmt.Errorf("vector database URL is required")
+	}
+
+	// A bare "host" or "host:port" has no scheme; url.Parse would read
+	// "localhost:6334" as scheme "localhost", opaque "6334".
+	if !strings.Contains(raw, "//") {
+		if h, p, splitErr := net.SplitHostPort(raw); splitErr == nil {
+			n, convErr := strconv.Atoi(p)
+			if convErr != nil {
+				return "", 0, false, fmt.Errorf("invalid port %q in %q", p, raw)
+			}
+			return h, grpcPortFor(n), false, nil
+		}
+		return raw, defaultGRPCPort, false, nil
+	}
+
+	u, parseErr := url.Parse(raw)
+	if parseErr != nil {
+		return "", 0, false, fmt.Errorf("parse vector database URL %q: %w", raw, parseErr)
+	}
+	if u.Hostname() == "" {
+		return "", 0, false, fmt.Errorf("vector database URL %q has no host", raw)
+	}
+
+	useTLS = u.Scheme == "https"
+	port = defaultGRPCPort
+	if p := u.Port(); p != "" {
+		n, convErr := strconv.Atoi(p)
+		if convErr != nil {
+			return "", 0, false, fmt.Errorf("invalid port %q in %q", p, raw)
+		}
+		port = grpcPortFor(n)
+	}
+	return u.Hostname(), port, useTLS, nil
 }
 
 // Client wraps the Qdrant client with application-specific operations
@@ -35,14 +127,17 @@ type SearchResult struct {
 	Score        float32
 }
 
-// NewClient creates a new vector database client
+// NewClient creates a new vector database client.
 func NewClient(cfg Config) (*Client, error) {
-	if cfg.URL == "" {
-		return nil, fmt.Errorf("vector database URL is required")
+	host, port, useTLS, err := parseEndpoint(cfg.URL)
+	if err != nil {
+		return nil, err
 	}
 
 	client, err := qdrant.NewClient(&qdrant.Config{
-		Host: cfg.URL,
+		Host:   host,
+		Port:   port,
+		UseTLS: useTLS,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Qdrant client: %w", err)
@@ -57,6 +152,10 @@ func NewClient(cfg Config) (*Client, error) {
 // Dimension: 1536 (OpenAI ada-002 embedding size)
 // Distance metric: Cosine similarity (standard for semantic search)
 func (c *Client) CreateCollection(ctx context.Context, collectionName string) error {
+	if err := c.connected(); err != nil {
+		return err
+	}
+
 	// Check if collection already exists
 	exists, err := c.qdrant.CollectionExists(ctx, collectionName)
 	if err != nil {
@@ -79,8 +178,11 @@ func (c *Client) CreateCollection(ctx context.Context, collectionName string) er
 		return fmt.Errorf("failed to create collection: %w", err)
 	}
 
-	// Create payload index for efficient metadata filtering
-	err = c.qdrant.CreateFieldIndex(ctx, &qdrant.CreateFieldIndexCollection{
+	// Create payload index for efficient metadata filtering.
+	//
+	// CreateFieldIndex returns (*UpdateResult, error) and the status in
+	// that result is NOT redundant with the error — see checkUpdateStatus.
+	res, err := c.qdrant.CreateFieldIndex(ctx, &qdrant.CreateFieldIndexCollection{
 		CollectionName: collectionName,
 		FieldName:      "repository_id",
 		FieldType:      qdrant.FieldType_FieldTypeKeyword.Enum(),
@@ -88,8 +190,11 @@ func (c *Client) CreateCollection(ctx context.Context, collectionName string) er
 	if err != nil {
 		return fmt.Errorf("failed to create repository_id index: %w", err)
 	}
+	if err := checkUpdateStatus("create repository_id index", res); err != nil {
+		return err
+	}
 
-	err = c.qdrant.CreateFieldIndex(ctx, &qdrant.CreateFieldIndexCollection{
+	res, err = c.qdrant.CreateFieldIndex(ctx, &qdrant.CreateFieldIndexCollection{
 		CollectionName: collectionName,
 		FieldName:      "language",
 		FieldType:      qdrant.FieldType_FieldTypeKeyword.Enum(),
@@ -97,14 +202,89 @@ func (c *Client) CreateCollection(ctx context.Context, collectionName string) er
 	if err != nil {
 		return fmt.Errorf("failed to create language index: %w", err)
 	}
+	return checkUpdateStatus("create language index", res)
+}
 
+// checkUpdateStatus turns a non-success UpdateStatus into an error.
+//
+// Qdrant's write RPCs return `err == nil` alongside a status that may say
+// the write did not happen: ClockRejected means the server refused it, and
+// WaitTimeout means it gave up waiting. Ignoring the status therefore
+// reports success for writes that were rejected or abandoned — silent data
+// loss with nothing in the logs.
+//
+// Acknowledged is accepted deliberately. It means "queued, not yet
+// applied", which is what Qdrant returns whenever the request does not set
+// Wait. No method here exposes Wait, so Completed is currently
+// unreachable; plumb it through when a caller has a durability
+// requirement to state.
+func checkUpdateStatus(op string, res *qdrant.UpdateResult) error {
+	if res == nil {
+		// No result and no error is not a shape the SDK produces today.
+		// Treat it as success rather than inventing a failure.
+		return nil
+	}
+	switch s := res.GetStatus(); s {
+	case qdrant.UpdateStatus_Completed, qdrant.UpdateStatus_Acknowledged:
+		return nil
+	default:
+		return fmt.Errorf("qdrant refused %s: status=%s operation_id=%d",
+			op, s, res.GetOperationId())
+	}
+}
+
+// ErrNotConnected is returned by any operation invoked on a Client that
+// has no underlying Qdrant connection — a zero-value Client, or one built
+// by a constructor whose error was ignored.
+//
+// This exists because the alternative is a nil-pointer panic from inside
+// the Qdrant SDK, several frames below the mistake. That is what the
+// package's own unit tests did the first time they were ever able to run:
+// `&Client{}` reached the wire call and took the whole test binary down.
+var ErrNotConnected = errors.New("vectordb: client is not connected")
+
+// connected reports whether the client can actually talk to Qdrant.
+//
+// Every exported method calls this. The first version of the guard
+// covered only UpsertVectors and SearchSimilar, which left
+// CreateCollection, DeleteByChunkID and Close still panicking on a nil
+// receiver — the same failure the guard was added to prevent, in the
+// three methods nobody happened to be testing.
+func (c *Client) connected() error {
+	if c == nil || c.qdrant == nil {
+		return ErrNotConnected
+	}
+	return nil
+}
+
+// validateUpsertInput checks the caller-supplied arguments, independent of
+// any connection.
+//
+// Split out so the validation rules are testable without a live Qdrant.
+// The tests previously exercised them by calling UpsertVectors on a
+// zero-value Client and relying on it returning before touching the
+// network — which held for the rejecting cases and panicked for the
+// accepting one, so the only case that proved validation *passes* was the
+// one that could not run.
+func validateUpsertInput(vectors [][]float32, metadata []VectorMetadata) error {
+	if len(vectors) != len(metadata) {
+		return fmt.Errorf("vectors and metadata length mismatch: %d vectors, %d metadata",
+			len(vectors), len(metadata))
+	}
 	return nil
 }
 
 // UpsertVectors inserts or updates embeddings with metadata
 func (c *Client) UpsertVectors(ctx context.Context, collectionName string, vectors [][]float32, metadata []VectorMetadata) error {
-	if len(vectors) != len(metadata) {
-		return fmt.Errorf("vectors and metadata length mismatch: %d vectors, %d metadata", len(vectors), len(metadata))
+	if err := validateUpsertInput(vectors, metadata); err != nil {
+		return err
+	}
+
+	// Connection check BEFORE the empty-input early return. With the two
+	// swapped, `nilClient.UpsertVectors(ctx, "x", nil, nil)` returned nil —
+	// a disconnected client reporting a successful write.
+	if err := c.connected(); err != nil {
+		return err
 	}
 
 	if len(vectors) == 0 {
@@ -128,14 +308,22 @@ func (c *Client) UpsertVectors(ctx context.Context, collectionName string, vecto
 		}
 
 		points[i] = &qdrant.PointStruct{
-			Id:      qdrant.NewIDString(pointID),
+			// NewIDUUID, not the removed NewIDString. pointID is a
+			// uuid.New().String(); Qdrant point ids are either a uint64 or
+			// a UUID, and this is the UUID constructor.
+			Id:      qdrant.NewIDUUID(pointID),
 			Vectors: qdrant.NewVectors(vectors[i]...),
 			Payload: payload,
 		}
 	}
 
-	// Batch upsert
-	_, err := c.qdrant.Upsert(ctx, &qdrant.UpsertPoints{
+	// Batch upsert.
+	//
+	// The status is checked, not discarded. This is the path M2 was
+	// actually about: Qdrant answers a rejected or abandoned write with
+	// err == nil and a non-success status, so ignoring it reports success
+	// for embeddings that were never stored.
+	res, err := c.qdrant.Upsert(ctx, &qdrant.UpsertPoints{
 		CollectionName: collectionName,
 		Points:         points,
 	})
@@ -143,13 +331,32 @@ func (c *Client) UpsertVectors(ctx context.Context, collectionName string, vecto
 		return fmt.Errorf("failed to upsert vectors: %w", err)
 	}
 
+	return checkUpdateStatus(fmt.Sprintf("upsert %d vectors", len(points)), res)
+}
+
+// EmbeddingDimension is the vector width the collection is created with
+// (OpenAI ada-002). Queries of any other width are rejected before they
+// reach Qdrant, where the failure would be a less obvious server error.
+const EmbeddingDimension = 1536
+
+// validateQueryVector checks a query vector independent of any connection.
+// Split out for the same reason as validateUpsertInput.
+func validateQueryVector(queryVector []float32) error {
+	if len(queryVector) != EmbeddingDimension {
+		return fmt.Errorf("invalid query vector dimension: expected %d, got %d",
+			EmbeddingDimension, len(queryVector))
+	}
 	return nil
 }
 
 // SearchSimilar queries by vector and returns top K results with scores and metadata
 func (c *Client) SearchSimilar(ctx context.Context, collectionName string, queryVector []float32, topK uint64, repositoryID string) ([]SearchResult, error) {
-	if len(queryVector) != 1536 {
-		return nil, fmt.Errorf("invalid query vector dimension: expected 1536, got %d", len(queryVector))
+	if err := validateQueryVector(queryVector); err != nil {
+		return nil, err
+	}
+
+	if err := c.connected(); err != nil {
+		return nil, err
 	}
 
 	// Build filter for repository scope (optional)
@@ -202,8 +409,12 @@ func (c *Client) SearchSimilar(ctx context.Context, collectionName string, query
 
 // DeleteByChunkID removes embeddings when chunks are deleted
 func (c *Client) DeleteByChunkID(ctx context.Context, collectionName string, chunkID string) error {
+	if err := c.connected(); err != nil {
+		return err
+	}
+
 	// Delete points by metadata filter
-	_, err := c.qdrant.Delete(ctx, &qdrant.DeletePoints{
+	res, err := c.qdrant.Delete(ctx, &qdrant.DeletePoints{
 		CollectionName: collectionName,
 		Points: &qdrant.PointsSelector{
 			PointsSelectorOneOf: &qdrant.PointsSelector_Filter{
@@ -230,10 +441,13 @@ func (c *Client) DeleteByChunkID(ctx context.Context, collectionName string, chu
 		return fmt.Errorf("failed to delete vectors for chunk %s: %w", chunkID, err)
 	}
 
-	return nil
+	return checkUpdateStatus("delete vectors for chunk "+chunkID, res)
 }
 
 // Close closes the client connection
 func (c *Client) Close() error {
+	if err := c.connected(); err != nil {
+		return err
+	}
 	return c.qdrant.Close()
 }

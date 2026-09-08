@@ -76,9 +76,10 @@ Recent decisions still affecting current work:
 - **ISS-006:** Test database connectivity — **✅ closed 2026-09-05** in Phase 17-01 via testcontainers-go harness (`pkg/testing/isolation`); see ISSUES.md
 - **ISS-007:** JWT-carried tenant claim — **✅ closed 2026-09-08** in Phase 19-03. Tenant identity now comes only from the Supabase-signed `app_metadata.organization_id` claim; the `X-Organization-ID` path is deleted, including from CORS. Closed without the per-request membership re-check the original filing called for — reasoning in ISSUES.md and 19-03-SUMMARY.md.
 - **ISS-008:** Request-scoped tenant transaction for DB-hitting endpoints — **filed 2026-09-06** during 17-02; must resolve before any Phase 20+ handler reads a tenant-scoped table directly from Go. See ISSUES.md.
-- **ISS-009:** `pkg/vectordb` does not compile against its pinned Qdrant client — **filed 2026-09-08** during 19-03. Pre-existing since Phase 3; blocks whole-module `go build ./...` as a CI gate. See ISSUES.md.
-- **ISS-010:** Isolation harness setup races when test packages run in parallel — **filed 2026-09-08** during 19-03. Use `go test -p 1` until fixed; blocks parallel CI. See ISSUES.md.
-- **ISS-011:** OAuth callback routes are live and broken, and bypass the org-context push — **filed 2026-09-08** during 19-03 review. Mounted whenever Redis is up; every completed GitHub callback is a 500. See ISSUES.md.
+- **ISS-009:** `pkg/vectordb` build — **✅ closed 2026-09-08.** Qdrant client bumped v1.7.0 → v1.19.2; the pin had always predated the API the package was written against. Fixing it surfaced a panicking unit test that had never been able to run.
+- **ISS-010:** Isolation harness parallel race — **✅ closed 2026-09-08.** Role setup now holds a `pg_advisory_xact_lock`; verified over 5 cold-container parallel runs.
+- **ISS-011:** OAuth callback routes — **✅ closed 2026-09-08** by unmounting them (not repairing). Repairing the 500 alone would have converted a loud failure into a silently claim-less account. Handlers kept as reference; deleting them is a planner/user call.
+- **ISS-012:** A revoked membership does not revoke the organization claim — **filed 2026-09-08** during 19-04. Not exploitable today; **whatever ships membership removal must rewrite the claim.** See ISSUES.md.
 - **Frontend inline-style pollution** — ongoing rule, cleaned per component touched
 - **Mocked repos/orgs/graph in frontend** — **replaced in Phase 23**
 
@@ -98,7 +99,13 @@ Next command suggested: plan Phase 20 (Repository Integration Backend) once 19-0
 
 **Environment note (new in 19-03):** local dev now has two separate Postgres instances — Supabase's (auth only) and docker-compose's on port 5434 (all application tables). They are NOT the same database, which is why 19-03 could not use a Supabase Auth Hook. Runbook: `docs/local-development.md`. The Go backend does not read `.env`; only docker-compose does.
 
-**Known-broken, unrelated:** `go test ./...` at the module root fails to build `pkg/vectordb` (ISS-009). Use per-package invocations until that is fixed.
+**CI now builds and tests the Go code** (`.github/workflows/backend-ci.yml`, added 2026-09-08). `go build ./...`, `go vet ./...`, and `go test -p 1 ./...` all gate every PR. Before this, nothing in CI had ever invoked a compiler — the isolation check runs a Python script over the diff — which is how `pkg/vectordb` stayed uncompilable from Phase 3 to Phase 19.
+
+The workflow supplies Postgres and Redis service containers for `pkg/auth`'s pre-17-01 helpers. Migrating those onto the testcontainers harness would let both be dropped; tracked in `19-02-SUMMARY.md`.
+
+The full gate is: `go mod download`/`verify`/`tidy -diff`, migrations applied, `go build ./...`, `go vet ./...`, `go test -p 1 ./...`, the harness packages again at default parallelism, and `go test -race` on the concurrency-sensitive packages. **All of them gate** — the `-race` step shipped as `continue-on-error` because it could not be executed on the authoring machine (no cgo), and was promoted once it ran green.
+
+**On ISS-010's regression guard:** the real one is `TestEnsureAppRoleIsConcurrencySafe` in `pkg/testing/isolation`, which releases 16 concurrent callers through a barrier and detected the missing advisory lock 8 times out of 8. The CI step that runs the harness packages at default parallelism is defense in depth only — measured at roughly one detection in eight, so a green result there proves little on its own. Do not replace the test with the step.
 
 **Fleet handoff notes for the worker session:**
 - Read the phase `-CONTEXT.md` first for vision context

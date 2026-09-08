@@ -1,0 +1,185 @@
+name: Backend CI
+
+# Builds, vets, and tests the Go backend on every PR.
+#
+# This did not exist until 2026-09-08, and its absence is why
+# `pkg/vectordb` sat uncompilable from Phase 3 (`3c47b7e`) until Phase 19
+# without anyone noticing: nothing in CI had ever built the Go code. The
+# isolation scanner runs a Python script over the diff and never invokes a
+# compiler.
+#
+# The gate is deliberately the WHOLE module — `./...`, not a curated list
+# of packages. A curated list is how the thing you forgot to add stops
+# being checked.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Supersede in-flight runs for the same ref. Without this, rapid pushes
+# stack redundant multi-minute runs and the newest result is not
+# necessarily the last one reported.
+concurrency:
+  group: backend-ci-${{ github.ref }}
+  # PRs only. Cancelling on `push: main` too would let a rapid merge
+  # sequence leave an intermediate main commit with no verdict at all.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # pkg/auth's older test helpers (pre-17-01) talk to a fixed Postgres
+    # DSN and a Redis, rather than provisioning their own like the
+    # testcontainers harness does. Supplying both here is what lets
+    # `go test ./...` be the gate today; migrating those helpers onto the
+    # 17-01 harness is tracked as a follow-up in 19-02-SUMMARY.md and would
+    # let these services be dropped.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: coderag
+          POSTGRES_PASSWORD: coderag
+          POSTGRES_DB: coderag
+        ports:
+          # 5434 to match the docker-compose mapping the helper defaults to.
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U coderag"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_TEST_URL: postgres://coderag:coderag@localhost:5434/coderag?sslmode=disable
+      REDIS_URL: redis://localhost:6379
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: services/backend/go.mod
+          cache-dependency-path: services/backend/go.sum
+
+      # Three distinct checks that all fail the same way — "works on the
+      # machine with a warm module cache":
+      #   download+verify — every dependency resolves and matches go.sum
+      #   tidy -diff      — go.mod/go.sum have no missing or stray entries
+      # A missing go.sum entry is how the qdrant bump first surfaced.
+      - name: Verify modules resolve and go.mod is tidy
+        working-directory: services/backend
+        run: |
+          go mod download
+          go mod verify
+          go mod tidy -diff
+
+      # Version-matched to the golang-migrate LIBRARY in go.mod. Two
+      # different migrate versions applying the same migrations is a
+      # difference nobody would think to look for.
+      #
+      # The checksum is pinned because this pipes a release tarball
+      # straight into tar and sudo. Blast radius is already small — the job
+      # has contents:read, no secrets, and `pull_request` (not
+      # `pull_request_target`) gives forks a read-only token — but GitHub
+      # permits re-uploading release assets, so "the tag didn't change"
+      # is not the same as "the bytes didn't change".
+      - name: Install golang-migrate
+        env:
+          MIGRATE_VERSION: v4.19.1
+          MIGRATE_SHA256: 2ac648fbd1b127b69ab5a7b33cf96212178f71e22379fc50573630c6f4c7ce18
+        run: |
+          curl -sSLo /tmp/migrate.tar.gz \
+            "https://github.com/golang-migrate/migrate/releases/download/${MIGRATE_VERSION}/migrate.linux-amd64.tar.gz"
+          echo "${MIGRATE_SHA256}  /tmp/migrate.tar.gz" | sha256sum -c -
+          tar xzf /tmp/migrate.tar.gz -C /tmp migrate
+          sudo mv /tmp/migrate /usr/local/bin/migrate
+          migrate -version
+
+      - name: Apply migrations to the test database
+        working-directory: services/backend
+        run: migrate -path migrations -database "$DATABASE_TEST_URL" up
+
+      - name: Build the whole module
+        working-directory: services/backend
+        run: go build ./...
+
+      - name: Vet the whole module
+        working-directory: services/backend
+        run: go vet ./...
+
+      # -p 1 serializes PACKAGES, not tests within a package. It keeps the
+      # primary gate deterministic — one process, one container, no
+      # cross-package interference to explain away when something fails.
+      #
+      # READ THE NEXT STEP BEFORE CHANGING THIS ONE. `-p 1` cannot observe
+      # the ISS-010 race at all, because only one process ever calls
+      # setupContainer. Measured on the pre-fix code, cold container each
+      # run: default parallelism failed 4 of 8 runs; `-p 1` failed 0 of 5.
+      # On its own this step would let a future removal of the advisory
+      # lock sail through CI forever while developers hit flakes locally.
+      - name: Test the whole module
+        working-directory: services/backend
+        run: go test ./... -count=1 -p 1 -timeout 15m
+
+      # Defense in depth for ISS-010 — NOT the primary regression guard.
+      #
+      # Runs the packages sharing the reused testcontainers Postgres at
+      # DEFAULT parallelism, so their setup routines contend the way they
+      # did when this raced. It is kept because real cross-package
+      # contention is a slightly different shape from a single-process
+      # test, and it costs about a minute.
+      #
+      # Do not rely on it. Measured against the pre-fix code across
+      # sixteen runs, this command detected the missing advisory lock
+      # roughly ONE TIME IN EIGHT — cold and warm containers performing
+      # identically, so reordering the steps buys nothing. A green result
+      # here is not evidence the lock is present.
+      #
+      # The real guard is TestEnsureAppRoleIsConcurrencySafe in
+      # pkg/testing/isolation, which releases 16 callers through a barrier
+      # and detected the same breakage 8 times out of 8. It runs inside
+      # the step above, so it survives this step being deleted.
+      - name: Harness under package parallelism (ISS-010, defense in depth)
+        working-directory: services/backend
+        run: go test ./pkg/api/... ./pkg/auth/... ./pkg/testing/... -count=1 -timeout 15m
+
+      # This shipped as `continue-on-error: true` in the first cut of this
+      # workflow, because -race needs cgo and the authoring machine had no
+      # C toolchain (CGO_ENABLED=0, no gcc) — so the step had never been
+      # executed anywhere and an unverified blocking gate would have been a
+      # coin flip on the next PR.
+      #
+      # It has now run: 61 seconds, all packages ok, zero data races.
+      # The condition for promoting it is met, so it gates.
+      #
+      # Promoting it also removes a trap: with `continue-on-error`, GitHub
+      # reports the step's conclusion as SUCCESS even when it fails. A
+      # future data race would not merely have been non-blocking — it would
+      # have been invisible without reading the raw log.
+      #
+      # It earns the runtime: pkg/api/handlers fires 16 concurrent requests
+      # through the real router (TestUserOrgsIsolation/Scenario5), and the
+      # shared testcontainers pool is exactly where a race would hide.
+      - name: Race detector on the concurrency-sensitive packages
+        working-directory: services/backend
+        # Scoped rather than module-wide: -race roughly doubles runtime,
+        # and these are the packages with concurrent tests worth the cost.
+        run: go test -race ./pkg/api/... ./pkg/testing/... -count=1 -p 1 -timeout 15m

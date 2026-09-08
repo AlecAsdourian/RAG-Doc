@@ -141,10 +141,6 @@ The inconsistency is known.)
 curl -s http://localhost:8080/health
 # {"service":"backend-api","status":"ok"}
 
-# OAuth wiring — 307 to GitHub with a state token (requires Redis).
-curl -s -o /dev/null -w "%{http_code} %{redirect_url}\n" \
-  http://localhost:8080/auth/github/login
-
 # Webhook rejects unsigned payloads.
 curl -s -o /dev/null -w "%{http_code}\n" -X POST \
   -H "Content-Type: application/json" -d '{}' \
@@ -156,16 +152,26 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST \
   http://localhost:8080/api/search          # expect 401
 ```
 
-If port 8080 is occupied by something else, set `PORT` to a free port —
-note that `BASE_URL` (used to build the OAuth `redirect_uri`) is
-independent and must match whatever GitHub has registered.
+If port 8080 is occupied by something else, set `PORT` to a free port.
+
+**There are no `/auth/github/*` or `/auth/gitlab/*` routes.** Sign-in goes
+through Supabase directly from the frontend
+(`supabase.auth.signInWithOAuth`), which redirects to Supabase's hosted
+endpoint and back to the app — the Go backend is never in that path. The
+one thing the backend does at signup is receive Supabase's webhook. See
+[`auth-frontend-contract.md`](auth-frontend-contract.md).
+
+The Go handlers for direct OAuth still exist as Phase-4 reference code but
+are deliberately not mounted (ISS-011): they returned 500 on every
+completed callback, and repairing that alone would have produced users
+with no organization claim.
 
 ## Redis
 
-Required for the OAuth state store (CSRF protection). If it's
-unreachable, the OAuth routes are **skipped at router construction**
-with a logged warning rather than failing startup — so a missing
-`/auth/github/login` route means Redis, not routing.
+Required by the OAuth state store (CSRF protection for the direct OAuth
+flow). Since those routes are unmounted, nothing in the request path uses
+Redis today — but `pkg/auth`'s state-store tests do, so it is needed to
+run the full test suite, and Phase 20's GitHub App flow will want it.
 
 ```bash
 docker compose up -d redis
@@ -202,15 +208,64 @@ into something eventually consistent.
 The isolation harness (`pkg/testing/isolation`) manages its own
 throwaway Postgres via testcontainers and needs no configuration.
 
-**Run test packages serially — `go test -p 1 ./pkg/...`.** Several
-packages share one reused container, and their setup routines race on
-the same `GRANT ... ON ALL TABLES` statement; in parallel this fails
-intermittently with `tuple concurrently updated (SQLSTATE XX000)`.
-Tracked as ISS-010.
+The `migrate` CLI is needed. Install it once:
 
-The older `pkg/auth` helpers do not — they read `DATABASE_TEST_URL`
-and fall back to a host that may not exist. To run those against the
-isolation harness's container:
+```bash
+go install -tags postgres github.com/golang-migrate/migrate/v4/cmd/migrate@v4.19.1
+```
+
+Then, **from the repository root**:
+
+```bash
+docker compose up -d postgres redis
+
+# pkg/auth's helpers use this database directly and do NOT apply
+# migrations themselves. On a fresh volume, skipping this makes every
+# pkg/auth test fail on a missing table.
+export DATABASE_TEST_URL="postgres://coderag:coderag@localhost:5434/coderag?sslmode=disable"
+migrate -path services/backend/migrations -database "$DATABASE_TEST_URL" up
+
+# -C because the Go module lives under services/backend; running this
+# from the repo root without it fails with "directory prefix . does not
+# contain main module".
+go test -C services/backend ./... -count=1 -p 1 -timeout 15m
+```
+
+**This is most of what CI runs, not all of it.** CI additionally runs
+`go build ./...`, `go vet ./...`, `go mod verify`, `go mod tidy -diff`, a
+`-race` pass, and a parallel-harness regression guard. A green run here
+is a good signal, not a guarantee — check the PR.
+
+**Why `-p 1`.** It serializes packages, not tests within a package, which
+keeps the run deterministic: one process, one container, nothing
+cross-package to explain away.
+
+Note the trade-off, because it is not obvious: **`-p 1` makes the run
+unable to observe the ISS-010 race through package contention.** With one
+process calling `setupContainer`, that window never opens. Measured on
+the pre-fix code with a cold container, default parallelism failed 4 of 8
+runs and `-p 1` failed 0 of 5.
+
+What actually guards it is `TestEnsureAppRoleIsConcurrencySafe` in
+`pkg/testing/isolation`: it releases 16 concurrent callers through a
+barrier rather than waiting for the scheduler to produce contention, and
+detected the missing advisory lock 8 times out of 8. That test runs under
+`-p 1` like any other, so this command does catch a regression.
+
+CI additionally runs the harness packages at default parallelism, but
+that step is defense in depth — it detected the same breakage only about
+one time in eight, so a green result there proves very little on its own.
+
+**Why compose is needed at all.** The 17-01 harness
+(`pkg/testing/isolation`) provisions its own throwaway Postgres and needs
+nothing. The older `pkg/auth` helpers predate it: they connect to a fixed
+DSN (`DATABASE_TEST_URL`, defaulting to the compose Postgres on 5434,
+which must have migrations applied) and the OAuth state-store tests need
+Redis. Migrating those helpers onto the testcontainers harness is a
+tracked follow-up in `19-02-SUMMARY.md`; doing it would remove the
+compose dependency and let CI drop its service containers.
+
+To point `pkg/auth` at the harness's container instead of compose:
 
 ```bash
 DATABASE_TEST_URL="postgres://isolation:isolation@localhost:<port>/isolation?sslmode=disable" \
@@ -218,5 +273,3 @@ DATABASE_TEST_URL="postgres://isolation:isolation@localhost:<port>/isolation?ssl
 ```
 
 Find `<port>` with `docker port rag-doc-isolation-tests 5432`.
-Migrating these helpers onto the testcontainers harness is tracked as a
-follow-up in `19-02-SUMMARY.md`.

@@ -136,14 +136,63 @@ func setupContainer(ctx context.Context) error {
 	return nil
 }
 
-// ensureAppRole creates a non-superuser role and grants it the privileges tests
-// need. It is idempotent so container reuse is safe.
+// appRoleSetupLockID is the advisory-lock key serializing ensureAppRole
+// across processes. The value is arbitrary but must not collide with
+// golang-migrate's own advisory lock, which is derived from the database
+// name — a fixed constant in a different range cannot.
+const appRoleSetupLockID = 0x7261_67646f_63 // "ragdoc"
+
+// ensureAppRole creates a non-superuser role and grants it the privileges
+// tests need. It is idempotent, so container reuse is safe.
+//
+// The whole sequence runs inside one transaction holding an advisory lock,
+// because `go test` runs packages in PARALLEL against the SAME reused
+// container and every one of these statements races:
+//
+//   - The DO block is check-then-act. Two processes can both observe the
+//     role missing and both attempt CREATE ROLE; the loser gets SQLSTATE
+//     42710 (role already exists).
+//   - The GRANTs update shared catalog tuples (pg_namespace, pg_class,
+//     pg_authid). Concurrent updates to the same tuple fail with SQLSTATE
+//     XX000 `tuple concurrently updated`, which is not retried by anything
+//     and surfaces as a hard test failure.
+//
+// This was observed in ~40% of COLD-container runs and never on a warm
+// one, which is the worst possible flake profile: CI is always cold, so it
+// fails there and passes locally. Tracked as ISS-010.
+//
+// Two details matter:
+//
+//   - `pg_advisory_xact_lock`, not the session-level `pg_advisory_lock`.
+//     CREATE ROLE and GRANT are both transactional in Postgres, so the
+//     whole thing commits or rolls back together, and a transaction-scoped
+//     lock is released by the server however the process dies. A session
+//     lock leaks if a test binary panics between acquire and release.
+//   - The lock wraps ALL the statements, not just the GRANTs. Locking only
+//     the part that failed most visibly would leave the CREATE ROLE race
+//     open to surface later under a tighter interleaving.
+//
+// This is the same mechanism golang-migrate already uses around migrations
+// in applyMigrations above — which is precisely why migrations survived
+// the concurrency that broke this function.
 func ensureAppRole(ctx context.Context, dsn string) error {
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
 		return fmt.Errorf("connect for role setup: %w", err)
 	}
 	defer conn.Close(ctx)
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin role setup tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Blocks until any concurrent ensureAppRole commits. Released
+	// automatically at commit or rollback.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, int64(appRoleSetupLockID)); err != nil {
+		return fmt.Errorf("acquire role setup lock: %w", err)
+	}
 
 	stmts := []string{
 		// CREATE ROLE is not IF NOT EXISTS, so wrap in DO block.
@@ -160,9 +209,13 @@ func ensureAppRole(ctx context.Context, dsn string) error {
 		`GRANT ` + appRole + ` TO ` + postgresUser + `;`,
 	}
 	for _, s := range stmts {
-		if _, err := conn.Exec(ctx, s); err != nil {
+		if _, err := tx.Exec(ctx, s); err != nil {
 			return fmt.Errorf("app role stmt failed: %s: %w", firstLine(s), err)
 		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit role setup: %w", err)
 	}
 	return nil
 }
