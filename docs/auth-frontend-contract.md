@@ -90,12 +90,35 @@ Authorization: Bearer <access_token>
 - Always scoped to the caller. There is no parameter naming a user, so
   there is nothing to tamper with.
 - `organizations` is always an array — `[]`, never `null`.
-- `active_organization_id` is `null` for a user with no claim. That is
-  distinct from `organizations: []` (belongs to nothing at all); the two
-  want different UI.
 - Works **without** an organization claim. This endpoint is how a
   claim-less user gets back to a valid state, so it is deliberately not
   gated on having one.
+
+### `active_organization_id` has three states, and one of them surprises people
+
+| State | Meaning | What to render |
+|---|---|---|
+| a UUID that appears in `organizations` | normal | that org's name |
+| `null` | the token carries no org claim | prompt to pick one |
+| **a UUID that does NOT appear in `organizations`** | the claim names an org the caller is no longer (or was never) a member of | treat as "no active org" — prompt to pick |
+
+**Do not assume the third state is impossible.** It is reachable today:
+the org claim is not recomputed when a token refreshes, so a user removed
+from their active organization keeps a claim naming it (ISS-012). It also
+occurs for a token whose `sub` doesn't resolve to any user row.
+
+Look the active id up in the array and handle the miss — never index
+blindly, and never render `active_organization_id` as a name. Concretely:
+
+```ts
+const active = data.organizations.find(o => o.is_active) ?? null
+// `active === null` covers all three states above. Prefer is_active over
+// comparing ids yourself; the server already did the comparison.
+```
+
+`organizations: []` with a non-null `active_organization_id` is the same
+situation in its most extreme form: the caller belongs to nothing, and the
+claim is stale. Same handling.
 
 ## 4. Switching organizations
 
@@ -118,6 +141,14 @@ Content-Type: application/json
 }
 ```
 
+**400 Bad Request** — `organization_id` is missing or is not a
+lowercase-canonical UUID (`8-4-4-4-12`, as Postgres emits them). Uppercase,
+braced, URN-prefixed, and whitespace-padded forms are all rejected. Also
+returned if the request body exceeds 4KB.
+
+Retrying a 400 unchanged will not help. Send ids exactly as they came back
+from `GET /api/user/organizations`.
+
 **403 Forbidden** — the caller does not belong to that organization. This
 is also the response for an organization that does not exist; the two are
 deliberately indistinguishable so the endpoint can't be used to enumerate
@@ -136,6 +167,7 @@ const res = await fetch('/api/user/select-organization', {
 })
 
 if (res.status === 403) return showError("You don't have access to that organization.")
+if (res.status === 400) return showError('That organization id is not valid.')  // retrying won't help
 if (!res.ok)            return showError('Could not switch organizations. Try again.')
 
 // REQUIRED. Until this resolves, the app is still operating as the old org.
@@ -158,6 +190,13 @@ never leaked anything.
 `organization_role` in the response is the caller's role **in the target
 organization**, which may differ from the role they held before. Render
 from the response (or the refreshed token), never from remembered state.
+
+### Send one switch at a time
+
+Concurrent switches all succeed and the last write wins, so a client that
+fires two doesn't know which organization it ended up in — the 202s are
+individually truthful and collectively meaningless. Disable the switcher
+until the refresh-and-reload completes.
 
 ## 5. Signing out
 
