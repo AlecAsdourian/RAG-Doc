@@ -106,10 +106,22 @@ func TestWebhookHandler_UserCreatedEvent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, count, "User should be created in database")
 
-	// Verify organization was created
+	// Verify organization was created.
+	//
+	// Scoped through the membership join rather than `name LIKE 'Test%'`.
+	// The prefix match also caught the `Test Org` seed row that ships in
+	// the local dev database, so the count came back 2 and the test failed
+	// for a reason that had nothing to do with provisioning. It only
+	// started failing once the local dev Postgres was reachable again —
+	// before that, SetupTestDB never connected and the assertion was never
+	// reached. The join says the property we actually care about: this
+	// user got exactly one organization.
 	var orgCount int
 	err = db.QueryRow(req.Context(),
-		`SELECT COUNT(*) FROM organizations WHERE name LIKE 'Test%'`).Scan(&orgCount)
+		`SELECT COUNT(*) FROM organizations o
+		 JOIN organization_memberships om ON om.organization_id = o.id
+		 JOIN users u ON om.user_id = u.id
+		 WHERE u.email = $1`, "test@example.com").Scan(&orgCount)
 	require.NoError(t, err)
 	assert.Equal(t, 1, orgCount, "Organization should be created for new user")
 
