@@ -142,20 +142,38 @@ func NewRouterWithValidatorAndAdmin(
 	// @skip-isolation-test: signature-verified webhook, provisions its own tenant (see 19-02)
 	r.Post("/webhooks/supabase", webhookHandler.HandleSupabaseWebhook())
 
-	// OAuth login/callback routes. StateStore is optional at
-	// construction time — if Redis is not reachable (typical in tests
-	// and offline dev), the routes are simply not mounted rather than
-	// panicking the whole router. Real deployments have Redis; the log
-	// line surfaces the miss.
-	if stateStore, err := auth.NewStateStore(); err == nil {
-		oauthConfig := auth.NewOAuthConfig()
-		provisioner := auth.NewUserProvisioner(dbpool)
-		r.Get("/auth/github/login", auth.HandleGitHubLogin(oauthConfig, stateStore))
-		r.Get("/auth/github/callback", auth.HandleGitHubCallback(oauthConfig, provisioner, stateStore))
-		r.Get("/auth/gitlab/login", auth.HandleGitLabLogin(oauthConfig, stateStore))
-		r.Get("/auth/gitlab/callback", auth.HandleGitLabCallback(oauthConfig, provisioner, stateStore))
+	// Direct OAuth routes are NOT mounted. See ISS-011.
+	//
+	// These handlers are the Phase-4 reference implementation, written
+	// before the project chose Supabase-native OAuth (ISS-005). They were
+	// still being mounted whenever Redis happened to be reachable, and in
+	// that state they are broken in two independent ways:
+	//
+	//  1. `HandleGitHubCallback` passes GitHub's NUMERIC user id to
+	//     ProvisionOAuthUser, which has parsed its identity argument as a
+	//     UUID since 19-02. Every completed callback is a 500 — a live
+	//     failure on a mounted route, not dormant code.
+	//
+	//  2. Even repaired, this is a second provisioning path that never
+	//     calls pushOrgContext, so a user created through it would have no
+	//     `app_metadata.organization_id` and would be refused by every
+	//     tenant-scoped route. Fixing (1) alone would convert a loud 500
+	//     into a quiet broken account.
+	//
+	// Unmounting is the smallest change that stops serving a broken
+	// endpoint. The handlers are kept, not deleted: removing them is a
+	// planner/user call, and they remain a useful reference if direct
+	// OAuth is ever wanted alongside Supabase. Reviving them means giving
+	// provisioning a non-UUID identity column and routing them through the
+	// same post-provision org-context push the webhook uses.
+	//
+	// The StateStore probe stays because it still reports a genuine
+	// configuration gap, and Phase 20's GitHub App flow will want it.
+	if _, err := auth.NewStateStore(); err == nil {
+		slog.Info("state store reachable; direct OAuth routes remain unmounted pending ISS-011")
 	} else {
-		slog.Warn("state store unavailable; OAuth routes not mounted",
+		slog.Warn("state store unavailable (OAuth CSRF protection would be unavailable "+
+			"if direct OAuth routes were mounted; see ISS-011)",
 			slog.String("error", err.Error()))
 	}
 
