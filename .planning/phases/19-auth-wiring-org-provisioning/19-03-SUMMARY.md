@@ -33,6 +33,8 @@ key-files:
   created:
     - services/backend/pkg/auth/supabase_admin.go
     - services/backend/pkg/auth/supabase_admin_test.go
+    - services/backend/pkg/auth/jwt_test.go
+    - services/backend/cmd/backfill-org-claims/main.go
     - docs/local-development.md
     - scripts/supabase/001-remove-app-schema-from-supabase.sql
     - .planning/phases/19-auth-wiring-org-provisioning/19-03-SUMMARY.md
@@ -52,8 +54,9 @@ key-decisions:
   - "No Supabase Auth Hook. The hook is a Postgres function running inside Supabase's database; the application's organization_memberships table lives in a different Postgres instance. The hook physically cannot make the membership decision. Verified, not assumed."
   - "No per-request membership re-check. The claim is trusted wholesale. Membership is validated where the claim is WRITTEN, and minting a token at all requires Supabase's signing key."
   - "The header path is deleted rather than deprecated behind a flag. A fallback that can be re-enabled is a fallback an operator can re-enable by accident."
-  - "The org-context push is non-fatal but convergent: a failed push does not fail the webhook, and every subsequent delivery retries it."
+  - "The org-context push is non-fatal, and there is NO automatic retry — Supabase webhooks fire once. cmd/backfill-org-claims is the repair path. (This entry originally claimed convergence on every delivery; that was wrong. See Deviation 7.)"
   - "AdminClient is optional at router construction. Missing credentials logs a loud warning and runs degraded rather than refusing to boot, so tests and offline dev work."
+  - "The organization claim must parse as a UUID. Closes the injection window before ISS-008 moves tenant interpolation into the middleware."
 
 patterns-established:
   - "When a plan's approach turns out to be impossible against the real system, revise the PLAN file with a REVISION NOTICE recording what was empirically verified, then execute the revised version."
@@ -61,12 +64,17 @@ patterns-established:
 
 issues-created:
   - ISS-009 (pkg/vectordb does not compile against its pinned Qdrant client)
+  - ISS-010 (isolation harness setup races when test packages run in parallel)
+  - ISS-011 (OAuth callback routes are live, broken, and bypass the org-context push)
 
 issues-closed:
   - ISS-007 (fully)
   - ISS-004 (security half; switching UX remains for 19-04)
 
-duration: ~5 hours (roughly half of it unplanned environment and Supabase-project work)
+patterns-established-addendum:
+  - "A test asserting a security property must assert a POSITIVE outcome and be shown to fail under a mutation that breaks the property. Two scenarios in this plan passed against a deliberately broken middleware before this was applied."
+
+duration: ~7 hours (roughly half of it unplanned environment and Supabase-project work, plus a round of reviewer fixes)
 completed: 2026-09-08
 ---
 
@@ -85,9 +93,10 @@ That scenario is now `Scenario5_TamperedOrgClaim_CannotReachOtherTenantsData`, a
 - `auth.AdminClient` writes `organization_id` / `organization_role` into the Supabase user's `raw_app_meta_data`, which Supabase surfaces as the `app_metadata` JWT claim
 - `ExtractOrganizationID` / `ExtractOrganizationRole` read the claim **nested**, with error messages that distinguish "never provisioned" from "provisioned but the push failed" — the two have different remediations
 - `TenantMiddleware` reads the claim and returns **403** when it is absent, rather than defaulting the caller into anyone's organization
+- The claim must parse as a UUID before it becomes a tenant id — a trust-boundary check, not formatting hygiene (see Deviation 8)
 - The header is removed from `Access-Control-Allow-Headers`, so a browser client cannot even send it
-- The org-context push runs on **every** webhook delivery, so a user whose first push failed converges on the next one instead of being permanently claim-less
-- 10 isolation scenarios (6 search, 4 chat) now exercise the JWT path, including a tampered claim and a claim-less token
+- `cmd/backfill-org-claims` repairs users whose org-context push failed, and doubles as the migration step for users provisioned before the claim existed
+- 11 isolation scenarios (7 search, 4 chat) on the JWT path, plus unit coverage for claim extraction. Two of them were confirmed able to fail by mutation testing (see Verification)
 
 ## Task Commits
 
@@ -122,7 +131,21 @@ ISS-007 called for the middleware to "cross-check against `organization_membersh
 
 Membership is validated where the claim is **written** — at provisioning, and in 19-04 at organization switch. Re-validating per request would add a database round-trip to the hot path of every authenticated call, to defend against an attacker who by construction would already need Supabase's JWT signing key. Someone holding that key does not need to lie about `organization_id`; they can mint any `sub` they like.
 
-The residual exposure is the token lifetime window: a user removed from an organization keeps access until their current token expires. That is the standard, accepted cost of stateless claims, and the right mitigation is short token TTLs plus a revocation path — not a per-request join. Flagged for the reviewer as a deliberate deviation.
+That part survived review. The characterization of the residual risk did not.
+
+**Correction.** The first draft of this section said the exposure is "the token lifetime window — a user removed from an organization keeps access until their current token expires… the standard, accepted cost of stateless claims," with short TTLs as the mitigation.
+
+That is wrong, and wrong in the direction that matters. It assumes the claim is recomputed each time a token is minted. It is not: `raw_app_meta_data` is written once, by the webhook, and nothing else in the codebase writes it. Supabase re-reads that same column at every mint, so a **refreshed token carries the same stale organization**. Removing a user from an organization does not expire their claim after an hour; it does not expire it at all. Short TTLs mitigate nothing here.
+
+Nothing removes memberships today, so this is currently theoretical — but 19-04 is precisely where memberships start changing, and it is the plan that would have inherited the bad reasoning. What actually bounds the exposure is not token expiry but the rule that **every membership change must rewrite the claim**. 19-04 owns that.
+
+### 8. Unplanned: the claim was not validated as a UUID
+
+Not in the plan, added in review. `ExtractOrganizationID` accepted any non-empty string, so `"x'; SET ROLE postgres; --"` was a valid tenant id as far as the middleware was concerned.
+
+Not exploitable today: every current consumer parses the UUID before interpolating it, so the outcome is a 500. But Postgres cannot bind a parameter into `SET LOCAL app.current_tenant`, so the established in-repo pattern for applying a tenant is string interpolation — and `middleware.go` carries a `_ = db // TODO(17-03/ISS-008)` reserving exactly that spot. ISS-008 would have turned an unchecked claim into SQL injection at the front door.
+
+One `uuid.Parse` closes it now, before the phase that would open it. Rejecting is safe because our own writer only ever pushes a `uuid.UUID`.
 
 ### 3. Unplanned: the local development environment did not work
 
@@ -160,18 +183,49 @@ Sub-step D ran a full round-trip against the live Supabase project: admin write 
 
 The third finding matters most for the test harness. `testjwt.Sign` previously emitted a **flat** `organization_id` claim. Every 17-02 isolation test passed against it — while a real Supabase token would have been rejected by the same middleware, because the claim it reads simply is not there. The harness agreed with itself and disagreed with the identity provider, which is the failure mode where a green suite means nothing. `testjwt` now emits the nested shape, with `TestSign_DoesNotEmitFlatClaims` guarding the reverse direction.
 
+## The blocker review caught
+
+Worth its own section, because the failure mode is the one this plan spent three paragraphs congratulating itself for finding elsewhere.
+
+**The claim:** "the org-context push runs on every webhook delivery, so a failed push self-heals on the next one." It appeared in the code comments, in `jwt.go`'s user-facing error string, in ISS-007, and in the PR body.
+
+**The reality:** there is no next delivery. The trigger is `AFTER INSERT ON auth.users` — one `auth_user_events` row per user, ever — and Supabase database webhooks fire once with no retry. That second fact was already written down in this repo, in `04-06-SUMMARY.md`, in Phase 4.
+
+The code is genuinely replay-convergent; the reviewer verified that by calling the handler twice and watching the push retry. Nothing calls it twice. A single failed push — one transient 5xx from an admin API this very summary records as flaky — left that user with no organization claim **permanently**, 403 on every route, with no repair path anywhere in the codebase and a 202 returned to Supabase.
+
+Compounding it: the push used the webhook request's context, so a client hangup cancelled the user's only chance at a claim.
+
+**Fixed by** `cmd/backfill-org-claims`, which reads org ownership from our database and re-pushes; `context.WithoutCancel` on the outbound call; an alert-shaped log line naming the repair command; and correcting every place that promised a retry. Returning 500 instead was considered and rejected — with no retry it would only make the log noisier.
+
+There was also no backfill for users provisioned before this PR. The same command covers them.
+
 ## Verification
 
 | Check | Result |
 |---|---|
-| `go vet ./pkg/api/... ./pkg/auth/... ./pkg/testing/...` | clean |
-| `TestSearchIsolation` | 6/6 pass (scenarios 4 and 5 rewritten, 6 new) |
+| `go vet ./pkg/api/... ./pkg/auth/... ./pkg/testing/... ./cmd/...` | clean |
+| `TestSearchIsolation` | 7/7 pass (4 and 5 rewritten, 6 and 7 new) |
 | `TestChatIsolation` | 4/4 pass (scenario 4 rewritten) |
-| `go test ./pkg/auth/...` | all pass |
-| `go test ./pkg/client/... ./pkg/testing/...` | all pass |
+| `TestExtractOrganizationID_*` | 23 subtests, new — malformed shapes, UUID enforcement, error distinction |
+| `go test ./pkg/auth/... ./pkg/client/... ./pkg/testing/...` | all pass |
+| `go test -p 1 ./pkg/...` | all pass — **`-p 1` required**, see ISS-010 |
 | `go test ./...` | **red** — `pkg/vectordb` build failure, pre-existing and unrelated (ISS-009) |
+| CI isolation scanner | PASS |
 | Live Supabase round-trip | admin write → sign in → decode confirms nested claim |
 | Migrations against the real DB | applied through 000009 (first time) |
+
+### Mutation testing
+
+Two scenarios were reported by the reviewer as unable to fail. Both were rewritten and then verified by breaking the middleware on purpose:
+
+| Mutation | Before | After |
+|---|---|---|
+| Re-add `X-Organization-ID` fallback to `TenantMiddleware` | all 10 scenarios passed | scenario 7 fails, and is the **only** failure |
+| Replace the claim read with a hardcoded nonexistent org | scenario 5 passed | scenario 5 fails |
+
+The same technique confirmed the two new admin-client security tests: reverting the redaction and the redirect refusal turns both red.
+
+This is now the standard for any test claiming to cover a security property in this repo — assert the positive outcome, then prove the test can fail.
 
 ## Issues Encountered
 
@@ -179,15 +233,39 @@ The third finding matters most for the test harness. `testjwt.Sign` previously e
 - **`pkg/vectordb` has never compiled against its pinned dependency** (ISS-009). Filed rather than fixed: a dependency bump does not belong inside a security PR.
 - **A stale test user** (`tes***@example.com`, created February 2026) is still in the Supabase project. Harmless, but it should be cleaned up before any real signup traffic.
 
+## Reviewer follow-ups (post-review, same branch)
+
+Reviewer returned one blocker, six mediums and eight nits, verified empirically rather than reasoned from docs — including running the isolation suite against a deliberately re-broken middleware. Option 1 applied per user decision: everything.
+
+**H1 — the "convergent" push has no trigger.** Covered in its own section above. Fixed with `cmd/backfill-org-claims`, `context.WithoutCancel`, an alert-shaped log line, and corrections to every place that promised a retry.
+
+**M1 — scenario 5 could not fail.** Its only assertion was that no result contained `"marmalade"`, which an empty result set satisfies — so every broken middleware passed it. Proved by mutation. Rewritten with positive assertions (`TotalResults == 1`, content contains `"velvet"`) and renamed: it was called `TamperedOrgClaim_CannotReachOtherTenantsData` while asserting behavior where the token *does* reach orgB's data, correctly and by design. Only Supabase's key can mint it; "tampered" was never the right word.
+
+**M2 — the suite could not detect re-introduction of the hole.** With a header-with-claim-fallback added back to `TenantMiddleware`, all ten scenarios still passed, because no test sent the header. Added scenario 7: orgA's token, orgA's repo, `X-Organization-ID: orgB`. Under that mutation it is now the only failure.
+
+**M3 — the service-role key could reach the log.** Non-2xx errors embedded 300 bytes of response body. A proxy or WAF error page that echoes request headers puts the key in plaintext in the application log; reviewer demonstrated it. Now scrubbed via `redactSecret`. The existing test named `NeverLeaksServiceKey` did not catch it — it split the error on the first colon and inspected only the prefix, testing the format string while discarding the only part that could carry the key. Now asserts on the whole string.
+
+**M4 — the key was forwarded on cross-host redirects.** Go strips `Authorization` across hosts but knows nothing about GoTrue's custom `apikey` header, which carries the same secret. Reviewer demonstrated a redirector harvesting it. Client now refuses to follow redirects at all.
+
+**M5 — `SignWithoutOrg` emitted a shape Supabase never issues.** It omitted `app_metadata` entirely, while a real un-provisioned user has it present with `provider`/`providers` and our key missing — a different branch, different error, different remediation. Exactly the harness-disagrees-with-the-IdP failure this plan fixed elsewhere. Corrected, with `SignWithNoAppMetadata` added for the defensive case and drift guards for both.
+
+**M6 — any non-empty string was a valid tenant id.** See Deviation 8.
+
+**Nits, all applied:** dead `meta == nil` branch and wrong-type error text in `jwt.go` (L1, L2); the schema-unqualified FK check still sitting in the committed cleanup script despite the summary describing that bug as fixed (L3); ROADMAP still specifying the Auth Hook (L4); `local-development.md` claiming Supabase holds `auth.users` only, contradicted by the bridge table the cleanup script deliberately keeps (L5); `Sign`'s doc comment still describing flat claims (L6); STATE.md contradicting itself about the reviewer session (L7). L8 (the live-but-broken OAuth callback routes) is filed as ISS-011 rather than fixed — it is pre-existing and out of scope for an auth-claim PR.
+
+**Also found while fixing:** running these packages in parallel races on the harness's `GRANT` statement (ISS-010). Use `go test -p 1`.
+
 ## Next Phase Readiness
 
-- **19-04** — unblocked and cheaper than planned. `auth.AdminClient` already exists and is the exact mechanism `POST /api/user/select-organization` needs; the endpoint validates membership then rewrites the same claim. The one thing 19-04 must solve that the plan did not anticipate: forcing a token refresh so the new claim takes effect immediately (see Deviation 1).
+- **19-04** — unblocked and cheaper than planned. `auth.AdminClient` already exists and is the exact mechanism `POST /api/user/select-organization` needs; the endpoint validates membership then rewrites the same claim. Two things 19-04 must solve that the original plan did not anticipate: forcing a token refresh so the new claim takes effect (Deviation 1), and rewriting the claim on **every** membership change, since nothing else expires a stale one (Deviation 2).
 - **Phase 20+** — every new endpoint inherits a tenant identity the client cannot forge. Combined with ISS-008 still open, the remaining work before a Go handler reads a tenant-scoped table directly is the request-scoped transaction, not the identity.
 - **Recommended follow-ups (not blocking):**
   1. Delete the three genuinely-superseded tests in `pkg/auth/isolation_test.go` (carried over from 19-02).
   2. Migrate `pkg/auth/testing.go` onto the 17-01 testcontainers harness (carried over from 19-02 — and Deviation 5 is a fresh example of what that gap costs).
-  3. Fix ISS-009 so whole-module `go build ./...` can become a CI gate.
+  3. Fix ISS-009 so whole-module `go build ./...` can become a CI gate, and ISS-010 so it can run in parallel.
   4. Decide on a token-refresh strategy for claim changes before 19-04 ships.
+  5. Schedule `backfill-org-claims` (cron or equivalent). It exists and is idempotent; running it periodically is what turns "one shot per user" into an eventually-consistent system rather than a manual incident response.
+  6. Resolve ISS-011 — the OAuth callback routes are mounted and returning 500.
 
 ---
 *Phase: 19-auth-wiring-org-provisioning*
