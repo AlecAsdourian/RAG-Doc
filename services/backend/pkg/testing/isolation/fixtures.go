@@ -22,9 +22,28 @@ type TestOrg struct {
 	ID   string
 	Slug string
 
+	// Internal users.id values.
 	OwnerID  string
 	AdminID  string
 	MemberID string
+
+	// Supabase auth ids — the values that appear in a real token's `sub`
+	// claim, and what `users.supabase_user_id` stores.
+	//
+	// These exist because the two id spaces are NOT interchangeable and the
+	// harness had been conflating them. Tests signed tokens with the
+	// internal `users.id`, which no production token ever carries. It went
+	// unnoticed for three phases because `auth.UserIDKey` was written by
+	// the middleware and read by nothing — 19-04's `GET /api/user/
+	// organizations` is the first code to resolve `sub` back to a user row,
+	// and it would have found zero rows in every test.
+	//
+	// Any test whose code path looks a user up by `sub` must sign with
+	// these. Tests that only care about tenant scope can keep using
+	// OwnerID; both are real ids, they just answer different questions.
+	OwnerSupabaseID  string
+	AdminSupabaseID  string
+	MemberSupabaseID string
 
 	ProjectID string
 	RepoID    string
@@ -64,9 +83,9 @@ func createOrg(t *testing.T, pool *pgxpool.Pool, slug string) *TestOrg {
 		slug, slug,
 	).Scan(&org.ID))
 
-	org.OwnerID = createUserWithMembership(t, pool, org.ID, "owner", slug)
-	org.AdminID = createUserWithMembership(t, pool, org.ID, "admin", slug)
-	org.MemberID = createUserWithMembership(t, pool, org.ID, "member", slug)
+	org.OwnerID, org.OwnerSupabaseID = createUserWithMembership(t, pool, org.ID, "owner", slug)
+	org.AdminID, org.AdminSupabaseID = createUserWithMembership(t, pool, org.ID, "admin", slug)
+	org.MemberID, org.MemberSupabaseID = createUserWithMembership(t, pool, org.ID, "member", slug)
 
 	require.NoError(t, pool.QueryRow(ctx,
 		`INSERT INTO projects (organization_id, name, slug)
@@ -90,16 +109,20 @@ func createOrg(t *testing.T, pool *pgxpool.Pool, slug string) *TestOrg {
 	return org
 }
 
-func createUserWithMembership(t *testing.T, pool *pgxpool.Pool, orgID, role, slug string) string {
+// createUserWithMembership returns (internal users.id, supabase_user_id).
+// Both are needed: the first is what foreign keys reference, the second is
+// what a real JWT's `sub` claim carries.
+func createUserWithMembership(t *testing.T, pool *pgxpool.Pool, orgID, role, slug string) (string, string) {
 	t.Helper()
 	ctx := context.Background()
 
 	var userID string
+	supabaseUserID := uuid.New()
 	email := fmt.Sprintf("%s-%s-%s@iso-test.local", role, slug, shortToken())
 	require.NoError(t, pool.QueryRow(ctx,
 		`INSERT INTO users (supabase_user_id, email, full_name)
 		 VALUES ($1, $2, $3) RETURNING id`,
-		uuid.New(), email, role+" of "+slug,
+		supabaseUserID, email, role+" of "+slug,
 	).Scan(&userID))
 
 	_, err := pool.Exec(ctx,
@@ -108,7 +131,25 @@ func createUserWithMembership(t *testing.T, pool *pgxpool.Pool, orgID, role, slu
 		userID, orgID, role,
 	)
 	require.NoError(t, err)
-	return userID
+	return userID, supabaseUserID.String()
+}
+
+// AddMembership grants an existing user a role in an additional
+// organization, which is how a test builds a genuinely multi-org user.
+//
+// WithTwoOrgs deliberately creates two disjoint tenants; this is the seam
+// for the one case that needs them to overlap — verifying that a user who
+// really does belong to both can switch between them, and that the
+// switching endpoint reads the role from the target org rather than
+// carrying over the role they hold elsewhere.
+func AddMembership(t *testing.T, pool *pgxpool.Pool, userID, orgID, role string) {
+	t.Helper()
+	_, err := pool.Exec(context.Background(),
+		`INSERT INTO organization_memberships (user_id, organization_id, role)
+		 VALUES ($1, $2, $3)`,
+		userID, orgID, role,
+	)
+	require.NoError(t, err, "AddMembership: user=%s org=%s role=%s", userID, orgID, role)
 }
 
 // cleanupOrg deletes every row a test fixture created for org. It runs inside
@@ -149,7 +190,16 @@ func cleanupOrg(ctx context.Context, pool *pgxpool.Pool, org *TestOrg) {
 		{`DELETE FROM ingestion_runs WHERE repository_id IN (SELECT id FROM repositories WHERE project_id = $1)`, []any{org.ProjectID}},
 		{`DELETE FROM repositories WHERE project_id = $1`, []any{org.ProjectID}},
 		{`DELETE FROM projects WHERE id = $1`, []any{org.ProjectID}},
-		{`DELETE FROM organization_memberships WHERE organization_id = $1`, []any{org.ID}},
+		// Delete memberships by org AND by user. The `user_id` half matters
+		// once a test uses AddMembership to put one org's user into the
+		// other org: cleaning up orgA would delete orgA's memberships,
+		// then fail to delete orgA's owner (still referenced by the orgB
+		// membership row), and — because each statement runs in its own
+		// savepoint — skip silently, leaking an orphaned user row into the
+		// reused container.
+		{`DELETE FROM organization_memberships
+		  WHERE organization_id = $1 OR user_id = ANY($2)`,
+			[]any{org.ID, []string{org.OwnerID, org.AdminID, org.MemberID}}},
 		{`DELETE FROM users WHERE id = ANY($1)`, []any{[]string{org.OwnerID, org.AdminID, org.MemberID}}},
 		{`DELETE FROM organizations WHERE id = $1`, []any{org.ID}},
 	}
