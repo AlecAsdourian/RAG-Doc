@@ -89,13 +89,14 @@ Plans:
 - [x] 19-01: Wire OAuth handlers + Supabase webhook — mount handlers in `pkg/api/router.go`, implement `POST /webhooks/supabase` receiver with HMAC signature verification (ISS-005)
 - [x] 19-02: Org auto-provisioning — on `user.created` webhook, call `ProvisionOAuthUser` + `CreateOrganizationForUser`; idempotent so replays are safe
 - [x] 19-03: JWT custom claim for org — **backend writes `raw_app_meta_data` via the Supabase admin API** (NOT an Auth Hook — see below); middleware reads `app_metadata.organization_id` from the verified JWT; `X-Organization-ID` header deleted. Closes ISS-007 and the security half of ISS-004.
-- [ ] 19-04: Multi-org handling — `GET /api/user/organizations`, `POST /api/user/select-organization`; frontend `OrgSelectPage` wires to real data (frontend work continues in Phase 23)
+- [x] 19-04: Multi-org handling — `GET /api/user/organizations` and `POST /api/user/select-organization`, both user-scoped (mounted outside `TenantMiddleware`, so a user with no organization claim can still reach them). Frontend `OrgSelectPage` implements `docs/auth-frontend-contract.md` in Phase 23. Closes ISS-004; files ISS-012.
 
-**19-03 course correction — read before planning 19-04.** This line originally said "Supabase Auth Hook adds `organization_id`". That is impossible in this architecture: the hook is a Postgres function running inside Supabase's database, and `organization_memberships` lives in a *different* Postgres instance (docker-compose, port 5434), so the hook cannot query the table it would need. Verified during 19-03; full reasoning in `19-03-SUMMARY.md`.
+**19-03 course correction.** This section originally said "Supabase Auth Hook adds `organization_id`". That is impossible in this architecture: the hook is a Postgres function running inside Supabase's database, and `organization_memberships` lives in a *different* Postgres instance (docker-compose, port 5434), so the hook cannot query the table it would need. Verified during 19-03; full reasoning in `19-03-SUMMARY.md`.
 
-Two consequences 19-04 inherits:
-1. The claim is written once and never recomputed, so **changing a user's organization requires an explicit rewrite plus a token refresh** — `select-organization` must do both.
-2. There is no automatic repair if a write fails (Supabase webhooks never retry). `cmd/backfill-org-claims` is the repair path.
+Consequences, now settled by 19-04:
+1. The claim is written once and never recomputed, so changing a user's organization requires an explicit rewrite plus a token refresh. `select-organization` does both — and `refreshSession()` was verified against the live project to genuinely re-read the metadata.
+2. There is no automatic repair if a write fails (do not rely on webhook retry). `cmd/backfill-org-claims` is the repair path.
+3. **Still open, inherited by Phase 20+:** a *revoked* membership does not revoke the claim, because nothing recomputes it. Whatever ships membership removal must rewrite the affected user's claim — short token TTLs do not bound this exposure. Filed as ISS-012.
 
 ### Phase 20: Repository Integration Backend
 

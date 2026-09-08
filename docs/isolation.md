@@ -10,11 +10,22 @@ this document is the canonical spec.
 
 **1. Middleware / primitive (application layer).**
 On the Go side, `TenantMiddleware` reads the current organization from
-the request and stashes it on the request context; handlers pull it
-out via `auth.OrgIDKey`. On the Python side, `require_tenant(conn,
-tenant_id)` opens a transaction with `SET LOCAL app.current_tenant`,
-scoping every DB access inside the block. This is the fast path.
-Handlers and workers written correctly never bypass it.
+the **signature-verified JWT claim** `app_metadata.organization_id` and
+stashes it on the request context; handlers pull it out via
+`auth.OrgIDKey`. On the Python side, `require_tenant(conn, tenant_id)`
+opens a transaction with `SET LOCAL app.current_tenant`, scoping every DB
+access inside the block. This is the fast path. Handlers and workers
+written correctly never bypass it.
+
+The word "claim" is load-bearing. Until Phase 19-03 this read an
+`X-Organization-ID` header, which meant any authenticated user could name
+any organization and be given it. Tenant identity now comes from a value
+only Supabase can mint, and there is no fallback — a token with no
+organization claim is refused with 403 rather than defaulted anywhere.
+The one endpoint that changes a caller's organization
+(`POST /api/user/select-organization`) validates membership server-side
+before writing the new claim; see
+[`auth-frontend-contract.md`](auth-frontend-contract.md).
 
 **2. DB trigger (database layer).**
 Migration 000009 attaches `assert_tenant_scoped()` as a
@@ -332,6 +343,10 @@ way: wrap the DB access.
 - `scripts/ci/check-isolation-tests.py` — the CI scanner
 - `scripts/ci/README.md` — scanner operational reference
 - `.planning/fleet/reviewer-session-prompt.md` — reviewer's hard-check rule
+- [`auth-frontend-contract.md`](auth-frontend-contract.md) — how a client
+  reads and changes its active organization. Relevant here because the
+  tenant that wall 1 scopes to comes from the JWT claim that document
+  describes, and nothing on the wire can override it.
 
 ## Adding a new endpoint framework
 

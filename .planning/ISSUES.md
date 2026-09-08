@@ -50,18 +50,16 @@ Enhancements discovered during execution. Not critical - address in future phase
   ```
 
 
-### ISS-004: Organization selection mechanism for multi-org users
+### ISS-012: A revoked membership does not revoke the organization claim
 
-- **Discovered:** Phase 4 (Authentication System)
-- **Type:** User Experience / Authorization
-- **Priority:** MEDIUM (functional but not production-ready)
-- **Partially resolved:** Phase 19-03 (2026-09-08) — see "Remaining scope" below.
-- **Description:** Users belonging to multiple organizations had no way to choose which org context they operate in beyond the `X-Organization-ID` header. Production needs: (1) API endpoint to list user's organizations, (2) Frontend UI to select organization, (3) Store selection in JWT custom claims or session, (4) Middleware reads org from JWT instead of header.
-- **Done in 19-03:** items (3) and (4). `app_metadata.organization_id` is written onto the Supabase user at provisioning time and read back off the verified JWT by `TenantMiddleware`; the header path is deleted, not deprecated. This closes the *security* half of the issue.
-- **Remaining scope (19-04):** items (1) and (2) — a user with two organizations still gets whichever one provisioning stamped, with no way to switch. Needs `GET /api/user/organizations`, `POST /api/user/select-organization` (validates membership, then rewrites `app_metadata.organization_id` through the same `auth.AdminClient` 19-03 added), and the frontend picker.
-- **Note on the original implementation sketch:** it called for a Supabase Auth Hook to inject the claim at token-mint time. 19-03 deliberately did not use one — the hook is a Postgres function living in the Supabase instance, and the app's data lives in a *separate* Postgres, so the hook could not see `organization_memberships` to make the decision. Writing `raw_app_meta_data` from the backend achieves the same claim with no cross-instance dependency. Cost: the claim only refreshes on token refresh, which 19-04's select-organization endpoint has to account for.
-- **Impact:** Medium (multi-org users still can't switch contexts).
-- **Effort:** Medium (backend API + frontend UI).
+- **Discovered:** Phase 19-04 (2026-09-08)
+- **Type:** Security / Authorization
+- **Priority:** HIGH before any membership-removal feature ships; **not exploitable today** (nothing removes memberships)
+- **Description:** The organization claim is written at two moments — provisioning, and `POST /api/user/select-organization` — and at no other time. Supabase re-reads the same `raw_app_meta_data` column at every token mint, so refreshing a token *preserves* the claim rather than recomputing it. Removing a user from an organization therefore does not end their access to it: their token still names that org, `TenantMiddleware` still honors it, and every refresh renews it indefinitely.
+- **Why it is not a live bug:** no code path removes a membership. `git grep 'DELETE FROM organization_memberships'` finds only test cleanup.
+- **Why it is filed anyway:** the natural mental model — "stateless claims expire, so exposure is bounded by token lifetime" — is **wrong here**, and it is the model a future author will bring. Short token TTLs do not mitigate this at all. This was written into 19-03's summary as fact before a reviewer caught it.
+- **What closes it:** whatever ships membership removal must also rewrite the affected user's claim (and, if they were removed from their *active* org, decide what to put there — most likely another membership, or nothing plus a 403 that routes them to the org picker). `auth.AdminClient` is the mechanism; `cmd/backfill-org-claims` is the precedent.
+- **Related:** ISS-004 (closed), and the "Not covered here" section of `docs/auth-frontend-contract.md`, which carries this warning forward to Phase 20+.
 
 ### ISS-005: Supabase Native OAuth webhook handler
 
@@ -130,6 +128,19 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Related code:** `services/backend/pkg/auth/middleware.go` (TenantMiddleware, currently a context-only pass-through with a `_ = db` reserved for this work).
 
 ## Closed Enhancements
+
+### ISS-004: Organization selection mechanism for multi-org users ✅
+
+- **Discovered:** Phase 4 (Authentication System)
+- **Closed:** 2026-09-08 (Phase 19-04; security half closed in 19-03)
+- **Type:** User Experience / Authorization
+- **Original problem:** Users belonging to multiple organizations had no way to choose which org context they operate in beyond the `X-Organization-ID` header. Needed: (1) an endpoint listing the user's organizations, (2) a frontend picker, (3) the selection stored in a JWT claim, (4) middleware reading the claim instead of the header.
+- **Done in 19-03:** items (3) and (4). `app_metadata.organization_id` is written onto the Supabase user and read back off the verified JWT by `TenantMiddleware`; the header path deleted, not deprecated.
+- **Done in 19-04:** item (1) plus the switching mechanism — `GET /api/user/organizations` and `POST /api/user/select-organization`, both user-scoped and deliberately outside `TenantMiddleware` so a user with no organization claim can still reach them. Item (2), the frontend picker, is Phase 23 work implementing `docs/auth-frontend-contract.md`; the backend contract it needs is complete and documented, so this issue is closed rather than left open on UI.
+- **Note on the original implementation sketch:** it called for a Supabase Auth Hook to inject the claim at token-mint time. Impossible in this architecture — the hook is a Postgres function inside Supabase's instance and `organization_memberships` lives in a different one. The backend writes `raw_app_meta_data` instead.
+- **Verified against the live project (2026-09-08):** `refreshSession()` genuinely re-reads `raw_app_meta_data`, so 202 → refresh → new claim works and a full sign-out/sign-in is not required.
+- **Security note carried forward:** switching writes BOTH `organization_id` and `organization_role`, because Supabase merges `app_metadata` and omitting the role leaves the previous one in place. See 19-04's summary; the escalation this prevents is pinned by a test.
+- **Successor issue:** ISS-012 — a *revoked* membership still does not revoke the claim. Out of scope here (nothing removes memberships yet).
 
 ### ISS-007: JWT-carried tenant claim (supersedes header trust) ✅
 
