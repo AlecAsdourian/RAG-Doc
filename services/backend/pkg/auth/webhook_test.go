@@ -54,18 +54,25 @@ func TestWebhookHandler_UserCreatedEvent(t *testing.T) {
 
 	handler := NewWebhookHandler(db, "test-secret-key")
 
-	// Create webhook payload for user creation
+	// Webhook payload matching what the handler actually dispatches on:
+	// schema=public, table=auth_user_events (populated by a DB trigger on
+	// auth.users). The prior version of this test used schema=auth,
+	// table=users, so the handler's dispatch branch never fired and the
+	// assertions below all found zero rows — a long-standing false
+	// failure, not a provisioning bug.
 	webhookPayload := SupabaseWebhookEvent{
 		Type:   "INSERT",
-		Table:  "users",
-		Schema: "auth",
+		Table:  "auth_user_events",
+		Schema: "public",
 		Record: json.RawMessage(`{
-			"id": "550e8400-e29b-41d4-a716-446655440000",
+			"id": "660e8400-e29b-41d4-a716-446655440000",
+			"supabase_user_id": "550e8400-e29b-41d4-a716-446655440000",
 			"email": "test@example.com",
-			"user_metadata": {
-				"full_name": "Test User"
+			"event_type": "INSERT",
+			"raw_user_meta_data": {
+				"full_name": "Test User",
+				"provider": "github"
 			},
-			"provider": "github",
 			"created_at": "2024-01-13T12:00:00Z"
 		}`),
 	}
@@ -228,6 +235,14 @@ func TestGenerateOrgNameFromEmail(t *testing.T) {
 		{"bob.smith@company.io", "Bob's Organization"},
 		{"admin@test.org", "Admin's Organization"},
 		{"", "My Organization"},
+
+		// Edge cases the prior implementation got wrong.
+		{"@example.com", "My Organization"},        // empty local part
+		{"___@example.com", "My Organization"},     // no alphanumerics
+		{"_leading@example.com", "Leading's Organization"},
+		{"ALICE@example.com", "Alice's Organization"}, // normalizes case
+		{"alice+tag@example.com", "Alice's Organization"},
+		{"no-at-sign", "My Organization"},
 	}
 
 	for _, tt := range tests {
@@ -331,6 +346,17 @@ func TestGenerateOrgSlugFromEmail(t *testing.T) {
 		{"bob.smith@company.io", "bob-smith-org"},
 		{"admin_user@test.org", "admin-user-org"},
 		{"", "my-org"},
+
+		// Edge cases the prior implementation got wrong. `""` previously
+		// produced "-org" because strings.Split("", "@") returns [""] and
+		// the len(parts)==0 guard was unreachable.
+		{"@example.com", "my-org"},    // empty local part
+		{"___@example.com", "my-org"}, // sanitizes to empty
+		{"_leading_@example.com", "leading-org"},
+		{"alice+tag@example.com", "alice-tag-org"},
+		{"a..b@example.com", "a-b-org"}, // consecutive dashes collapsed
+		{"ALICE@example.com", "alice-org"},
+		{"no-at-sign", "my-org"},
 	}
 
 	for _, tt := range tests {
