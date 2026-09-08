@@ -280,6 +280,15 @@ func TestUserOrgsIsolation(t *testing.T) {
 				status, body := doSelectOrg(t, server.URL, ownerAToken, target)
 				require.Truef(t, status == http.StatusBadRequest || status == http.StatusForbidden,
 					"target %q should be refused with 400 or 403, got %d; body=%s", target, status, body)
+
+				// The rejection must not describe our internals. The raw
+				// validator error reads "Key: 'SelectOrgRequest.
+				// OrganizationID' Error:Field validation for
+				// 'OrganizationID' failed on the 'uuid' tag" — Go struct
+				// and tag names, useless to the caller and informative to
+				// everyone else.
+				require.NotContainsf(t, body, "SelectOrgRequest",
+					"error body for %q leaks Go struct internals: %s", target, body)
 			}
 		})
 
@@ -322,6 +331,42 @@ func TestUserOrgsIsolation(t *testing.T) {
 					status, body := doSelectOrg(t, server.URL, bad, orgA.ID)
 					require.Equal(t, http.StatusUnauthorized, status,
 						"same for the mutating endpoint; body=%s", body)
+				})
+			}
+		})
+
+		t.Run("Scenario9_NonCanonicalSubjectResolvesToTheSameIdentity", func(t *testing.T) {
+			// The narrow door the first version of the `sub` guard left
+			// open. `uuid.Parse` is more permissive than Postgres: it
+			// accepts `urn:uuid:...`, which Postgres's uuid type rejects,
+			// plus braced and unhyphenated forms it accepts. Validating
+			// without canonicalizing meant the value that reached the
+			// database was still whatever the token said — so the guard
+			// narrowed the 500 rather than closing it, and four textually
+			// different subjects mapped to one identity by accident rather
+			// than by design.
+			//
+			// ExtractUserID now returns the canonical form. Each variant
+			// below must produce exactly the same response as the plain
+			// one: accepted, and resolved to the same user.
+			canonical := doListOrgs(t, server.URL, ownerAToken)
+			require.NotEmpty(t, canonical.Organizations,
+				"precondition: the canonical form must resolve to memberships")
+
+			plain := orgA.OwnerSupabaseID
+			for name, variant := range map[string]string{
+				"urn":        "urn:uuid:" + plain,
+				"braced":     "{" + plain + "}",
+				"uppercase":  strings.ToUpper(plain),
+				"unhyphened": strings.ReplaceAll(plain, "-", ""),
+			} {
+				t.Run(name, func(t *testing.T) {
+					got := doListOrgs(t, server.URL, testjwt.Sign(variant, orgA.ID, "owner"))
+					require.Len(t, got.Organizations, len(canonical.Organizations),
+						"%s form of the subject must resolve to the same identity", name)
+					for i := range got.Organizations {
+						require.Equal(t, canonical.Organizations[i].ID, got.Organizations[i].ID)
+					}
 				})
 			}
 		})

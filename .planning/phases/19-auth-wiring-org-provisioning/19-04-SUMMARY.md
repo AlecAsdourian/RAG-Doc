@@ -135,6 +135,8 @@ Both security assertions were shown to fail when the property they guard is brok
 | Unscope the List query (`WHERE $1 = $1`) | scenarios 3 and 5 fail — **in 0.03s**, not a 90s hang |
 | Remove the `sub` UUID guard | scenario 7 fails, only scenario 7 |
 | Remove the request body limit | scenario 8 fails, only scenario 8 |
+| Validate `sub` but don't canonicalize it | scenario 9's `urn` subtest fails — and only that one |
+| Echo the raw validator error | scenario 6 fails, only scenario 6 |
 
 Reviewer independently added three more: scoping `callerRoleIn` to any org fails 1+2; moving the routes behind `TenantMiddleware` fails only scenario 4; forcing `is_active` false fails only scenario 3.
 
@@ -178,6 +180,14 @@ Rewritten to collect failures under a mutex, report at most once per goroutine, 
 **Nits applied:** case-insensitive `is_active` comparison (L1); clean validation message instead of the raw validator error naming Go struct fields (L2); the `@skip-isolation-test` marker deleted — it sat on a GET the scanner never inspects and was one reformat from silently un-gating the POST, which the scanner now explicitly reports as *covered* (L6); `fixtures.go` doc comment corrected to say which id to sign with (L7); concurrent-switch semantics documented (L8); router doc comment mentions the admin seam (L9).
 
 **A correction to my own work (L3).** I added `OR user_id = ANY(...)` to `cleanupOrg` with a confident explanation of a leak it prevents. The reviewer checked: `organization_memberships.user_id` is already `ON DELETE CASCADE` (migration 000007), so the leak was impossible and the clause was dead weight with a wrong rationale attached. Reverted, and the comment now records why the reasoning was wrong — a confident wrong comment is worse than none.
+
+**Verification round (M5) — the `sub` guard narrowed the 500 rather than closing it.** `uuid.Parse` is more permissive than Postgres: it accepts `urn:uuid:...`, which Postgres's uuid type rejects outright, so a URN-form subject still reached the driver and still returned 500 — the exact failure the guard's own doc comment claimed to prevent. It also accepts braced and unhyphenated forms that Postgres *does* accept, meaning four textually different `sub` values resolved to one identity by accident rather than by design.
+
+Both extractors now return `parsed.String()` rather than the input. That closes the URN gap and canonicalizes the rest. It matters more for `ExtractOrganizationID` than it looks: ISS-008 will interpolate that value into `SET LOCAL app.current_tenant` (Postgres cannot bind a parameter into a `SET`), so a validated-but-non-canonical value would be wrong at precisely the point the validation exists to protect.
+
+Scenario 9 pins it, and under mutation only the `urn` subtest fails — braced and uppercase pass, because Postgres accepts those. The test isolates the actual gap rather than asserting a blanket property.
+
+Recorded in the doc comment for whoever meets it next: if this project ever enables Supabase Third-Party Auth (Clerk, Firebase, Auth0), `sub` stops being a UUID and this check would 401 every user. Unreachable today, and the real constraint is that `users.supabase_user_id` is a uuid column — such a migration needs a schema change, not a looser check.
 
 **Also settled:** the `ORDER BY om.created_at ASC LIMIT 1` tiebreak in `callerRoleIn` was unreachable — `UNIQUE(user_id, organization_id)` makes multiple rows impossible. Rather than keep unreachable code that looks like a decision, it now errors if more than one row comes back. Worth recording *why* the obvious fix is wrong: "highest privilege wins" is backwards for an authorization decision — the fail-safe direction is least privilege, and ambiguous membership is a data-integrity bug that should be refused rather than resolved by guess.
 

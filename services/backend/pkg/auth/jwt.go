@@ -66,15 +66,34 @@ func (v *JWTValidator) ValidateToken(ctx context.Context, tokenString string) (j
 // rejects nothing a real token carries. "The identity provider would never
 // do that" is not a reason to skip the check; it is the assumption that
 // keeps holes alive through review.
+//
+// The CANONICAL form is returned, not the input. uuid.Parse is more
+// permissive than Postgres: it accepts `urn:uuid:...`, which Postgres's
+// uuid type rejects outright, plus braced and unhyphenated forms that
+// Postgres accepts but that make four textually different `sub` values
+// resolve to one identity. Validating without canonicalizing narrowed the
+// 500 rather than closing it — a URN-form subject still reached the driver.
+// Returning u.String() closes it and makes the value downstream code
+// compares byte-for-byte actually stable.
+//
+// Forward-looking caveat: if this project ever enables Supabase
+// Third-Party Auth (Clerk, Firebase, Auth0), `sub` stops being a UUID —
+// Firebase issues 28-char alphanumerics, Auth0 `auth0|...`, Clerk
+// `user_...` — and this check would 401 every user. Unreachable today
+// (the validator pins the Supabase issuer and JWKS), and the underlying
+// constraint is real regardless: `users.supabase_user_id` is a uuid
+// column, so such a migration needs a schema change, not just a looser
+// check here.
 func ExtractUserID(token jwt.Token) (string, error) {
 	userID, ok := token.Subject()
 	if !ok || userID == "" {
 		return "", fmt.Errorf("missing subject claim")
 	}
-	if _, err := uuid.Parse(userID); err != nil {
+	parsed, err := uuid.Parse(userID)
+	if err != nil {
 		return "", fmt.Errorf("subject claim is not a valid UUID: %w", err)
 	}
-	return userID, nil
+	return parsed.String(), nil
 }
 
 // AppMetadataClaim is the JWT claim Supabase populates from the user's
@@ -175,15 +194,22 @@ func extractAppMetadataString(token jwt.Token, key string) (string, error) {
 // Rejecting is safe: our own writer only ever pushes a uuid.UUID string
 // (see WebhookHandler.pushOrgContext), so a non-UUID claim cannot come
 // from a correctly-provisioned user.
+// Like ExtractUserID, this returns the CANONICAL form. That matters more
+// here than it looks: ISS-008 will string-interpolate this value into
+// `SET LOCAL app.current_tenant` (Postgres cannot bind a parameter into a
+// SET), and `urn:uuid:...` passes uuid.Parse while being rejected by
+// Postgres — validated, but still wrong at exactly the point the
+// validation exists to protect.
 func ExtractOrganizationID(token jwt.Token) (string, error) {
 	raw, err := extractAppMetadataString(token, orgIDKey)
 	if err != nil {
 		return "", err
 	}
-	if _, err := uuid.Parse(raw); err != nil {
+	parsed, err := uuid.Parse(raw)
+	if err != nil {
 		return "", fmt.Errorf("%s.%s is not a valid UUID: %w", AppMetadataClaim, orgIDKey, err)
 	}
-	return raw, nil
+	return parsed.String(), nil
 }
 
 // ExtractOrganizationRole gets the caller's role within their active
