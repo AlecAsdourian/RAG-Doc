@@ -159,6 +159,97 @@ func TestGitHubInstallations_UnscopedWriteIsRefused(t *testing.T) {
 		require.ErrorAs(t, err, &pgErr)
 		require.Containsf(t, []string{"42501", "22P02"}, pgErr.Code,
 			"expected the 000009 trigger (42501) or the RLS uuid cast (22P02), got %s", pgErr.Code)
+
+		// Assert on the MESSAGE, not just the code.
+		//
+		// The code alone cannot tell the trigger from RLS: WITH CHECK also
+		// refuses an unscoped INSERT with 42501. The first version of this
+		// test checked only the code and passed with the trigger dropped —
+		// while its own doc comment claimed to be confirming the trigger
+		// was attached.
+		//
+		// The two say different things:
+		//   trigger: "tenant isolation violated: app.current_tenant must be set ..."
+		//   RLS:     "new row violates row-level security policy ..."
+		if pgErr.Code == "42501" {
+			require.Containsf(t, pgErr.Message, "tenant isolation violated",
+				"42501 came from RLS, not the 000009 trigger — the trigger is not "+
+					"attached to github_installations. Message was: %s", pgErr.Message)
+		}
+	})
+}
+
+// TestRepositoryCannotReferenceAnotherTenantsInstallation is the
+// regression test for the seam migration 000010 opened and then closed.
+//
+// `github_installations` is scoped by organization_id; `repositories` is
+// scoped through projects.organization_id. `repositories.installation_id`
+// crosses between the two, and FOREIGN KEY validation runs with RLS
+// bypassed — so before the trg_assert_installation_tenant trigger, orgA
+// could point one of its repositories at orgB's installation even though
+// it could not SELECT that installation.
+//
+// Why it matters more than a malformed row: a sync job following that
+// link mints an installation token for orgB's installation while acting
+// for orgA — read access to another customer's private source.
+func TestRepositoryCannotReferenceAnotherTenantsInstallation(t *testing.T) {
+	pool := isolation.SetupTestDB(t)
+	ctx := context.Background()
+
+	isolation.WithTwoOrgs(t, pool, func(orgA, orgB *isolation.TestOrg) {
+		scoper := db.NewTenantScoper(pool)
+
+		insertInstallation(t, scoper, orgB.ID, 778899)
+
+		var orgBInstallationID string
+		require.NoError(t, scoper.InTenantTx(ctxForTenant(orgB.ID), func(tx pgx.Tx) error {
+			return tx.QueryRow(ctx,
+				`SELECT id::text FROM github_installations WHERE github_installation_id = $1`,
+				778899).Scan(&orgBInstallationID)
+		}))
+
+		t.Run("orgA cannot even see it", func(t *testing.T) {
+			var visible int
+			require.NoError(t, scoper.InTenantTx(ctxForTenant(orgA.ID), func(tx pgx.Tx) error {
+				return tx.QueryRow(ctx,
+					`SELECT count(*) FROM github_installations WHERE id = $1`,
+					orgBInstallationID).Scan(&visible)
+			}))
+			require.Zero(t, visible, "precondition: orgB's installation is invisible to orgA")
+		})
+
+		t.Run("and cannot link a repository to it", func(t *testing.T) {
+			err := scoper.InTenantTx(ctxForTenant(orgA.ID), func(tx pgx.Tx) error {
+				_, e := tx.Exec(ctx,
+					`UPDATE repositories SET installation_id = $1 WHERE id = $2`,
+					orgBInstallationID, orgA.RepoID)
+				return e
+			})
+
+			require.Error(t, err,
+				"orgA linked its repository to orgB's installation; a sync job following "+
+					"that link would mint a token for orgB's GitHub account")
+
+			var pgErr *pgconn.PgError
+			require.ErrorAs(t, err, &pgErr)
+			require.Equal(t, "42501", pgErr.Code)
+			require.Contains(t, pgErr.Message, "tenant isolation violated")
+		})
+
+		t.Run("but can link to its own", func(t *testing.T) {
+			insertInstallation(t, scoper, orgA.ID, 112233)
+
+			require.NoError(t, scoper.InTenantTx(ctxForTenant(orgA.ID), func(tx pgx.Tx) error {
+				_, e := tx.Exec(ctx, `
+					UPDATE repositories
+					SET installation_id = (
+						SELECT id FROM github_installations WHERE github_installation_id = $1
+					)
+					WHERE id = $2
+				`, 112233, orgA.RepoID)
+				return e
+			}), "the guard must not block the legitimate case")
+		})
 	})
 }
 

@@ -302,13 +302,32 @@ func (p *UserProvisioner) CreateOrganizationForUser(
 	// project is a state no code handles, and 19-02 already learned what
 	// a partially-created organization costs.
 	//
-	// ON CONFLICT DO NOTHING for replay safety. The partial unique index
-	// idx_projects_one_default_per_org guarantees at most one default per
-	// organization, so a retry cannot produce a second.
+	// The conflict target is the DEFAULT-PROJECT index, not (org, slug).
+	//
+	// An earlier version targeted (organization_id, slug) and claimed the
+	// partial unique index made a second default impossible. Backwards:
+	// that index is the constraint that RAISES, and naming a different
+	// target does not catch it. It failed in both directions —
+	//
+	//   org already has a default under another slug (exactly what this
+	//   migration's own backfill produces for an org that already had
+	//   projects) -> unique violation on idx_projects_one_default_per_org,
+	//   aborting the whole CreateOrganizationForUser transaction;
+	//
+	//   org has a NON-default project already using slug 'default' -> the
+	//   conflict is swallowed and the organization ends with ZERO default
+	//   projects, so DefaultProjectID later reports a data-integrity error.
+	//
+	// Targeting the partial index handles the first correctly and leaves
+	// the second impossible.
+	//
+	// Not reachable from today's only call site, where the organization is
+	// always freshly created in this same transaction — but the comment
+	// asserted a safety property the code did not have.
 	_, err = tx.Exec(ctx, `
 		INSERT INTO projects (organization_id, name, slug, is_default)
 		VALUES ($1, 'Default', 'default', true)
-		ON CONFLICT (organization_id, slug) DO NOTHING
+		ON CONFLICT (organization_id) WHERE is_default DO NOTHING
 	`, orgID)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("failed to create default project: %w", err)

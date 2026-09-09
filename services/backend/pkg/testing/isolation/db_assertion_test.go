@@ -75,6 +75,22 @@ var protectedTables = []struct {
 		`INSERT INTO feedback (retrieval_id, feedback_type) VALUES ($1, $2)`,
 		[]any{uuid.NewString(), "positive"},
 	},
+	{
+		// Added by migration 000010 (Phase 20-02).
+		//
+		// This entry is the ratchet doing its job. 20-02 shipped its own
+		// isolation tests for this table and skipped registering it here,
+		// and the gap was invisible: RLS's WITH CHECK refuses an unscoped
+		// INSERT with the SAME SQLSTATE 42501 the trigger uses, so a test
+		// asserting only the code passes with the trigger dropped.
+		// requireTenantViolation asserts on the MESSAGE, which is what
+		// separates them.
+		"github_installations",
+		`INSERT INTO github_installations
+		   (organization_id, github_installation_id, account_login, account_type, repository_selection)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		[]any{uuid.NewString(), int64(4242424242), "someone", "User", "selected"},
+	},
 }
 
 func TestDBAssertion_TriggerFiresOnInsertWithoutTenant(t *testing.T) {

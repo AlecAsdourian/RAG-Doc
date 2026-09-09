@@ -55,8 +55,32 @@ type Client struct {
 	baseURL    string
 	httpClient *http.Client
 
-	mu     sync.Mutex
-	tokens map[int64]cachedToken
+	mu        sync.Mutex
+	tokens    map[int64]cachedToken
+	mintLocks map[int64]*sync.Mutex
+}
+
+// cachedToken returns a cached token that is not close to expiring.
+func (c *Client) cachedToken(installationID int64) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cached, ok := c.tokens[installationID]
+	if !ok || !time.Now().Add(installationTokenMargin).Before(cached.expiresAt) {
+		return "", false
+	}
+	return cached.token, true
+}
+
+// mintLockFor returns the per-installation mint lock, creating it once.
+func (c *Client) mintLockFor(installationID int64) *sync.Mutex {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if l, ok := c.mintLocks[installationID]; ok {
+		return l
+	}
+	l := &sync.Mutex{}
+	c.mintLocks[installationID] = l
+	return l
 }
 
 type cachedToken struct {
@@ -111,7 +135,8 @@ func NewClient(appID, privateKeyPath string) (*Client, error) {
 				return http.ErrUseLastResponse
 			},
 		},
-		tokens: make(map[int64]cachedToken),
+		tokens:    make(map[int64]cachedToken),
+		mintLocks: make(map[int64]*sync.Mutex),
 	}, nil
 }
 
@@ -185,11 +210,30 @@ func (c *Client) AppJWT() (string, error) {
 // cache below exists so a burst of calls does not mint a token each time,
 // not to keep tokens around.
 func (c *Client) InstallationToken(ctx context.Context, installationID int64) (string, error) {
-	c.mu.Lock()
-	cached, ok := c.tokens[installationID]
-	c.mu.Unlock()
-	if ok && time.Now().Add(installationTokenMargin).Before(cached.expiresAt) {
-		return cached.token, nil
+	if tok, ok := c.cachedToken(installationID); ok {
+		return tok, nil
+	}
+
+	// Serialize minting PER INSTALLATION, and re-check the cache once the
+	// lock is held.
+	//
+	// The first version released the read lock before the HTTP call, which
+	// is a check-then-act gap: measured at 25 concurrent callers producing
+	// 25 mint requests and 25 distinct tokens, last writer winning the
+	// cache. No data race — just no deduplication, while the comment
+	// claimed the cache existed so "a burst of calls does not mint a token
+	// each time". Phase 21's parallel repository syncs are exactly that
+	// burst.
+	//
+	// Per-installation rather than one global lock, so a slow mint for one
+	// installation does not stall every other one.
+	mintLock := c.mintLockFor(installationID)
+	mintLock.Lock()
+	defer mintLock.Unlock()
+
+	// Someone may have minted while we waited.
+	if tok, ok := c.cachedToken(installationID); ok {
+		return tok, nil
 	}
 
 	appJWT, err := c.AppJWT()
@@ -207,6 +251,13 @@ func (c *Client) InstallationToken(ctx context.Context, installationID int64) (s
 	}
 	if out.Token == "" {
 		return "", fmt.Errorf("github: installation %d returned an empty token", installationID)
+	}
+	if out.ExpiresAt.IsZero() {
+		// Without an expiry the cache check below treats the token as
+		// already stale, so every call re-mints — silently, and only
+		// visible as unexplained API volume.
+		return "", fmt.Errorf(
+			"github: installation %d returned a token with no expires_at", installationID)
 	}
 
 	c.mu.Lock()
@@ -295,10 +346,18 @@ func (c *Client) ListInstallationRepositories(ctx context.Context, installationI
 		}
 		all = append(all, out.Repositories...)
 		if len(out.Repositories) < 100 {
-			break
+			return all, nil
 		}
 	}
-	return all, nil
+
+	// Reaching the bound means the list is TRUNCATED. Returning it with a
+	// nil error would tell the caller these are all the repositories the
+	// installation can see, which is the kind of wrong answer that gets
+	// acted on. An error is the honest result even though the data is
+	// partially good.
+	return nil, fmt.Errorf(
+		"github: installation %d has more than %d repositories; refusing to return a "+
+			"truncated list", installationID, maxPages*100)
 }
 
 // do issues an authenticated request and decodes a JSON response.

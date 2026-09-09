@@ -249,8 +249,8 @@ func TestGenerateOrgNameFromEmail(t *testing.T) {
 		{"", "My Organization"},
 
 		// Edge cases the prior implementation got wrong.
-		{"@example.com", "My Organization"},        // empty local part
-		{"___@example.com", "My Organization"},     // no alphanumerics
+		{"@example.com", "My Organization"},    // empty local part
+		{"___@example.com", "My Organization"}, // no alphanumerics
 		{"_leading@example.com", "Leading's Organization"},
 		{"ALICE@example.com", "Alice's Organization"}, // normalizes case
 		{"alice+tag@example.com", "Alice's Organization"},

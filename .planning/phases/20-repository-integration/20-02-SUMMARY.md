@@ -90,10 +90,47 @@ It passed the scratch-database check because I had created the role by hand ther
 | `migrate up` → `down 1` → `up` on a scratch database | clean each time |
 | `go build ./...`, `go vet ./...` | clean |
 | `go test -p 1 ./...` | all pass |
-| `TestGitHubInstallations_*` | 3 tests, 5 assertions |
-| **Mutation: remove RLS from `github_installations`** | all three isolation tests fail |
+
+### Mutation testing
+
+| Mutation | Result |
+|---|---|
+| Disable RLS on `github_installations` | `AreTenantIsolated` fails (all 3 subtests) |
+| Remove the `trg_assert_installation_tenant` trigger | `RepositoryCannotReferenceAnotherTenantsInstallation` fails |
+| Remove `trg_assert_tenant` from `github_installations` | the `protectedTables` ratchet fails |
+| Delete the default-project insert from provisioning | `CreateOrganizationForUser_CreatesADefaultProject` fails (all 3 subtests) |
+
+**A correction to an earlier version of this table.** It claimed "remove RLS → all three isolation tests fail". That was wrong, and reviewer-measured: disabling RLS fails one test, because the other two are held up by a UNIQUE constraint and by the trigger respectively. The claim was written from expectation rather than from a run. Fourth time in this project that a summary has asserted a property the code did not have.
 
 The `pkg/github` tests cover the credential handling the way `supabase_admin.go` learned to: a stub server echoes the `Authorization` header into an error body, and the test asserts neither an App JWT nor a `ghs_` token survives into the error. Redirects are refused outright. Both were reviewer findings on the Supabase client; here they are built in rather than retrofitted.
+
+## Reviewer round (post-review, same branch)
+
+One blocker-class finding, one process failure, and three doc claims the code did not have.
+
+**H1 — a repository could point at another tenant's installation.** `github_installations` is scoped by `organization_id`; `repositories` is scoped through `projects.organization_id`; `repositories.installation_id` crosses between them and nothing made the two agree. **Foreign key validation runs with RLS bypassed**, so the referenced installation did not have to be visible. Demonstrated as the non-superuser app role: orgA `SELECT`s orgB's installation → 0 rows, then `UPDATE repositories SET installation_id = <that id>` → `UPDATE 1`.
+
+The consequence is worse than a bad row: a sync job following that link mints an installation token for orgB's installation while acting for orgA — read access to another customer's private source. And `ON DELETE SET NULL` meant orgB deleting its *own* installation wrote into orgA's repository row, a cross-tenant write orgB could not perform directly.
+
+Closed with `trg_assert_installation_tenant`, a trigger asserting the installation's organization matches the repository's. Not `SECURITY DEFINER`: under the caller's own RLS another tenant's installation is invisible, so the lookup returns NULL and the comparison refuses the write — same answer without elevated reads. Pinned by a test that fails when the trigger is removed.
+
+The migration comment claiming the `UNIQUE` on `github_installation_id` "enforces one installation serves one organization ... so a repository's owner cannot be ambiguous" was half true. It constrains which organization owns an installation; it said nothing about which repositories may point at one. Corrected to say so.
+
+**H2 — I skipped step 3 of `docs/isolation.md`'s own four-step recipe** for adding a tenant-scoped table: registering it in the harness's `protectedTables`. Migration 000009's header gives the same instruction, and the list calls itself "the ratchet".
+
+The gap was invisible because my own test could not see it: RLS's `WITH CHECK` refuses an unscoped INSERT with the *same* SQLSTATE 42501 the trigger uses, and the test asserted only the code — so dropping `trg_assert_tenant` left every test green, while the test's doc comment claimed to be confirming the trigger was attached. Registered now; `requireTenantViolation` asserts on the message, which is what separates the two.
+
+**M1 — the `ON CONFLICT` target was wrong in both directions.** It named `(organization_id, slug)` while asserting that the partial unique index made a duplicate impossible — backwards, since that index is the constraint that raises. An organization with a default under a different slug (exactly what this migration's backfill produces) would abort the whole transaction; one with a non-default project on slug `default` would end with zero defaults. Now targets the partial index.
+
+**M2 — the default-project invariant test asserted the fixture's own constant.** It ran against `WithTwoOrgs`, whose fixture sets `is_default = true` as a literal. Deleting the insert from `CreateOrganizationForUser` left the entire suite green. There is now a test on the production path, including that a repository can actually be created under the resolved project.
+
+**M3 — the token cache did not deduplicate concurrent mints.** Measured at 25 concurrent callers producing 25 mint requests, last writer winning — while the comment claimed the cache existed so a burst would not mint each time. Per-installation mint locks with a re-check after acquiring.
+
+**M4 — pagination truncated silently at 10,000 repositories** and returned a nil error, reporting a partial list as complete. Now an error.
+
+**Nits applied:** a token response with no `expires_at` now errors rather than re-minting forever (it would have been visible only as unexplained API volume).
+
+**Not done:** `sync_state` has no CHECK constraint (L6) and `redactSecrets` covers only `ghs_`/`ghu_` prefixes — 20-04's OAuth flow produces `gho_`. Both are small; flagged for 20-04 rather than widened into this plan.
 
 ## Notes for what comes next
 

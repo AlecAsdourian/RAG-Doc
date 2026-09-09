@@ -84,13 +84,16 @@ CREATE TABLE github_installations (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
 
-  -- THIS UNIQUE IS THE TENANCY BOUNDARY, not a dedup convenience.
+  -- Enforces "one installation serves exactly one organization" — a
+  -- tenancy constraint, not a dedup convenience. Without it two tenants
+  -- could both claim the same GitHub installation.
   --
-  -- It is what enforces "one installation serves exactly one
-  -- organization". Without it, two tenants could both claim the same
-  -- GitHub installation and a repository's owner would become ambiguous.
-  -- An organization MAY hold several installations (someone connecting
-  -- two different GitHub accounts); an installation never fans out.
+  -- It is HALF the story, and an earlier draft of this comment claimed
+  -- the whole. It constrains which organization an installation belongs
+  -- to; it says nothing about which repositories may point at that
+  -- installation. That second half is section 4 at the bottom of this
+  -- file, and without it a repository could reference another tenant's
+  -- installation entirely legally.
   github_installation_id BIGINT NOT NULL UNIQUE,
 
   -- Verified 2026-09-08: account.type is 'User' for the dev installation,
@@ -193,3 +196,68 @@ CREATE UNIQUE INDEX idx_repositories_installation_github_id
 CREATE INDEX idx_repositories_sync_state
   ON repositories (sync_state)
   WHERE sync_state <> 'synced';
+
+-- =====================================================================
+-- 4. The seam between two scoping schemes
+-- =====================================================================
+--
+-- `github_installations` is scoped by `organization_id` directly.
+-- `repositories` is scoped through `projects.organization_id`.
+-- `repositories.installation_id` crosses between them, and nothing above
+-- makes the two agree.
+--
+-- That gap is real, not theoretical. FOREIGN KEY validation runs with RLS
+-- bypassed, so the referenced installation does not have to be visible to
+-- the writer. Demonstrated as a NOSUPERUSER NOBYPASSRLS role:
+--
+--   orgA scope: SELECT .. WHERE id = <orgB installation>       -> 0 rows
+--   orgA scope: UPDATE repositories SET installation_id = <it> -> UPDATE 1
+--
+-- The consequence is worse than a bad row. A sync job would mint an
+-- installation token for orgB's installation while acting for orgA — read
+-- access to another customer's private source. And because the FK is
+-- ON DELETE SET NULL, orgB deleting its OWN installation then writes into
+-- orgA's repository row: a cross-tenant write orgB could not perform
+-- directly.
+--
+-- The UNIQUE on github_installation_id above does not cover this. It
+-- guarantees one installation serves one organization; it says nothing
+-- about which repositories may point at it.
+--
+-- A CHECK cannot express this (it needs a subquery), so it is a trigger,
+-- in the style of 000009's assert_tenant_scoped.
+CREATE OR REPLACE FUNCTION assert_installation_matches_repository_tenant()
+RETURNS TRIGGER AS $$
+DECLARE
+  repo_org UUID;
+  inst_org UUID;
+BEGIN
+  IF NEW.installation_id IS NULL THEN
+    RETURN NEW;
+  END IF;
+
+  SELECT p.organization_id INTO repo_org
+  FROM projects p WHERE p.id = NEW.project_id;
+
+  -- Deliberately NOT SECURITY DEFINER. Under the caller's own RLS an
+  -- installation belonging to another tenant is invisible, so inst_org
+  -- comes back NULL and the comparison below refuses the write — the
+  -- same answer, without granting this function elevated reads.
+  SELECT gi.organization_id INTO inst_org
+  FROM github_installations gi WHERE gi.id = NEW.installation_id;
+
+  IF repo_org IS DISTINCT FROM inst_org THEN
+    RAISE EXCEPTION
+      'tenant isolation violated: repository belongs to organization %, but '
+      'installation % resolves to % (NULL means it is not visible to you)',
+      repo_org, NEW.installation_id, inst_org
+      USING ERRCODE = '42501';
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_assert_installation_tenant
+  BEFORE INSERT OR UPDATE OF installation_id, project_id ON repositories
+  FOR EACH ROW EXECUTE FUNCTION assert_installation_matches_repository_tenant();

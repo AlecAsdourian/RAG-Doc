@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -160,6 +161,75 @@ func TestInstallationToken_RefreshesNearExpiry(t *testing.T) {
 	require.Equal(t, 2, mints, "an expired cached token must be re-minted")
 }
 
+// TestInstallationToken_DeduplicatesConcurrentMints pins the property the
+// cache's doc comment claims.
+//
+// The first version released its lock before the HTTP call: 25 concurrent
+// callers produced 25 mint requests and 25 distinct tokens, last writer
+// winning the cache. No data race — just no deduplication, which is
+// exactly the burst Phase 21's parallel repository syncs will produce.
+func TestInstallationToken_DeduplicatesConcurrentMints(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		mints int
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		mints++
+		n := mints
+		mu.Unlock()
+		// A slow mint widens the window the old code raced through.
+		time.Sleep(20 * time.Millisecond)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = fmt.Fprintf(w, `{"token":"ghs_tok%d","expires_at":%q}`,
+			n, "2999-01-01T00:00:00Z")
+	}))
+	t.Cleanup(srv.Close)
+
+	c := newTestClient(t, srv)
+	ctx := context.Background()
+
+	const callers = 25
+	var wg sync.WaitGroup
+	tokens := make([]string, callers)
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			tok, err := c.InstallationToken(ctx, 42)
+			if err == nil {
+				tokens[i] = tok
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	mu.Lock()
+	got := mints
+	mu.Unlock()
+	require.Equal(t, 1, got,
+		"%d concurrent callers should mint ONE token, not %d", callers, got)
+
+	for i, tok := range tokens {
+		require.Equalf(t, tokens[0], tok, "caller %d got a different token", i)
+	}
+}
+
+// TestInstallationToken_RejectsMissingExpiry: a response with no
+// expires_at leaves the cache entry permanently stale, so every call
+// re-mints — silently, visible only as unexplained API volume.
+func TestInstallationToken_RejectsMissingExpiry(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = fmt.Fprint(w, `{"token":"ghs_noexpiry"}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := newTestClient(t, srv).InstallationToken(context.Background(), 1)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no expires_at")
+}
+
 func TestListInstallationRepositories_FollowsPagination(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "access_tokens") {
@@ -186,6 +256,39 @@ func TestListInstallationRepositories_FollowsPagination(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, repos, 101, "a short final page must end the loop, and both pages must be kept")
 	require.Equal(t, int64(999), repos[100].ID)
+}
+
+// TestListInstallationRepositories_RefusesToTruncateSilently.
+//
+// The page bound is right — a pagination bug on either side would
+// otherwise be an unbounded loop. Returning the partial list with a nil
+// error is not: it tells the caller "these are all the repositories this
+// installation can see", which is a wrong answer that gets acted on.
+func TestListInstallationRepositories_RefusesToTruncateSilently(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "access_tokens") {
+			w.WriteHeader(http.StatusCreated)
+			_, _ = fmt.Fprint(w, `{"token":"ghs_x","expires_at":"2999-01-01T00:00:00Z"}`)
+			return
+		}
+		// Always a full page — the caller never sees an end.
+		repos := make([]string, 100)
+		for i := range repos {
+			repos[i] = fmt.Sprintf(`{"id":%d,"name":"r","size":1}`, i)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, `{"total_count":99999,"repositories":[%s]}`,
+			strings.Join(repos, ","))
+	}))
+	t.Cleanup(srv.Close)
+
+	repos, err := newTestClient(t, srv).ListInstallationRepositories(context.Background(), 1)
+
+	require.Error(t, err,
+		"hitting the page bound means the list is truncated; returning it with a nil "+
+			"error would report a partial list as complete")
+	require.Nil(t, repos, "a truncated list must not be handed back alongside the error")
+	require.Contains(t, err.Error(), "truncated")
 }
 
 // TestRepository_SizeIsKilobytes pins the unit.

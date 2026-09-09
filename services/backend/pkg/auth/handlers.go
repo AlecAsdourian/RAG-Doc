@@ -108,10 +108,10 @@ func HandleGitHubCallback(oauthConfig *OAuthConfig, provisioner *UserProvisioner
 		// TODO: Generate JWT or redirect with session cookie
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"user":      user,
-			"is_new":    isNewUser,
-			"message":   "Authentication successful",
-			"note":      "TODO: Generate JWT and handle organization creation",
+			"user":    user,
+			"is_new":  isNewUser,
+			"message": "Authentication successful",
+			"note":    "TODO: Generate JWT and handle organization creation",
 		})
 	}
 }
@@ -212,10 +212,10 @@ func HandleGitLabCallback(oauthConfig *OAuthConfig, provisioner *UserProvisioner
 		// TODO: Generate JWT or redirect with session cookie
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"user":      user,
-			"is_new":    isNewUser,
-			"message":   "Authentication successful",
-			"note":      "TODO: Generate JWT and handle organization creation",
+			"user":    user,
+			"is_new":  isNewUser,
+			"message": "Authentication successful",
+			"note":    "TODO: Generate JWT and handle organization creation",
 		})
 	}
 }

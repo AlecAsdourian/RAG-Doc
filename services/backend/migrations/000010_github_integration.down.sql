@@ -4,6 +4,9 @@
 -- Order matters: drop what depends on github_installations before the
 -- table itself.
 
+DROP TRIGGER IF EXISTS trg_assert_installation_tenant ON repositories;
+DROP FUNCTION IF EXISTS assert_installation_matches_repository_tenant();
+
 DROP INDEX IF EXISTS idx_repositories_sync_state;
 DROP INDEX IF EXISTS idx_repositories_installation_github_id;
 

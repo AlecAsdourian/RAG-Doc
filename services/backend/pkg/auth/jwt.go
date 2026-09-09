@@ -41,9 +41,9 @@ func (v *JWTValidator) ValidateToken(ctx context.Context, tokenString string) (j
 	// Parse and validate token
 	token, err := jwt.Parse(
 		[]byte(tokenString),
-		jwt.WithKeySet(set),        // Use JWKs for verification
-		jwt.WithValidate(true),     // Validates exp, nbf, iat
-		jwt.WithIssuer(v.issuer),   // Validate issuer claim
+		jwt.WithKeySet(set),      // Use JWKs for verification
+		jwt.WithValidate(true),   // Validates exp, nbf, iat
+		jwt.WithIssuer(v.issuer), // Validate issuer claim
 	)
 	if err != nil {
 		return nil, fmt.Errorf("invalid token: %w", err)
