@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lestrrat-go/jwx/v3/jwt"
 )
 
@@ -85,17 +84,26 @@ func JWTAuthMiddleware(validator TokenValidator) func(http.Handler) http.Handler
 // a database round-trip to the hot path to defend against an attacker who,
 // by construction, would already have to control token issuance.
 //
-// Note on the db argument: earlier drafts of this middleware tried to
-// SET LOCAL app.current_tenant on a pool-acquired connection here. That
-// was broken twice over — SET LOCAL outside an explicit transaction is a
-// no-op, and pgx's extended protocol rejects parameterized SET — so it
-// crashed every request with 500. It has been removed. RLS-scoped queries
-// must open their own transaction via isolation.TenantScope (or a Phase
-// 17-03 request-scoped-tx equivalent); the pool argument is kept so a
-// future request-tx design can wire itself in without a middleware-chain
-// signature change.
-func TenantMiddleware(db *pgxpool.Pool) func(http.Handler) http.Handler {
-	_ = db // TODO(17-03/ISS-008): wire request-scoped tenant tx here
+// This middleware does NOT open a database transaction, and takes no pool.
+//
+// It did once, briefly: an early draft called SET LOCAL app.current_tenant
+// on a pool-acquired connection here, which was broken twice over — SET
+// LOCAL outside an explicit transaction is a no-op, and pgx's extended
+// protocol rejects a parameterized SET — and crashed every request with a
+// 500. After that it kept an unused `db *pgxpool.Pool` parameter reserving
+// the spot for ISS-008.
+//
+// ISS-008 was resolved in 20-01, and NOT here. Scoping every authenticated
+// request would hold a pooled connection and an open transaction for the
+// life of the request, including `/api/chat/stream`, whose life is
+// measured in minutes — and including the majority of requests, which
+// never touch the database at all. Handlers that read tenant-scoped tables
+// use db.TenantScoper instead; see 20-01-DESIGN.md for the full
+// comparison, and docs/isolation.md for which handlers need it.
+//
+// The parameter is gone rather than ignored. An unused pool argument is an
+// invitation to wire something into the wrong layer.
+func TenantMiddleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			token, ok := r.Context().Value(TokenKey).(jwt.Token)
