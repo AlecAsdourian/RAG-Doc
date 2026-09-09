@@ -132,8 +132,34 @@ set -a && . ./.env && set +a
 go run .
 ```
 
-(The Python workers service *does* auto-load `.env` via `load_dotenv()`.
-The inconsistency is known.)
+**Two traps in that one line, both hit for real on 2026-09-09.** `.` is
+shell *sourcing*, so the file is interpreted as bash rather than parsed as
+a `KEY=VALUE` list:
+
+- **A UTF-8 BOM breaks it.** An editor that saves `.env` with a byte-order
+  mark makes line 1 fail with `command not found`, and sourcing stops
+  there — so *nothing* is exported, and the failure looks like missing
+  configuration rather than a broken file. Check with
+  `head -c 3 .env | od -An -tx1`; `ef bb bf` means strip it.
+
+- **Unquoted Windows paths lose their backslashes.**
+  `GITHUB_APP_PRIVATE_KEY_PATH=C:\Users\Alec\key.pem` sources as
+  `C:UsersAleckey.pem`, because `\U` and `\A` are escapes. The backend
+  then panics with a file-not-found naming a path that is *not* the one in
+  the file, which is a genuinely confusing thing to debug.
+
+  **Quote any value containing backslashes** — `KEY="C:\Users\..."` — or
+  write the path with forward slashes, which Go accepts on Windows.
+
+(The Python workers service *does* auto-load `.env` via `load_dotenv()`,
+which has neither problem. The inconsistency is known.)
+
+**docker-compose's `backend` service does not pass these through.** It
+sets only `ENV`, `DATABASE_URL` and `RAG_SERVICE_URL` — no `SUPABASE_*`,
+no `REDIS_URL`, no `GITHUB_APP_*` — and the router panics without
+`SUPABASE_WEBHOOK_SECRET`, so `docker compose up backend` does not
+currently start. Run the backend directly, as above; compose is for
+Postgres, Redis and Qdrant.
 
 ## Verify
 

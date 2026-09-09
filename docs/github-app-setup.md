@@ -170,8 +170,13 @@ GITHUB_APP_SLUG=rag-doc-dev
 GITHUB_WEBHOOK_SECRET=<the openssl rand output>
 
 # Absolute path to the .pem from step 2 — NOT its contents, and NOT a
-# path inside the repository
-GITHUB_APP_PRIVATE_KEY_PATH=/absolute/path/to/rag-doc-dev.private-key.pem
+# path inside the repository.
+#
+# QUOTE IT if it contains backslashes. The run command in
+# local-development.md sources this file as bash, so an unquoted
+# C:\Users\... arrives as C:Users... and the backend panics naming a
+# path that is not the one written here.
+GITHUB_APP_PRIVATE_KEY_PATH="C:\Users\you\rag-doc-dev.private-key.pem"
 
 # From the App settings page, "Client ID", and a client secret you
 # generate there. REQUIRED — see step 1b.
