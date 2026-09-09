@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lestrrat-go/jwx/v3/jwt"
 )
 
@@ -13,12 +12,48 @@ type contextKey string
 
 const (
 	UserIDKey  contextKey = "user_id"
-	OrgIDKey   contextKey = "org_id"
 	OrgRoleKey contextKey = "org_role"
 	// TokenKey carries the validated jwt.Token so middleware downstream of
 	// JWTAuthMiddleware can read claims without re-parsing or re-verifying.
 	TokenKey contextKey = "jwt_token"
+
+	// orgIDCtxKey is UNEXPORTED, unlike its neighbours. Read it with
+	// OrgIDFromContext and set it with ContextWithOrgID.
+	//
+	// It decides which tenant's data a request reaches, so `ctx.Value(...)`
+	// on it should be a deliberate act rather than something a handler can
+	// do by pattern-matching the line above it. Naming the accessors also
+	// gives the setter somewhere to carry a warning.
+	orgIDCtxKey contextKey = "org_id"
 )
+
+// OrgIDFromContext returns the caller's organization, as put there by
+// TenantMiddleware from a signature-verified JWT claim.
+//
+// The second return is false when no organization is present — which for
+// a route behind TenantMiddleware is a wiring bug, since that middleware
+// refuses a claim-less caller with 403 before any handler runs.
+func OrgIDFromContext(ctx context.Context) (string, bool) {
+	orgID, ok := ctx.Value(orgIDCtxKey).(string)
+	return orgID, ok
+}
+
+// ContextWithOrgID attaches an organization to a context.
+//
+// FOR TenantMiddleware AND TESTS. Calling this anywhere else sets the
+// tenant WITHOUT the JWT verification that makes it trustworthy, and
+// everything downstream — RLS scope, which rows a query returns — will
+// honour whatever you pass.
+//
+// Go cannot prevent that; an exported setter is required for the
+// middleware and for tests that exercise handlers directly. So this is a
+// signpost, not a wall. The wall is that TenantMiddleware is the only
+// production caller, and that db.TenantScoper takes no tenant parameter
+// of its own — a handler cannot name a tenant without going out of its
+// way to build a context that lies.
+func ContextWithOrgID(ctx context.Context, orgID string) context.Context {
+	return context.WithValue(ctx, orgIDCtxKey, orgID)
+}
 
 // JWTAuthMiddleware validates JWT and extracts user_id.
 //
@@ -85,17 +120,26 @@ func JWTAuthMiddleware(validator TokenValidator) func(http.Handler) http.Handler
 // a database round-trip to the hot path to defend against an attacker who,
 // by construction, would already have to control token issuance.
 //
-// Note on the db argument: earlier drafts of this middleware tried to
-// SET LOCAL app.current_tenant on a pool-acquired connection here. That
-// was broken twice over — SET LOCAL outside an explicit transaction is a
-// no-op, and pgx's extended protocol rejects parameterized SET — so it
-// crashed every request with 500. It has been removed. RLS-scoped queries
-// must open their own transaction via isolation.TenantScope (or a Phase
-// 17-03 request-scoped-tx equivalent); the pool argument is kept so a
-// future request-tx design can wire itself in without a middleware-chain
-// signature change.
-func TenantMiddleware(db *pgxpool.Pool) func(http.Handler) http.Handler {
-	_ = db // TODO(17-03/ISS-008): wire request-scoped tenant tx here
+// This middleware does NOT open a database transaction, and takes no pool.
+//
+// It did once, briefly: an early draft called SET LOCAL app.current_tenant
+// on a pool-acquired connection here, which was broken twice over — SET
+// LOCAL outside an explicit transaction is a no-op, and pgx's extended
+// protocol rejects a parameterized SET — and crashed every request with a
+// 500. After that it kept an unused `db *pgxpool.Pool` parameter reserving
+// the spot for ISS-008.
+//
+// ISS-008 was resolved in 20-01, and NOT here. Scoping every authenticated
+// request would hold a pooled connection and an open transaction for the
+// life of the request, including `/api/chat/stream`, whose life is
+// measured in minutes — and including the majority of requests, which
+// never touch the database at all. Handlers that read tenant-scoped tables
+// use db.TenantScoper instead; see 20-01-DESIGN.md for the full
+// comparison, and docs/isolation.md for which handlers need it.
+//
+// The parameter is gone rather than ignored. An unused pool argument is an
+// invitation to wire something into the wrong layer.
+func TenantMiddleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			token, ok := r.Context().Value(TokenKey).(jwt.Token)
@@ -117,7 +161,7 @@ func TenantMiddleware(db *pgxpool.Pool) func(http.Handler) http.Handler {
 			// empty role rather than being refused outright.
 			role, _ := ExtractOrganizationRole(token)
 
-			ctx := context.WithValue(r.Context(), OrgIDKey, orgID)
+			ctx := ContextWithOrgID(r.Context(), orgID)
 			ctx = context.WithValue(ctx, OrgRoleKey, role)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})

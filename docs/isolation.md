@@ -27,6 +27,50 @@ The one endpoint that changes a caller's organization
 before writing the new claim; see
 [`auth-frontend-contract.md`](auth-frontend-contract.md).
 
+### Which mechanism a Go handler uses
+
+Reading the claim off the context is not enough to make a query safe — the
+database also has to be told. Two patterns, and picking the wrong one is
+the most likely way to introduce a leak in Phase 20+:
+
+**Touching a table with RLS** — `repositories`, `ingestion_runs`,
+`chunks`, `queries`, `retrievals`, `feedback` (migration 000008)? The
+handler is constructed with a **`*db.TenantScoper`** and runs every query
+inside it:
+
+```go
+type RepositoriesHandler struct {
+    scoper *db.TenantScoper   // deliberately NOT a *pgxpool.Pool
+}
+
+func (h *RepositoriesHandler) List(w http.ResponseWriter, r *http.Request) {
+    err := h.scoper.InTenantTx(r.Context(), func(tx pgx.Tx) error {
+        // every query on tx runs with app.current_tenant set
+    })
+}
+```
+
+`InTenantTx` takes the tenant from the request context and from nowhere
+else. There is no parameter through which a caller can name one — that is
+the `X-Organization-ID` vulnerability wearing a different hat.
+
+**Touching only `users`, `organizations`, or `organization_memberships`?**
+Use the pool and scope by the caller's `sub`. Those tables have no RLS,
+and `pkg/api/handlers/user_orgs.go` is the worked example. Forcing them
+through a tenant transaction would be wrong twice: it would require an
+organization claim that a user recovering their account does not have, and
+it would imply protection those tables do not carry.
+
+**Why the handler holds a scoper instead of a pool.** An unscoped query
+against an RLS table does not fail in a way you can rely on noticing. It
+returns **zero rows with no error** on a connection that has never been
+scoped, and **fails with SQLSTATE 22P02** on one that has — because a
+committed `SET LOCAL` leaves the setting as an empty string, and
+`""::uuid` is invalid. Same query, same pool, different outcome depending
+on which connection you get. A handler that has no pool cannot make that
+mistake at all. See ISS-013, and
+`pkg/db/tenant_isolation_test.go`, which demonstrates both halves.
+
 **2. DB trigger (database layer).**
 Migration 000009 attaches `assert_tenant_scoped()` as a
 `BEFORE INSERT/UPDATE/DELETE` trigger to every tenant-scoped table
@@ -82,23 +126,60 @@ func (h *SearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-**If you write raw SQL outside the middleware chain** (a background job,
-a CLI script, a Celery-style worker), wrap it in `TenantScope`:
+### If your handler queries the database
+
+Use `db.TenantScoper`. The handler is constructed with one **instead of a
+pool**, so an unscoped query is not something it can express:
 
 ```go
-tx, err := isolation.TenantScope(ctx, pool, orgID)
-if err != nil {
-    return err
+type RepositoriesHandler struct {
+    scoper *db.TenantScoper
 }
-defer tx.Rollback(ctx)
-// ...tx.Exec / tx.Query...
-return tx.Commit(ctx)
+
+func (h *RepositoriesHandler) List(w http.ResponseWriter, r *http.Request) {
+    var repos []Repository
+
+    if err := h.scoper.InTenantTx(r.Context(), func(tx pgx.Tx) error {
+        rows, err := tx.Query(r.Context(), `SELECT id, name FROM repositories`)
+        if err != nil {
+            return err
+        }
+        defer rows.Close()
+        for rows.Next() {
+            var repo Repository
+            if err := rows.Scan(&repo.ID, &repo.Name); err != nil {
+                return err
+            }
+            repos = append(repos, repo)
+        }
+        return rows.Err()
+    }); err != nil {
+        render.Render(w, r, ErrInternal(err))
+        return
+    }
+
+    render.Render(w, r, &RepositoryListResponse{Repositories: repos})
+}
 ```
 
-`TenantScope` (from `pkg/testing/isolation` today, will move to a
-production primitive under ISS-008) validates the org id, begins a
-transaction, sets `SET LOCAL app.current_tenant`, and hands you the
-`pgx.Tx`. Every write inside is caught by RLS + the trigger.
+**Collect into a variable and respond after `InTenantTx` returns.** Do not
+write the HTTP response inside the callback. The commit happens *after*
+your callback returns, so a handler that renders 201 in there has already
+told the client its write succeeded when the commit can still fail — and
+`render` will then try to write a second body.
+
+`InTenantTx` returns `db.ErrCommitFailed` (wrapped) for exactly that case,
+so a handler that genuinely needs to distinguish "my logic failed" from
+"the write did not land" can.
+
+The tenant comes from the request context and nowhere else. There is no
+parameter to pass one.
+
+**Background jobs and scripts** that have no request context still need a
+tenant scope. `pkg/testing/isolation.TenantScope` is **test-only** — it
+takes the tenant as a parameter and interpolates it without requiring the
+canonical form. Non-test code should construct a context with the tenant
+and use `db.TenantScoper`.
 
 ## Writing a tenant-scoped worker (Python)
 

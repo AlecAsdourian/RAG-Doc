@@ -15,6 +15,7 @@ import (
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/api/handlers"
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/auth"
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/client"
+	"github.com/yourusername/smart-docs-platform/services/backend/pkg/db"
 )
 
 // Config holds router configuration
@@ -111,7 +112,21 @@ func NewRouterWithValidatorAndAdmin(
 	// Multi-org endpoints. They share the admin client with the webhook —
 	// both write the same organization claim, one at signup and one when
 	// the user switches.
+	//
+	// These take the POOL, not the TenantScoper, and that is correct: they
+	// read users / organizations / organization_memberships, none of which
+	// have RLS, and they scope by the caller's `sub` rather than by tenant.
+	// Routing them through a tenant transaction would require an
+	// organization claim that a claim-less user recovering their account
+	// does not have. See docs/isolation.md for the rule.
 	userOrgsHandler := handlers.NewUserOrgsHandler(dbpool, adminClient, validate)
+
+	// Tenant-scoped database access for Phase 20+ handlers. Handlers that
+	// touch a table listed in migration 000008 are constructed with this
+	// and NOT with dbpool, so an unscoped query is not something they can
+	// express. See 20-01-DESIGN.md.
+	tenantScoper := db.NewTenantScoper(dbpool)
+	_ = tenantScoper // first consumer lands in 20-03 (repositories CRUD)
 
 	r := chi.NewRouter()
 
@@ -212,7 +227,7 @@ func NewRouterWithValidatorAndAdmin(
 		// JWT authentication middleware
 		r.Use(auth.JWTAuthMiddleware(jwtValidator))
 		// Tenant isolation middleware
-		r.Use(auth.TenantMiddleware(dbpool))
+		r.Use(auth.TenantMiddleware())
 
 		// Apply timeout to non-streaming routes only
 		r.With(middleware.Timeout(60*time.Second)).Route("/api", func(r chi.Router) {
