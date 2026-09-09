@@ -104,13 +104,24 @@ Consequences, now settled by 19-04:
 **Depends on:** Phase 19 (auth), Phase 17 (isolation pattern)
 **Research:** Likely (external integration)
 **Research topics:** GitHub App configuration best practices, installation flow UX, webhook payload patterns and required event types (push, installation, installation_repositories), signature verification, handling large repos (>1GB, submodules, LFS), GitHub Enterprise support consideration
-**Plans:** TBD (target 4 plans)
+**Plans:** 5 (planned 2026-09-08 — see `20-CONTEXT.md`)
 
 Plans:
-- [ ] 20-01: Schema + GitHub App registration — migration adds `github_installation_id`, `webhook_secret`, `sync_state`, `last_synced_at`, `default_branch`, `size_bytes`, `visibility` to `repositories`; document GitHub App setup (user creates the App in GitHub UI following our runbook)
-- [ ] 20-02: Repositories CRUD API — `POST /api/repositories`, `GET /api/repositories`, `GET /api/repositories/:id`, `DELETE /api/repositories/:id`; tenant-scoped; validation; pagination on list
-- [ ] 20-03: Installation flow — `GET /api/github/install` redirects to GitHub App install URL; callback handler links installation to org; list-repositories endpoint filters to those accessible via the installation
-- [ ] 20-04: Webhook receiver — `POST /webhooks/github` with HMAC-SHA256 signature verification, handle push / installation / installation_repositories events, enqueue sync jobs (queue infra ships in Phase 21)
+- [ ] 20-01: **Request-scoped tenant transaction (ISS-008)** — a Go handler primitive that sets `app.current_tenant` from the verified claim, plus tests proving that bypassing it fails detectably
+- [ ] 20-02: GitHub App contract verification + schema — verify against the live App FIRST, then migration adding `github_installations` (RLS + tenant trigger) and the new `repositories` columns; GitHub client with App JWT and installation tokens
+- [ ] 20-03: Repositories CRUD API — `POST/GET/GET :id/DELETE /api/repositories`; tenant-scoped, cursor-paginated, isolation-tested
+- [ ] 20-04: Installation flow — `GET /api/github/install`, `GET /api/github/callback` (CSRF-stated, organization bound to the state token), list-installation-repositories; deletes the dead GitLab handlers
+- [ ] 20-05: Webhook receiver — `POST /webhooks/github`, HMAC-SHA256 over the raw body, idempotent by delivery id, handling push / installation / installation_repositories as recorded intent (the queue is Phase 21)
+
+**Planning notes (2026-09-08).** Five plans, not four, and the order changed. Three things drove it:
+
+1. **ISS-008 is blocking, and it is now verified rather than anticipated.** `repositories` is RLS-scoped; the only Go handler touching the database today reads `users`/`organizations`/`organization_memberships`, none of which have RLS. So no Go handler has ever read an RLS-scoped table, and `GET /api/repositories` is the first. Without the primitive it returns zero rows silently. Hence a new 20-01.
+2. **Contract verification moved ahead of schema design**, per the user's decision to register the App first. This is the 19-03 pattern: that phase's plan was built on a Supabase Auth Hook that verification proved architecturally impossible, and the same class of mistake against GitHub would cost more, not less.
+3. **Two items in the original sketch were wrong.** `webhook_secret` is App-level configuration, not a per-repository column. `github_installation_id` on `repositories` denormalizes an organization-level fact onto every repository row; it gets its own table with a UNIQUE constraint that *is* the one-installation-one-organization tenancy boundary.
+
+Locked decisions: GitHub only (GitLab handlers deleted); one installation serves exactly one organization; size/visibility recorded but nothing rejected for being large — limits belong in Phase 22 where cloning happens.
+
+**User action required before 20-02:** register the GitHub App by following `docs/github-app-setup.md` (~20 minutes, needs an ngrok tunnel). Nothing after 20-01 can proceed without it.
 
 ### Phase 21: Ingestion Job Infrastructure
 
