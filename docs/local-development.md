@@ -168,10 +168,19 @@ with no organization claim.
 
 ## Redis
 
-Required by the OAuth state store (CSRF protection for the direct OAuth
-flow). Since those routes are unmounted, nothing in the request path uses
-Redis today — but `pkg/auth`'s state-store tests do, so it is needed to
-run the full test suite, and Phase 20's GitHub App flow will want it.
+**Required in the request path as of 20-04.** The GitHub App install flow
+stores its organization-bound state tokens there, so without Redis
+`GET /api/github/install` returns 503 and the callback refuses to link —
+deliberately, since a flow that cannot be completed should not be
+started. (This paragraph previously said nothing in the request path used
+Redis. That stopped being true when the install flow shipped.)
+
+`pkg/auth`'s state-store tests need it too, so it is required to run the
+full suite either way.
+
+If Redis is down when the router is CONSTRUCTED, the install flow stays
+disabled for the life of the process — there is no reconnect. Restart the
+backend after bringing Redis back.
 
 ```bash
 docker compose up -d redis

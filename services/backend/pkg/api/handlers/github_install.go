@@ -47,6 +47,12 @@ type InstallStateStore interface {
 // flow needs.
 type GitHubInstallationClient interface {
 	GetInstallation(ctx context.Context, installationID int64) (*github.Installation, error)
+	// VerifyUserControlsInstallation proves the person completing the
+	// callback actually has access to the installation they named.
+	// Without it, `GetInstallation` proves only that the installation
+	// belongs to our App — true of every customer's installation.
+	VerifyUserControlsInstallation(ctx context.Context, code string, installationID int64) error
+	UserAuthConfigured() bool
 	ListInstallationRepositoriesPage(
 		ctx context.Context, installationID int64, page, perPage int,
 	) ([]github.Repository, bool, error)
@@ -139,6 +145,21 @@ func (h *GitHubInstallHandler) Install(w http.ResponseWriter, r *http.Request) {
 			"state store unavailable; cannot start an installation safely")))
 		return
 	}
+	// Refuse when the callback could not complete either. Redirecting to
+	// GitHub anyway means the user performs a real installation and then
+	// hits a dead end — and, because installing leaves the installation
+	// live and unlinked, it manufactures exactly the state the callback's
+	// user-authorization check exists to protect.
+	if h.github == nil || !h.github.UserAuthConfigured() {
+		render.Render(w, r, ErrServiceUnavailable(errors.New(
+			"github app credentials are not fully configured; cannot start an installation")))
+		return
+	}
+	if h.appSlug == "" {
+		render.Render(w, r, ErrServiceUnavailable(errors.New(
+			"github app slug is not configured; the install redirect would go nowhere")))
+		return
+	}
 
 	token, err := newStateToken()
 	if err != nil {
@@ -229,16 +250,56 @@ func (h *GitHubInstallHandler) Callback(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// STEP 2 — the installation id is an attacker-supplied integer until
-	// GitHub says otherwise.
+	// GitHub says otherwise, and it stays one until STEP 3 says the caller
+	// controls it.
 	installationID, err := strconv.ParseInt(q.Get("installation_id"), 10, 64)
 	if err != nil || installationID <= 0 {
 		h.redirectResult(w, r, "invalid_installation", "GitHub did not send a usable installation id")
 		return
 	}
 
-	// STEP 3 — prove the installation is real and that we can authenticate
-	// to it, BEFORE writing anything. This is the step that turns a number
-	// in a query string into a fact.
+	// STEP 3 — prove the CALLER controls this installation.
+	//
+	// This is the check whose absence made the first version of this file
+	// exploitable, and the reason the ordering below is not negotiable.
+	// `GetInstallation` (step 4) authenticates as the APP, so it succeeds
+	// for every installation of our App and says nothing about who is
+	// asking. On its own it let any authenticated user claim any
+	// not-yet-linked installation by naming its id — and installations
+	// sit unlinked routinely, because installing from GitHub's own button
+	// sends no `state` and we refuse it.
+	//
+	// The `code` GitHub sends alongside `installation_id` is exchanged for
+	// a user-to-server token, and the installation must appear in that
+	// user's own list.
+	//
+	// FAIL CLOSED when the App has no client credentials. Linking without
+	// this check is the vulnerability, so an unconfigured deployment
+	// refuses rather than falling back to the old behaviour.
+	if !h.github.UserAuthConfigured() {
+		slog.Error("install callback refused: the GitHub App has no client credentials, " +
+			"so user authorization cannot be verified; set GITHUB_APP_CLIENT_ID and " +
+			"GITHUB_APP_CLIENT_SECRET and enable 'Request user authorization (OAuth) " +
+			"during installation' on the App")
+		h.redirectResult(w, r, "unavailable",
+			"this server cannot complete GitHub installations yet; an administrator "+
+				"needs to finish configuring the GitHub App")
+		return
+	}
+	if err := h.github.VerifyUserControlsInstallation(ctx, q.Get("code"), installationID); err != nil {
+		slog.Warn("install callback: user does not control the named installation",
+			slog.Int64("installation_id", installationID),
+			slog.String("requesting_organization_id", st.OrganizationID),
+			slog.String("error", err.Error()))
+		// Same answer as "no such installation". Telling the two apart
+		// would confirm that an installation id exists.
+		h.redirectResult(w, r, "invalid_installation",
+			"we could not confirm that you have access to that GitHub installation")
+		return
+	}
+
+	// STEP 4 — prove the installation is real and that we can authenticate
+	// to it, BEFORE writing anything.
 	inst, err := h.github.GetInstallation(ctx, installationID)
 	if err != nil {
 		slog.Warn("install callback: installation not reachable",
@@ -254,7 +315,7 @@ func (h *GitHubInstallHandler) Callback(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// STEP 4 — persist, into the organization the TOKEN named.
+	// STEP 5 — persist, into the organization the TOKEN named.
 	orgCtx := auth.ContextWithOrgID(ctx, st.OrganizationID)
 	var internalID string
 	err = h.scoper.InTenantTx(orgCtx, func(tx pgx.Tx) error {

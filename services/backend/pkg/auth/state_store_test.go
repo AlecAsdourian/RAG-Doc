@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -170,34 +171,49 @@ func TestStateStore_ConsumeStateIsSingleUseUnderConcurrency(t *testing.T) {
 	defer store.Close()
 
 	ctx := context.Background()
-	const state = "test-consume-race"
-	require.NoError(t, store.StoreStateValue(ctx, state, "payload"))
+
+	// WARM THE POOL FIRST, and race several rounds.
+	//
+	// Without this the test measured a cold connection pool exclusively:
+	// every racer paid a fresh dial, which serialised them enough that
+	// even a check-then-act implementation produced exactly one winner.
+	// Measured — a deliberately non-atomic version won round 0 every time
+	// and then leaked 6 to 16 winners in later rounds. A test that only
+	// ever runs round 0 cannot see the bug it exists for.
+	_, _, _ = store.ConsumeState(ctx, "warm-up-nonexistent-key")
 
 	const racers = 16
-	var (
-		start   = make(chan struct{})
-		wg      sync.WaitGroup
-		mu      sync.Mutex
-		winners int
-	)
-	for i := 0; i < racers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			<-start
-			_, ok, err := store.ConsumeState(ctx, state)
-			mu.Lock()
-			defer mu.Unlock()
-			if err == nil && ok {
-				winners++
-			}
-		}()
-	}
-	close(start)
-	wg.Wait()
+	const rounds = 5
 
-	assert.Equal(t, 1, winners,
-		"exactly one consumer may win the race; got %d", winners)
+	for round := 0; round < rounds; round++ {
+		state := fmt.Sprintf("test-consume-race-%d", round)
+		require.NoError(t, store.StoreStateValue(ctx, state, "payload"))
+
+		var (
+			start   = make(chan struct{})
+			wg      sync.WaitGroup
+			mu      sync.Mutex
+			winners int
+		)
+		for i := 0; i < racers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				_, ok, err := store.ConsumeState(ctx, state)
+				mu.Lock()
+				defer mu.Unlock()
+				if err == nil && ok {
+					winners++
+				}
+			}()
+		}
+		close(start)
+		wg.Wait()
+
+		require.Equalf(t, 1, winners,
+			"round %d: exactly one consumer may win the race; got %d", round, winners)
+	}
 }
 
 // TestStateStore_ValidateStateIsAlsoSingleUse pins that the legacy entry

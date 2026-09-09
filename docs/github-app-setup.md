@@ -77,6 +77,40 @@ When it does, update both URLs in the App settings. This is the single
 most annoying part of the loop; a paid ngrok subdomain or a `cloudflared`
 named tunnel makes it stable if it becomes a nuisance.
 
+### User authorization — REQUIRED, and it is a security control
+
+On the App's settings page, under **Identifying and authorizing users**:
+
+- ✅ **Request user authorization (OAuth) during installation**
+
+Then, further down the same page, generate a **client secret** and note
+the **Client ID**. Both go in `.env` (step 3).
+
+**Why this is not optional.** GitHub's app-level endpoint
+`GET /app/installations/{id}` authenticates as the *App*, so it succeeds
+for every installation of this App and says nothing about who is asking.
+With this box unchecked there is no `code` on the setup redirect, and the
+callback has no way to tell the account's owner from anybody else.
+
+That gap is exploitable, and it was found in review of 20-04 before it
+shipped: installing from GitHub's own "Install App" button sends no
+`state`, so we refuse it and the installation sits live but unlinked —
+and any authenticated user could then claim it by naming its numeric id,
+which is visible to the victim at
+`github.com/settings/installations/<id>` and in webhook payloads. The
+attacker's workspace would own the link, and could ingest the victim's
+private source through it.
+
+With the box checked, GitHub sends a `code` alongside `installation_id`.
+The backend exchanges it for a user-to-server token and requires the
+installation to appear in that user's own `GET /user/installations` before
+writing anything. **The callback fails closed**: without
+`GITHUB_APP_CLIENT_ID` and `GITHUB_APP_CLIENT_SECRET` it refuses to link
+at all, and `GET /api/github/install` returns 503 rather than sending
+someone to GitHub for an installation it could not finish.
+
+The cost is one extra GitHub screen during install ("authorize this app").
+
 ### Permissions
 
 Under **Repository permissions**, set only these. Everything else stays
@@ -123,7 +157,7 @@ directory.
 
 ## 3. Record the values
 
-You need four things. Put them in `services/backend/.env`:
+You need six things. Put them in `services/backend/.env`:
 
 ```bash
 # From the App settings page, "About" section
@@ -138,6 +172,11 @@ GITHUB_WEBHOOK_SECRET=<the openssl rand output>
 # Absolute path to the .pem from step 2 — NOT its contents, and NOT a
 # path inside the repository
 GITHUB_APP_PRIVATE_KEY_PATH=/absolute/path/to/rag-doc-dev.private-key.pem
+
+# From the App settings page, "Client ID", and a client secret you
+# generate there. REQUIRED — see step 1b.
+GITHUB_APP_CLIENT_ID=Iv1.xxxxxxxxxxxx
+GITHUB_APP_CLIENT_SECRET=<generated client secret>
 ```
 
 `.env.example` documents these as of **20-04**. This paragraph claimed

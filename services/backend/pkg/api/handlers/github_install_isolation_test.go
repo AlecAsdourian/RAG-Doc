@@ -26,6 +26,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -79,9 +80,16 @@ type stubInstallClient struct {
 
 	installation *github.Installation
 	getErr       error
-	repos        []github.Repository
-	hasNext      bool
-	listErr      error
+	// userAuthOff simulates an App with no client credentials.
+	userAuthOff bool
+	// controlsErr is what VerifyUserControlsInstallation returns; nil
+	// means the caller demonstrably controls the installation.
+	controlsErr error
+	verifyCalls int
+	lastCode    string
+	repos       []github.Repository
+	hasNext     bool
+	listErr     error
 
 	getCalls  int
 	listCalls int
@@ -101,6 +109,18 @@ func (s *stubInstallClient) GetInstallation(
 	return &inst, nil
 }
 
+func (s *stubInstallClient) UserAuthConfigured() bool { return !s.userAuthOff }
+
+func (s *stubInstallClient) VerifyUserControlsInstallation(
+	_ context.Context, code string, _ int64,
+) error {
+	s.mu.Lock()
+	s.verifyCalls++
+	s.lastCode = code
+	s.mu.Unlock()
+	return s.controlsErr
+}
+
 func (s *stubInstallClient) ListInstallationRepositoriesPage(
 	_ context.Context, _ int64, _, _ int,
 ) ([]github.Repository, bool, error) {
@@ -117,6 +137,12 @@ func (s *stubInstallClient) calls() (get, list int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.getCalls, s.listCalls
+}
+
+func (s *stubInstallClient) verifications() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.verifyCalls
 }
 
 func githubInstallation(login string) *github.Installation {
@@ -426,6 +452,122 @@ func TestGitHubInstallFlow(t *testing.T) {
 				"cross-tenant leak: orgB listed orgA's installation")
 			require.NotContains(t, body, "96001",
 				"GitHub's numeric installation id must not be handed to clients")
+		})
+
+		t.Run("Scenario11_AnUnlinkedInstallationCannotBeClaimedByAStranger", func(t *testing.T) {
+			// THE TAKEOVER. Found in review, and the reason STEP 3 exists.
+			//
+			// `GetInstallation` authenticates as the APP, so it succeeds
+			// for every installation of our App and proves nothing about
+			// who is asking. Installations sit unlinked routinely — GitHub's
+			// own "Install App" button sends no state, so we refuse it and
+			// leave the installation live — and before the user-authorization
+			// check, any authenticated user could claim one by naming its
+			// id, then read the owner's private repositories through
+			// POST /api/repositories.
+			const victimInstallation = int64(880042)
+			states := newMemoryStates()
+
+			// The stub answers exactly as GitHub does for the app-level
+			// endpoint: this installation is real. Only the user-level
+			// check can tell the attacker apart from the owner.
+			gh := &stubInstallClient{
+				installation: githubInstallation("victim-org"),
+				controlsErr:  fmt.Errorf("github: the authorizing user does not have access"),
+			}
+			srv := installServer(t, pool, states, gh)
+
+			// The attacker starts a legitimate flow of their OWN, so the
+			// state token is genuine and bound to their organization.
+			_, redirect := getNoRedirect(t, srv+"/api/github/install", tokenB)
+			state := mustStateToken(t, redirect)
+
+			_, location := getNoRedirect(t, fmt.Sprintf(
+				"%s/api/github/callback?installation_id=%d&state=%s&code=stolen",
+				srv, victimInstallation, state), "")
+
+			require.Equal(t, "invalid_installation", resultOf(t, location),
+				"a stranger must not be able to claim an unlinked installation")
+			require.NotContains(t, installationsOf(t, pool, orgB.ID), victimInstallation,
+				"TAKEOVER: the attacker's organization was linked to an installation it does not control")
+
+			// And the app-level lookup must not even have run: the user
+			// check gates it.
+			getCalls, _ := gh.calls()
+			require.Zero(t, getCalls,
+				"the app-level lookup must come after the user check, not before")
+			require.Equal(t, 1, gh.verifications())
+		})
+
+		t.Run("Scenario12_LinkingRefusesWhenUserAuthorizationCannotBeVerified", func(t *testing.T) {
+			// Fail closed. An App without client credentials cannot prove
+			// anything about the caller, and linking without that proof is
+			// the vulnerability — so it refuses rather than falling back.
+			states := newMemoryStates()
+			gh := &stubInstallClient{
+				installation: githubInstallation("unverifiable"),
+				userAuthOff:  true,
+			}
+			srv := installServer(t, pool, states, gh)
+
+			// It refuses at the front door too, rather than sending the
+			// user to GitHub for an installation it could not finish.
+			status, _ := getNoRedirect(t, srv+"/api/github/install", tokenA)
+			require.Equal(t, http.StatusServiceUnavailable, status,
+				"do not start a flow that cannot be completed")
+
+			// And if a callback arrives anyway (an install begun before the
+			// credentials were removed), it must not link.
+			states.StoreStateValue(context.Background(), "handmade",
+				fmt.Sprintf(`{"organization_id":%q}`, orgA.ID))
+			_, location := getNoRedirect(t, fmt.Sprintf(
+				"%s/api/github/callback?installation_id=881001&state=handmade&code=x", srv), "")
+			require.Equal(t, "unavailable", resultOf(t, location))
+			require.NotContains(t, installationsOf(t, pool, orgA.ID), int64(881001))
+		})
+
+		t.Run("Scenario13_UnconfiguredGitHubStillAnswers404ForAnotherTenant", func(t *testing.T) {
+			// The 20-03 enumeration oracle, one endpoint further on.
+			// Moving the `h.github == nil` check above the ownership check
+			// survives every other scenario, because they all supply a
+			// client — so the ordering only becomes observable with no
+			// client at all: a real installation belonging to someone else
+			// would answer 503 while a made-up id answered 404, and the
+			// difference says which ids exist.
+			instB := seedInstallation(t, pool, orgB.ID, 97001)
+			srv := installServer(t, pool, newMemoryStates(), nil)
+
+			mine, _ := getNoRedirect(t, srv+"/api/github/installations/"+instB+"/repositories", tokenA)
+			fake, _ := getNoRedirect(t,
+				srv+"/api/github/installations/99999999-9999-9999-9999-999999999999/repositories", tokenA)
+
+			require.Equal(t, http.StatusNotFound, mine,
+				"another tenant's installation must 404 before availability is considered")
+			require.Equal(t, fake, mine,
+				"'not yours' and 'does not exist' must be indistinguishable")
+
+			// The owner gets the 503, because for them the question is
+			// answerable and the service genuinely is not available.
+			owner, _ := getNoRedirect(t, srv+"/api/github/installations/"+instB+"/repositories", tokenB)
+			require.Equal(t, http.StatusServiceUnavailable, owner)
+		})
+
+		t.Run("Scenario14_SuspendedAndMismatchedInstallationsAreRefused", func(t *testing.T) {
+			states := newMemoryStates()
+			suspended := githubInstallation("suspended-account")
+			at := time.Now().Add(-time.Hour)
+			suspended.SuspendedAt = &at
+			gh := &stubInstallClient{installation: suspended}
+			srv := installServer(t, pool, states, gh)
+
+			_, redirect := getNoRedirect(t, srv+"/api/github/install", tokenA)
+			_, location := getNoRedirect(t, fmt.Sprintf(
+				"%s/api/github/callback?installation_id=98001&state=%s&code=c",
+				srv, mustStateToken(t, redirect)), "")
+
+			require.Equal(t, "suspended", resultOf(t, location),
+				"a suspended installation must not be linked")
+			require.NotContains(t, installationsOf(t, pool, orgA.ID), int64(98001))
 		})
 
 		t.Run("Scenario9_TheOrganizationComesFromTheTokenAndNothingElse", func(t *testing.T) {

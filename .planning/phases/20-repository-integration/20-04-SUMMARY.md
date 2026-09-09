@@ -22,6 +22,7 @@ tech-stack:
     - "Single-use means atomic. EXISTS-then-DEL is check-then-act and lets a replay win the race."
     - "Ownership is proven BEFORE the third-party call, not after — refusing afterwards still spends the credential and still leaks existence through timing"
     - "A config value that only ever appears in a redirect URL must fail at construction; a wrong one is a 302 to somebody else's 404, with nothing in our logs"
+    - "Authenticating as the APP proves a third-party object is real, never that the caller controls it. Those are different questions and only the second is authorization."
 
 key-files:
   created:
@@ -40,7 +41,8 @@ key-decisions:
   - "A collision on github_installation_id is a normal result (already_connected), not a 500. Both organizations are logged for operators; neither is named to the user, because naming the other one confirms it exists and uses this product."
   - "The callback answers with a redirect carrying github_result, not JSON. Its caller is a browser following GitHub's redirect chain, not a fetch()."
   - "GitHub's numeric installation id is never returned to clients. A UI addresses installations by our uuid; the number is what someone would need to talk to GitHub about an installation that is not theirs."
-  - "The ISS-011 StateStore probe is deleted rather than kept. 20-04 gave the state store a real consumer, so the probe's only remaining effect was a full Redis connect timeout on every router construction — 2.1s per test."
+  - "The ISS-011 StateStore probe is deleted rather than kept: 20-04 gave the state store a real consumer, so the flow reports availability instead. It halves the handlers package runtime; it does not eliminate the dial, which still happens per router construction."
+  - "The install callback FAILS CLOSED without the App's client credentials. Linking without the user-authorization leg is the vulnerability, so an unconfigured deployment refuses rather than falling back."
 
 issues-created: []
 issues-closed: []
@@ -55,20 +57,42 @@ completed: 2026-09-09
 
 ## The ordering is the security argument
 
-`Callback` does four things and the order is the whole design:
+`Callback` does five things and the order is the whole design:
 
 1. **Consume the state token.** Atomic get-and-delete, so a replay loses the race rather than winning it. Invalid, expired and already-used are one answer.
 2. **Read the organization out of the token** — not from the request, not from the caller's claim.
-3. **Ask GitHub whether the installation is real**, before anything is written. `installation_id` is an attacker-supplied integer until GitHub says otherwise.
-4. **Persist**, and treat a collision as a comprehensible situation rather than a fault.
+3. **Prove the CALLER controls this installation**, via the user-authorization code. Added in review; see below.
+4. **Ask GitHub whether the installation is real**, before anything is written.
+5. **Persist**, and treat a collision as a comprehensible situation rather than a fault.
 
-Doing (4) before (1)-(3) is an open door. Doing (2) from the request is the subtler mistake, and it is the one a test had to catch: see below.
+Doing (5) before the rest is an open door. Doing (2) from the request is the subtler mistake, and a test had to catch it. **Omitting (3) entirely was a cross-tenant read of private source code**, and it shipped in the first version of this file.
 
 ## Two things the plan called out, both verified rather than assumed
 
 **The callback is mounted outside `JWTAuthMiddleware`.** A browser following GitHub's redirect sends no `Authorization` header, so a callback inside the authenticated group returns 401 to every real installation — it fails 100% of the time, not intermittently. Scenario 3 is the regression guard: it asserts the route answers *something other than 401* without a token.
 
 **A missing `state` is refused, never defaulted.** Installing from GitHub's own "Install App" button produces a redirect with `installation_id` and `setup_action` and no `state`. Defaulting to "the caller's current organization" would link an installation to whoever happened to be logged in — and on a public route there is no caller, so the fallback would have to invent one.
+
+## The hole review found: installation takeover
+
+The first version of this file proved an installation was **real** and called that authorization. It is not.
+
+`GET /app/installations/{id}` authenticates as the **App**, so it succeeds for every installation of our App and says nothing whatsoever about who is asking. `installation_id` arrives in a query string. The state token says which of the *attacker's own* organizations to write into — which it did faithfully.
+
+The exploit, reproduced end to end by the reviewer against the real router and database:
+
+1. A victim installs the App from GitHub's own button, Marketplace, or the Configure flow. That redirect carries no `state`, so we answer `missing_state` — **and the installation is now live on GitHub and unlinked here.** The behaviour this plan documented as correct is the enabling condition.
+2. An attacker starts a legitimate flow of their own and gets a genuine state token bound to their organization.
+3. The attacker completes the callback with their own token and the victim's `installation_id` — visible to the victim at `github.com/settings/installations/<id>`, and in 20-05's webhook payloads.
+4. `connected`. The attacker's organization now owns the link, and 20-03's `POST /api/repositories` will ingest the victim's private source through it, legitimately, because the row really is theirs now.
+
+**The fix is the leg GitHub provides for exactly this.** With *Request user authorization (OAuth) during installation* enabled, the setup redirect also carries a `code`. It is exchanged for a user-to-server token, and the installation must appear in that user's own `GET /user/installations` before anything is written. Step 3 runs **before** the app-level lookup, so a stranger's probe never reaches it.
+
+**It fails closed.** Without `GITHUB_APP_CLIENT_ID` / `GITHUB_APP_CLIENT_SECRET` the callback refuses to link at all, and `GET /api/github/install` returns 503 rather than sending someone to GitHub for an installation it could not finish — which would manufacture exactly the unlinked state the check exists to protect.
+
+**An uncomfortable detail.** This PR had already added `gho_` to `redactSecrets`, with a comment saying 20-04 "put an OAuth-shaped flow in front of the App". There was no OAuth flow and no code exchange, so a `gho_` token could never have occurred. The redaction anticipated precisely the control that was missing — the artifact of a security measure shipped without the measure.
+
+**Requires a GitHub UI change**, recorded in `docs/github-app-setup.md`: tick the authorization box, generate a client secret. Until that is done the flow correctly refuses to work.
 
 ## What the plan did not anticipate
 
@@ -84,7 +108,9 @@ Recorded as a REVISION NOTICE in `20-04-PLAN.md` rather than improvised, per the
 
 **`docs/github-app-setup.md` claimed `.env.example` documented the App variables "as of 20-02".** It did not — 20-02 added the code that reads them and never added them to the template, so anyone following the runbook found nothing matching. Both fixed.
 
-**The ISS-011 StateStore probe cost 2.1 seconds per router construction.** It dialled Redis solely to log whether Redis was reachable, with five retries. Its stated justification was that "Phase 20's GitHub App flow will want it" — which is now true, so the flow reports it and the probe is gone. The handlers package went from 17s to 0.3s.
+**The ISS-011 StateStore probe dialled Redis solely to log whether Redis was reachable**, with five retries, on every router construction. Its stated justification was that "Phase 20's GitHub App flow will want it" — now true, so the flow reports it and the probe is gone.
+
+**Correction to an earlier version of this section**, measured by review: it claimed "the probe's only remaining effect was a Redis connect timeout on every router construction — the handlers package went from 17s to 0.3s". Both halves were wrong. `auth.NewStateStore()` still runs on every router construction where nothing is injected, so the dial was moved rather than removed; measured, the package is 1.86s with Redis up and 37.5s with Redis down, against 94.3s with the probe restored. Removing the probe roughly halved it. The 0.3s figure came from a run of one test function, not the package.
 
 **GitLab is deleted** (Task 4): both handlers, the OAuth config entry, the `.env.example` keys, and a stale comment in `webhook.go`. `go build` clean, no references remain.
 
@@ -94,8 +120,8 @@ Recorded as a REVISION NOTICE in `20-04-PLAN.md` rather than improvised, per the
 |---|---|
 | `go build ./...`, `go vet ./...`, `gofmt` | clean |
 | `go test -p 1 ./...` | all pass, container rebuilt from scratch |
-| `TestGitHubInstallFlow` | 10/10 |
-| `TestStateStore_*` | 8/8, including the new payload and concurrency cases |
+| `TestGitHubInstallFlow` | 14/14 |
+| `TestStateStore_*` | 8/8; the concurrency case now warms the pool and races 5 rounds |
 | CI isolation scanner | PASS (no new mutation endpoints — all four routes are GET) |
 
 `-race` was not run locally (this machine has no gcc; `go test -race` needs cgo). CI runs it.
@@ -112,11 +138,30 @@ Recorded as a REVISION NOTICE in `20-04-PLAN.md` rather than improvised, per the
 | Install puts the organization in the redirect URL | scenario 1 fails, only it |
 | Success redirect drops `installation_id` | scenario 10 fails, only it |
 | `row_security = off` inside the listing transaction | scenario 10 fails, only it |
-| `ConsumeState` back to `EXISTS`-then-`DEL` (5ms window) | `TestStateStore_ConsumeStateIsSingleUseUnderConcurrency` fails |
+| `ConsumeState` back to `EXISTS`-then-`DEL` | `TestStateStore_ConsumeStateIsSingleUseUnderConcurrency` fails |
+| **User-control check removed** (the shipped-vulnerable state) | scenario 11 fails, only it |
+| Fail-closed becomes fail-open with no client credentials | scenario 12 fails, only it |
+| User check runs after the app-level lookup | scenario 11 fails, only it |
+| `Install` stops refusing an unconfigured App | scenario 12 fails, only it |
+| Availability checked before ownership on the list path | scenario 13 fails, only it |
+| Suspended-installation check removed | scenario 14 fails, only it |
+| `newStateToken` returns 32 zero bytes | `TestNewStateToken_IsNotPredictable` fails |
+
+### A correction to this file's own mutation claim
+
+The `ConsumeState` row previously said the check-then-act mutation was killed, with a paragraph asserting a first false negative had been re-verified "with the mutated source verified in place". Review measured it surviving three independent runs, and was right: the test built a fresh store and raced **once**, so it only ever measured a cold connection pool, which serialised the racers enough that even a non-atomic implementation produced one winner. Instrumented, the mutation won round 0 every time and then leaked 6–16 winners in later rounds.
+
+The test now warms the pool and races five rounds. The mutation dies without needing an artificial sleep.
 
 **Scenario 9 did not exist until the mutation testing demanded it.** Reading the organization from a query parameter instead of the token — the single most important property in this file — passed the entire suite. The scenario now sends a callback carrying orgB's id as a query parameter *and* a valid orgB bearer token against a state token minted by orgA, and asserts the row lands in orgA. A status code cannot show this; only the resulting row can.
 
-The `ConsumeState` mutation is recorded honestly: a first attempt reported the test surviving, and re-running it with the mutated source verified in place showed the test failing as it should. The first run's mutation had not applied.
+Scenarios 11 and 12 exist for the same reason one level up: the takeover passed every test in this file, because every one of them supplied a caller who legitimately owned what they were asking about.
+
+## Carried, not fixed
+
+- **The state store is built once at router construction and never closed or retried.** If Redis is down at boot, `installStates` stays nil for the life of the process and the install flow is disabled until a restart — documented in `local-development.md` rather than fixed, because a reconnecting store is a change to shared infrastructure rather than to this flow.
+- **`inst.ID` vs the query's id.** Persisting GitHub's value rather than the caller's is defensive, and it is not pinned: a stub cannot return a different id than it was asked for without simulating a GitHub bug, so the mutation is unobservable by construction. Recorded rather than dressed up as covered.
+- **`per_page=abc` and `page=abc` give differently-shaped 400 messages.** Cosmetic.
 
 ## Notes for what comes next
 
