@@ -288,11 +288,86 @@ func (p *UserProvisioner) CreateOrganizationForUser(
 		return uuid.Nil, fmt.Errorf("failed to add user to organization: %w", err)
 	}
 
+	// Default project, in the same transaction as the organization.
+	//
+	// `repositories.project_id` is NOT NULL, so without this a freshly
+	// provisioned user has an organization they cannot connect a
+	// repository to. Nothing in production created a project before
+	// 20-02 — the only inserts were test helpers — which is why
+	// migration 000010 also backfills one for every existing
+	// organization.
+	//
+	// In this transaction rather than a follow-up write, for the same
+	// reason the membership is: an organization that exists without its
+	// project is a state no code handles, and 19-02 already learned what
+	// a partially-created organization costs.
+	//
+	// The conflict target is the DEFAULT-PROJECT index, not (org, slug).
+	//
+	// An earlier version targeted (organization_id, slug) and claimed the
+	// partial unique index made a second default impossible. Backwards:
+	// that index is the constraint that RAISES, and naming a different
+	// target does not catch it. It failed in both directions —
+	//
+	//   org already has a default under another slug (exactly what this
+	//   migration's own backfill produces for an org that already had
+	//   projects) -> unique violation on idx_projects_one_default_per_org,
+	//   aborting the whole CreateOrganizationForUser transaction;
+	//
+	//   org has a NON-default project already using slug 'default' -> the
+	//   conflict is swallowed and the organization ends with ZERO default
+	//   projects, so DefaultProjectID later reports a data-integrity error.
+	//
+	// Targeting the partial index handles the first correctly and leaves
+	// the second impossible.
+	//
+	// Not reachable from today's only call site, where the organization is
+	// always freshly created in this same transaction — but the comment
+	// asserted a safety property the code did not have.
+	_, err = tx.Exec(ctx, `
+		INSERT INTO projects (organization_id, name, slug, is_default)
+		VALUES ($1, 'Default', 'default', true)
+		ON CONFLICT (organization_id) WHERE is_default DO NOTHING
+	`, orgID)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("failed to create default project: %w", err)
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return uuid.Nil, fmt.Errorf("commit org creation: %w", err)
 	}
 
 	return orgID, nil
+}
+
+// DefaultProjectID returns the organization's default project.
+//
+// 20-03's `POST /api/repositories` needs it: the caller names a
+// repository and an installation, not a project, so the handler resolves
+// the project itself.
+//
+// Every organization has exactly one, guaranteed by
+// idx_projects_one_default_per_org plus creation in
+// CreateOrganizationForUser and the 000010 backfill. A missing default is
+// therefore a data-integrity problem rather than a normal absence, and is
+// reported as an error rather than a zero value.
+func (p *UserProvisioner) DefaultProjectID(ctx context.Context, orgID uuid.UUID) (uuid.UUID, error) {
+	var projectID uuid.UUID
+	err := p.db.QueryRow(ctx, `
+		SELECT id FROM projects
+		WHERE organization_id = $1 AND is_default
+	`, orgID).Scan(&projectID)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, fmt.Errorf(
+			"organization %s has no default project; migration 000010 backfills one for "+
+				"every organization and CreateOrganizationForUser creates one for each new "+
+				"organization, so this means neither ran for it", orgID)
+	}
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("look up default project: %w", err)
+	}
+	return projectID, nil
 }
 
 // randomHex returns n random bytes hex-encoded (2n characters).

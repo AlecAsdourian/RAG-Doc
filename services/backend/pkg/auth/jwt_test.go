@@ -80,8 +80,8 @@ func TestExtractOrganizationID_RequiresUUID(t *testing.T) {
 	for _, raw := range []string{
 		"not-a-uuid-at-all",
 		"x'; SET ROLE postgres; --",
-		"22222222-2222-2222-2222-22222222222",  // one char short
-		"22222222222222222222222222222222222",  // no dashes, wrong length
+		"22222222-2222-2222-2222-22222222222",   // one char short
+		"22222222222222222222222222222222222",   // no dashes, wrong length
 		" 22222222-2222-2222-2222-222222222222", // leading space
 		"22222222-2222-2222-2222-222222222222\n",
 	} {

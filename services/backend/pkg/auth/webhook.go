@@ -28,7 +28,6 @@ func (e *disposableEmailError) Error() string {
 	return fmt.Sprintf("disposable email domain refused: %s", e.email)
 }
 
-
 // MaxWebhookBodyBytes bounds the request body the webhook is willing to
 // read. 64KB is comfortably larger than a real Supabase user event
 // (~1-2KB) and small enough to hold the whole payload in memory without
@@ -37,18 +36,18 @@ const MaxWebhookBodyBytes = 64 << 10
 
 // SupabaseWebhookEvent represents the structure of Supabase database webhook events
 type SupabaseWebhookEvent struct {
-	Type      string          `json:"type"`       // e.g., "INSERT", "UPDATE", "DELETE"
-	Table     string          `json:"table"`      // e.g., "auth_user_events"
-	Schema    string          `json:"schema"`     // e.g., "public"
-	Record    json.RawMessage `json:"record"`     // The actual data
+	Type      string          `json:"type"`   // e.g., "INSERT", "UPDATE", "DELETE"
+	Table     string          `json:"table"`  // e.g., "auth_user_events"
+	Schema    string          `json:"schema"` // e.g., "public"
+	Record    json.RawMessage `json:"record"` // The actual data
 	OldRecord json.RawMessage `json:"old_record,omitempty"`
 }
 
 // AuthUserEvent represents a record from our auth_user_events table
 // This is populated by a database trigger on auth.users
 type AuthUserEvent struct {
-	ID              string                 `json:"id"`                // Event UUID
-	SupabaseUserID  string                 `json:"supabase_user_id"`  // User's Supabase Auth UUID
+	ID              string                 `json:"id"`               // Event UUID
+	SupabaseUserID  string                 `json:"supabase_user_id"` // User's Supabase Auth UUID
 	Email           string                 `json:"email"`
 	RawUserMetaData map[string]interface{} `json:"raw_user_meta_data"` // Contains provider info, name, etc.
 	EventType       string                 `json:"event_type"`         // INSERT, UPDATE, DELETE

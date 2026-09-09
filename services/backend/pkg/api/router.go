@@ -16,6 +16,7 @@ import (
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/auth"
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/client"
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/db"
+	"github.com/yourusername/smart-docs-platform/services/backend/pkg/github"
 )
 
 // Config holds router configuration
@@ -127,6 +128,28 @@ func NewRouterWithValidatorAndAdmin(
 	// express. See 20-01-DESIGN.md.
 	tenantScoper := db.NewTenantScoper(dbpool)
 	_ = tenantScoper // first consumer lands in 20-03 (repositories CRUD)
+
+	// GitHub App client. Optional at construction, matching the Supabase
+	// admin client above: without credentials we warn loudly and run
+	// degraded rather than refusing to boot, so tests and offline dev
+	// still work. Degraded means repository connection and the webhook
+	// receiver cannot function — everything else is unaffected.
+	//
+	// A malformed key is NOT degraded-and-continue. NewClient fails on it,
+	// and a deployment that has credentials but cannot use them should say
+	// so at startup rather than at the first repository connect.
+	var githubClient *github.Client
+	if appID, keyPath := os.Getenv("GITHUB_APP_ID"), os.Getenv("GITHUB_APP_PRIVATE_KEY_PATH"); appID != "" && keyPath != "" {
+		gh, err := github.NewClient(appID, keyPath)
+		if err != nil {
+			panic("api: GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_PATH are set but unusable: " + err.Error())
+		}
+		githubClient = gh
+	} else {
+		slog.Warn("GITHUB_APP_ID or GITHUB_APP_PRIVATE_KEY_PATH unset; " +
+			"repository connection and GitHub webhooks are unavailable")
+	}
+	_ = githubClient // consumers land in 20-03 and 20-04
 
 	r := chi.NewRouter()
 
