@@ -16,8 +16,9 @@ Behavior:
   matched — as `/api/repositories/{id}`.
 - For each detected endpoint, check whether any test file in the same
   diff (matching `*_isolation_test.go` or `test_*_isolation.py`)
-  references the endpoint's full path, or its static prefix (the part
-  before the first `{`, since a test builds a real id in place of it).
+  references the endpoint's full path, or has one line holding every
+  static segment of it in order — since a test builds real ids in place
+  of the `{param}` pieces.
 - If not covered, look for a `@skip-isolation-test: <reason>` marker on
   the endpoint's line or within its diff hunk. A non-empty reason is
   required.
@@ -62,18 +63,22 @@ from typing import Iterable
 # scanner blind to middleware-wrapped routes — the idiom router.go itself
 # uses for every timeout-wrapped group. A destructive route guarded by an
 # admin check is exactly the shape most likely to be written that way.
+# The path must start with `/`. Widening the receiver to accept `)` and
+# `]` also let `buckets[0].Delete("tmp")` and any other library call with
+# a string argument read as a route; a chi path always starts with a
+# slash, so that one character filters most of it back out.
 _GO_METHOD_CALL = re.compile(
-    r'[\w)\]]\s*\.\s*(Post|Put|Patch|Delete)\s*\(\s*"([^"]+)"'
+    r'[\w)\]]\s*\.\s*(Post|Put|Patch|Delete)\s*\(\s*"(/[^"]*)"'
 )
 _GO_HANDLE_FUNC = re.compile(
-    r'HandleFunc\s*\(\s*"(POST|PUT|PATCH|DELETE)\s+([^"]+)"'
+    r'HandleFunc\s*\(\s*"(POST|PUT|PATCH|DELETE)\s+(/[^"]*)"'
 )
 # `r.Method("POST", "/x", h)` / `r.MethodFunc(http.MethodDelete, "/y", h)`
 # — chi's explicit form, invisible to the shorthand pattern above.
 _GO_METHOD_STRING = re.compile(
     r'\.\s*Method(?:Func)?\s*\(\s*'
     r'(?:"(POST|PUT|PATCH|DELETE)"|http\.Method(Post|Put|Patch|Delete))'
-    r'\s*,\s*"([^"]+)"'
+    r'\s*,\s*"(/[^"]*)"'
 )
 _PY_DECORATOR = re.compile(
     r'@\w+\.(post|put|patch|delete)\s*\(\s*[\'"]([^\'"]+)[\'"]'
@@ -290,49 +295,115 @@ def _parens_balanced(text: str) -> bool:
     return text.count("(") <= text.count(")")
 
 
-# Go literals and comments, stripped before any brace or comment scan.
-#
-# Every one of these can carry a brace or a `//` that is not code:
-# `w.Write([]byte("}"))` pops the prefix stack early, a raw string holding
-# `{"a":` pushes and never pops, `/* shape: { id */` does the same, and a
-# route literal of `"//v2"` looks like a comment opener. Blanking their
-# contents (keeping length is unnecessary; only the braces matter) makes
-# the scan see code and nothing else.
-_GO_NONCODE = re.compile(
-    r'"(?:\\.|[^"\\])*"'   # interpreted string
-    r"|'(?:\\.|[^'\\])*'"  # rune
-    r'|`[^`]*`'            # raw string
-    r'|/\*.*?\*/',         # block comment
-    re.DOTALL,
-)
-_GO_LINE_COMMENT = re.compile(r'//')
+def _scan_go(source: str) -> tuple[str, str]:
+    """One pass, two views of the file.
+
+    Returns `(code_only, comments_blanked)`:
+
+    * `code_only` blanks strings, runes, raw strings AND comments — used
+      for counting braces, where a `}` in any of those is noise.
+    * `comments_blanked` blanks only comments, keeping string literals —
+      used for reading a route's path, which lives in a literal, while
+      still ignoring a commented-out registration.
+
+    Newlines and total length are preserved in both, so line numbers and
+    offsets into the original still line up.
+
+    Why a scanner and not a regex alternation. The first version of this
+    was one, and it had a hole big enough to hand a destructive route a
+    free pass: an unbounded rune alternative `'…'` meant an APOSTROPHE IN
+    AN ENGLISH COMMENT opened a literal that ran to the next apostrophe
+    anywhere in the file, blanking every brace in between. `router.go`
+    carries fifteen apostrophes inside `//` comments, and
+
+        // Don't add a sync endpoint here; Phase 21 owns the queue.
+        ...
+        // The stream's lifecycle is managed by the handler itself.
+
+    swallowed the `})` between them, so a later top-level route inherited
+    the repositories prefix and matched the repositories test. `/*` inside
+    a `//` comment did the same through a second door.
+
+    The cure is ordering: a comment is recognised BEFORE a literal, so
+    nothing inside a comment can open one. Left to right, one pass, one
+    state — which is also how Go itself reads the file.
+    """
+    code: list[str] = []      # literals AND comments blanked
+    kept: list[str] = []      # only comments blanked
+    mode: str | None = None   # None | '"' | "'" | '`' | '//' | '/*'
+    i, n = 0, len(source)
+
+    def emit(blank_in_code: str, blank_in_kept: str) -> None:
+        code.append(blank_in_code)
+        kept.append(blank_in_kept)
+
+    while i < n:
+        ch = source[i]
+
+        if mode is None:
+            # A COMMENT IS RECOGNISED BEFORE A LITERAL. That ordering is
+            # the whole fix: nothing inside a comment can open a string or
+            # a rune, so an apostrophe in English prose is inert.
+            if source.startswith("//", i):
+                mode, i = "//", i + 2
+                emit("  ", "  ")
+                continue
+            if source.startswith("/*", i):
+                mode, i = "/*", i + 2
+                emit("  ", "  ")
+                continue
+            if ch in ('"', "'", "`"):
+                mode, i = ch, i + 1
+                emit(" ", ch)
+                continue
+            emit(ch, ch)
+            i += 1
+            continue
+
+        if mode in ("//", "/*"):
+            if mode == "//" and ch == "\n":
+                mode = None
+                emit("\n", "\n")
+                i += 1
+                continue
+            if mode == "/*" and source.startswith("*/", i):
+                mode, i = None, i + 2
+                emit("  ", "  ")
+                continue
+            blank = "\n" if ch == "\n" else " "
+            emit(blank, blank)
+            i += 1
+            continue
+
+        # Inside a string, rune or raw string.
+        if mode in ('"', "'") and ch == "\\" and i + 1 < n:
+            emit("  ", source[i : i + 2])
+            i += 2
+            continue
+        if ch == mode:
+            mode = None
+            emit(" ", ch)
+            i += 1
+            continue
+        emit("\n" if ch == "\n" else " ", ch)
+        i += 1
+
+    return "".join(code), "".join(kept)
 
 
 def _blank_go_noncode(source: str) -> str:
-    """Blank the CONTENTS of literals and block comments across a whole
-    file, preserving newlines so line numbers still line up.
-
-    Applied to the whole source rather than per line, because a raw string
-    or a block comment can span lines — and a `{` inside one is exactly
-    what desynchronises a per-line brace count.
-    """
-    def repl(m: re.Match[str]) -> str:
-        return "".join("\n" if ch == "\n" else " " for ch in m.group(0))
-
-    return _GO_NONCODE.sub(repl, source)
+    return _scan_go(source)[0]
 
 
 def _strip_line_comment(text: str) -> str:
-    """Drop a trailing `//` comment without disturbing string literals.
+    """Drop a trailing `//` comment, leaving literals intact.
 
     Used where the surviving text still has to READ correctly (the
-    block-opener check), so literals are put back rather than blanked.
+    block-opener check), so this truncates rather than blanking.
     """
-    spans = [(m.start(), m.end()) for m in _GO_NONCODE.finditer(text)]
-    for m in _GO_LINE_COMMENT.finditer(text):
-        if not any(lo <= m.start() < hi for lo, hi in spans):
-            return text[: m.start()]
-    return text
+    kept = _scan_go(text)[1]
+    stripped = kept.rstrip()
+    return text[: len(stripped)] if len(stripped) < len(text) else text
 
 
 # A trailing `func(...) {` — the shape of every chi sub-router opener
@@ -397,15 +468,12 @@ def route_prefixes(repo_root: Path, rel_path: str) -> dict[int, str]:
         _PREFIX_CACHE[key] = prefixes
         return prefixes
 
-    blanked = _blank_go_noncode(source).splitlines()
+    code_lines, kept_lines = (v.splitlines() for v in _scan_go(source))
     stack: list[tuple[int, str]] = []  # (brace depth when opened, prefix)
     depth = 0
-    for line_no, line in enumerate(source.splitlines(), start=1):
-        code = blanked[line_no - 1] if line_no <= len(blanked) else ""
-        m = _GO_LINE_COMMENT.search(code)
-        if m:
-            code = code[: m.start()]
-            line = line[: m.start()]
+    for line_no in range(1, len(code_lines) + 1):
+        code = code_lines[line_no - 1]
+        line = kept_lines[line_no - 1]
 
         opened = code.count("{")
         closed = code.count("}")
@@ -575,10 +643,35 @@ def coverage_needles(endpoint: Endpoint) -> list[str]:
     return [endpoint.path, *segments]
 
 
+def _line_has_segments_in_order(line: str, segments: list[str]) -> bool:
+    """True if `line` contains every segment, in order, left to right."""
+    at = 0
+    for seg in segments:
+        found = line.find(seg, at)
+        if found < 0:
+            return False
+        at = found + len(seg)
+    return True
+
+
 def test_files_reference(
     paths: set[str], endpoint: Endpoint, repo_root: Path
 ) -> bool:
-    """True if any test file carries the literal path, or all its segments."""
+    """True if a test file carries the literal path, or builds it.
+
+    "Builds it" means ONE LINE holds every static segment, in order.
+    Matching the segments independently anywhere in the file was still a
+    free pass: two unrelated comments mentioning `/api/orgs/` and
+    `/members/` covered `DELETE /api/orgs/{orgID}/members/{userID}`, and a
+    lone `// TODO: cover /resync one day` covered the resync route. A test
+    that actually drives the route writes the path in one expression.
+
+    The cost is idiom-sensitivity: `path.Join("/api/things", id, "x")`
+    builds the URL without ever holding those pieces adjacently, so it
+    reads as uncovered. That direction is the safe one — a false FAIL is
+    visible and fixable, a false PASS is silent — and the failure message
+    says what to do about it.
+    """
     needles = coverage_needles(endpoint)
     if not needles:
         return False
@@ -592,7 +685,9 @@ def test_files_reference(
             text = target.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        if literal in text or all(s in text for s in segments):
+        if literal in text:
+            return True
+        if any(_line_has_segments_in_order(ln, segments) for ln in text.splitlines()):
             return True
     return False
 
@@ -655,8 +750,13 @@ def print_human_report(report: Report, verbose: bool) -> None:
         print()
         print(
             "Add a test in `*_isolation_test.go` (Go) or `test_*_isolation.py` "
-            "(Python) that references the endpoint path. For a parameterised "
-            "route, the part before the first `{` is enough."
+            "(Python) that drives the endpoint. It counts when one line holds "
+            "every static piece of the path in order — so for "
+            "`/api/things/{id}/resync`, a line containing "
+            '`\"/api/things/\" + id + \"/resync\"`. Building the path some '
+            "other way (path.Join, a helper that splits it up) will not be "
+            "recognised; write the literal path in the test, or use the skip "
+            "marker below."
         )
         print(
             "To intentionally skip (rare): add `// @skip-isolation-test: <reason>` "

@@ -521,10 +521,18 @@ func (h *RepositoriesHandler) Connect(w http.ResponseWriter, r *http.Request) {
 		//      that could never be synced, because nothing else ever sets
 		//      `github_repo_id`.
 		//
-		// `projects` has no RLS, so the join to `organization_id` is what
-		// scopes this — off an org id read from a row RLS already proved
-		// is ours. Ordered so a real GitHub-id match always wins over a
-		// URL match.
+		// SCOPING. `repositories` carries RLS, so this SELECT is already
+		// tenant-scoped before the join is considered — measured: with
+		// another tenant holding a row of identical `github_repo_id` AND
+		// `git_url`, RLS alone reduces the match set to ours. The join to
+		// `organization_id` is a SECOND layer, and it is what keeps
+		// adoption safe if the policy ever regresses. (An earlier comment
+		// here called the join "what scopes this", which overstated it.)
+		//
+		// ORDER BY is load-bearing, not cosmetic. A real GitHub-id match
+		// must beat a URL match: adopting the legacy row while an id-match
+		// exists in the same project makes the UPDATE below collide with
+		// idx_repositories_project_github_repo — a reachable 500.
 		var existingID string
 		aerr := tx.QueryRow(ctx, `
 			SELECT r.id::text

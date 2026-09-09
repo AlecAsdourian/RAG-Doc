@@ -152,11 +152,22 @@ changed — it has to be fetched again through the new credential, so it
 returns to `pending`. **Do not show "queued" on the strength of having
 called this**; read the `sync_state` in the response.
 
-**One repository per organization, wherever it already lives.** Connecting
-a repository your organization has connected before returns that same row
-— even if it sits in a project other than the default, and even if it was
-connected before this API existed and carries no GitHub id yet. You will
-not get a duplicate, and the `id` you get back may not be new.
+**Connecting a repository your organization already has returns that same
+row** — even if it sits in a project other than the default, and even if
+it was connected before this API existed and carries no GitHub id yet.
+The `id` you get back may not be new.
+
+That is a best effort, not a guarantee, and these are the known gaps:
+
+- A repository whose stored URL differs from what GitHub now reports
+  (`…/thing` vs `…/thing.git`, or a rename we have not caught up with)
+  is not recognised as the same one.
+- Duplicates that already exist are not reconciled — nothing merges them
+  after the fact.
+- Two connects racing into different projects can both create a row.
+
+So **treat the list as possibly containing the same repository twice**,
+key your UI on `id`, and use `github_repo_id` to spot the duplicates.
 
 | Status | Meaning |
 |---|---|

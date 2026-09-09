@@ -81,7 +81,7 @@ It does **not** guarantee you see every new row, and an earlier version of this 
 
 `POST /api/repositories` — takes `github_repo_id` and `installation_id`. Verifies the installation is the caller's, asks GitHub whether that installation can actually see the repository, then persists what GitHub reported. Re-connecting refreshes metadata and returns 201, so a retry is harmless.
 
-The GitHub call sits **between** two transactions rather than inside one. A network round-trip inside a transaction pins a pooled connection for its duration; the cost is that the two halves are not atomic, and the unique index on `(installation_id, github_repo_id)` is what makes that safe.
+The GitHub call sits **between** two transactions rather than inside one. A network round-trip inside a transaction pins a pooled connection for its duration; the cost is that the two halves are not atomic, and the upsert on `(project_id, github_repo_id)` is what makes that safe. (This paragraph said "the unique index on `(installation_id, github_repo_id)`" until migration 000011 dropped that index — the same stale claim review found in the code comment beside it, in a second place.)
 
 `DELETE /api/repositories/{id}` — deletes, cascading to everything ingested. The response reports how many chunks, ingestion runs **and pieces of feedback** went with it, so a client can show what was lost instead of a bare 204. Feedback is the only one of the three a user cannot get back by re-ingesting, and it was being destroyed silently.
 
@@ -156,6 +156,28 @@ The nil handling is deliberate: a nil `*github.Client` assigned to an interface 
 
 **L7 — trailing garbage after the JSON object was accepted.** `Decode` reads one value and stops; `dec.More()` closes it. The same shape exists in `user_orgs.go` — left alone as a sweep rather than widened into this plan.
 
+## Third review round: an apostrophe was enough to open a hole
+
+**N-H1 — prose apostrophes desynchronised the brace scan, and that handed a destructive route a free pass.**
+
+The literal-blanking added in round two was a regex alternation whose rune branch, `'(?:\\.|[^'\\])*'`, had no bound and no `//` branch beside it. So an apostrophe in an English comment opened a "rune literal" that closed at the next apostrophe anywhere in the file, blanking every brace between them. `router.go` carries fifteen apostrophes inside `//` comments; it survived only because interleaved string literals happened to consume them first.
+
+Measured on the real router: two ordinary comments — `// Don't add a sync endpoint here` and `// The stream's lifecycle …` — swallowed the `})` between them, and a top-level `r.Delete("/{id}", h.WipeEverything)` was reported as `DELETE /api/repositories/{id}` and matched by the existing repositories test. **A destructive endpoint, green, with no test.** `/*` written inside a `//` comment did the same through a second door.
+
+Replaced with a single-pass scanner. The fix is ordering: **a comment is recognised before a literal**, so nothing inside a comment can open one — which is how Go itself reads the file. It emits two views (literals-and-comments blanked for brace counting, comments-only blanked for reading a route's path) and preserves length and newlines, which the prefix walk depends on.
+
+**N-M2 — segments were matched independently anywhere in the file**, so the free pass survived in a narrower form: a lone `// TODO: cover /resync one day` covered the resync route. They must now appear on **one line, in order**. The cost is idiom-sensitivity — `path.Join(...)` reads as uncovered — and the failure text now says so, because a gate whose guidance does not fix its own red check gets disabled.
+
+**N-M1 — the gate's instructions described a rule it no longer implemented.** Four places still said the leading prefix was enough, including the PR comment a failing author actually reads. `scripts/ci/README.md` had not been touched by the round-two commit at all.
+
+**N-L7 — the widened receiver matched any library call**, so `buckets[0].Delete("tmp")` read as a route. Go paths must now start with `/`.
+
+**N-L1 — the rollback guard was check-then-act.** A writer committing between the assertion and the ALTER put back exactly the duplicate the check had cleared. `LOCK TABLE repositories IN ACCESS EXCLUSIVE MODE` first; the ALTER takes that lock anyway.
+
+**N-L2 / N-L3 — two load-bearing clauses were unpinned**, and mutation confirmed it: reversing the adoption `ORDER BY` (which would make an adoption collide with the new unique index — a reachable 500) and dropping the `OR github_repo_id IS NULL` half of the re-queue rule both survived the suite. Both now have tests.
+
+**N-L4 / N-L5 / N-L6 / N-L8 — four more claims corrected.** The docs said "you will not get a duplicate" when three real gaps remain (URL spelling, pre-existing duplicates, a cross-project race); the verification table said 11/11 when ten subtests ran; a comment called the join "what scopes this" when RLS already does and the join is the second layer; and the rollback message said "resolve the rows named below" while naming only counts.
+
 ## Verification
 
 | Check | Result |
@@ -163,11 +185,11 @@ The nil handling is deliberate: a nil `*github.Client` assigned to an interface 
 | `go build ./...`, `go vet ./...` | clean |
 | `go test -p 1 ./...` | all pass, from a container rebuilt from scratch |
 | `TestRepositoriesIsolation` | 6/6 |
-| `TestRepositoriesConnect` | 11/11 |
+| `TestRepositoriesConnect` | 12/12 |
 | `TestDeleteReportsTheWholeCascade` | pass |
 | `migrate up` → `down 1` → `up` on an EMPTY scratch database | clean each time, ends `11 \| f` |
 | `down 1` on a database holding rows 000011 legalises | refuses by design, names the offending groups, applies nothing; `force 11` recovers |
-| `pytest scripts/ci/test_check_isolation.py` | 27 pass |
+| `pytest scripts/ci/test_check_isolation.py` | 32 pass |
 | CI isolation scanner | PASS — `POST /api/repositories` and `DELETE /api/repositories/{id}`, both now actually resolved and matched |
 
 `-race` was NOT run locally — this machine has no gcc, and `go test -race`
@@ -206,6 +228,18 @@ Second review round:
 | Adoption scoped to the default project | `AdoptsARowFromANonDefaultProject…` fails, only it |
 | DELETE takes every repository in the project | `TestDeleteReportsTheWholeCascade` fails (green before the sibling was seeded) |
 | `canonicalUUID` degraded to a bare `uuid.Parse` | `NonCanonicalUUIDs…`, `MalformedCursor…` fail |
+| Adoption `ORDER BY` reversed (legacy URL match wins) | `PrefersARealIDMatchOverALegacyURLMatch` fails, only it |
+| Re-queue drops the `OR github_repo_id IS NULL` half | `AdoptingARowThatNeverHadAGitHubIDQueuesIt` fails, only it |
+
+Third round, scanner:
+
+| Mutation | Tests killed |
+|---|---|
+| Line comments not recognised at all (the original shape of N-H1) | `apostrophe_in_prose`, `block_comment_opener_inside_a_line_comment`, `double_slash_route_literal` |
+| `/*` inside a `//` comment reopens block-comment mode | `block_comment_opener_inside_a_line_comment` |
+| Segments matched anywhere in the file rather than on one line | `segments_must_share_one_line_in_order` |
+| Segment order not required | `segments_out_of_order_on_one_line` |
+| Path no longer required to start with `/` | `library_call_with_a_non_path_argument` |
 
 Scanner, eight mutations. Three kill several tests rather than one, which is recorded here rather than rounded off:
 

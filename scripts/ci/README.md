@@ -44,22 +44,35 @@ The path it matches on is the **full** path. A Go route registered as
 `"/{id}"` inside `r.Route("/api/repositories", ...)` is reported as
 `/api/repositories/{id}`; the enclosing `Route`/`Mount` prefixes are
 resolved from the file on disk, because the opener is usually a context
-line rather than part of the diff.
+line rather than part of the diff. Registrations are recognised whether
+they are written as `r.Post(...)`, `r.With(mw).Post(...)`,
+`r.Method("POST", ...)`, `r.MethodFunc(...)` or `HandleFunc("POST ...")`.
 
-For a parameterised route, the **static prefix** — everything before the
-first `{` — counts too. A test drives `DELETE /api/repositories/{id}` by
-building `"/api/repositories/" + id`, so the literal `{id}` appears
-nowhere; demanding it would make parameterised routes permanently
-uncoverable.
+A parameterised route is covered when **one line** of a test holds every
+**static segment** of the path, **in order**. A test drives
+`DELETE /api/repositories/{id}` by building `"/api/repositories/" + id`,
+so the literal `{id}` appears nowhere and demanding it would make
+parameterised routes permanently uncoverable. The whole literal path
+(`/api/repositories/{id}`) counts too, anywhere in the file.
+
+Every segment, not just the leading one: `/api/repositories/{id}/resync`
+needs `/resync` on that line as well. Matching only the leading piece let
+any new route nested under an already-tested prefix pass with no test at
+all.
 
 Handler-name matching is intentionally NOT used — path strings are more
 stable across refactors and easier to grep manually if the check fails.
 
-Two limits worth knowing:
+Three limits worth knowing:
 
 - **Matching is method-blind.** A test that only exercises
-  `GET /api/things` marks a newly added `POST /api/things` as covered.
-  This is a ratchet against forgetting, not proof of coverage.
+  `GET /api/things` marks a newly added `POST /api/things` as covered
+  (ISS-015). This is a ratchet against forgetting, not proof of coverage.
+- **The path has to appear as written.** `path.Join("/api/things", id,
+  "resync")` never holds those pieces adjacently, so it reads as
+  uncovered even though it drives the route. Write the literal path in
+  the test, or use a skip marker with a reason. The failure direction is
+  deliberate: a false FAIL is visible and fixable, a false PASS is not.
 - **An endpoint whose full path resolves to `/` is always reported
   missing**, never covered — `"/"` appears in every file, so matching on
   it would mean nothing. Give the route a real path or an explicit skip

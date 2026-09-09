@@ -335,6 +335,88 @@ func TestRepositoriesConnect(t *testing.T) {
 				"the installation did not change, so nothing should be re-queued")
 		})
 
+		t.Run("PrefersARealIDMatchOverALegacyURLMatch", func(t *testing.T) {
+			// Both adoptable rows in one project. Adopting the legacy one
+			// would make the UPDATE collide with
+			// idx_repositories_project_github_repo — a reachable 500 — so
+			// the ORDER BY that puts a real id match first is load-bearing.
+			const ghID = int64(4245000)
+			const cloneURL = "https://github.com/someone/both-shapes.git"
+			scoper := db.NewTenantScoper(pool)
+			ctx := auth.ContextWithOrgID(context.Background(), orgA.ID)
+
+			var realID, legacyID string
+			require.NoError(t, scoper.InTenantTx(ctx, func(tx pgx.Tx) error {
+				if err := tx.QueryRow(context.Background(), `
+					INSERT INTO repositories
+					  (project_id, installation_id, github_repo_id, name, git_url, sync_state)
+					VALUES ($1, $2, $3, 'both-real', 'https://github.com/someone/both-real.git', 'synced')
+					RETURNING id::text`, orgA.ProjectID, instA, ghID).Scan(&realID); err != nil {
+					return err
+				}
+				// Created LATER, so only the id-before-url ordering saves us.
+				return tx.QueryRow(context.Background(), `
+					INSERT INTO repositories (project_id, name, git_url, sync_state)
+					VALUES ($1, 'both-legacy', $2, 'never_synced')
+					RETURNING id::text`, orgA.ProjectID, cloneURL).Scan(&legacyID)
+			}))
+
+			lister := &stubLister{repos: []github.Repository{{
+				ID: ghID, Name: "both-shapes", Visibility: "private",
+				DefaultBranch: "main", CloneURL: cloneURL, SizeKB: 5,
+			}}}
+			url := newConnectServer(t, pool, lister)
+
+			status, body := doRepoRequest(t, url, http.MethodPost, "/api/repositories", tokenA,
+				fmt.Sprintf(`{"github_repo_id":%d,"installation_id":%q}`, ghID, instA))
+			require.Equal(t, http.StatusCreated, status,
+				"adopting the legacy row here would be a unique-violation 500; body=%s", body)
+
+			var got handlers.Repository
+			require.NoError(t, json.Unmarshal([]byte(body), &got))
+			require.Equal(t, realID, got.ID,
+				"a real github_repo_id match must win over a git_url match")
+		})
+
+		t.Run("AdoptingARowThatNeverHadAGitHubIDQueuesIt", func(t *testing.T) {
+			// The `OR github_repo_id IS NULL` half of the re-queue rule.
+			// A row whose installation_id is ALREADY correct but which has
+			// no github_repo_id is schema-legal; without that clause it
+			// would be adopted and left at its old sync_state, so nothing
+			// would ever fetch it.
+			const ghID = int64(4246000)
+			const cloneURL = "https://github.com/someone/linked-but-unidentified.git"
+			scoper := db.NewTenantScoper(pool)
+			ctx := auth.ContextWithOrgID(context.Background(), orgA.ID)
+
+			var rowID string
+			require.NoError(t, scoper.InTenantTx(ctx, func(tx pgx.Tx) error {
+				return tx.QueryRow(context.Background(), `
+					INSERT INTO repositories
+					  (project_id, installation_id, name, git_url, sync_state)
+					VALUES ($1, $2, 'linked-but-unidentified', $3, 'synced')
+					RETURNING id::text`, orgA.ProjectID, instA, cloneURL).Scan(&rowID)
+			}))
+
+			lister := &stubLister{repos: []github.Repository{{
+				ID: ghID, Name: "linked-but-unidentified", Visibility: "private",
+				DefaultBranch: "main", CloneURL: cloneURL, SizeKB: 7,
+			}}}
+			url := newConnectServer(t, pool, lister)
+
+			status, body := doRepoRequest(t, url, http.MethodPost, "/api/repositories", tokenA,
+				fmt.Sprintf(`{"github_repo_id":%d,"installation_id":%q}`, ghID, instA))
+			require.Equal(t, http.StatusCreated, status, "body=%s", body)
+
+			var got handlers.Repository
+			require.NoError(t, json.Unmarshal([]byte(body), &got))
+			require.Equal(t, rowID, got.ID)
+
+			_, sync, _ := repoStateOf(t, pool, orgA.ID, rowID)
+			require.Equal(t, "pending", sync,
+				"a row that has just been given a github_repo_id has never been fetched as one")
+		})
+
 		t.Run("InstallationDeletedMidConnectIs404Not500", func(t *testing.T) {
 			// The GitHub call sits between two transactions deliberately
 			// (a network round-trip must not pin a pooled connection), so

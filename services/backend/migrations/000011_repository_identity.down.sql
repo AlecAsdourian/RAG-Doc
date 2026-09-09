@@ -26,35 +26,53 @@
 -- still at 000011 — so the recovery is `migrate force 11`, then resolve
 -- the rows named below.
 
+-- Taken BEFORE the check, and held to the end of the transaction.
+--
+-- Without it the guard is check-then-act: a connect committing between
+-- the assertion and the ALTER puts back exactly the duplicate the check
+-- just cleared, and the operator gets the bare "could not create unique
+-- index" this file exists to replace. The ALTER takes this lock anyway,
+-- so taking it early costs nothing but the order.
+LOCK TABLE repositories IN ACCESS EXCLUSIVE MODE;
+
 DO $$
 DECLARE
-  dup_url  bigint;
-  dup_inst bigint;
+  dup_url  text;
+  dup_inst text;
 BEGIN
-  SELECT count(*) INTO dup_url FROM (
-    SELECT project_id, git_url
-    FROM repositories
-    GROUP BY project_id, git_url
-    HAVING count(*) > 1
-  ) d;
+  SELECT string_agg(format('project %s / %s (%s rows)', project_id, git_url, n), '; ')
+    INTO dup_url
+    FROM (
+      SELECT project_id, git_url, count(*) AS n
+      FROM repositories
+      GROUP BY project_id, git_url
+      HAVING count(*) > 1
+      ORDER BY count(*) DESC
+      LIMIT 20
+    ) d;
 
-  SELECT count(*) INTO dup_inst FROM (
-    SELECT installation_id, github_repo_id
-    FROM repositories
-    WHERE installation_id IS NOT NULL AND github_repo_id IS NOT NULL
-    GROUP BY installation_id, github_repo_id
-    HAVING count(*) > 1
-  ) d;
+  SELECT string_agg(format('installation %s / repo %s (%s rows)', installation_id, github_repo_id, n), '; ')
+    INTO dup_inst
+    FROM (
+      SELECT installation_id, github_repo_id, count(*) AS n
+      FROM repositories
+      WHERE installation_id IS NOT NULL AND github_repo_id IS NOT NULL
+      GROUP BY installation_id, github_repo_id
+      HAVING count(*) > 1
+      ORDER BY count(*) DESC
+      LIMIT 20
+    ) d;
 
-  IF dup_url > 0 OR dup_inst > 0 THEN
+  IF dup_url IS NOT NULL OR dup_inst IS NOT NULL THEN
     RAISE EXCEPTION
-      'cannot roll back 000011: % duplicate (project_id, git_url) group(s) '
-      'and % duplicate (installation_id, github_repo_id) group(s) exist',
-      dup_url, dup_inst
+      'cannot roll back 000011. duplicate (project_id, git_url): [%]. '
+      'duplicate (installation_id, github_repo_id): [%]',
+      coalesce(dup_url, 'none'), coalesce(dup_inst, 'none')
       USING HINT =
         'These rows are legal under 000011 and illegal under 000010. '
         'Nothing was changed: run `migrate force 11` to clear the dirty '
-        'flag, resolve the duplicates by hand, then retry the rollback.';
+        'flag, resolve the rows named above, then retry the rollback. '
+        '(At most 20 groups of each kind are listed.)';
   END IF;
 END $$;
 
