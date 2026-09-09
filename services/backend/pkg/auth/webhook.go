@@ -237,7 +237,7 @@ func (h *WebhookHandler) handleAuthUserEvent(r *http.Request, recordData json.Ra
 	}
 
 	// Extract full name from raw_user_meta_data
-	// GitHub/GitLab OAuth populates this with user profile info
+	// GitHub OAuth populates this with user profile info
 	fullName := ""
 	if event.RawUserMetaData != nil {
 		if name, ok := event.RawUserMetaData["full_name"].(string); ok {

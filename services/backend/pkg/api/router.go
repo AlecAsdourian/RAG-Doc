@@ -24,6 +24,20 @@ type Config struct {
 	LogJSON  bool
 	LogLevel slog.Level
 
+	// GitHubInstallations, InstallStates, GitHubAppSlug and FrontendURL
+	// override the installation flow's dependencies. Left unset in
+	// production, where they come from the environment and from Redis.
+	//
+	// The seams exist because the install flow's security is entirely in
+	// the ORDER of its checks — state consumed before GitHub is called,
+	// ownership proven before GitHub is called — and nothing can assert an
+	// order it cannot observe. Requiring live Redis and a live GitHub App
+	// to test that would mean it went untested.
+	GitHubInstallations handlers.GitHubInstallationClient
+	InstallStates       handlers.InstallStateStore
+	GitHubAppSlug       string
+	FrontendURL         string
+
 	// GitHubRepositories overrides the GitHub client the repositories
 	// handler talks to. Left nil in production, where the client is built
 	// from GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY_PATH below.
@@ -172,6 +186,58 @@ func NewRouterWithValidatorAndAdmin(
 	}
 	repositoriesHandler := handlers.NewRepositoriesHandler(tenantScoper, repositoryGitHub, validate)
 
+	// GitHub App installation flow (20-04).
+	//
+	// GITHUB_APP_SLUG is required WHENEVER the App is configured, and the
+	// panic is deliberate. The slug only appears in a redirect URL, so a
+	// wrong or empty one produces a 302 to a GitHub 404 — a failure that
+	// surfaces as a user saying "the button is broken", days later, with
+	// nothing in our logs. The 19-01 fail-closed rule: a deployment that
+	// has credentials but cannot use them should say so at startup.
+	appSlug := cfg.GitHubAppSlug
+	if appSlug == "" {
+		appSlug = os.Getenv("GITHUB_APP_SLUG")
+	}
+	if githubClient != nil && appSlug == "" {
+		panic("api: GITHUB_APP_ID is set but GITHUB_APP_SLUG is not; " +
+			"the install redirect would point at a nonexistent GitHub App")
+	}
+
+	// Where the callback sends the browser afterwards. Not a security
+	// boundary — it is our own frontend, and the callback never reflects
+	// anything caller-supplied into it — but a bad value strands the user
+	// on a blank page after a successful install.
+	frontendURL := cfg.FrontendURL
+	if frontendURL == "" {
+		frontendURL = os.Getenv("FRONTEND_URL")
+	}
+	if frontendURL == "" {
+		frontendURL = "http://localhost:5173"
+	}
+
+	// Redis is only dialled when nothing was injected. Calling
+	// NewStateStore unconditionally would make every test that supplies
+	// its own store still depend on a live Redis.
+	installStates := cfg.InstallStates
+	if installStates == nil {
+		if stateStore, err := auth.NewStateStore(); err == nil {
+			installStates = stateStore
+		} else {
+			slog.Warn("state store unavailable; the GitHub App install flow will refuse to "+
+				"start an installation rather than begin one it cannot finish",
+				slog.String("error", err.Error()))
+		}
+	}
+
+	// Same typed-nil trap as the repositories handler: a nil *github.Client
+	// assigned to an interface makes the interface non-nil.
+	installGitHub := cfg.GitHubInstallations
+	if installGitHub == nil && githubClient != nil {
+		installGitHub = githubClient
+	}
+	githubInstallHandler := handlers.NewGitHubInstallHandler(
+		tenantScoper, installStates, installGitHub, appSlug, frontendURL)
+
 	r := chi.NewRouter()
 
 	// Middleware chain - order matters!
@@ -226,19 +292,26 @@ func NewRouterWithValidatorAndAdmin(
 	// provisioning a non-UUID identity column and routing them through the
 	// same post-provision org-context push the webhook uses.
 	//
-	// The StateStore probe stays because it still reports a genuine
-	// configuration gap, and Phase 20's GitHub App flow will want it.
-	if stateStore, err := auth.NewStateStore(); err == nil {
-		// Close it. NewStateStore dials Redis and leaves a pooled client
-		// with background goroutines behind; this probe only wants the
-		// reachability answer, and routers are constructed per test.
-		_ = stateStore.Close()
-		slog.Info("state store reachable; direct OAuth routes remain unmounted (ISS-011)")
-	} else {
-		slog.Warn("state store unavailable (OAuth CSRF protection would be unavailable "+
-			"if direct OAuth routes were mounted; see ISS-011)",
-			slog.String("error", err.Error()))
-	}
+	// The ISS-011 StateStore probe is gone: 20-04 gave the state store a
+	// real consumer, so the install flow's own wiring reports its
+	// availability, and a probe that dialled Redis purely to log about it
+	// cost every router construction a full connect timeout.
+
+	// GitHub App callback — PUBLIC, and that is the whole point.
+	//
+	// Verified 2026-09-08 against the live App: a browser following
+	// GitHub's redirect sends no Authorization header, so this path inside
+	// the authenticated group returns 401 to every real installation. It
+	// fails 100% of the time, not intermittently, which is why the plan
+	// calls the mount point out before the handler.
+	//
+	// No @skip-isolation-test marker: the scanner only inspects
+	// POST/PUT/PATCH/DELETE, so a marker here would assert a gate that
+	// never looks at this line. Its tenant scoping is covered by
+	// TestGitHubInstallFlow scenarios 3, 4, 7 and 9 instead — a state
+	// token rather than a JWT is what carries the organization, so a JWT
+	// is not the thing to assert on.
+	r.With(middleware.Timeout(30*time.Second)).Get("/api/github/callback", githubInstallHandler.Callback)
 
 	// User-scoped routes: authenticated, but deliberately NOT behind
 	// TenantMiddleware.
@@ -287,6 +360,16 @@ func NewRouterWithValidatorAndAdmin(
 				r.Post("/", repositoriesHandler.Connect)
 				r.Get("/{id}", repositoriesHandler.Get)
 				r.Delete("/{id}", repositoriesHandler.Delete)
+			})
+
+			// GitHub App install entry point and installation browsing.
+			// Tenant-scoped: the state token minted here carries the
+			// caller's organization, and the repository listing reads
+			// `github_installations`, which carries RLS.
+			r.Route("/github", func(r chi.Router) {
+				r.Get("/install", githubInstallHandler.Install)
+				r.Get("/installations", githubInstallHandler.ListInstallations)
+				r.Get("/installations/{id}/repositories", githubInstallHandler.ListRepositories)
 			})
 		})
 

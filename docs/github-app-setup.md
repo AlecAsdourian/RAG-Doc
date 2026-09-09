@@ -140,9 +140,19 @@ GITHUB_WEBHOOK_SECRET=<the openssl rand output>
 GITHUB_APP_PRIVATE_KEY_PATH=/absolute/path/to/rag-doc-dev.private-key.pem
 ```
 
-`.env.example` documents these as of 20-02. Note the backend does **not**
-read `.env` itself — only docker-compose does. See
-[`local-development.md`](local-development.md).
+`.env.example` documents these as of **20-04**. This paragraph claimed
+20-02 before that, and it was wrong — 20-02 added the code that reads
+them but never added them to the template, so anyone following this
+runbook found no matching entries there.
+
+**`GITHUB_APP_SLUG` is required whenever `GITHUB_APP_ID` is set**, and the
+router refuses to start without it. It appears in exactly one place — the
+`github.com/apps/<slug>/installations/new` redirect — so a missing or
+wrong value produces a 302 to a GitHub 404, which surfaces days later as
+"the install button is broken" with nothing in our logs.
+
+Note the backend does **not** read `.env` itself — only docker-compose
+does. See [`local-development.md`](local-development.md).
 
 ---
 

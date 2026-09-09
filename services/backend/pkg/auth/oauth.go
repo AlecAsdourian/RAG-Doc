@@ -5,12 +5,17 @@ import (
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/github"
-	"golang.org/x/oauth2/gitlab"
 )
 
+// OAuthConfig holds direct-OAuth provider configuration.
+//
+// GitHub only. The GitLab provider was removed in 20-04 per 20-CONTEXT
+// decision 2 — its handlers had been unmounted since the ISS-011 cleanup,
+// so it was advertising an integration that did not exist. The GitHub
+// entry stays because ISS-011 records reviving direct GitHub OAuth as a
+// real, if unlikely, option; it does not conflict with the GitHub App.
 type OAuthConfig struct {
 	GitHub *oauth2.Config
-	GitLab *oauth2.Config
 }
 
 func NewOAuthConfig() *OAuthConfig {
@@ -26,13 +31,6 @@ func NewOAuthConfig() *OAuthConfig {
 			RedirectURL:  baseURL + "/auth/github/callback",
 			Scopes:       []string{"user:email", "read:user"},
 			Endpoint:     github.Endpoint,
-		},
-		GitLab: &oauth2.Config{
-			ClientID:     os.Getenv("GITLAB_CLIENT_ID"),
-			ClientSecret: os.Getenv("GITLAB_CLIENT_SECRET"),
-			RedirectURL:  baseURL + "/auth/gitlab/callback",
-			Scopes:       []string{"read_user", "email"},
-			Endpoint:     gitlab.Endpoint,
 		},
 	}
 }

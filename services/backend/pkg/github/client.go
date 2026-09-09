@@ -360,6 +360,47 @@ func (c *Client) ListInstallationRepositories(ctx context.Context, installationI
 			"truncated list", installationID, maxPages*100)
 }
 
+// ListInstallationRepositoriesPage returns ONE page, and whether another
+// follows.
+//
+// The accumulating variant above is right when the caller needs the whole
+// set to search it (connecting a repository by id). It is wrong when the
+// caller is feeding a picker: an installation with 5,000 repositories
+// would become a 5,000-row response built from 50 sequential round trips
+// to GitHub, on one HTTP request's budget.
+//
+// `hasNext` comes from the page being full rather than from parsing the
+// Link header. GitHub sends `rel="next"` and that would be more precise,
+// but a full last page then costs one extra empty request — which is the
+// cheap failure. Misreading a Link header is the expensive one.
+func (c *Client) ListInstallationRepositoriesPage(
+	ctx context.Context, installationID int64, page, perPage int,
+) (repos []Repository, hasNext bool, err error) {
+	if page < 1 {
+		page = 1
+	}
+	if perPage < 1 || perPage > 100 {
+		perPage = 100
+	}
+
+	token, err := c.InstallationToken(ctx, installationID)
+	if err != nil {
+		return nil, false, err
+	}
+
+	var out struct {
+		TotalCount   int          `json:"total_count"`
+		Repositories []Repository `json:"repositories"`
+	}
+	endpoint := fmt.Sprintf("%s/installation/repositories?per_page=%d&page=%d",
+		c.baseURL, perPage, page)
+	if err := c.do(ctx, http.MethodGet, endpoint, token, &out); err != nil {
+		return nil, false, fmt.Errorf("github: list repositories page %d for installation %d: %w",
+			page, installationID, err)
+	}
+	return out.Repositories, len(out.Repositories) == perPage, nil
+}
+
 // do issues an authenticated request and decodes a JSON response.
 //
 // No retries. Phase 24 owns rate limiting, and a naive retry against
@@ -409,7 +450,10 @@ func (c *Client) do(ctx context.Context, method, url, bearer string, out any) er
 // 2026-09-08) rather than by value, because the token in flight is not
 // necessarily the one cached.
 func (c *Client) redactSecrets(s string) string {
-	for _, prefix := range []string{"ghs_", "ghu_"} {
+	// `gho_` is a user-to-server OAuth token. It was not needed until
+	// 20-04 put an OAuth-shaped flow in front of the App, and a prefix
+	// this list does not know about is a prefix that reaches a log intact.
+	for _, prefix := range []string{"ghs_", "ghu_", "gho_"} {
 		s = redactPrefixed(s, prefix)
 	}
 	// An App JWT is three base64url segments; redact anything that looks
