@@ -90,6 +90,17 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Fix:** move the context key and its accessors to a leaf package (`pkg/tenantctx`) that both can import. Mechanical: the key already has accessors as of 20-01, so the change is an import rewrite across five call sites.
 - **Not done in 20-01** because the cycle does not exist, the benefit is speculative, and the refactor would have widened a plan that already grew a security fix.
 
+### ISS-016: `sync_state` has no lease, so a relink can re-queue a run already in flight
+
+- **Discovered:** Phase 20-03 second review (2026-09-09)
+- **Type:** Correctness / Ingestion
+- **Priority:** MEDIUM — must be settled **before Phase 21 builds the queue**, not after
+- **Description:** `POST /api/repositories` sets `sync_state = 'pending'` when a repository's `installation_id` changes. If the row was `syncing` at that moment, it is re-queued while the original run is still going, and whichever finishes last writes the final state. `idx_repositories_sync_state` is a partial index on `sync_state <> 'synced'`, so the Phase 21 worker will pick the re-queued row straight up.
+- **Why it was not simply avoided:** refusing to re-queue a `syncing` row is worse. The in-flight run holds an installation token for an App that was just uninstalled, so it will fail regardless — and leaving the row `syncing` strands it until that failure lands, with nothing to retry it.
+- **The actual gap:** `sync_state` is a status column being used as a queue, with no lease, owner or attempt counter. Two writers can believe they own the same repository. 20-05's webhook writes go through the same upsert, so it inherits this.
+- **What Phase 21 should do:** give the queue a lease (`sync_lease_owner`, `sync_lease_expires_at`) or move it out of `repositories` entirely. Then a relink can cancel or supersede a run rather than racing it.
+- **Also carried:** a `failed` repository cannot be retried through this API at all — re-connecting deliberately does not reset the state. Documented in `docs/api-repositories.md`; Phase 21 owns retry.
+
 ### ISS-015: The isolation scanner's coverage match is method-blind
 
 - **Discovered:** Phase 20-03 review (2026-09-08), while fixing the nested-`chi.Route` blind spot
@@ -97,7 +108,8 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Priority:** LOW — the ratchet works; this is the last soft edge in it
 - **Description:** `scripts/ci/check-isolation-tests.py` decides coverage by looking for the endpoint's path in an isolation-test file. It cannot see which HTTP method the test exercises, so an existing test that only does `GET /api/things` marks a newly added `POST /api/things` as covered.
 - **Why it was not fixed with the rest of 20-03's scanner work:** every cheap way to add method-awareness reads a Go test for method tokens (`http.MethodPost`, `"POST"`, helper wrappers) and guesses. A gate that fails a PR because the author spelled the method differently gets disabled, and a disabled gate is worse than a loose one. Worth doing properly — resolve the handler symbol per route and check the test drives that handler — or not at all.
-- **What is NOT affected:** every mutation route in a nested `chi.Route` block is now detected with its full path, and an endpoint whose path resolves to `/` is always reported missing rather than matched by any file. Both are pinned by tests in `scripts/ci/test_check_isolation.py`.
+- **Correction to the first version of this entry.** It claimed "every mutation route in a nested `chi.Route` block is now detected with its full path". False when written, and found by review: `r.With(mw).Post(...)` and `r.Method("POST", …)` were both invisible, and a new route nested under an already-tested prefix was marked covered for nothing. Both fixed and pinned; this entry is narrowed to what actually remains.
+- **What IS pinned now, each by its own test in `scripts/ci/test_check_isolation.py`:** nested `chi.Route` blocks; middleware-wrapped registrations; `Method`/`MethodFunc`; every static segment of a parameterised path having to appear, not just the leading one; a path resolving to `/` never matching; braces inside strings, raw strings and block comments; and a skip marker on a group opener not reaching the routes inside it.
 
 ### ISS-013: Unscoped access to an RLS table behaves differently depending on connection history
 

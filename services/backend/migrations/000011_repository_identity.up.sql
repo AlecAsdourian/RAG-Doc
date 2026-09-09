@@ -41,10 +41,26 @@ CREATE UNIQUE INDEX idx_repositories_project_github_repo
 -- Installation is a credential, not an identity — the same repository
 -- reached through a reinstalled App is the same repository.
 --
--- What it used to guarantee — one repository connected once per
--- installation — is preserved by the index above wherever it matters,
--- because an installation belongs to exactly one organization (000010)
--- and the API connects into that organization's default project.
+-- WHAT THIS GIVES UP, precisely. 000010's index forbade the same
+-- `(installation_id, github_repo_id)` anywhere; the index above forbids
+-- it only within one project. An organization may hold several projects
+-- (`idx_projects_one_default_per_org` constrains how many are DEFAULT,
+-- not how many exist), and `docs/api-repositories.md` says a repository
+-- connected before this API may sit in a non-default one. So at the
+-- schema level the same repository can now appear twice in one
+-- organization, in two projects.
+--
+-- An earlier version of this comment claimed the index above preserved
+-- the old guarantee "wherever it matters". It does not, and the gap is
+-- not academic: a duplicate would be ingested twice in Phase 21, doubling
+-- chunks and duplicating every search hit.
+--
+-- It is closed in the handler instead, which resolves a repository across
+-- ALL of the organization's projects before inserting — see
+-- `Connect` in pkg/api/handlers/repositories.go. That belongs there
+-- rather than here because the rule is "one per organization" and
+-- `repositories` reaches its organization only through a join, which a
+-- unique index cannot span.
 DROP INDEX IF EXISTS idx_repositories_installation_github_id;
 
 -- =====================================================================

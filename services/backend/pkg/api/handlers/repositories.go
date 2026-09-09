@@ -445,8 +445,10 @@ func (h *RepositoriesHandler) Connect(w http.ResponseWriter, r *http.Request) {
 	//
 	// A network round-trip inside a transaction pins a pooled connection
 	// for its duration. Splitting means the two steps are not atomic; the
-	// unique index on (installation_id, github_repo_id) is what makes a
-	// duplicate connect harmless.
+	// upsert on (project_id, github_repo_id) is what makes a duplicate
+	// connect harmless. (It used to say "the unique index on
+	// (installation_id, github_repo_id)" — migration 000011 drops that
+	// index, and the comment outlived it by one commit.)
 	repos, err := h.github.ListInstallationRepositories(ctx, ghInstallationID)
 	if err != nil {
 		render.Render(w, r, ErrServiceUnavailable(fmt.Errorf("list installation repositories: %w", err)))
@@ -500,6 +502,75 @@ func (h *RepositoriesHandler) Connect(w http.ResponseWriter, r *http.Request) {
 			return fmt.Errorf("resolve default project: %w", perr)
 		}
 
+		// Adopt an existing row from ANYWHERE in this organization before
+		// inserting into the default project.
+		//
+		// Two rows are adoptable, and both were shipping as duplicates:
+		//
+		//   1. The same `github_repo_id` in a NON-DEFAULT project.
+		//      Migration 000011's index is per-project, and an
+		//      organization may hold several projects, so the schema
+		//      cannot express "once per organization" — `repositories`
+		//      reaches its organization only through a join. Without this,
+		//      a repository already connected under an older project got a
+		//      second row, and Phase 21 would ingest it twice.
+		//
+		//   2. A row with NO `github_repo_id` whose `git_url` matches —
+		//      anything connected before this API existed. It is the same
+		//      repository; leaving it alone produced a permanent duplicate
+		//      that could never be synced, because nothing else ever sets
+		//      `github_repo_id`.
+		//
+		// `projects` has no RLS, so the join to `organization_id` is what
+		// scopes this — off an org id read from a row RLS already proved
+		// is ours. Ordered so a real GitHub-id match always wins over a
+		// URL match.
+		var existingID string
+		aerr := tx.QueryRow(ctx, `
+			SELECT r.id::text
+			FROM repositories r
+			JOIN projects p ON p.id = r.project_id
+			WHERE p.organization_id = $1
+			  AND (r.github_repo_id = $2
+			       OR (r.github_repo_id IS NULL AND r.git_url = $3))
+			ORDER BY (r.github_repo_id IS NULL), r.created_at
+			LIMIT 1
+		`, orgID, match.ID, match.CloneURL).Scan(&existingID)
+		if aerr != nil && !errors.Is(aerr, pgx.ErrNoRows) {
+			return fmt.Errorf("resolve existing repository: %w", aerr)
+		}
+
+		if aerr == nil {
+			return tx.QueryRow(ctx, `
+				UPDATE repositories SET
+				  installation_id = $2,
+				  github_repo_id = $3,
+				  name = $4,
+				  git_url = $5,
+				  default_branch = $6,
+				  visibility = $7,
+				  size_kb = $8,
+				  archived = $9,
+				  sync_state = CASE
+				    WHEN installation_id IS DISTINCT FROM $2::uuid
+				      OR github_repo_id IS NULL
+				    THEN 'pending' ELSE sync_state END,
+				  updated_at = NOW()
+				WHERE id = $1
+				RETURNING id::text, name, git_url, default_branch, github_repo_id,
+				          installation_id::text, visibility, size_kb, archived,
+				          sync_state, last_synced_at, created_at
+			`,
+				existingID, req.InstallationID, match.ID, match.Name, match.CloneURL,
+				match.DefaultBranch, match.Visibility, match.SizeKB, match.Archived,
+			).Scan(
+				&created.ID, &created.Name, &created.GitURL, &created.DefaultBranch,
+				&created.GitHubRepoID, &created.InstallationID, &created.Visibility,
+				&created.SizeKB, &created.Archived, &created.SyncState,
+				&created.LastSyncedAt, &created.CreatedAt,
+			)
+		}
+
 		// Upsert on (project_id, github_repo_id) — migration 000011.
 		//
 		// NOT on the installation: that is a credential, and it is exactly
@@ -508,6 +579,11 @@ func (h *RepositoriesHandler) Connect(w http.ResponseWriter, r *http.Request) {
 		// `UNIQUE (project_id, git_url)` and surfaced as a 500. Keying on
 		// GitHub's stable repository id makes the same call RELINK the
 		// orphaned row instead.
+		//
+		// Still an upsert, not a plain insert, even though the lookup
+		// above has just run: two concurrent connects can both miss and
+		// both insert, and ON CONFLICT is what keeps that at one row and
+		// two 201s rather than a 23505.
 		return tx.QueryRow(ctx, `
 			INSERT INTO repositories
 			  (project_id, installation_id, github_repo_id, name, git_url,
@@ -523,10 +599,17 @@ func (h *RepositoriesHandler) Connect(w http.ResponseWriter, r *http.Request) {
 			  visibility = EXCLUDED.visibility,
 			  size_kb = EXCLUDED.size_kb,
 			  archived = EXCLUDED.archived,
-			  -- Re-queue only when the installation actually changed. A
-			  -- plain re-connect refreshes metadata and must not stomp a
-			  -- 'syncing' run; a relinked repository has to be fetched
-			  -- again through the new credential.
+			  -- Re-queue only when the installation actually changed: a
+			  -- plain re-connect is a metadata refresh and must not
+			  -- restart a run, while a relinked repository has to be
+			  -- fetched again through the new credential.
+			  --
+			  -- This DOES stomp a 'syncing' row when the installation
+			  -- changed, and an earlier version of this comment claimed
+			  -- otherwise. There is no better answer available here: the
+			  -- in-flight run holds a token for an installation that no
+			  -- longer exists, so it is going to fail anyway, and there is
+			  -- no lease column to hand it off with. ISS-016.
 			  sync_state = CASE
 			    WHEN repositories.installation_id IS DISTINCT FROM EXCLUDED.installation_id
 			    THEN 'pending' ELSE repositories.sync_state END,

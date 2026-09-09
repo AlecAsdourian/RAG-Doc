@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,6 +93,18 @@ func newConnectServer(t *testing.T, pool *pgxpool.Pool, lister handlers.Installa
 
 func connectBody(installationID string) string {
 	return fmt.Sprintf(`{"github_repo_id":%d,"installation_id":%q}`, stubRepoID, installationID)
+}
+
+// countRepositories counts everything visible in org's tenant scope.
+func countRepositories(t *testing.T, pool *pgxpool.Pool, org *isolation.TestOrg) int64 {
+	t.Helper()
+	scoper := db.NewTenantScoper(pool)
+	ctx := auth.ContextWithOrgID(context.Background(), org.ID)
+	var n int64
+	require.NoError(t, scoper.InTenantTx(ctx, func(tx pgx.Tx) error {
+		return tx.QueryRow(context.Background(), `SELECT count(*) FROM repositories`).Scan(&n)
+	}))
+	return n
 }
 
 // repoStateOf reads a repository's row directly, inside orgA's scope.
@@ -226,27 +239,100 @@ func TestRepositoriesConnect(t *testing.T) {
 				"an unchanged installation must not re-queue; the state belongs to Phase 21")
 		})
 
-		t.Run("DoesNotCollideWithAGitURLAlreadyInTheProject", func(t *testing.T) {
+		t.Run("AdoptsALegacyRowWithTheSameURLInsteadOfDuplicating", func(t *testing.T) {
 			// A row with no GitHub id holding the same clone URL — the
 			// shape of anything connected before this API existed. It used
-			// to abort the connect with a 500.
-			const shared = "https://github.com/someone/shared-url.git"
+			// to abort the connect with a 500; fixing that stopped the
+			// error but produced a SECOND row that could never be synced,
+			// because nothing else ever sets github_repo_id.
+			//
+			// The earlier version of this test asserted only the status
+			// code, so it could not see the duplicate — and, sharing one
+			// github_repo_id with every other subtest, it was really
+			// re-running the UPDATE path rather than the one it named.
+			const shared = "https://github.com/someone/legacy-adopt.git"
+			const ghID = int64(4243000)
 			scoper := db.NewTenantScoper(pool)
 			ctx := auth.ContextWithOrgID(context.Background(), orgA.ID)
+
+			var legacyID string
 			require.NoError(t, scoper.InTenantTx(ctx, func(tx pgx.Tx) error {
-				_, err := tx.Exec(context.Background(), `
+				return tx.QueryRow(context.Background(), `
 					INSERT INTO repositories (project_id, name, git_url, sync_state)
-					VALUES ($1, 'legacy', $2, 'never_synced')`, orgA.ProjectID, shared)
-				return err
+					VALUES ($1, 'legacy', $2, 'never_synced')
+					RETURNING id::text`, orgA.ProjectID, shared).Scan(&legacyID)
 			}))
 
-			lister := &stubLister{repos: []github.Repository{stubRepo("shared-url", shared)}}
+			before := countRepositories(t, pool, orgA)
+			lister := &stubLister{repos: []github.Repository{{
+				ID: ghID, Name: "legacy-adopt", Visibility: "private",
+				DefaultBranch: "main", CloneURL: shared, SizeKB: 12,
+			}}}
 			url := newConnectServer(t, pool, lister)
 
-			status, body := doRepoRequest(t, url, http.MethodPost,
-				"/api/repositories", tokenA, connectBody(instA))
-			require.Equal(t, http.StatusCreated, status,
-				"a stored git_url must not block connecting a different repository; body=%s", body)
+			status, body := doRepoRequest(t, url, http.MethodPost, "/api/repositories", tokenA,
+				fmt.Sprintf(`{"github_repo_id":%d,"installation_id":%q}`, ghID, instA))
+			require.Equal(t, http.StatusCreated, status, "body=%s", body)
+
+			var got handlers.Repository
+			require.NoError(t, json.Unmarshal([]byte(body), &got))
+			require.Equal(t, legacyID, got.ID, "the legacy row must be adopted, not duplicated")
+			require.Equal(t, before, countRepositories(t, pool, orgA),
+				"adopting must not add a row")
+
+			_, sync, _ := repoStateOf(t, pool, orgA.ID, legacyID)
+			require.Equal(t, "pending", sync,
+				"a row linked to an installation for the first time has never been fetched")
+		})
+
+		t.Run("AdoptsARowFromANonDefaultProjectInTheSameOrganization", func(t *testing.T) {
+			// Migration 000011's unique index is per-PROJECT, and an
+			// organization may hold several. Without an org-wide lookup the
+			// same repository gets a second row and Phase 21 ingests it
+			// twice — doubling chunks and duplicating every search hit.
+			const ghID = int64(4244000)
+			const cloneURL = "https://github.com/someone/second-project.git"
+			scoper := db.NewTenantScoper(pool)
+			ctx := auth.ContextWithOrgID(context.Background(), orgA.ID)
+
+			var otherProjectID, existingID string
+			require.NoError(t, scoper.InTenantTx(ctx, func(tx pgx.Tx) error {
+				if err := tx.QueryRow(context.Background(), `
+					INSERT INTO projects (organization_id, name, slug, is_default)
+					VALUES ($1, 'Archive', 'archive', false)
+					RETURNING id::text`, orgA.ID).Scan(&otherProjectID); err != nil {
+					return err
+				}
+				return tx.QueryRow(context.Background(), `
+					INSERT INTO repositories
+					  (project_id, installation_id, github_repo_id, name, git_url, sync_state)
+					VALUES ($1, $2, $3, 'second-project', $4, 'synced')
+					RETURNING id::text`,
+					otherProjectID, instA, ghID, cloneURL).Scan(&existingID)
+			}))
+
+			before := countRepositories(t, pool, orgA)
+			lister := &stubLister{repos: []github.Repository{{
+				ID: ghID, Name: "second-project-renamed", Visibility: "private",
+				DefaultBranch: "main", CloneURL: cloneURL, SizeKB: 30,
+			}}}
+			url := newConnectServer(t, pool, lister)
+
+			status, body := doRepoRequest(t, url, http.MethodPost, "/api/repositories", tokenA,
+				fmt.Sprintf(`{"github_repo_id":%d,"installation_id":%q}`, ghID, instA))
+			require.Equal(t, http.StatusCreated, status, "body=%s", body)
+
+			var got handlers.Repository
+			require.NoError(t, json.Unmarshal([]byte(body), &got))
+			require.Equal(t, existingID, got.ID,
+				"a repository already connected in another project of this org must be reused")
+			require.Equal(t, before, countRepositories(t, pool, orgA),
+				"the same GitHub repository must not appear twice in one organization")
+
+			_, sync, name := repoStateOf(t, pool, orgA.ID, existingID)
+			require.Equal(t, "second-project-renamed", name)
+			require.Equal(t, "synced", sync,
+				"the installation did not change, so nothing should be re-queued")
 		})
 
 		t.Run("InstallationDeletedMidConnectIs404Not500", func(t *testing.T) {
@@ -303,10 +389,18 @@ func TestRepositoriesConnect(t *testing.T) {
 			// and brace forms, and Postgres accepts one of those and
 			// rejects the other. Passing its input through unexamined made
 			// the URN form an unhandled 22P02.
+			//
+			// Uppercase is a DELIBERATE behaviour change: Postgres accepts
+			// an uppercase UUID literal, so `GET /api/repositories/AABB…`
+			// used to return 200. It is a 404 now. One spelling of an id
+			// works — the one this API emits — and the alternative is a
+			// rule that admits some non-canonical forms and 500s on others.
 			url := newConnectServer(t, pool, &stubLister{})
 			for _, id := range []string{
 				"urn:uuid:" + orgA.RepoID,
 				"{" + orgA.RepoID + "}",
+				strings.ToUpper(orgA.RepoID),
+				strings.ReplaceAll(orgA.RepoID, "-", ""),
 			} {
 				for _, method := range []string{http.MethodGet, http.MethodDelete} {
 					status, body := doRepoRequest(t, url, method, "/api/repositories/"+id, tokenA, "")
@@ -350,6 +444,15 @@ func TestDeleteReportsTheWholeCascade(t *testing.T) {
 		seedIngestedContent(t, pool, orgA, 2)
 		seedIngestedContent(t, pool, orgB, 1)
 
+		// A SECOND repository for orgA, with its own chain.
+		//
+		// Without it the delete cannot be measured for over-breadth within
+		// the tenant: `WithTwoOrgs` gives orgA exactly one repository, so
+		// `DELETE ... WHERE project_id = (the row's project)` — a realistic
+		// wrong-column bug — takes everything orgA has and every assertion
+		// still passes.
+		siblingID := seedSiblingRepository(t, pool, orgA)
+
 		status, body := doRepoRequest(t, url, http.MethodDelete,
 			"/api/repositories/"+orgA.RepoID, tokenA, "")
 		require.Equal(t, http.StatusOK, status, "body=%s", body)
@@ -368,7 +471,64 @@ func TestDeleteReportsTheWholeCascade(t *testing.T) {
 		// because the RLS path runs through the repository that just went.
 		require.Equal(t, []int64{1, 1, 1}, ingestedCounts(t, pool, orgB),
 			"deleting orgA's repository must not touch orgB's chunks, runs or feedback")
+
+		// And orgA's OTHER repository, in the same project, survives whole.
+		// This is the assertion that catches a within-tenant over-broad
+		// delete — a wrong WHERE column, a wrong join, a cascade that takes
+		// siblings — which the cross-tenant checks above cannot see.
+		require.Equal(t, []int64{1, 1, 1}, ingestedCounts(t, pool, orgA),
+			"deleting one repository must not take orgA's other one with it")
+		s, b := doRepoRequest(t, url, http.MethodGet, "/api/repositories/"+siblingID, tokenA, "")
+		require.Equal(t, http.StatusOK, s, "orgA's sibling repository was deleted too; body=%s", b)
 	})
+}
+
+// seedSiblingRepository adds a second repository to org's default project,
+// with its own ingestion chain, and returns its id.
+func seedSiblingRepository(t *testing.T, pool *pgxpool.Pool, org *isolation.TestOrg) string {
+	t.Helper()
+	scoper := db.NewTenantScoper(pool)
+	ctx := auth.ContextWithOrgID(context.Background(), org.ID)
+	bg := context.Background()
+
+	var repoID string
+	require.NoError(t, scoper.InTenantTx(ctx, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(bg, `
+			INSERT INTO repositories (project_id, name, git_url, sync_state)
+			VALUES ($1, 'sibling', $2, 'never_synced')
+			RETURNING id::text`,
+			org.ProjectID, "https://example.test/"+org.Slug+"-sibling.git").Scan(&repoID); err != nil {
+			return err
+		}
+		var runID, chunkID, queryID, retrievalID string
+		if err := tx.QueryRow(bg, `
+			INSERT INTO ingestion_runs (repository_id, commit_sha, branch, status)
+			VALUES ($1, repeat('c', 40), 'main', 'completed')
+			RETURNING id::text`, repoID).Scan(&runID); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(bg, `
+			INSERT INTO chunks
+			  (ingestion_run_id, repository_id, file_path, start_line, end_line, content, content_hash)
+			VALUES ($1, $2, 'sibling.go', 1, 2, 'package main', repeat('d', 64))
+			RETURNING id::text`, runID, repoID).Scan(&chunkID); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(bg, `
+			INSERT INTO queries (project_id, query_text) VALUES ($1, 'sibling?')
+			RETURNING id::text`, org.ProjectID).Scan(&queryID); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(bg, `
+			INSERT INTO retrievals (query_id, chunk_id, rank, score)
+			VALUES ($1, $2, 1, 0.5) RETURNING id::text`, queryID, chunkID).Scan(&retrievalID); err != nil {
+			return err
+		}
+		_, err := tx.Exec(bg, `
+			INSERT INTO feedback (retrieval_id, feedback_type) VALUES ($1, 'neutral')`, retrievalID)
+		return err
+	}))
+	return repoID
 }
 
 // ingestedCounts reports {chunks, ingestion_runs, feedback} within org's

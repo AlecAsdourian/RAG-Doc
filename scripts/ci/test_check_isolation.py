@@ -432,6 +432,216 @@ def test_skip_marker_in_a_route_block_binds_to_its_own_route(tmp_path: Path):
     assert [e.path for e in report.missing] == ["/api/hooks/{id}"]
 
 
+# ---------- PR #21 second review ----------
+
+
+def test_middleware_wrapped_routes_are_detected(tmp_path: Path):
+    """H1. `r.With(mw).Post(...)` has a `)` before the dot, so a receiver
+    pattern requiring an identifier saw nothing at all — on the idiom
+    router.go already uses for every timeout-wrapped group. A destructive
+    route guarded by an admin check is exactly this shape.
+    """
+    lines = [
+        '\tr.With(middleware.Timeout(60*time.Second)).Route("/api", func(r chi.Router) {',
+        '\t\tr.With(requireAdmin).Delete("/organizations/{id}", h.DeleteOrg)',
+        '\t\tr.With(requireAdmin).Post("/organizations/{id}/transfer", h.Transfer)',
+        '\t})',
+    ]
+    _write(tmp_path, "services/backend/pkg/api/router.go", lines)
+    report = scanner.build_report(
+        _diff("services/backend/pkg/api/router.go", lines), tmp_path
+    )
+
+    assert {(e.method, e.path) for e in report.missing} == {
+        ("DELETE", "/api/organizations/{id}"),
+        ("POST", "/api/organizations/{id}/transfer"),
+    }
+
+
+def test_chi_method_and_methodfunc_registrations_are_detected(tmp_path: Path):
+    """H1, same class: chi's explicit form takes the method as an argument,
+    which the shorthand pattern cannot see."""
+    lines = [
+        '\tr.Method("POST", "/api/imports", h.Import)',
+        '\tr.MethodFunc(http.MethodDelete, "/api/imports/{id}", h.Drop)',
+        '\tr.Method("GET", "/api/imports", h.List)',
+    ]
+    _write(tmp_path, "services/backend/pkg/api/router.go", lines)
+    report = scanner.build_report(
+        _diff("services/backend/pkg/api/router.go", lines), tmp_path
+    )
+
+    assert {(e.method, e.path) for e in report.missing} == {
+        ("POST", "/api/imports"),
+        ("DELETE", "/api/imports/{id}"),
+    }, "GET must stay unreported; both mutation spellings must be caught"
+
+
+def test_a_new_route_under_a_tested_prefix_is_not_free(tmp_path: Path):
+    """H2. Matching only the leading static piece meant every new route
+    nested under an already-tested prefix was covered for nothing.
+    `/api/repositories/{id}/resync` reduced to `/api/repositories/`, which
+    the existing DELETE test already contains.
+    """
+    router = "services/backend/pkg/api/router.go"
+    test = "services/backend/pkg/api/handlers/repositories_isolation_test.go"
+    router_lines = [
+        '\tr.Route("/api/repositories", func(r chi.Router) {',
+        '\t\tr.Post("/{id}/resync", h.Resync)',
+        '\t})',
+    ]
+    existing_test_line = '\tdo(t, http.MethodDelete, "/api/repositories/"+other.ID, tokenA)'
+    _write(tmp_path, router, router_lines)
+    _write(tmp_path, test, ["package handlers_test", existing_test_line])
+
+    report = scanner.build_report(
+        _diff(router, added=[router_lines[1]], context_lines=[router_lines[0]])
+        + "\n"
+        + _diff(test, [existing_test_line]),
+        tmp_path,
+    )
+
+    assert not report.passed(), (
+        "a new mutation endpoint must not inherit coverage from a sibling route"
+    )
+    assert [e.path for e in report.missing] == ["/api/repositories/{id}/resync"]
+
+
+def test_every_static_segment_present_counts_as_covered(tmp_path: Path):
+    """The other half of H2: a test that really does drive the route —
+    building the id in the middle — must still count."""
+    router = "services/backend/pkg/api/router.go"
+    test = "services/backend/pkg/api/handlers/repositories_isolation_test.go"
+    router_lines = [
+        '\tr.Route("/api/repositories", func(r chi.Router) {',
+        '\t\tr.Post("/{id}/resync", h.Resync)',
+        '\t})',
+    ]
+    test_line = '\tdo(t, http.MethodPost, "/api/repositories/"+id+"/resync", tokenA)'
+    _write(tmp_path, router, router_lines)
+    _write(tmp_path, test, ["package handlers_test", test_line])
+
+    report = scanner.build_report(
+        _diff(router, router_lines) + "\n" + _diff(test, [test_line]), tmp_path
+    )
+
+    assert report.passed()
+    assert [e.path for e in report.covered] == ["/api/repositories/{id}/resync"]
+
+
+def test_braces_inside_literals_and_comments_do_not_move_the_prefix(tmp_path: Path):
+    """L1. A `}` in a string, a raw string carrying `{`, and a multi-line
+    block comment each desynchronised the brace stack, so routes reported
+    a prefix belonging to some other block.
+    """
+    lines = [
+        '\tr.Route("/api/admin", func(r chi.Router) {',
+        '\t\tw.Write([]byte("}"))',
+        '\t\tconst tmpl = `{"shape":`',
+        '\t\t/* payload looks like { id, name',
+        '\t\t   across two lines } */',
+        '\t\tr.Post("/wipe", h.Wipe)',
+        '\t})',
+        '\tr.Post("/api/unrelated", h.Other)',
+    ]
+    _write(tmp_path, "services/backend/pkg/api/router.go", lines)
+    report = scanner.build_report(
+        _diff("services/backend/pkg/api/router.go", lines), tmp_path
+    )
+
+    assert {(e.method, e.path) for e in report.missing} == {
+        ("POST", "/api/admin/wipe"),
+        ("POST", "/api/unrelated"),
+    }, "a route after the block must not inherit its prefix either"
+
+
+def test_a_double_slash_route_literal_is_not_read_as_a_comment(tmp_path: Path):
+    """L2. `"//v2"` looks like a comment opener, which collapsed the block
+    onto one logical line — and one skip marker then covered every route
+    in it.
+    """
+    lines = [
+        '\tr.Route("//v2", func(r chi.Router) { // @skip-isolation-test: legacy alias',
+        '\t\tr.Post("/wipe", h.Wipe)',
+        '\t\tr.Delete("/nuke", h.Nuke)',
+        '\t})',
+    ]
+    _write(tmp_path, "services/backend/pkg/api/router.go", lines)
+    report = scanner.build_report(
+        _diff("services/backend/pkg/api/router.go", lines), tmp_path
+    )
+
+    assert not report.passed(), (
+        "a marker on the Route opener must not excuse the routes inside it"
+    )
+    assert {(e.method, e.path) for e in report.missing} == {
+        ("POST", "/v2/wipe"),
+        ("DELETE", "/v2/nuke"),
+    }
+
+
+def test_a_route_after_a_closed_block_loses_the_prefix(tmp_path: Path):
+    """The prefix stack has to POP. Nothing exercised that before, so a
+    stack that never popped passed the whole suite.
+    """
+    lines = [
+        '\tr.Route("/api/things", func(r chi.Router) {',
+        '\t\tr.Post("/", h.Create)',
+        '\t})',
+        '\tr.Post("/webhooks/github", h.Webhook)',
+    ]
+    _write(tmp_path, "services/backend/pkg/api/router.go", lines)
+    report = scanner.build_report(
+        _diff("services/backend/pkg/api/router.go", lines), tmp_path
+    )
+
+    assert {(e.method, e.path) for e in report.missing} == {
+        ("POST", "/api/things"),
+        ("POST", "/webhooks/github"),
+    }
+
+
+def test_a_route_sharing_its_groups_line_is_inside_that_group(tmp_path: Path):
+    """A route on the same line as its own `Route(` opener is INSIDE it.
+
+    An earlier version recorded the prefix before pushing, on the reasoning
+    that such a route sits outside its own group. That is backwards, and it
+    left a complete one-line group with no prefix at all — its routes
+    reported as `/y` rather than `/x/y`.
+    """
+    lines = [
+        '\tr.Post("/api/first", h.First)',
+        '\tr.Route("/api/inline", func(r chi.Router) { r.Post("/second", h.Second) })',
+        '\tr.Route("/api/group", func(r chi.Router) {',
+        '\t\tr.Delete("/third", h.Third)',
+        '\t})',
+        '\tr.Post("/api/last", h.Last)',
+    ]
+    _write(tmp_path, "services/backend/pkg/api/router.go", lines)
+    report = scanner.build_report(
+        _diff("services/backend/pkg/api/router.go", lines), tmp_path
+    )
+
+    assert {(e.method, e.path) for e in report.missing} == {
+        ("POST", "/api/first"),
+        ("POST", "/api/inline/second"),
+        ("DELETE", "/api/group/third"),
+        ("POST", "/api/last"),
+    }
+
+
+def test_routes_registered_inside_a_test_file_are_not_reported(tmp_path: Path):
+    """Isolation tests stand up their own routers. Scanning them would
+    report a test's own scaffolding as an unprotected endpoint."""
+    test = "services/backend/pkg/api/handlers/thing_isolation_test.go"
+    lines = ['\tr.Post("/api/only-in-a-test", h.Thing)']
+    _write(tmp_path, test, lines)
+    report = scanner.build_report(_diff(test, lines), tmp_path)
+
+    assert report.passed()
+    assert not report.missing and not report.covered and not report.skipped
+
+
 def test_read_endpoints_are_not_reported(tmp_path: Path):
     # Neither Go GET nor Python GET should be flagged — read endpoints
     # are covered by RLS silent-filter, not by this scanner.

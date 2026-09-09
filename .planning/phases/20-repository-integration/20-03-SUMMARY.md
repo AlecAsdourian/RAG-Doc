@@ -24,6 +24,8 @@ tech-stack:
     - "Key a row's identity on what does not change. Keying on the installation broke the documented reinstall recovery, because the installation is exactly what a reinstall changes."
     - "A handler that talks to an external service takes an interface, not the concrete client — otherwise its success path is untestable and ships unexecuted"
     - "uuid.Parse is a parser, not a validator: canonicalise or refuse before a UUID from outside reaches Postgres"
+    - "A uniqueness rule the schema cannot express — one that spans a join — belongs in the handler, and the migration should say so rather than claim the index covers it"
+    - "A down migration that can be made impossible by the data its own up migration legalises must assert that first, with the recovery in the message. Relying on a later statement to fail gives the operator an error naming neither the rows nor the way out."
 
 key-files:
   created:
@@ -46,7 +48,7 @@ key-decisions:
   - "git_url stops being a key for GitHub-sourced rows (000011). For those it is DERIVED from github_repo_id, and a rename frees the old URL, so two rows can briefly hold the same stored URL. That must not be a 500 on an unrelated connect."
   - "The isolation scanner was fixed rather than worked around. Flattening the routes or planting a `/{id}` literal in the test would have turned the check green while leaving POST /api/repositories unchecked."
 
-issues-created: [ISS-015]
+issues-created: [ISS-015, ISS-016]
 issues-closed: []
 
 duration: ~1 hour
@@ -106,7 +108,33 @@ Fixed rather than worked around. Flattening the routes or planting a `/{id}` lit
 | Enclosing `Route`/`Mount` prefixes resolved from the file on disk | `DELETE /api/repositories/{id}`, not `/{id}` — the opener is usually a context line, so the prefix is not in the diff |
 | Coverage matches the full path or its static prefix | a test building `"/api/repositories/" + id` counts; a path that resolves to `/` never counts |
 
-Eight scanner mutations, each killed by exactly its own test. What remains is ISS-015: matching is still method-blind.
+What remains is ISS-015: matching is still method-blind.
+
+## Second review round: the scanner fix had two more holes, and the rollback was broken
+
+The first fix closed the nested-block hole and left two others open, both found by review.
+
+**H1 — `r.With(mw).Post(...)` was still invisible.** The receiver pattern required an identifier before the dot, and a middleware-wrapped call has `)` there. `router.go` writes `r.With(middleware.Timeout(…)).Route(…)` twice, so this was not hypothetical — a destructive route guarded by an admin check is exactly the shape most likely to be written that way, and it would have passed with no test. `r.Method("POST", …)` and `MethodFunc` were invisible for the same reason. Fixed, and the receiver is now `[\w)\]]`.
+
+**H2 — a new route nested under an already-tested prefix was covered for free.** Matching the leading static piece meant `POST /api/repositories/{id}/resync` reduced to `/api/repositories/`, which the existing DELETE test already contains. Phase 21's "sync now" endpoint is precisely that shape. The path is now split on every parameter and **all** its static segments must appear, so `/resync` has to show up too.
+
+**H3 — `migrate down 1` failed partway and left the version table dirty.** 000011 legalises rows 000010 forbade, so recreating the old keys can be impossible. The down file relied on those recreations to fail, with a comment claiming the constraint was "recreated last" so it would refuse rather than discard — wrong twice: golang-migrate runs the file in one transaction, so statement order decides nothing, and the operator got a bare "could not create unique index". There is now an assertion first, naming the offending groups and the recovery. Measured: refuses cleanly, nothing applied, `migrate force 11` restores `11 | f` and the database is usable.
+
+The verification table previously said `migrate up → down 1 → up | clean each time`. That was true **only on an empty database**, which is what I had tested.
+
+**M1/M2 — the same repository could still land twice in one organization.** 000011's index is per-project, and an organization may hold several projects; the migration's comment claimed the old guarantee was "preserved wherever it matters", which was false. A duplicate would be ingested twice in Phase 21. `Connect` now resolves an existing repository across **all** of the organization's projects before inserting, and also adopts a pre-API row with no GitHub id whose `git_url` matches — that one used to become a permanent duplicate that could never be synced.
+
+**M3 — the cascade test could not see an over-broad delete.** `WithTwoOrgs` gives orgA one repository, so `DELETE ... WHERE project_id = (…)` passed every assertion. orgA now has a second repository with its own chain, and it has to survive.
+
+**M5** — a comment in `repositories.go` still credited the `(installation_id, github_repo_id)` index that this commit's own migration drops.
+
+**M4 → ISS-016.** A relink re-queues a repository that is mid-`syncing`. There is no better answer available here (the in-flight run holds a token for an uninstalled App and will fail anyway), and no lease column to hand off with. The comment claiming it "must not stomp a 'syncing' run" was describing an intention, not the code. Phase 21 owns the fix.
+
+### A correction to this file's own mutation claim
+
+The line "Eight scanner mutations, each killed by exactly its own test" was not reproducible as written, and review measured that: four natural mutations survived the suite, and three of the eight killed four or five tests rather than one. Both halves of the claim were wrong.
+
+The survivors are now covered — a stack that never pops, prefixes recorded in the wrong order, test files not excluded from scanning, and a marker on a group opener reaching the routes inside it. Chasing the ordering one turned up a real bug: a complete one-line `r.Route("/x", func(r chi.Router) { r.Post("/y", h) })` was getting no prefix at all.
 
 ## Review round: seven more findings
 
@@ -135,11 +163,15 @@ The nil handling is deliberate: a nil `*github.Client` assigned to an interface 
 | `go build ./...`, `go vet ./...` | clean |
 | `go test -p 1 ./...` | all pass, from a container rebuilt from scratch |
 | `TestRepositoriesIsolation` | 6/6 |
-| `TestRepositoriesConnect` | 9/9 |
+| `TestRepositoriesConnect` | 11/11 |
 | `TestDeleteReportsTheWholeCascade` | pass |
-| `migrate up` → `down 1` → `up` on a scratch database | clean each time |
-| `pytest scripts/ci/test_check_isolation.py` | 18 pass |
+| `migrate up` → `down 1` → `up` on an EMPTY scratch database | clean each time, ends `11 \| f` |
+| `down 1` on a database holding rows 000011 legalises | refuses by design, names the offending groups, applies nothing; `force 11` recovers |
+| `pytest scripts/ci/test_check_isolation.py` | 27 pass |
 | CI isolation scanner | PASS — `POST /api/repositories` and `DELETE /api/repositories/{id}`, both now actually resolved and matched |
+
+`-race` was NOT run locally — this machine has no gcc, and `go test -race`
+requires cgo. CI runs it (`backend-ci.yml`).
 
 ### Mutation testing
 
@@ -148,8 +180,8 @@ Original three:
 | Mutation | Result |
 |---|---|
 | DELETE ignores `RowsAffected` (reports success for a cross-tenant delete) | scenario 3 fails, only 3 |
-| Connect skips the scoped installation check | scenario 4 fails, only 4 |
 | Get returns 500 rather than 404 for another tenant's repository | scenario 2 fails, only 2 |
+| ~~Connect skips the scoped installation check → scenario 4 fails, only 4~~ | **Stale, re-measured.** Scenario 4 now stays GREEN: the second-transaction re-read added in the first review round catches the cross-tenant case on its own. What fails instead is `WithoutCredentialsAvailabilityIsStillCheckedAfterAuthorization`. Two layers now guard that connect, which is the intent — but the row as written was no longer true. |
 
 Review round:
 
@@ -164,6 +196,29 @@ Review round:
 | Installation vanishing mid-connect is a 500 again | `InstallationDeletedMidConnectIs404Not500` fails, only it |
 | Feedback goes uncounted | `TestDeleteReportsTheWholeCascade` fails |
 | Page not truncated to `limit` | scenario 6 fails, only it |
+
+Second review round:
+
+| Mutation | Result |
+|---|---|
+| No org-wide adoption lookup | both `Adopts…` subtests fail |
+| Adoption matches `github_repo_id` only | `AdoptsALegacyRowWithTheSameURL…` fails, only it |
+| Adoption scoped to the default project | `AdoptsARowFromANonDefaultProject…` fails, only it |
+| DELETE takes every repository in the project | `TestDeleteReportsTheWholeCascade` fails (green before the sibling was seeded) |
+| `canonicalUUID` degraded to a bare `uuid.Parse` | `NonCanonicalUUIDs…`, `MalformedCursor…` fail |
+
+Scanner, eight mutations. Three kill several tests rather than one, which is recorded here rather than rounded off:
+
+| Mutation | Tests killed |
+|---|---|
+| Receiver requires an identifier again | `middleware_wrapped_routes` |
+| `Method`/`MethodFunc` pattern removed | `chi_method_and_methodfunc` |
+| Only the leading static segment required | `a_new_route_under_a_tested_prefix_is_not_free` |
+| Literals/comments not blanked before brace counting | `braces_inside_literals…`, `double_slash_route_literal` |
+| Prefix stack never pops | `braces_inside_literals…`, `route_after_a_closed_block` |
+| Prefix recorded before the line's own opener | `route_sharing_its_groups_line` |
+| Test files no longer excluded from scanning | `routes_registered_inside_a_test_file` |
+| Block openers stop being a skip boundary | `double_slash_route_literal` |
 
 Scenarios 3 and 4 assert on the resulting **row**, not the status code. Under RLS a cross-tenant write matches nothing rather than erroring, so a status-only assertion passes against a handler that did the wrong thing — the trap this project has fallen into before.
 

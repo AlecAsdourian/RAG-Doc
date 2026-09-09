@@ -36,7 +36,9 @@ is still there.
 
 To recover, reinstall the App and `POST /api/repositories` again with the
 new installation. That relinks the existing row rather than creating a
-second one, and moves it back to `pending`.
+second one, and moves it back to `pending` — including when the
+repository was mid-sync, so a run that was in flight against the old
+installation is superseded rather than waited for.
 
 **`archived` repositories still appear.** GitHub archived them; we do not
 filter. Worth a visual marker.
@@ -149,6 +151,12 @@ already in flight. The exception is a repository whose `installation_id`
 changed — it has to be fetched again through the new credential, so it
 returns to `pending`. **Do not show "queued" on the strength of having
 called this**; read the `sync_state` in the response.
+
+**One repository per organization, wherever it already lives.** Connecting
+a repository your organization has connected before returns that same row
+— even if it sits in a project other than the default, and even if it was
+connected before this API existed and carries no GitHub id yet. You will
+not get a duplicate, and the `id` you get back may not be new.
 
 | Status | Meaning |
 |---|---|

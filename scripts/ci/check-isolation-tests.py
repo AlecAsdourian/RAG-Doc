@@ -56,20 +56,44 @@ from typing import Iterable
 # `endpoint_skip_reason` to find registration boundaries — where an
 # unchanged route sitting between a skip marker and an endpoint is every
 # bit as much a boundary as an added one.
+#
+# The receiver is `[\w)\]]`, not an identifier. `r.With(mw).Post("/x", h)`
+# has a `)` before the dot, and requiring an identifier there made the
+# scanner blind to middleware-wrapped routes — the idiom router.go itself
+# uses for every timeout-wrapped group. A destructive route guarded by an
+# admin check is exactly the shape most likely to be written that way.
 _GO_METHOD_CALL = re.compile(
-    r'\b(?:[A-Za-z_][A-Za-z0-9_]*)\.(Post|Put|Patch|Delete)\s*\(\s*"([^"]+)"'
+    r'[\w)\]]\s*\.\s*(Post|Put|Patch|Delete)\s*\(\s*"([^"]+)"'
 )
 _GO_HANDLE_FUNC = re.compile(
     r'HandleFunc\s*\(\s*"(POST|PUT|PATCH|DELETE)\s+([^"]+)"'
+)
+# `r.Method("POST", "/x", h)` / `r.MethodFunc(http.MethodDelete, "/y", h)`
+# — chi's explicit form, invisible to the shorthand pattern above.
+_GO_METHOD_STRING = re.compile(
+    r'\.\s*Method(?:Func)?\s*\(\s*'
+    r'(?:"(POST|PUT|PATCH|DELETE)"|http\.Method(Post|Put|Patch|Delete))'
+    r'\s*,\s*"([^"]+)"'
 )
 _PY_DECORATOR = re.compile(
     r'@\w+\.(post|put|patch|delete)\s*\(\s*[\'"]([^\'"]+)[\'"]'
 )
 
 ENDPOINT_PATTERNS: dict[str, list[re.Pattern[str]]] = {
-    "go": [_GO_METHOD_CALL, _GO_HANDLE_FUNC],
+    "go": [_GO_METHOD_CALL, _GO_HANDLE_FUNC, _GO_METHOD_STRING],
     "python": [_PY_DECORATOR],
 }
+
+
+def _method_and_path(m: re.Match[str]) -> tuple[str, str]:
+    """Pull (METHOD, path) out of a match.
+
+    Patterns may carry alternatives that leave some groups None (the two
+    spellings of a chi `Method` call), so read the surviving groups
+    positionally: method first, path last.
+    """
+    groups = [g for g in m.groups() if g is not None]
+    return groups[0].upper(), groups[-1]
 
 # `@skip-isolation-test: reason`. The reason must contain at least one
 # non-space character; an empty or whitespace-only reason is refused.
@@ -266,14 +290,49 @@ def _parens_balanced(text: str) -> bool:
     return text.count("(") <= text.count(")")
 
 
-# `//` that is not the `//` of a scheme (`https://`). Naive, but it keeps a
-# URL literal from truncating a line before its braces are counted.
-_GO_LINE_COMMENT = re.compile(r'(?<!:)//')
+# Go literals and comments, stripped before any brace or comment scan.
+#
+# Every one of these can carry a brace or a `//` that is not code:
+# `w.Write([]byte("}"))` pops the prefix stack early, a raw string holding
+# `{"a":` pushes and never pops, `/* shape: { id */` does the same, and a
+# route literal of `"//v2"` looks like a comment opener. Blanking their
+# contents (keeping length is unnecessary; only the braces matter) makes
+# the scan see code and nothing else.
+_GO_NONCODE = re.compile(
+    r'"(?:\\.|[^"\\])*"'   # interpreted string
+    r"|'(?:\\.|[^'\\])*'"  # rune
+    r'|`[^`]*`'            # raw string
+    r'|/\*.*?\*/',         # block comment
+    re.DOTALL,
+)
+_GO_LINE_COMMENT = re.compile(r'//')
+
+
+def _blank_go_noncode(source: str) -> str:
+    """Blank the CONTENTS of literals and block comments across a whole
+    file, preserving newlines so line numbers still line up.
+
+    Applied to the whole source rather than per line, because a raw string
+    or a block comment can span lines — and a `{` inside one is exactly
+    what desynchronises a per-line brace count.
+    """
+    def repl(m: re.Match[str]) -> str:
+        return "".join("\n" if ch == "\n" else " " for ch in m.group(0))
+
+    return _GO_NONCODE.sub(repl, source)
 
 
 def _strip_line_comment(text: str) -> str:
-    m = _GO_LINE_COMMENT.search(text)
-    return text[: m.start()] if m else text
+    """Drop a trailing `//` comment without disturbing string literals.
+
+    Used where the surviving text still has to READ correctly (the
+    block-opener check), so literals are put back rather than blanked.
+    """
+    spans = [(m.start(), m.end()) for m in _GO_NONCODE.finditer(text)]
+    for m in _GO_LINE_COMMENT.finditer(text):
+        if not any(lo <= m.start() < hi for lo, hi in spans):
+            return text[: m.start()]
+    return text
 
 
 # A trailing `func(...) {` — the shape of every chi sub-router opener
@@ -315,11 +374,16 @@ def route_prefixes(repo_root: Path, rel_path: str) -> dict[int, str]:
     test will ever contain, and one that tells a reader nothing in the PR
     comment either.
 
-    Brace counting is the same cheap approximation `_parens_balanced` is.
-    It is accurate for route tables and wrong in the presence of a brace
-    inside a string literal; the failure mode is a wrong prefix on a
-    reported endpoint, which surfaces as a spurious FAIL rather than a
-    silent pass.
+    Brace counting is a cheap approximation, but not a naive one: string
+    literals, rune literals, raw strings and block comments are blanked
+    across the whole file first, so `w.Write([]byte("}"))` and a raw
+    string holding `{"a":` no longer desynchronise the stack. What is
+    still approximate is anything that puts an unbalanced brace in real
+    code, which Go does not permit.
+
+    Braces are counted on the blanked text; the Route path is read from
+    the ORIGINAL line, since blanking would erase the very literal being
+    extracted.
     """
     key = (str(repo_root), rel_path)
     cached = _PREFIX_CACHE.get(key)
@@ -333,20 +397,34 @@ def route_prefixes(repo_root: Path, rel_path: str) -> dict[int, str]:
         _PREFIX_CACHE[key] = prefixes
         return prefixes
 
+    blanked = _blank_go_noncode(source).splitlines()
     stack: list[tuple[int, str]] = []  # (brace depth when opened, prefix)
     depth = 0
     for line_no, line in enumerate(source.splitlines(), start=1):
-        code = _strip_line_comment(line)
-
-        # Recorded BEFORE this line's own opener is pushed: a route
-        # registered on the opener line itself is outside its own prefix.
-        prefixes[line_no] = "".join(p for _, p in stack)
+        code = blanked[line_no - 1] if line_no <= len(blanked) else ""
+        m = _GO_LINE_COMMENT.search(code)
+        if m:
+            code = code[: m.start()]
+            line = line[: m.start()]
 
         opened = code.count("{")
         closed = code.count("}")
-        route = _GO_ROUTE_PREFIX.search(code)
+        route = _GO_ROUTE_PREFIX.search(line)
+        base = "".join(p for _, p in stack)
+
         if route and opened > closed:
+            # Opens a group. A route sharing this line is INSIDE it, so
+            # the line gets the new prefix too.
             stack.append((depth, route.group(1)))
+            prefixes[line_no] = base + route.group(1)
+        elif route and opened and opened == closed:
+            # A complete one-line group: `r.Route("/x", func(r chi.Router)
+            # { r.Post("/y", h) })`. Nothing is pushed, because the block
+            # is over by end of line — but its routes still live under it.
+            prefixes[line_no] = base + route.group(1)
+        else:
+            prefixes[line_no] = base
+
         depth += opened - closed
         while stack and depth <= stack[-1][0]:
             stack.pop()
@@ -388,7 +466,7 @@ def added_endpoints(hunk: Hunk, repo_root: Path) -> Iterable[tuple[Endpoint, int
         seen: set[tuple[str, str]] = set()
         for pat in ENDPOINT_PATTERNS[hunk.lang]:
             for m in pat.finditer(content):
-                method, raw_path = m.group(1).upper(), m.group(2)
+                method, raw_path = _method_and_path(m)
                 if (method, raw_path) in seen:
                     continue
                 seen.add((method, raw_path))
@@ -433,6 +511,13 @@ def endpoint_skip_reason(hunk: Hunk, endpoint_idx: int) -> str | None:
             # A different route registration boundary — do not cross it.
             if any(p.search(raw) for p in patterns):
                 return None
+            # So is the line that OPENS the enclosing block. A marker on
+            # `r.Route("/x", func(r chi.Router) { // @skip…` describes the
+            # group, not the routes nested inside it, and letting it reach
+            # them is the "one marker, many endpoints" hole this window
+            # exists to prevent.
+            if hunk.lang == "go" and _opens_block(raw):
+                return None
         m = SKIP_MARKER.search(raw)
         if m:
             reason = m.group(1).strip()
@@ -457,39 +542,47 @@ def collect_test_file_paths(diff_text: str) -> set[str]:
     return paths
 
 
+_PATH_PARAM = re.compile(r'\{[^}]*\}')
+
+
 def coverage_needles(endpoint: Endpoint) -> list[str]:
-    """The strings whose presence in a test file counts as coverage.
+    """The literal path is one needle; EVERY static segment is another.
 
-    The full path, then its STATIC PREFIX — everything before the first
-    path parameter. A Go test drives `DELETE /api/repositories/{id}` by
-    building `"/api/repositories/" + id`, so the literal `{id}` appears
-    nowhere; requiring it would mean no parameterised route could ever be
-    covered.
+    A Go test drives `DELETE /api/repositories/{id}` by building
+    `"/api/repositories/" + id`, so the literal `{id}` appears nowhere and
+    demanding it would make parameterised routes permanently uncoverable.
+    The answer is to split the path on its parameters and require ALL the
+    non-trivial static pieces to appear.
 
-    A path of `/` yields nothing, so an endpoint whose full path could not
-    be resolved past the root is reported as missing rather than matched by
-    every file in the repository. Same for a static prefix of `/`.
+    Requiring only the leading piece — the first version of this — handed
+    a free pass to every new route nested under an already-tested prefix.
+    `POST /api/repositories/{id}/resync` reduced to `/api/repositories/`,
+    which the existing DELETE test already contains, so a brand-new
+    mutation endpoint went green with no test at all. Splitting on every
+    parameter means `/resync` has to show up too.
 
-    Known limitation: this is method-blind. A test that only exercises
-    `GET /api/things` marks a newly added `POST /api/things` as covered.
-    The scanner is a ratchet against forgetting, not a proof of coverage.
+    Returns an empty list when nothing non-trivial survives (`/`,
+    `/{id}`), so such an endpoint is reported missing rather than matched
+    by every file in the repository.
+
+    Known limitation: this is method-blind (ISS-015). A test that only
+    exercises `GET /api/things` marks a newly added `POST /api/things` as
+    covered. A ratchet against forgetting, not a proof of coverage.
     """
-    if endpoint.path == "/":
+    segments = [s for s in _PATH_PARAM.split(endpoint.path) if len(s) > 1]
+    if not segments:
         return []
-    needles = [endpoint.path]
-    static = endpoint.path.split("{", 1)[0]
-    if static != endpoint.path and len(static) > 1:
-        needles.append(static)
-    return needles
+    return [endpoint.path, *segments]
 
 
 def test_files_reference(
     paths: set[str], endpoint: Endpoint, repo_root: Path
 ) -> bool:
-    """True if any of the given test files references the endpoint."""
+    """True if any test file carries the literal path, or all its segments."""
     needles = coverage_needles(endpoint)
     if not needles:
         return False
+    literal, segments = needles[0], needles[1:]
     for rel in paths:
         target = repo_root / rel
         if not target.exists():
@@ -499,7 +592,7 @@ def test_files_reference(
             text = target.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        if any(n in text for n in needles):
+        if literal in text or all(s in text for s in segments):
             return True
     return False
 
