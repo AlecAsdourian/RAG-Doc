@@ -1,6 +1,7 @@
 package api
 
 import (
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -23,6 +24,27 @@ import (
 type Config struct {
 	LogJSON  bool
 	LogLevel slog.Level
+
+	// LogWriter redirects request logging. Nil means stderr, as in
+	// production. A test sets it to assert on what actually reaches a
+	// log — the only way to hold "this credential is never rendered",
+	// since that depends on which field the logger chooses to print
+	// rather than on any function we control.
+	LogWriter io.Writer
+
+	// GitHubInstallations, InstallStates, GitHubAppSlug and FrontendURL
+	// override the installation flow's dependencies. Left unset in
+	// production, where they come from the environment and from Redis.
+	//
+	// The seams exist because the install flow's security is entirely in
+	// the ORDER of its checks — state consumed before GitHub is called,
+	// ownership proven before GitHub is called — and nothing can assert an
+	// order it cannot observe. Requiring live Redis and a live GitHub App
+	// to test that would mean it went untested.
+	GitHubInstallations handlers.GitHubInstallationClient
+	InstallStates       handlers.InstallStateStore
+	GitHubAppSlug       string
+	FrontendURL         string
 
 	// GitHubRepositories overrides the GitHub client the repositories
 	// handler talks to. Left nil in production, where the client is built
@@ -100,6 +122,7 @@ func NewRouterWithValidatorAndAdmin(
 		Concise:         true,
 		RequestHeaders:  true,
 		ResponseHeaders: false,
+		Writer:          cfg.LogWriter,
 	})
 
 	// Initialize webhook handler. The secret is required at construction
@@ -172,11 +195,82 @@ func NewRouterWithValidatorAndAdmin(
 	}
 	repositoriesHandler := handlers.NewRepositoriesHandler(tenantScoper, repositoryGitHub, validate)
 
+	// GitHub App installation flow (20-04).
+	//
+	// GITHUB_APP_SLUG is required WHENEVER the App is configured, and the
+	// panic is deliberate. The slug only appears in a redirect URL, so a
+	// wrong or empty one produces a 302 to a GitHub 404 — a failure that
+	// surfaces as a user saying "the button is broken", days later, with
+	// nothing in our logs. The 19-01 fail-closed rule: a deployment that
+	// has credentials but cannot use them should say so at startup.
+	appSlug := cfg.GitHubAppSlug
+	if appSlug == "" {
+		appSlug = os.Getenv("GITHUB_APP_SLUG")
+	}
+	if githubClient != nil && appSlug == "" {
+		panic("api: GITHUB_APP_ID is set but GITHUB_APP_SLUG is not; " +
+			"the install redirect would point at a nonexistent GitHub App")
+	}
+	// Same rule, same reason. An App configured without client credentials
+	// cannot run the user-authorization leg, so every installation attempt
+	// refuses — and `.env.example` calls them required. A deployment that
+	// has credentials but cannot use them should say so at startup rather
+	// than at the first user's first click.
+	//
+	// Scoped to `githubClient != nil` so a machine with no App at all
+	// still boots, which is the shape every test and most dev checkouts
+	// have.
+	if githubClient != nil && !githubClient.UserAuthConfigured() {
+		panic("api: GITHUB_APP_ID is set but GITHUB_APP_CLIENT_ID / " +
+			"GITHUB_APP_CLIENT_SECRET are not; the install callback cannot verify " +
+			"that a user controls the installation they name, and refuses to link " +
+			"anything without that proof")
+	}
+
+	// Where the callback sends the browser afterwards. Not a security
+	// boundary — it is our own frontend, and the callback never reflects
+	// anything caller-supplied into it — but a bad value strands the user
+	// on a blank page after a successful install.
+	frontendURL := cfg.FrontendURL
+	if frontendURL == "" {
+		frontendURL = os.Getenv("FRONTEND_URL")
+	}
+	if frontendURL == "" {
+		frontendURL = "http://localhost:5173"
+	}
+
+	// Redis is only dialled when nothing was injected. Calling
+	// NewStateStore unconditionally would make every test that supplies
+	// its own store still depend on a live Redis.
+	installStates := cfg.InstallStates
+	if installStates == nil {
+		if stateStore, err := auth.NewStateStore(); err == nil {
+			installStates = stateStore
+		} else {
+			slog.Warn("state store unavailable; the GitHub App install flow will refuse to "+
+				"start an installation rather than begin one it cannot finish",
+				slog.String("error", err.Error()))
+		}
+	}
+
+	// Same typed-nil trap as the repositories handler: a nil *github.Client
+	// assigned to an interface makes the interface non-nil.
+	installGitHub := cfg.GitHubInstallations
+	if installGitHub == nil && githubClient != nil {
+		installGitHub = githubClient
+	}
+	githubInstallHandler := handlers.NewGitHubInstallHandler(
+		tenantScoper, installStates, installGitHub, appSlug, frontendURL)
+
 	r := chi.NewRouter()
 
 	// Middleware chain - order matters!
 	// 1. Request ID (first - generates correlation ID)
 	r.Use(middleware.RequestID)
+	// 1b. Scrub credential-bearing query strings BEFORE the logger sees
+	//     them. Must precede httplog.RequestLogger — chi middleware wraps
+	//     in registration order.
+	r.Use(scrubSensitiveQuery)
 	// 2. Logger (logs start/end with request ID)
 	r.Use(httplog.RequestLogger(logger))
 	// 3. Recoverer (catches panics, logs them)
@@ -226,19 +320,26 @@ func NewRouterWithValidatorAndAdmin(
 	// provisioning a non-UUID identity column and routing them through the
 	// same post-provision org-context push the webhook uses.
 	//
-	// The StateStore probe stays because it still reports a genuine
-	// configuration gap, and Phase 20's GitHub App flow will want it.
-	if stateStore, err := auth.NewStateStore(); err == nil {
-		// Close it. NewStateStore dials Redis and leaves a pooled client
-		// with background goroutines behind; this probe only wants the
-		// reachability answer, and routers are constructed per test.
-		_ = stateStore.Close()
-		slog.Info("state store reachable; direct OAuth routes remain unmounted (ISS-011)")
-	} else {
-		slog.Warn("state store unavailable (OAuth CSRF protection would be unavailable "+
-			"if direct OAuth routes were mounted; see ISS-011)",
-			slog.String("error", err.Error()))
-	}
+	// The ISS-011 StateStore probe is gone: 20-04 gave the state store a
+	// real consumer, so the install flow's own wiring reports its
+	// availability, and a probe that dialled Redis purely to log about it
+	// cost every router construction a full connect timeout.
+
+	// GitHub App callback — PUBLIC, and that is the whole point.
+	//
+	// Verified 2026-09-08 against the live App: a browser following
+	// GitHub's redirect sends no Authorization header, so this path inside
+	// the authenticated group returns 401 to every real installation. It
+	// fails 100% of the time, not intermittently, which is why the plan
+	// calls the mount point out before the handler.
+	//
+	// No @skip-isolation-test marker: the scanner only inspects
+	// POST/PUT/PATCH/DELETE, so a marker here would assert a gate that
+	// never looks at this line. Its tenant scoping is covered by
+	// TestGitHubInstallFlow scenarios 3, 4, 7 and 9 instead — a state
+	// token rather than a JWT is what carries the organization, so a JWT
+	// is not the thing to assert on.
+	r.With(middleware.Timeout(30*time.Second)).Get("/api/github/callback", githubInstallHandler.Callback)
 
 	// User-scoped routes: authenticated, but deliberately NOT behind
 	// TenantMiddleware.
@@ -288,6 +389,16 @@ func NewRouterWithValidatorAndAdmin(
 				r.Get("/{id}", repositoriesHandler.Get)
 				r.Delete("/{id}", repositoriesHandler.Delete)
 			})
+
+			// GitHub App install entry point and installation browsing.
+			// Tenant-scoped: the state token minted here carries the
+			// caller's organization, and the repository listing reads
+			// `github_installations`, which carries RLS.
+			r.Route("/github", func(r chi.Router) {
+				r.Get("/install", githubInstallHandler.Install)
+				r.Get("/installations", githubInstallHandler.ListInstallations)
+				r.Get("/installations/{id}/repositories", githubInstallHandler.ListRepositories)
+			})
 		})
 
 		// SSE streaming route - no timeout middleware (streams are long-lived)
@@ -302,6 +413,60 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	render.JSON(w, r, map[string]string{
 		"status":  "ok",
 		"service": "backend-api",
+	})
+}
+
+// sensitiveQueryPaths are request paths whose query string carries a
+// credential, keyed to the parameters to blank.
+//
+// `/api/github/callback` carries the GitHub user-authorization `code` —
+// the credential the whole installation-takeover fix rests on — and the
+// `state` token. Both were being written to the application log in full
+// by httplog, which builds its `url` field from r.RequestURI.
+//
+// That was cosmetic until 20-04. It is not now: the `missing_state` path
+// refuses BEFORE exchanging the code, so a victim's code stays valid for
+// its full lifetime while sitting in our logs, where anyone with log
+// access could replay it and take over that installation. httplog already
+// masks the Authorization header to `***`, so this codebase agrees these
+// are secrets; the query string was simply the gap.
+var sensitiveQueryPaths = map[string][]string{
+	"/api/github/callback": {"code", "state"},
+}
+
+// scrubSensitiveQuery blanks credential parameters in the REQUEST URI —
+// the string loggers render — while leaving r.URL intact so handlers
+// still read the real values.
+//
+// Deliberately not `r.URL.RawQuery`: the handler needs it. This depends
+// on loggers rendering RequestURI rather than reconstructing from URL,
+// which is why TestCallbackCredentialsDoNotReachTheLog asserts on
+// captured log output rather than on this function.
+func scrubSensitiveQuery(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		params, sensitive := sensitiveQueryPaths[r.URL.Path]
+		if !sensitive || r.URL.RawQuery == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		scrubbed := r.URL.Query()
+		changed := false
+		for _, key := range params {
+			if scrubbed.Has(key) {
+				scrubbed.Set(key, "[REDACTED]")
+				changed = true
+			}
+		}
+		if !changed {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		safe := *r.URL
+		safe.RawQuery = scrubbed.Encode()
+		r.RequestURI = safe.RequestURI()
+		next.ServeHTTP(w, r)
 	})
 }
 

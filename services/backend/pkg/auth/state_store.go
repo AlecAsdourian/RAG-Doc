@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -46,10 +47,9 @@ func NewStateStore() (*StateStore, error) {
 // StoreState stores an OAuth state token in Redis with TTL
 // Key format: "oauth:state:{token}"
 func (s *StateStore) StoreState(ctx context.Context, state string) error {
-	key := fmt.Sprintf("oauth:state:%s", state)
-
-	// Store with TTL (value doesn't matter, we just check existence)
-	err := s.client.Set(ctx, key, "1", s.ttl).Err()
+	// Store with TTL. Value is a placeholder; StoreStateValue is the
+	// variant that carries one.
+	err := s.client.Set(ctx, stateKey(state), "1", s.ttl).Err()
 	if err != nil {
 		return fmt.Errorf("failed to store state: %w", err)
 	}
@@ -57,31 +57,54 @@ func (s *StateStore) StoreState(ctx context.Context, state string) error {
 	return nil
 }
 
-// ValidateState checks if a state token exists in Redis and deletes it (single-use)
-// Returns true if state is valid, false otherwise
+// StoreStateValue stores a state token carrying a payload.
+//
+// The GitHub App install flow (20-04) binds the caller's organization to
+// the token here, so the callback can recover it WITHOUT trusting a query
+// parameter or the caller's current claim. The token is the only thing
+// that survives the round trip through GitHub.
+func (s *StateStore) StoreStateValue(ctx context.Context, state, value string) error {
+	if err := s.client.Set(ctx, stateKey(state), value, s.ttl).Err(); err != nil {
+		return fmt.Errorf("failed to store state: %w", err)
+	}
+	return nil
+}
+
+// ConsumeState atomically reads a state token and destroys it, returning
+// the payload stored with it.
+//
+// GETDEL, not EXISTS-then-DEL. The earlier implementation did the latter,
+// which is check-then-act: two callbacks presenting the same token could
+// both observe it as present and both proceed, which is precisely the
+// replay that single-use exists to prevent. It also returned `true` when
+// the delete failed, with a comment reasoning that reuse-once beat
+// blocking a valid user — a defensible trade for a login button, and the
+// wrong one for a token that authorises linking a tenant to a GitHub
+// installation.
+func (s *StateStore) ConsumeState(ctx context.Context, state string) (string, bool, error) {
+	value, err := s.client.GetDel(ctx, stateKey(state)).Result()
+	if errors.Is(err, redis.Nil) {
+		// Expired, never issued, or already used. Indistinguishable on
+		// purpose: all three mean "do not proceed".
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("failed to consume state: %w", err)
+	}
+	return value, true, nil
+}
+
+// ValidateState reports whether a state token was valid, consuming it.
+//
+// Retained for the direct-OAuth handlers. It is now a thin wrapper over
+// ConsumeState so those inherit the atomic single-use guarantee too.
 func (s *StateStore) ValidateState(ctx context.Context, state string) (bool, error) {
-	key := fmt.Sprintf("oauth:state:%s", state)
+	_, ok, err := s.ConsumeState(ctx, state)
+	return ok, err
+}
 
-	// Check if key exists
-	exists, err := s.client.Exists(ctx, key).Result()
-	if err != nil {
-		return false, fmt.Errorf("failed to check state: %w", err)
-	}
-
-	if exists == 0 {
-		// State doesn't exist (expired or never created)
-		return false, nil
-	}
-
-	// Delete state (single-use token)
-	err = s.client.Del(ctx, key).Err()
-	if err != nil {
-		// Log error but still return true (state was valid)
-		// Worst case: state can be reused once (better than blocking valid user)
-		return true, fmt.Errorf("state valid but failed to delete: %w", err)
-	}
-
-	return true, nil
+func stateKey(state string) string {
+	return fmt.Sprintf("oauth:state:%s", state)
 }
 
 // Close closes the Redis connection

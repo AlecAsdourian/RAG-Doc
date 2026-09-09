@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -31,6 +32,9 @@ import (
 
 const (
 	defaultBaseURL = "https://api.github.com"
+
+	// The OAuth endpoints live on github.com, not api.github.com.
+	defaultOAuthBaseURL = "https://github.com"
 
 	// GitHub rejects an App JWT with more than 10 minutes of life. Nine
 	// leaves room for clock skew without brushing the limit.
@@ -50,10 +54,18 @@ const (
 
 // Client talks to GitHub as the App.
 type Client struct {
-	appID      string
-	privateKey *rsa.PrivateKey
-	baseURL    string
-	httpClient *http.Client
+	appID        string
+	privateKey   *rsa.PrivateKey
+	baseURL      string
+	oauthBaseURL string
+	httpClient   *http.Client
+
+	// Client credentials for the user-authorization leg. Optional at
+	// construction; without them the callback refuses to link anything,
+	// because it cannot prove the person completing it has any authority
+	// over the installation they named.
+	clientID     string
+	clientSecret string
 
 	mu        sync.Mutex
 	tokens    map[int64]cachedToken
@@ -119,9 +131,12 @@ func NewClient(appID, privateKeyPath string) (*Client, error) {
 	}
 
 	return &Client{
-		appID:      appID,
-		privateKey: key,
-		baseURL:    defaultBaseURL,
+		appID:        appID,
+		privateKey:   key,
+		baseURL:      defaultBaseURL,
+		oauthBaseURL: defaultOAuthBaseURL,
+		clientID:     os.Getenv("GITHUB_APP_CLIENT_ID"),
+		clientSecret: os.Getenv("GITHUB_APP_CLIENT_SECRET"),
 		httpClient: &http.Client{
 			Timeout: requestTimeout,
 			// Never follow a redirect. Requests carry an App JWT or an
@@ -360,6 +375,200 @@ func (c *Client) ListInstallationRepositories(ctx context.Context, installationI
 			"truncated list", installationID, maxPages*100)
 }
 
+// ListInstallationRepositoriesPage returns ONE page, and whether another
+// follows.
+//
+// The accumulating variant above is right when the caller needs the whole
+// set to search it (connecting a repository by id). It is wrong when the
+// caller is feeding a picker: an installation with 5,000 repositories
+// would become a 5,000-row response built from 50 sequential round trips
+// to GitHub, on one HTTP request's budget.
+//
+// `hasNext` comes from the page being full rather than from parsing the
+// Link header. GitHub sends `rel="next"` and that would be more precise,
+// but a full last page then costs one extra empty request — which is the
+// cheap failure. Misreading a Link header is the expensive one.
+func (c *Client) ListInstallationRepositoriesPage(
+	ctx context.Context, installationID int64, page, perPage int,
+) (repos []Repository, hasNext bool, err error) {
+	if page < 1 {
+		page = 1
+	}
+	if perPage < 1 || perPage > 100 {
+		perPage = 100
+	}
+
+	token, err := c.InstallationToken(ctx, installationID)
+	if err != nil {
+		return nil, false, err
+	}
+
+	var out struct {
+		TotalCount   int          `json:"total_count"`
+		Repositories []Repository `json:"repositories"`
+	}
+	endpoint := fmt.Sprintf("%s/installation/repositories?per_page=%d&page=%d",
+		c.baseURL, perPage, page)
+	if err := c.do(ctx, http.MethodGet, endpoint, token, &out); err != nil {
+		return nil, false, fmt.Errorf("github: list repositories page %d for installation %d: %w",
+			page, installationID, err)
+	}
+	return out.Repositories, len(out.Repositories) == perPage, nil
+}
+
+// ErrUserAuthUnavailable means the App has no client credentials, so the
+// user-authorization leg cannot run.
+var ErrUserAuthUnavailable = errors.New(
+	"github: GITHUB_APP_CLIENT_ID / GITHUB_APP_CLIENT_SECRET are not set; " +
+		"cannot verify that a user controls the installation they named")
+
+// UserAuthConfigured reports whether the client can run the
+// user-authorization leg at all.
+func (c *Client) UserAuthConfigured() bool {
+	return c.clientID != "" && c.clientSecret != ""
+}
+
+// VerifyUserControlsInstallation is the check that makes the install
+// callback an authorization boundary rather than a form.
+//
+// WHY THIS EXISTS. `GET /app/installations/{id}` authenticates as the APP,
+// so it succeeds for every installation of our App — it proves the
+// installation is real, and nothing whatsoever about who is asking. A
+// callback that stopped there let any authenticated user claim any
+// installation that was not yet linked, simply by naming its id: install
+// from GitHub's own button (which sends no `state`, so we refuse and
+// leave it unlinked), then have an attacker complete the callback with
+// their own state token and the victim's installation id. The attacker's
+// organization then owns the link, and 20-03's connect endpoint will
+// happily ingest the victim's private repositories through it.
+//
+// The fix is the leg GitHub provides for exactly this: with "Request user
+// authorization (OAuth) during installation" enabled, the setup redirect
+// also carries a `code`. Exchanging it yields a USER-to-server token, and
+// `GET /user/installations` under that token lists only the installations
+// that user can actually see. If the named installation is not in it, the
+// person completing the callback does not control it.
+//
+// Returns nil only when the user demonstrably controls the installation.
+func (c *Client) VerifyUserControlsInstallation(
+	ctx context.Context, code string, installationID int64,
+) error {
+	if !c.UserAuthConfigured() {
+		return ErrUserAuthUnavailable
+	}
+	if strings.TrimSpace(code) == "" {
+		return errors.New("github: no user authorization code on the callback")
+	}
+
+	userToken, err := c.exchangeUserCode(ctx, code)
+	if err != nil {
+		return err
+	}
+
+	ok, err := c.userHasInstallation(ctx, userToken, installationID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf(
+			"github: the authorizing user does not have access to installation %d",
+			installationID)
+	}
+	return nil
+}
+
+// exchangeUserCode trades a setup `code` for a user-to-server token.
+func (c *Client) exchangeUserCode(ctx context.Context, code string) (string, error) {
+	form := url.Values{
+		"client_id":     {c.clientID},
+		"client_secret": {c.clientSecret},
+		"code":          {code},
+	}
+	endpoint := c.oauthBaseURL + "/login/oauth/access_token"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint,
+		strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", fmt.Errorf("github: build token exchange request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("github: token exchange: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("github: read token exchange response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		// REDACT BY VALUE, not just by prefix.
+		//
+		// This request carries its credentials in the BODY, not a header,
+		// and `redactSecrets` only knows token prefixes — a GitHub App
+		// client secret has none. Measured: an upstream that echoes the
+		// request body (the proxy/WAF case redactSecrets exists for) put
+		// `client_secret=…&code=…` verbatim into this error, which the
+		// callback then logs.
+		return "", fmt.Errorf("github: token exchange returned %d: %s",
+			resp.StatusCode,
+			redactValues(c.redactSecrets(string(body)), c.clientSecret, c.clientID, code))
+	}
+
+	var out struct {
+		AccessToken      string `json:"access_token"`
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return "", fmt.Errorf("github: decode token exchange response: %w", err)
+	}
+	// GitHub answers 200 with an `error` field for a bad or reused code.
+	if out.Error != "" {
+		return "", fmt.Errorf("github: token exchange refused: %s", out.Error)
+	}
+	if out.AccessToken == "" {
+		return "", errors.New("github: token exchange returned no access token")
+	}
+	return out.AccessToken, nil
+}
+
+// userHasInstallation asks whether the token's owner can see the
+// installation.
+func (c *Client) userHasInstallation(
+	ctx context.Context, userToken string, installationID int64,
+) (bool, error) {
+	// Bounded like ListInstallationRepositories, and for the same reason.
+	const maxPages = 20
+	for page := 1; page <= maxPages; page++ {
+		var out struct {
+			TotalCount    int            `json:"total_count"`
+			Installations []Installation `json:"installations"`
+		}
+		endpoint := fmt.Sprintf("%s/user/installations?per_page=100&page=%d", c.baseURL, page)
+		if err := c.do(ctx, http.MethodGet, endpoint, userToken, &out); err != nil {
+			return false, fmt.Errorf("github: list user installations: %w", err)
+		}
+		for _, inst := range out.Installations {
+			if inst.ID == installationID {
+				return true, nil
+			}
+		}
+		if len(out.Installations) < 100 {
+			return false, nil
+		}
+	}
+	// FAIL CLOSED. Returning true here would accept an installation we
+	// never actually found; returning false would claim absence from a
+	// list we know is truncated. Neither is honest, so this errors.
+	return false, fmt.Errorf(
+		"github: user has more than %d installations; cannot confirm access to %d",
+		maxPages*100, installationID)
+}
+
 // do issues an authenticated request and decodes a JSON response.
 //
 // No retries. Phase 24 owns rate limiting, and a naive retry against
@@ -409,12 +618,29 @@ func (c *Client) do(ctx context.Context, method, url, bearer string, out any) er
 // 2026-09-08) rather than by value, because the token in flight is not
 // necessarily the one cached.
 func (c *Client) redactSecrets(s string) string {
-	for _, prefix := range []string{"ghs_", "ghu_"} {
+	// `gho_` is a user-to-server OAuth token; `ghr_` its refresh token,
+	// which the exchange returns when "expire user authorization tokens"
+	// is enabled on the App. A prefix this list does not know about is a
+	// prefix that reaches a log intact.
+	for _, prefix := range []string{"ghs_", "ghu_", "gho_", "ghr_"} {
 		s = redactPrefixed(s, prefix)
 	}
 	// An App JWT is three base64url segments; redact anything that looks
 	// like one rather than trying to match the exact string.
 	return redactJWTs(s)
+}
+
+// redactValues removes exact strings, for secrets with no recognisable
+// shape. Short values are skipped: redacting a two-character string would
+// shred the surrounding text without protecting anything.
+func redactValues(s string, values ...string) string {
+	for _, v := range values {
+		if len(v) < 8 {
+			continue
+		}
+		s = strings.ReplaceAll(s, v, "[REDACTED]")
+	}
+	return s
 }
 
 func redactPrefixed(s, prefix string) string {

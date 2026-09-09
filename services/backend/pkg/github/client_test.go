@@ -9,10 +9,12 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -381,4 +383,211 @@ func TestDo_DoesNotFollowRedirects(t *testing.T) {
 	_, err := c.GetInstallation(context.Background(), 1)
 	require.Error(t, err, "a redirect must surface as an error, not be followed")
 	assert.False(t, targetSawAuth, "credentials must never reach a redirect target")
+}
+
+// --- 20-04: the user-authorization leg and page-wise listing ---
+
+// TestVerifyUserControlsInstallation_RefusesAnInstallationTheUserCannotSee
+// is the unit-level guard for the takeover found in PR #22's review.
+//
+// The app-level endpoint proves an installation is real; only this check
+// proves the caller controls it.
+func TestVerifyUserControlsInstallation_RefusesAnInstallationTheUserCannotSee(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/login/oauth/access_token":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"access_token":"gho_usertoken","token_type":"bearer"}`)
+		case "/user/installations":
+			// The user can see 42; they are asking about 99.
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"total_count":1,"installations":[{"id":42}]}`)
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	c.oauthBaseURL = srv.URL
+	c.clientID, c.clientSecret = "iv1.test", "secret"
+
+	require.NoError(t, c.VerifyUserControlsInstallation(context.Background(), "code", 42),
+		"an installation the user can see must be accepted")
+
+	err := c.VerifyUserControlsInstallation(context.Background(), "code", 99)
+	require.Error(t, err, "an installation the user cannot see must be refused")
+	require.Contains(t, err.Error(), "does not have access")
+}
+
+func TestVerifyUserControlsInstallation_FailsClosedWithoutCredentials(t *testing.T) {
+	c := newTestClient(t, httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			t.Error("must not call GitHub without client credentials")
+		})))
+	c.clientID, c.clientSecret = "", ""
+
+	require.False(t, c.UserAuthConfigured())
+	require.ErrorIs(t,
+		c.VerifyUserControlsInstallation(context.Background(), "code", 1),
+		ErrUserAuthUnavailable)
+}
+
+func TestVerifyUserControlsInstallation_RefusesAReusedCode(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// GitHub answers 200 with an `error` field for a bad or reused
+		// code. Treating that as success would accept any code at all.
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"error":"bad_verification_code","error_description":"expired"}`)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	c.oauthBaseURL = srv.URL
+	c.clientID, c.clientSecret = "iv1.test", "secret"
+
+	err := c.VerifyUserControlsInstallation(context.Background(), "reused", 42)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "bad_verification_code")
+}
+
+// TestListInstallationRepositoriesPage_HasNextAtTheBoundaries pins the
+// value docs/api-github-install.md documents. It was computed here and
+// stubbed away everywhere else, so nothing held it.
+func TestListInstallationRepositoriesPage_HasNextAtTheBoundaries(t *testing.T) {
+	total := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/access_tokens") {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"token":"ghs_x","expires_at":%q}`,
+				time.Now().Add(time.Hour).Format(time.RFC3339))
+			return
+		}
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		per, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
+		start := (page - 1) * per
+		var repos []string
+		for i := start; i < total && i < start+per; i++ {
+			repos = append(repos, fmt.Sprintf(`{"id":%d,"name":"r%d"}`, i, i))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"total_count":%d,"repositories":[%s]}`, total, strings.Join(repos, ","))
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv)
+
+	cases := []struct {
+		name        string
+		total, page int
+		perPage     int
+		wantLen     int
+		wantHasNext bool
+	}{
+		{"partial page is the last one", 31, 2, 30, 1, false},
+		{"full first page of many", 31, 1, 30, 30, true},
+		{"exactly divisible looks like more", 30, 1, 30, 30, true},
+		{"and the next page is empty", 30, 2, 30, 0, false},
+		{"past the end", 5, 9, 30, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			total = tc.total
+			repos, hasNext, err := c.ListInstallationRepositoriesPage(
+				context.Background(), 1, tc.page, tc.perPage)
+			require.NoError(t, err)
+			require.Len(t, repos, tc.wantLen)
+			require.Equal(t, tc.wantHasNext, hasNext)
+		})
+	}
+}
+
+// TestRedactSecrets_CoversOAuthTokens pins the gho_ prefix added in
+// 20-04. A prefix this list does not know is a prefix that reaches a log.
+func TestRedactSecrets_CoversOAuthTokens(t *testing.T) {
+	c := newTestClient(t, httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {})))
+
+	for _, secret := range []string{"ghs_installation", "ghu_user", "gho_oauth"} {
+		got := c.redactSecrets("upstream said: Authorization: Bearer " + secret + "ABC123")
+		require.NotContains(t, got, secret, "%s prefix must be redacted", secret)
+		require.Contains(t, got, "[REDACTED]")
+	}
+}
+
+// TestVerifyUserControlsInstallation_RefusesAnEmptyCodeWithoutCallingGitHub
+// is defence in depth: real GitHub refuses an empty code anyway, but
+// spending a round trip to learn that is a free way for an unauthenticated
+// caller to make us talk to GitHub.
+func TestVerifyUserControlsInstallation_RefusesAnEmptyCodeWithoutCallingGitHub(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	c.oauthBaseURL = srv.URL
+	c.clientID, c.clientSecret = "iv1.test", "secret"
+
+	for _, code := range []string{"", "   ", "\t", "\n"} {
+		err := c.VerifyUserControlsInstallation(context.Background(), code, 42)
+		require.Error(t, err, "empty code %q must be refused", code)
+	}
+	require.False(t, called, "an empty code must not reach GitHub at all")
+}
+
+// TestUserHasInstallation_FailsClosedAtThePageBound pins the direction of
+// the truncation answer. Returning true would accept an installation we
+// never found.
+func TestUserHasInstallation_FailsClosedAtThePageBound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/login/oauth/access_token" {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"access_token":"gho_x"}`)
+			return
+		}
+		// Always a full page, so the bound is always reached.
+		var items []string
+		for i := 0; i < 100; i++ {
+			items = append(items, fmt.Sprintf(`{"id":%d}`, i))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"total_count":100000,"installations":[%s]}`, strings.Join(items, ","))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	c.oauthBaseURL = srv.URL
+	c.clientID, c.clientSecret = "iv1.test", "secret"
+
+	err := c.VerifyUserControlsInstallation(context.Background(), "code", 424242)
+	require.Error(t, err, "a truncated list must not be read as proof of access")
+	require.Contains(t, err.Error(), "cannot confirm access")
+}
+
+// TestExchangeUserCode_DoesNotLeakTheClientSecret covers the credential
+// this request carries in its BODY, where prefix-based redaction cannot
+// see it — an upstream that echoes the request is the case redactSecrets
+// exists for.
+func TestExchangeUserCode_DoesNotLeakTheClientSecret(t *testing.T) {
+	const secret = "1f2e3d4c5b6a7988776655443322110099aabbcc"
+	const code = "thecodethatwassent"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusBadGateway)
+		fmt.Fprintf(w, "<html>WAF blocked request. body was: %s</html>", body)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	c.oauthBaseURL = srv.URL
+	c.clientID, c.clientSecret = "Iv1.probeclientid", secret
+
+	err := c.VerifyUserControlsInstallation(context.Background(), code, 1)
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), secret, "the client secret reached an error string")
+	require.NotContains(t, err.Error(), code, "the authorization code reached an error string")
+	require.Contains(t, err.Error(), "[REDACTED]")
 }
