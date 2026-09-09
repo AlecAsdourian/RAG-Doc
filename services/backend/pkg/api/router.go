@@ -1,6 +1,7 @@
 package api
 
 import (
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -23,6 +24,13 @@ import (
 type Config struct {
 	LogJSON  bool
 	LogLevel slog.Level
+
+	// LogWriter redirects request logging. Nil means stderr, as in
+	// production. A test sets it to assert on what actually reaches a
+	// log — the only way to hold "this credential is never rendered",
+	// since that depends on which field the logger chooses to print
+	// rather than on any function we control.
+	LogWriter io.Writer
 
 	// GitHubInstallations, InstallStates, GitHubAppSlug and FrontendURL
 	// override the installation flow's dependencies. Left unset in
@@ -114,6 +122,7 @@ func NewRouterWithValidatorAndAdmin(
 		Concise:         true,
 		RequestHeaders:  true,
 		ResponseHeaders: false,
+		Writer:          cfg.LogWriter,
 	})
 
 	// Initialize webhook handler. The secret is required at construction
@@ -202,6 +211,21 @@ func NewRouterWithValidatorAndAdmin(
 		panic("api: GITHUB_APP_ID is set but GITHUB_APP_SLUG is not; " +
 			"the install redirect would point at a nonexistent GitHub App")
 	}
+	// Same rule, same reason. An App configured without client credentials
+	// cannot run the user-authorization leg, so every installation attempt
+	// refuses — and `.env.example` calls them required. A deployment that
+	// has credentials but cannot use them should say so at startup rather
+	// than at the first user's first click.
+	//
+	// Scoped to `githubClient != nil` so a machine with no App at all
+	// still boots, which is the shape every test and most dev checkouts
+	// have.
+	if githubClient != nil && !githubClient.UserAuthConfigured() {
+		panic("api: GITHUB_APP_ID is set but GITHUB_APP_CLIENT_ID / " +
+			"GITHUB_APP_CLIENT_SECRET are not; the install callback cannot verify " +
+			"that a user controls the installation they name, and refuses to link " +
+			"anything without that proof")
+	}
 
 	// Where the callback sends the browser afterwards. Not a security
 	// boundary — it is our own frontend, and the callback never reflects
@@ -243,6 +267,10 @@ func NewRouterWithValidatorAndAdmin(
 	// Middleware chain - order matters!
 	// 1. Request ID (first - generates correlation ID)
 	r.Use(middleware.RequestID)
+	// 1b. Scrub credential-bearing query strings BEFORE the logger sees
+	//     them. Must precede httplog.RequestLogger — chi middleware wraps
+	//     in registration order.
+	r.Use(scrubSensitiveQuery)
 	// 2. Logger (logs start/end with request ID)
 	r.Use(httplog.RequestLogger(logger))
 	// 3. Recoverer (catches panics, logs them)
@@ -385,6 +413,60 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	render.JSON(w, r, map[string]string{
 		"status":  "ok",
 		"service": "backend-api",
+	})
+}
+
+// sensitiveQueryPaths are request paths whose query string carries a
+// credential, keyed to the parameters to blank.
+//
+// `/api/github/callback` carries the GitHub user-authorization `code` —
+// the credential the whole installation-takeover fix rests on — and the
+// `state` token. Both were being written to the application log in full
+// by httplog, which builds its `url` field from r.RequestURI.
+//
+// That was cosmetic until 20-04. It is not now: the `missing_state` path
+// refuses BEFORE exchanging the code, so a victim's code stays valid for
+// its full lifetime while sitting in our logs, where anyone with log
+// access could replay it and take over that installation. httplog already
+// masks the Authorization header to `***`, so this codebase agrees these
+// are secrets; the query string was simply the gap.
+var sensitiveQueryPaths = map[string][]string{
+	"/api/github/callback": {"code", "state"},
+}
+
+// scrubSensitiveQuery blanks credential parameters in the REQUEST URI —
+// the string loggers render — while leaving r.URL intact so handlers
+// still read the real values.
+//
+// Deliberately not `r.URL.RawQuery`: the handler needs it. This depends
+// on loggers rendering RequestURI rather than reconstructing from URL,
+// which is why TestCallbackCredentialsDoNotReachTheLog asserts on
+// captured log output rather than on this function.
+func scrubSensitiveQuery(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		params, sensitive := sensitiveQueryPaths[r.URL.Path]
+		if !sensitive || r.URL.RawQuery == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		scrubbed := r.URL.Query()
+		changed := false
+		for _, key := range params {
+			if scrubbed.Has(key) {
+				scrubbed.Set(key, "[REDACTED]")
+				changed = true
+			}
+		}
+		if !changed {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		safe := *r.URL
+		safe.RawQuery = scrubbed.Encode()
+		r.RequestURI = safe.RequestURI()
+		next.ServeHTTP(w, r)
 	})
 }
 

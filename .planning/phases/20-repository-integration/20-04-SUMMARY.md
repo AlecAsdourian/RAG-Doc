@@ -44,7 +44,7 @@ key-decisions:
   - "The ISS-011 StateStore probe is deleted rather than kept: 20-04 gave the state store a real consumer, so the flow reports availability instead. It halves the handlers package runtime; it does not eliminate the dial, which still happens per router construction."
   - "The install callback FAILS CLOSED without the App's client credentials. Linking without the user-authorization leg is the vulnerability, so an unconfigured deployment refuses rather than falling back."
 
-issues-created: []
+issues-created: [ISS-018]
 issues-closed: []
 
 duration: ~3 hours
@@ -120,7 +120,7 @@ Recorded as a REVISION NOTICE in `20-04-PLAN.md` rather than improvised, per the
 |---|---|
 | `go build ./...`, `go vet ./...`, `gofmt` | clean |
 | `go test -p 1 ./...` | all pass, container rebuilt from scratch |
-| `TestGitHubInstallFlow` | 14/14 |
+| `TestGitHubInstallFlow` | 16/16 |
 | `TestStateStore_*` | 8/8; the concurrency case now warms the pool and races 5 rounds |
 | CI isolation scanner | PASS (no new mutation endpoints — all four routes are GET) |
 
@@ -147,6 +147,18 @@ Recorded as a REVISION NOTICE in `20-04-PLAN.md` rather than improvised, per the
 | Suspended-installation check removed | scenario 14 fails, only it |
 | `newStateToken` returns 32 zero bytes | `TestNewStateToken_IsNotPredictable` fails |
 
+Second review round:
+
+| Mutation | Result |
+|---|---|
+| Query scrubber removed | scenario 15 fails |
+| Scrubber blanks `state` but not `code` | scenario 15 fails |
+| Empty-slug refusal removed | scenario 16 fails, only it |
+| `has_next` forced to false | `TestListInstallationRepositoriesPage_HasNextAtTheBoundaries` fails |
+| Client secret / code not redacted by value | `TestExchangeUserCode_DoesNotLeakTheClientSecret` fails |
+| Empty code reaches GitHub | `TestVerifyUserControlsInstallation_RefusesAnEmptyCode…` fails |
+| Page bound fails open | `TestUserHasInstallation_FailsClosedAtThePageBound` fails |
+
 ### A correction to this file's own mutation claim
 
 The `ConsumeState` row previously said the check-then-act mutation was killed, with a paragraph asserting a first false negative had been re-verified "with the mutated source verified in place". Review measured it surviving three independent runs, and was right: the test built a fresh store and raced **once**, so it only ever measured a cold connection pool, which serialised the racers enough that even a non-atomic implementation produced one winner. Instrumented, the mutation won round 0 every time and then leaked 6–16 winners in later rounds.
@@ -157,9 +169,29 @@ The test now warms the pool and races five rounds. The mutation dies without nee
 
 Scenarios 11 and 12 exist for the same reason one level up: the takeover passed every test in this file, because every one of them supplied a caller who legitimately owned what they were asking about.
 
+## Second review round: the fix promoted two log leaks from cosmetic to serious
+
+Approved, with two MEDIUM findings — both credential-handling gaps that **the H1 fix itself made security-relevant**, because `code` is now the thing standing between an attacker and someone's private source.
+
+**N1 — the App client secret and the `code` survived redaction into a logged error.** The token exchange carries its credentials in the request BODY, and `redactSecrets` only knows token *prefixes*; a GitHub App client secret has none. Measured with an upstream echoing the request body — the proxy/WAF case `redactSecrets`' own doc comment cites as its reason for existing — both appeared verbatim in an error that `Callback` then logs. Added `redactValues`, which removes exact strings, applied to the client secret, client id and code.
+
+**N2 — `code` and `state` were written to the application log in full, on every callback.** `httplog` builds its `url` field from `r.RequestURI`, query string included. This was cosmetic before the H1 fix. It is not now: the `missing_state` path refuses **before** exchanging the code, so a victim's code sits unconsumed and valid for its full lifetime — in our logs, replayable by anyone who can read them. A `scrubSensitiveQuery` middleware, registered before the logger, blanks those parameters in `RequestURI` while leaving `r.URL` intact for the handler.
+
+Scenario 15 asserts on **captured log output**, not on the scrubbing function, because the property that must hold is "no logger renders it" — which depends on which field the logger chooses, not on anything this code controls. `LogWriter` was added to `api.Config` to make that observable.
+
+I did **not** take the suggested mitigation of exchanging-and-discarding the code on the `missing_state` path: that route is unauthenticated, so it would let anyone force us to call GitHub.
+
+**N3** — `ghr_` added to the redaction prefixes; the exchange returns a refresh token when "expire user authorization tokens" is enabled.
+
+**N4** — three unpinned behaviours, now pinned: the empty-slug refusal (scenario 16 — scenario 12 tripped the credentials guard first, so the slug branch was never reached), the fail-closed answer at `userHasInstallation`'s page bound, and refusing an empty code without calling GitHub.
+
+**N5** — missing client credentials now panic at construction, exactly like a missing slug, and for the identical reason: a deployment that has credentials but cannot use them should say so at startup. Scoped to `githubClient != nil`, so a machine with no App still boots.
+
+**The one residual, and it is structural:** a code belonging to a *different user* would pass, because the code **is** the user's identity. The whole control rests on `code` confidentiality — which is exactly why N1 and N2 mattered enough to fix rather than file.
+
 ## Carried, not fixed
 
-- **The state store is built once at router construction and never closed or retried.** If Redis is down at boot, `installStates` stays nil for the life of the process and the install flow is disabled until a restart — documented in `local-development.md` rather than fixed, because a reconnecting store is a change to shared infrastructure rather than to this flow.
+- **The state store is built once at router construction and never closed or retried** — ISS-018. Documented in `local-development.md` rather than fixed here, because a lazily-dialling store is a change to shared infrastructure rather than to this flow.
 - **`inst.ID` vs the query's id.** Persisting GitHub's value rather than the caller's is defensive, and it is not pinned: a stub cannot return a different id than it was asked for without simulating a GitHub bug, so the mutation is unobservable by construction. Recorded rather than dressed up as covered.
 - **`per_page=abc` and `page=abc` give differently-shaped 400 messages.** Cosmetic.
 

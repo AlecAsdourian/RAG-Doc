@@ -505,8 +505,17 @@ func (c *Client) exchangeUserCode(ctx context.Context, code string) (string, err
 		return "", fmt.Errorf("github: read token exchange response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
+		// REDACT BY VALUE, not just by prefix.
+		//
+		// This request carries its credentials in the BODY, not a header,
+		// and `redactSecrets` only knows token prefixes — a GitHub App
+		// client secret has none. Measured: an upstream that echoes the
+		// request body (the proxy/WAF case redactSecrets exists for) put
+		// `client_secret=…&code=…` verbatim into this error, which the
+		// callback then logs.
 		return "", fmt.Errorf("github: token exchange returned %d: %s",
-			resp.StatusCode, c.redactSecrets(string(body)))
+			resp.StatusCode,
+			redactValues(c.redactSecrets(string(body)), c.clientSecret, c.clientID, code))
 	}
 
 	var out struct {
@@ -552,7 +561,9 @@ func (c *Client) userHasInstallation(
 			return false, nil
 		}
 	}
-	// Refusing beats guessing: a truncated list cannot prove absence.
+	// FAIL CLOSED. Returning true here would accept an installation we
+	// never actually found; returning false would claim absence from a
+	// list we know is truncated. Neither is honest, so this errors.
 	return false, fmt.Errorf(
 		"github: user has more than %d installations; cannot confirm access to %d",
 		maxPages*100, installationID)
@@ -607,15 +618,29 @@ func (c *Client) do(ctx context.Context, method, url, bearer string, out any) er
 // 2026-09-08) rather than by value, because the token in flight is not
 // necessarily the one cached.
 func (c *Client) redactSecrets(s string) string {
-	// `gho_` is a user-to-server OAuth token. It was not needed until
-	// 20-04 put an OAuth-shaped flow in front of the App, and a prefix
-	// this list does not know about is a prefix that reaches a log intact.
-	for _, prefix := range []string{"ghs_", "ghu_", "gho_"} {
+	// `gho_` is a user-to-server OAuth token; `ghr_` its refresh token,
+	// which the exchange returns when "expire user authorization tokens"
+	// is enabled on the App. A prefix this list does not know about is a
+	// prefix that reaches a log intact.
+	for _, prefix := range []string{"ghs_", "ghu_", "gho_", "ghr_"} {
 		s = redactPrefixed(s, prefix)
 	}
 	// An App JWT is three base64url segments; redact anything that looks
 	// like one rather than trying to match the exact string.
 	return redactJWTs(s)
+}
+
+// redactValues removes exact strings, for secrets with no recognisable
+// shape. Short values are skipped: redacting a two-character string would
+// shred the surrounding text without protecting anything.
+func redactValues(s string, values ...string) string {
+	for _, v := range values {
+		if len(v) < 8 {
+			continue
+		}
+		s = strings.ReplaceAll(s, v, "[REDACTED]")
+	}
+	return s
 }
 
 func redactPrefixed(s, prefix string) string {

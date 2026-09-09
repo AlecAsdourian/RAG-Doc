@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -512,4 +513,81 @@ func TestRedactSecrets_CoversOAuthTokens(t *testing.T) {
 		require.NotContains(t, got, secret, "%s prefix must be redacted", secret)
 		require.Contains(t, got, "[REDACTED]")
 	}
+}
+
+// TestVerifyUserControlsInstallation_RefusesAnEmptyCodeWithoutCallingGitHub
+// is defence in depth: real GitHub refuses an empty code anyway, but
+// spending a round trip to learn that is a free way for an unauthenticated
+// caller to make us talk to GitHub.
+func TestVerifyUserControlsInstallation_RefusesAnEmptyCodeWithoutCallingGitHub(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	c.oauthBaseURL = srv.URL
+	c.clientID, c.clientSecret = "iv1.test", "secret"
+
+	for _, code := range []string{"", "   ", "\t", "\n"} {
+		err := c.VerifyUserControlsInstallation(context.Background(), code, 42)
+		require.Error(t, err, "empty code %q must be refused", code)
+	}
+	require.False(t, called, "an empty code must not reach GitHub at all")
+}
+
+// TestUserHasInstallation_FailsClosedAtThePageBound pins the direction of
+// the truncation answer. Returning true would accept an installation we
+// never found.
+func TestUserHasInstallation_FailsClosedAtThePageBound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/login/oauth/access_token" {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"access_token":"gho_x"}`)
+			return
+		}
+		// Always a full page, so the bound is always reached.
+		var items []string
+		for i := 0; i < 100; i++ {
+			items = append(items, fmt.Sprintf(`{"id":%d}`, i))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"total_count":100000,"installations":[%s]}`, strings.Join(items, ","))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	c.oauthBaseURL = srv.URL
+	c.clientID, c.clientSecret = "iv1.test", "secret"
+
+	err := c.VerifyUserControlsInstallation(context.Background(), "code", 424242)
+	require.Error(t, err, "a truncated list must not be read as proof of access")
+	require.Contains(t, err.Error(), "cannot confirm access")
+}
+
+// TestExchangeUserCode_DoesNotLeakTheClientSecret covers the credential
+// this request carries in its BODY, where prefix-based redaction cannot
+// see it — an upstream that echoes the request is the case redactSecrets
+// exists for.
+func TestExchangeUserCode_DoesNotLeakTheClientSecret(t *testing.T) {
+	const secret = "1f2e3d4c5b6a7988776655443322110099aabbcc"
+	const code = "thecodethatwassent"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusBadGateway)
+		fmt.Fprintf(w, "<html>WAF blocked request. body was: %s</html>", body)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	c.oauthBaseURL = srv.URL
+	c.clientID, c.clientSecret = "Iv1.probeclientid", secret
+
+	err := c.VerifyUserControlsInstallation(context.Background(), code, 1)
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), secret, "the client secret reached an error string")
+	require.NotContains(t, err.Error(), code, "the authorization code reached an error string")
+	require.Contains(t, err.Error(), "[REDACTED]")
 }

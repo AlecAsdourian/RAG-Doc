@@ -90,6 +90,16 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Fix:** move the context key and its accessors to a leaf package (`pkg/tenantctx`) that both can import. Mechanical: the key already has accessors as of 20-01, so the change is an import rewrite across five call sites.
 - **Not done in 20-01** because the cycle does not exist, the benefit is speculative, and the refactor would have widened a plan that already grew a security fix.
 
+### ISS-018: A Redis outage at startup disables GitHub installs until the process restarts
+
+- **Discovered:** Phase 20-04 review (2026-09-09)
+- **Type:** Operability
+- **Priority:** MEDIUM — silent, and it lands during exactly the event most likely to coincide with it (a deploy)
+- **Description:** `NewRouterWithValidatorAndAdmin` dials Redis once, at construction, to build the install flow's state store. If that dial fails, `installStates` stays nil for the life of the process: `GET /api/github/install` returns 503 and the callback refuses to link, forever, with one startup WARN and nothing afterwards. A Redis blip during a deploy therefore disables GitHub installations with no ongoing signal.
+- **Why the current behaviour is still right as far as it goes:** refusing is correct — a flow that cannot store its state token cannot be completed safely, and starting one anyway leaves the user with a live unlinked installation, which is the state 20-04's user-authorization check exists to protect. The problem is that it never heals and barely announces itself.
+- **What to do:** dial lazily on first use so a recovered Redis heals itself, and log at ERROR (not silently) on each refusal so the condition is visible in monitoring. The store is also never `Close()`d — the old ISS-011 probe explicitly closed its client; this one holds a pooled connection for the process lifetime.
+- **Related:** `docs/local-development.md` documents the restart requirement.
+
 ### ISS-017: Three residual soft edges in the isolation scanner
 
 - **Discovered:** Phase 20-03 fourth review pass (2026-09-09), after the approval

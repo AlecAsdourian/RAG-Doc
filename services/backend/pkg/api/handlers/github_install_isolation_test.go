@@ -16,6 +16,7 @@ package handlers_test
 // status code alone cannot tell a safe implementation from an unsafe one.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -41,6 +42,24 @@ import (
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/testing/isolation"
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/testing/isolation/testjwt"
 )
+
+// safeBuffer collects log output from the server's goroutines.
+type safeBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *safeBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *safeBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 // memoryStates is an in-memory InstallStateStore.
 //
@@ -568,6 +587,76 @@ func TestGitHubInstallFlow(t *testing.T) {
 			require.Equal(t, "suspended", resultOf(t, location),
 				"a suspended installation must not be linked")
 			require.NotContains(t, installationsOf(t, pool, orgA.ID), int64(98001))
+		})
+
+		t.Run("Scenario15_CallbackCredentialsDoNotReachTheLog", func(t *testing.T) {
+			// The `code` is the credential the whole takeover fix rests on,
+			// and the `missing_state` path refuses BEFORE exchanging it —
+			// so a victim's code stays valid for its full lifetime. Written
+			// to a log, it is replayable by anyone who can read that log.
+			//
+			// Asserted on CAPTURED LOG OUTPUT rather than on the scrubbing
+			// function, because the thing that must hold is "no logger
+			// renders it", not "we blanked the field we think it reads".
+			const secretCode = "SECRETOAUTHCODEABC123"
+			const secretState = "SECRETSTATETOKENXYZ789"
+
+			var captured safeBuffer
+			router := api.NewRouterWithValidatorAndAdmin(
+				pool, client.NewRAGClient("http://127.0.0.1:1"), testjwt.NewValidator(), nil,
+				api.Config{
+					LogLevel:            slog.LevelDebug,
+					LogWriter:           &captured,
+					GitHubRepositories:  &stubLister{},
+					GitHubInstallations: &stubInstallClient{installation: githubInstallation("x")},
+					InstallStates:       newMemoryStates(),
+					GitHubAppSlug:       "rag-doc-test",
+					FrontendURL:         "https://app.example.test/settings",
+				},
+			)
+			logged := httptest.NewServer(router)
+			t.Cleanup(logged.Close)
+
+			getNoRedirect(t, fmt.Sprintf(
+				"%s/api/github/callback?installation_id=99001&code=%s&state=%s&setup_action=install",
+				logged.URL, secretCode, secretState), "")
+
+			out := captured.String()
+			require.NotEmpty(t, out, "nothing was logged; the assertion below would be vacuous")
+			require.NotContains(t, out, secretCode,
+				"the GitHub authorization code reached the log; it is replayable")
+			require.NotContains(t, out, secretState,
+				"the state token reached the log")
+			require.Contains(t, out, "/api/github/callback",
+				"the path itself should still be logged")
+		})
+
+		t.Run("Scenario16_AnEmptySlugRefusesInsteadOfRedirectingToNowhere", func(t *testing.T) {
+			// Scenario 12 trips the credentials guard first, so the slug
+			// branch was never exercised by it — review measured the check
+			// as unpinned. Everything else here is configured, so only the
+			// slug can refuse.
+			deadRAG := httptest.NewServer(http.HandlerFunc(
+				func(w http.ResponseWriter, r *http.Request) {}))
+			t.Cleanup(deadRAG.Close)
+			router := api.NewRouterWithValidatorAndAdmin(
+				pool, client.NewRAGClient(deadRAG.URL), testjwt.NewValidator(), nil,
+				api.Config{
+					LogLevel:            slog.LevelWarn,
+					GitHubRepositories:  &stubLister{},
+					GitHubInstallations: &stubInstallClient{installation: githubInstallation("x")},
+					InstallStates:       newMemoryStates(),
+					GitHubAppSlug:       "", // the whole point
+					FrontendURL:         "https://app.example.test/settings",
+				},
+			)
+			srv := httptest.NewServer(router)
+			t.Cleanup(srv.Close)
+
+			status, location := getNoRedirect(t, srv.URL+"/api/github/install", tokenA)
+			require.Equal(t, http.StatusServiceUnavailable, status,
+				"an empty slug must refuse, not 302 to github.com/apps//installations/new")
+			require.Empty(t, location)
 		})
 
 		t.Run("Scenario9_TheOrganizationComesFromTheTokenAndNothingElse", func(t *testing.T) {
