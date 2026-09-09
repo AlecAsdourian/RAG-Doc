@@ -23,6 +23,17 @@ import (
 type Config struct {
 	LogJSON  bool
 	LogLevel slog.Level
+
+	// GitHubRepositories overrides the GitHub client the repositories
+	// handler talks to. Left nil in production, where the client is built
+	// from GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY_PATH below.
+	//
+	// A seam rather than a fourth NewRouterWith… constructor. Without it
+	// nothing can exercise POST /api/repositories past its first
+	// authorization check, because the real client's baseURL is unexported
+	// — which is how that endpoint's entire persist path shipped with no
+	// test over it.
+	GitHubRepositories handlers.InstallationRepositoryLister
 }
 
 // NewRouter creates a Chi router with middleware chain and route groups.
@@ -127,7 +138,6 @@ func NewRouterWithValidatorAndAdmin(
 	// and NOT with dbpool, so an unscoped query is not something they can
 	// express. See 20-01-DESIGN.md.
 	tenantScoper := db.NewTenantScoper(dbpool)
-	_ = tenantScoper // first consumer lands in 20-03 (repositories CRUD)
 
 	// GitHub App client. Optional at construction, matching the Supabase
 	// admin client above: without credentials we warn loudly and run
@@ -149,7 +159,18 @@ func NewRouterWithValidatorAndAdmin(
 		slog.Warn("GITHUB_APP_ID or GITHUB_APP_PRIVATE_KEY_PATH unset; " +
 			"repository connection and GitHub webhooks are unavailable")
 	}
-	_ = githubClient // consumers land in 20-03 and 20-04
+	// Repository CRUD. Takes the scoper, NOT dbpool — see 20-01-DESIGN.md.
+	//
+	// The handler takes an interface, and a nil *github.Client assigned to
+	// one produces a NON-nil interface holding a nil pointer. Passing
+	// githubClient straight through would therefore defeat the handler's
+	// own `h.github == nil` check and panic on the first connect in a
+	// degraded deployment. Only assign when there is really a client.
+	repositoryGitHub := cfg.GitHubRepositories
+	if repositoryGitHub == nil && githubClient != nil {
+		repositoryGitHub = githubClient
+	}
+	repositoriesHandler := handlers.NewRepositoriesHandler(tenantScoper, repositoryGitHub, validate)
 
 	r := chi.NewRouter()
 
@@ -256,6 +277,17 @@ func NewRouterWithValidatorAndAdmin(
 		r.With(middleware.Timeout(60*time.Second)).Route("/api", func(r chi.Router) {
 			// Search endpoint
 			r.Post("/search", searchHandler.Search)
+
+			// Repositories. Tenant-scoped: every one of these reads or
+			// writes `repositories`, which carries RLS and the 000009
+			// trigger, so they sit inside this group rather than the
+			// user-scoped one above.
+			r.Route("/repositories", func(r chi.Router) {
+				r.Get("/", repositoriesHandler.List)
+				r.Post("/", repositoriesHandler.Connect)
+				r.Get("/{id}", repositoriesHandler.Get)
+				r.Delete("/{id}", repositoriesHandler.Delete)
+			})
 		})
 
 		// SSE streaming route - no timeout middleware (streams are long-lived)
