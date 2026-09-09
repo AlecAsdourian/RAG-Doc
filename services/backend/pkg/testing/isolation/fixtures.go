@@ -100,9 +100,18 @@ func createOrg(t *testing.T, pool *pgxpool.Pool, slug string) *TestOrg {
 	org.AdminID, org.AdminSupabaseID = createUserWithMembership(t, pool, org.ID, "admin", slug)
 	org.MemberID, org.MemberSupabaseID = createUserWithMembership(t, pool, org.ID, "member", slug)
 
+	// is_default = true, mirroring what CreateOrganizationForUser produces
+	// for a real organization (migration 000010).
+	//
+	// This fixture inserts organizations directly rather than going through
+	// provisioning, so every invariant provisioning establishes has to be
+	// established here too — otherwise tests run against a shape production
+	// never has. `repositories.project_id` is NOT NULL and 20-03 resolves
+	// it through the default project, so an organization without one is not
+	// a realistic organization.
 	require.NoError(t, pool.QueryRow(ctx,
-		`INSERT INTO projects (organization_id, name, slug)
-		 VALUES ($1, $2, $3) RETURNING id`,
+		`INSERT INTO projects (organization_id, name, slug, is_default)
+		 VALUES ($1, $2, $3, true) RETURNING id`,
 		org.ID, slug+"-proj", slug+"-proj",
 	).Scan(&org.ProjectID))
 
