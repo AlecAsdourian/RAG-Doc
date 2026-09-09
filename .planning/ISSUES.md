@@ -80,6 +80,16 @@ Enhancements discovered during execution. Not critical - address in future phase
   - Update frontend to use Supabase JS client for OAuth
 
 
+### ISS-014: `pkg/db` imports `pkg/auth`, which inverts the layering
+
+- **Discovered:** Phase 20-01 review (2026-09-08)
+- **Type:** Architecture / Maintainability
+- **Priority:** LOW — no cycle today, and nothing is blocked
+- **Description:** `db.tenantFromContext` reads the caller's organization via `auth.OrgIDFromContext`, so `pkg/db` depends on `pkg/auth`. `pkg/auth` currently imports no internal package, so there is no cycle.
+- **Why it may bite:** `pkg/auth` already does its own database work with a raw pool (`provisioning.go`, `webhook.go`). The first time any of `users` / `organizations` / `organization_memberships` gains RLS, or any auth flow needs a tenant-scoped write, `pkg/auth` will want `db.TenantScoper` — and the import direction makes that a refactor rather than a line.
+- **Fix:** move the context key and its accessors to a leaf package (`pkg/tenantctx`) that both can import. Mechanical: the key already has accessors as of 20-01, so the change is an import rewrite across five call sites.
+- **Not done in 20-01** because the cycle does not exist, the benefit is speculative, and the refactor would have widened a plan that already grew a security fix.
+
 ### ISS-013: Unscoped access to an RLS table behaves differently depending on connection history
 
 - **Discovered:** Phase 20-01 (2026-09-08), while writing the tests for `TenantScoper`
@@ -89,8 +99,32 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **So the same unscoped query is silently empty OR a 500**, depending on which pooled connection it gets and what that connection did earlier. Verified by direct probe; both halves are pinned by `TestUnscopedAccess_BehaviourDependsOnConnectionHistory` in `pkg/db/tenant_isolation_test.go`.
 - **Why it is not live today:** `db.TenantScoper` makes unscoped access unreachable from a correctly-constructed handler, and the only handler holding a raw pool (`user_orgs.go`) touches no RLS table.
 - **Why it is filed anyway:** it fails in the direction that trains people badly. A fresh test process gets `NULL` and sees a clean empty result; production, once connections have been reused, gets intermittent 500s with a message about invalid uuid syntax that points nowhere near the actual cause.
-- **Fix options:** `NULLIF(current_setting('app.current_tenant', true), '')::uuid` makes it deterministically silent; dropping the `missing_ok` flag makes it deterministically loud. Either is a migration across all six tenant-scoped tables.
-- **Recommendation:** deterministically **loud**. With `TenantScoper` in place an unscoped query is by definition a bug, and a bug that always throws is cheaper than one that sometimes returns `[]`. But this is an operational-risk judgement and belongs to whoever owns that call.
+- **Independently reproduced** on PG 16.11 during 20-01 review, including the case I had not tested. **Nothing clears it short of reconnecting:**
+
+  | after a committed `SET LOCAL` | `current_setting('app.current_tenant', true)` |
+  |---|---|
+  | (as-is) | `''` |
+  | `RESET app.current_tenant` | `''` |
+  | `SET app.current_tenant TO DEFAULT` | `''` |
+  | `RESET ALL` | `''` |
+  | **`DISCARD ALL`** | **`''`** |
+
+  And pgxpool never runs `DISCARD ALL` — it only destroys closed, busy, in-transaction, or expired connections, and this repo registers no `AfterRelease` hook. Corroborating evidence from another angle: `SetupTestDB` does `SET ROLE rag_doc_app` in `AfterConnect`; if pgxpool reset connections on release, that would revert to the superuser (`rolbypassrls=t`) and **every isolation test in the repo would silently pass**. It does not.
+
+- **THE FIX IS CHEAPER THAN FIRST WRITTEN — no migration required.** The original entry said this needs a policy change across all six tables. It does not. A one-line `pgxpool.Config.AfterConnect` sentinel gives the recommended always-loud behaviour on every connection, measured:
+
+  ```sql
+  SET app.current_tenant = '';                      -- once, in AfterConnect
+  SELECT count(*) FROM repositories;                -- ERROR 22P02, deterministically
+  BEGIN; SET LOCAL app.current_tenant = '1111...';
+    SELECT count(*) FROM repositories;              -- works
+  COMMIT;                                            -- reverts to '', same after ROLLBACK
+  ```
+
+  Reversible, no schema change, and it makes the two "kinds of missing" into one.
+
+- **Other options:** `NULLIF(current_setting('app.current_tenant', true), '')::uuid` in the policies makes it deterministically *silent*; dropping the `missing_ok` flag makes it deterministically *loud*. Both are migrations across six tables and neither is necessary given the above.
+- **Recommendation:** the `AfterConnect` sentinel, giving deterministically **loud**. With `TenantScoper` in place an unscoped query is by definition a bug, and a bug that always throws is cheaper than one that sometimes returns `[]`. Still an operational-risk judgement — a 500 is worse than an empty list for a user who trips it — so it belongs to whoever owns that call, but it is now a pool-constructor line rather than a schema change.
 
 ## Closed Enhancements
 

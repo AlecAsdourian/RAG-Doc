@@ -79,7 +79,7 @@ func (h *SearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 	// it to the RAG service so the Python side scopes retrieval to this
 	// org. Without this, cross-tenant chunks leak into results.
 	ctx := r.Context()
-	orgID, ok := ctx.Value(auth.OrgIDKey).(string)
+	orgID, ok := auth.OrgIDFromContext(ctx)
 	if !ok || orgID == "" {
 		render.Render(w, r, ErrInternal(errors.New("tenant context missing from request; middleware chain misconfigured")))
 		return

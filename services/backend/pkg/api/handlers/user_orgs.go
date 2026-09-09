@@ -104,7 +104,7 @@ func callerSupabaseID(r *http.Request) (string, bool) {
 
 // activeOrgFromToken reads the caller's current organization claim.
 //
-// Read from the token rather than from auth.OrgIDKey because these routes
+// Read from the token rather than from the request context because these routes
 // deliberately sit outside TenantMiddleware, which is what sets that key.
 // Absence is normal and not an error: a user mid-provisioning, or one
 // whose org-context push failed, has no claim and still needs this

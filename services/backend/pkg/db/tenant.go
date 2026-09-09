@@ -30,6 +30,20 @@ import (
 var ErrNoTenant = errors.New("db: no organization on request context; " +
 	"route is not behind TenantMiddleware")
 
+// ErrCommitFailed wraps a failure to commit the tenant transaction.
+//
+// It is distinguishable from an error the handler's callback returned,
+// and the distinction matters: a commit failure means the callback
+// SUCCEEDED and its work was then discarded. A handler that has already
+// decided to return 201 needs to know that the row it just wrote is not
+// there.
+//
+// The temptation is to treat any non-nil error from InTenantTx the same
+// way. That is fine for a handler that renders its response after
+// InTenantTx returns — the pattern docs/isolation.md recommends — and
+// wrong for one that renders inside the callback.
+var ErrCommitFailed = errors.New("db: tenant transaction failed to commit")
+
 // TenantScoper opens transactions with `app.current_tenant` set, which is
 // what makes the RLS policies in migration 000008 and the
 // assert_tenant_scoped trigger in 000009 resolve to the caller's own rows.
@@ -85,13 +99,19 @@ func (s *TenantScoper) InTenantTx(ctx context.Context, fn func(pgx.Tx) error) er
 		return fmt.Errorf("db: begin tenant tx: %w", err)
 	}
 	// Safe after Commit — rolling back a committed transaction is a no-op.
-	defer func() { _ = tx.Rollback(ctx) }()
+	//
+	// WithoutCancel because ctx is the request context. On a client
+	// disconnect it is already cancelled, Rollback fails, and pgx marks the
+	// connection dead and discards it — correct, but it means a burst of
+	// disconnects churns the pool. Detaching lets the rollback complete and
+	// the connection go back.
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 
 	// SET LOCAL cannot take a bind parameter (pgx's extended protocol
 	// rejects a parameterized SET, and Postgres would not accept one
-	// anyway), so the id is concatenated. tenantFromContext has already
-	// proven it is a UUID — see the comment there for why that check is
-	// repeated rather than trusted from upstream.
+	// anyway), so the id is concatenated. tenantFromContext guarantees it
+	// is the canonical 36-character form — see the comment there, which
+	// explains why "it parsed as a UUID" would NOT have been enough.
 	//
 	// LOCAL, not SESSION: the setting must die with the transaction. A
 	// session-scoped value would outlive this request on a pooled
@@ -105,21 +125,47 @@ func (s *TenantScoper) InTenantTx(ctx context.Context, fn func(pgx.Tx) error) er
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("db: commit tenant tx: %w", err)
+		// Wrapped in a sentinel so a caller can distinguish this from an
+		// error its own callback returned. Reaching here means the callback
+		// succeeded and its work was then thrown away — the one case where
+		// "the handler failed" is the wrong thing to tell the user.
+		return fmt.Errorf("%w: %w", ErrCommitFailed, err)
 	}
 	return nil
 }
 
-// tenantFromContext extracts and re-validates the caller's organization.
+// tenantFromContext extracts the caller's organization and returns it in
+// canonical form, or an error.
 //
-// The UUID check duplicates one auth.ExtractOrganizationID already
-// performs. That is deliberate: the value is about to be concatenated
-// into SQL, and this is the only place in the codebase where that
-// happens. It should be defensible reading this function alone, rather
-// than by tracing three layers up to a guarantee a future change could
-// weaken without anyone noticing the connection.
+// It duplicates a check auth.ExtractOrganizationID already performs. That
+// is deliberate: the value is about to be concatenated into SQL, and this
+// is the only place in the codebase where that happens. It must be
+// defensible reading this function alone, not by tracing three layers up
+// to a guarantee a future change could weaken.
+//
+// REQUIRING THE CANONICAL FORM IS THE SAFETY PROPERTY, not the parse.
+// `uuid.Parse` is a parser, not a validator — its own documentation says
+// "Parse should not be used to validate strings as it parses non-standard
+// encodings". For 38-character input it strips the first and last bytes
+// without checking them, so all of these parse successfully:
+//
+//	'11111111-1111-1111-1111-111111111111;      (quote and semicolon!)
+//	{11111111-1111-1111-1111-111111111111}
+//	urn:uuid:11111111-1111-1111-1111-111111111111
+//	11111111111111111111111111111111            (no dashes)
+//	11111111-1111-1111-1111-11111111111A        (uppercase)
+//
+// Interpolating the RAW string after a successful parse would put those
+// first two into SQL. Returning parsed.String() normalizes all of them to
+// `[0-9a-f-]{36}`, which is what actually makes the concatenation safe.
+//
+// The equality check below makes that dependency explicit rather than
+// implicit. Without it, "simplifying" this to `return raw, nil` — keeping
+// the parse, so it still looks validated — would compile, pass every
+// test, and reopen the hole. A reviewer measured exactly that mutation
+// surviving the suite.
 func tenantFromContext(ctx context.Context) (string, error) {
-	raw, ok := ctx.Value(auth.OrgIDKey).(string)
+	raw, ok := auth.OrgIDFromContext(ctx)
 	if !ok || raw == "" {
 		return "", ErrNoTenant
 	}
@@ -127,5 +173,15 @@ func tenantFromContext(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("db: organization id on context is not a valid UUID: %w", err)
 	}
-	return parsed.String(), nil
+	canonical := parsed.String()
+	if canonical != raw {
+		// Not merely pedantic. A non-canonical value here means something
+		// upstream stopped canonicalizing (auth.ExtractOrganizationID does
+		// today), and the difference between "parsed" and "canonical" is
+		// exactly where injection would live.
+		return "", fmt.Errorf(
+			"db: organization id on context is not in canonical form (got %q, canonical %q)",
+			raw, canonical)
+	}
+	return canonical, nil
 }

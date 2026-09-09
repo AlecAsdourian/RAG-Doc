@@ -76,7 +76,7 @@ func (h *ChatHandler) StreamChat(w http.ResponseWriter, r *http.Request) {
 	// Kept here — above the SSE headers — so a missing tenant returns a
 	// real 5xx, not a 200 with an embedded error frame.
 	ctx := r.Context()
-	orgID, ok := ctx.Value(auth.OrgIDKey).(string)
+	orgID, ok := auth.OrgIDFromContext(ctx)
 	if !ok || orgID == "" {
 		render.Render(w, r, ErrInternal(errors.New("tenant context missing from request; middleware chain misconfigured")))
 		return

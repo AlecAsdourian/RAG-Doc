@@ -159,7 +159,7 @@ jobs:
       # the step above, so it survives this step being deleted.
       - name: Harness under package parallelism (ISS-010, defense in depth)
         working-directory: services/backend
-        run: go test ./pkg/api/... ./pkg/auth/... ./pkg/testing/... -count=1 -timeout 15m
+        run: go test ./pkg/api/... ./pkg/auth/... ./pkg/db/... ./pkg/testing/... -count=1 -timeout 15m
 
       # This shipped as `continue-on-error: true` in the first cut of this
       # workflow, because -race needs cgo and the authoring machine had no
@@ -182,4 +182,4 @@ jobs:
         working-directory: services/backend
         # Scoped rather than module-wide: -race roughly doubles runtime,
         # and these are the packages with concurrent tests worth the cost.
-        run: go test -race ./pkg/api/... ./pkg/testing/... -count=1 -p 1 -timeout 15m
+        run: go test -race ./pkg/api/... ./pkg/db/... ./pkg/testing/... -count=1 -p 1 -timeout 15m

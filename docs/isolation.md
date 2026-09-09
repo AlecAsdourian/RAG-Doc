@@ -126,23 +126,60 @@ func (h *SearchHandler) Search(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-**If you write raw SQL outside the middleware chain** (a background job,
-a CLI script, a Celery-style worker), wrap it in `TenantScope`:
+### If your handler queries the database
+
+Use `db.TenantScoper`. The handler is constructed with one **instead of a
+pool**, so an unscoped query is not something it can express:
 
 ```go
-tx, err := isolation.TenantScope(ctx, pool, orgID)
-if err != nil {
-    return err
+type RepositoriesHandler struct {
+    scoper *db.TenantScoper
 }
-defer tx.Rollback(ctx)
-// ...tx.Exec / tx.Query...
-return tx.Commit(ctx)
+
+func (h *RepositoriesHandler) List(w http.ResponseWriter, r *http.Request) {
+    var repos []Repository
+
+    if err := h.scoper.InTenantTx(r.Context(), func(tx pgx.Tx) error {
+        rows, err := tx.Query(r.Context(), `SELECT id, name FROM repositories`)
+        if err != nil {
+            return err
+        }
+        defer rows.Close()
+        for rows.Next() {
+            var repo Repository
+            if err := rows.Scan(&repo.ID, &repo.Name); err != nil {
+                return err
+            }
+            repos = append(repos, repo)
+        }
+        return rows.Err()
+    }); err != nil {
+        render.Render(w, r, ErrInternal(err))
+        return
+    }
+
+    render.Render(w, r, &RepositoryListResponse{Repositories: repos})
+}
 ```
 
-`TenantScope` (from `pkg/testing/isolation` today, will move to a
-production primitive under ISS-008) validates the org id, begins a
-transaction, sets `SET LOCAL app.current_tenant`, and hands you the
-`pgx.Tx`. Every write inside is caught by RLS + the trigger.
+**Collect into a variable and respond after `InTenantTx` returns.** Do not
+write the HTTP response inside the callback. The commit happens *after*
+your callback returns, so a handler that renders 201 in there has already
+told the client its write succeeded when the commit can still fail — and
+`render` will then try to write a second body.
+
+`InTenantTx` returns `db.ErrCommitFailed` (wrapped) for exactly that case,
+so a handler that genuinely needs to distinguish "my logic failed" from
+"the write did not land" can.
+
+The tenant comes from the request context and nowhere else. There is no
+parameter to pass one.
+
+**Background jobs and scripts** that have no request context still need a
+tenant scope. `pkg/testing/isolation.TenantScope` is **test-only** — it
+takes the tenant as a parameter and interpolates it without requiring the
+canonical form. Non-test code should construct a context with the tenant
+and use `db.TenantScoper`.
 
 ## Writing a tenant-scoped worker (Python)
 

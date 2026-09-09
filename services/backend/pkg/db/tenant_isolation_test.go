@@ -21,6 +21,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/require"
@@ -31,10 +32,10 @@ import (
 )
 
 // ctxForTenant builds the request context a handler would see: the
-// organization id under auth.OrgIDKey, exactly as auth.TenantMiddleware
+// organization on the context, exactly as auth.TenantMiddleware
 // puts it there from a verified JWT claim.
 func ctxForTenant(orgID string) context.Context {
-	return context.WithValue(context.Background(), auth.OrgIDKey, orgID)
+	return auth.ContextWithOrgID(context.Background(), orgID)
 }
 
 func TestTenantScoper_ScopesReadsToTheCallersTenant(t *testing.T) {
@@ -162,6 +163,61 @@ func TestTenantScoper_RefusesNonUUIDTenant(t *testing.T) {
 			})
 			require.Error(t, err)
 			require.False(t, called, "the callback must not run for a malformed tenant id")
+		})
+	}
+}
+
+// TestTenantScoper_RefusesNonCanonicalTenant is the test the cases above
+// cannot be: every one of them is rejected by `uuid.Parse` on length
+// alone, so they pass whether or not the canonical form is enforced.
+//
+// These do not. `uuid.Parse` is a parser, not a validator — its own
+// documentation says "Parse should not be used to validate strings as it
+// parses non-standard encodings", and for 38-character input it strips
+// the first and last bytes WITHOUT checking them. Every string below
+// parses successfully.
+//
+// The first two are the ones that matter: they carry a quote and a
+// semicolon into a value that is concatenated into SQL. They are
+// currently harmless only because the code interpolates
+// `parsed.String()` rather than the input — a property a future
+// "simplification" could drop while leaving the `uuid.Parse` call in
+// place, so it still LOOKS validated.
+//
+// A reviewer measured that exact mutation surviving the entire suite.
+// This is the test that stops it.
+func TestTenantScoper_RefusesNonCanonicalTenant(t *testing.T) {
+	pool := isolation.SetupTestDB(t)
+	scoper := db.NewTenantScoper(pool)
+
+	const canonical = "11111111-1111-1111-1111-111111111111"
+
+	for name, input := range map[string]string{
+		"quote and semicolon": "'" + canonical + ";",
+		"wrapped in quotes":   "'" + canonical + "'",
+		"braced":              "{" + canonical + "}",
+		"urn form":            "urn:uuid:" + canonical,
+		"uppercase":           "11111111-1111-1111-1111-11111111111A",
+		"no dashes":           "11111111111111111111111111111111",
+	} {
+		t.Run(name, func(t *testing.T) {
+			// Precondition: uuid.Parse ACCEPTS this. If it ever stops, the
+			// case has stopped testing what it was written for.
+			_, perr := uuid.Parse(input)
+			require.NoErrorf(t, perr,
+				"precondition: uuid.Parse should accept %q — this case exists "+
+					"because it does", input)
+
+			called := false
+			err := scoper.InTenantTx(ctxForTenant(input), func(pgx.Tx) error {
+				called = true
+				return nil
+			})
+
+			require.Errorf(t, err,
+				"%q parses as a UUID but is not canonical; interpolating it raw is "+
+					"how a quote reaches SQL", input)
+			require.False(t, called, "the callback must not run")
 		})
 	}
 }

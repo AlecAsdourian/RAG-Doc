@@ -12,12 +12,48 @@ type contextKey string
 
 const (
 	UserIDKey  contextKey = "user_id"
-	OrgIDKey   contextKey = "org_id"
 	OrgRoleKey contextKey = "org_role"
 	// TokenKey carries the validated jwt.Token so middleware downstream of
 	// JWTAuthMiddleware can read claims without re-parsing or re-verifying.
 	TokenKey contextKey = "jwt_token"
+
+	// orgIDCtxKey is UNEXPORTED, unlike its neighbours. Read it with
+	// OrgIDFromContext and set it with ContextWithOrgID.
+	//
+	// It decides which tenant's data a request reaches, so `ctx.Value(...)`
+	// on it should be a deliberate act rather than something a handler can
+	// do by pattern-matching the line above it. Naming the accessors also
+	// gives the setter somewhere to carry a warning.
+	orgIDCtxKey contextKey = "org_id"
 )
+
+// OrgIDFromContext returns the caller's organization, as put there by
+// TenantMiddleware from a signature-verified JWT claim.
+//
+// The second return is false when no organization is present — which for
+// a route behind TenantMiddleware is a wiring bug, since that middleware
+// refuses a claim-less caller with 403 before any handler runs.
+func OrgIDFromContext(ctx context.Context) (string, bool) {
+	orgID, ok := ctx.Value(orgIDCtxKey).(string)
+	return orgID, ok
+}
+
+// ContextWithOrgID attaches an organization to a context.
+//
+// FOR TenantMiddleware AND TESTS. Calling this anywhere else sets the
+// tenant WITHOUT the JWT verification that makes it trustworthy, and
+// everything downstream — RLS scope, which rows a query returns — will
+// honour whatever you pass.
+//
+// Go cannot prevent that; an exported setter is required for the
+// middleware and for tests that exercise handlers directly. So this is a
+// signpost, not a wall. The wall is that TenantMiddleware is the only
+// production caller, and that db.TenantScoper takes no tenant parameter
+// of its own — a handler cannot name a tenant without going out of its
+// way to build a context that lies.
+func ContextWithOrgID(ctx context.Context, orgID string) context.Context {
+	return context.WithValue(ctx, orgIDCtxKey, orgID)
+}
 
 // JWTAuthMiddleware validates JWT and extracts user_id.
 //
@@ -125,7 +161,7 @@ func TenantMiddleware() func(http.Handler) http.Handler {
 			// empty role rather than being refused outright.
 			role, _ := ExtractOrganizationRole(token)
 
-			ctx := context.WithValue(r.Context(), OrgIDKey, orgID)
+			ctx := ContextWithOrgID(r.Context(), orgID)
 			ctx = context.WithValue(ctx, OrgRoleKey, role)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
