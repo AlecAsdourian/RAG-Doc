@@ -189,6 +189,40 @@ I did **not** take the suggested mitigation of exchanging-and-discarding the cod
 
 **The one residual, and it is structural:** a code belonging to a *different user* would pass, because the code **is** the user's identity. The whole control rests on `code` confidentiality — which is exactly why N1 and N2 mattered enough to fix rather than file.
 
+## Verified against the live App, not only against stubs
+
+The GitHub-side configuration was completed on 2026-09-09 (user
+authorization enabled, client secret generated). Booting the real backend
+against those real credentials:
+
+- **It starts.** The new startup checks — App id, slug, private key, client
+  id, client secret — all pass, so the fail-closed panics do not fire on a
+  correctly configured deployment.
+- **`GET /api/github/install` → 401** without a bearer token: mounted and
+  authenticated.
+- **`GET /api/github/callback` → 302 `github_result=missing_state`**, *not*
+  401. That is the mount-point claim confirmed against a running server
+  rather than a test router — which matters, because a callback inside the
+  authenticated group fails 100% of the time in production and 0% of the
+  time in a test that supplies a token.
+
+**Two environment traps found doing it**, neither in this code, both now
+documented in `local-development.md`:
+
+1. The `.env` carried a **UTF-8 BOM**, which makes the documented
+   `set -a && . ./.env && set +a` fail on line 1 — so *nothing* is
+   exported, and it reads as missing configuration rather than a broken
+   file.
+2. **An unquoted Windows path loses its backslashes when sourced.**
+   `C:\Users\Alec\key.pem` became `C:UsersAleckey.pem`, and the backend
+   panicked naming a path that was not the one in the file. Quoting fixes
+   it; so do forward slashes.
+
+Also noted: docker-compose's `backend` service passes none of these
+through and would panic on the missing `SUPABASE_WEBHOOK_SECRET`, so it is
+not a working way to run the backend today. Recorded rather than fixed —
+compose is used for Postgres, Redis and Qdrant.
+
 ## Carried, not fixed
 
 - **The state store is built once at router construction and never closed or retried** — ISS-018. Documented in `local-development.md` rather than fixed here, because a lazily-dialling store is a change to shared infrastructure rather than to this flow.
