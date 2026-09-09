@@ -80,20 +80,32 @@ Enhancements discovered during execution. Not critical - address in future phase
   - Update frontend to use Supabase JS client for OAuth
 
 
-### ISS-008: Request-scoped tenant transaction for DB-hitting endpoints
+### ISS-013: Unscoped access to an RLS table behaves differently depending on connection history
 
-- **Discovered:** Phase 17-02 (2026-09-06)
-- **Type:** Architecture / Correctness
-- **Priority:** HIGH before any handler starts reading tenant-scoped tables directly
-- **Description:** The original `TenantMiddleware` tried to `SET LOCAL app.current_tenant` on a pool-acquired connection, then released the connection before the handler ran. That approach was broken twice over — `SET LOCAL` outside an explicit transaction is a no-op, and pgx's extended query protocol rejects parameterized `SET`. The block was removed in Phase 17-02 (the SET was crashing every request with 500 and blocking isolation tests). For today's endpoints this is fine — Search and StreamChat proxy to Python and never touch RLS-scoped tables from Go. But Phase 20+ handlers (repositories, chunks, queries) WILL query RLS-scoped tables from Go and need a real request-scoped tenant scope.
-- **Resolution options (pick in 17-03):**
-  1. Middleware begins a transaction, `SET LOCAL app.current_tenant` inside it, stashes the tx on request context, handler pulls tx from context for every query, tx commits on 2xx / rolls back on error.
-  2. Every handler that needs DB access calls `isolation.TenantScope` (or a production-equivalent) explicitly, opening its own transaction. Simpler wiring, more boilerplate per handler.
-- **Impact:** Correctness — without one of these, Phase 20+ handlers will either bypass RLS or return zero rows.
-- **Effort:** Medium (design decision + one refactor to the middleware chain).
-- **Related code:** `services/backend/pkg/auth/middleware.go` (TenantMiddleware, currently a context-only pass-through with a `_ = db` reserved for this work).
+- **Discovered:** Phase 20-01 (2026-09-08), while writing the tests for `TenantScoper`
+- **Type:** Correctness / Operability
+- **Priority:** MEDIUM — no live code path hits it, but it is a heisenbug generator
+- **Description:** The RLS policies in migration 000008 compare against `current_setting('app.current_tenant', true)::uuid`. The `missing_ok` flag makes an *unset* GUC return `NULL`, which filters every row and returns an empty result with no error. But a **committed `SET LOCAL` leaves the GUC as an empty string** on that backend permanently (`RESET` and `SET TO DEFAULT` do not clear it — established 17-02), and `''::uuid` raises **SQLSTATE 22P02**.
+- **So the same unscoped query is silently empty OR a 500**, depending on which pooled connection it gets and what that connection did earlier. Verified by direct probe; both halves are pinned by `TestUnscopedAccess_BehaviourDependsOnConnectionHistory` in `pkg/db/tenant_isolation_test.go`.
+- **Why it is not live today:** `db.TenantScoper` makes unscoped access unreachable from a correctly-constructed handler, and the only handler holding a raw pool (`user_orgs.go`) touches no RLS table.
+- **Why it is filed anyway:** it fails in the direction that trains people badly. A fresh test process gets `NULL` and sees a clean empty result; production, once connections have been reused, gets intermittent 500s with a message about invalid uuid syntax that points nowhere near the actual cause.
+- **Fix options:** `NULLIF(current_setting('app.current_tenant', true), '')::uuid` makes it deterministically silent; dropping the `missing_ok` flag makes it deterministically loud. Either is a migration across all six tenant-scoped tables.
+- **Recommendation:** deterministically **loud**. With `TenantScoper` in place an unscoped query is by definition a bug, and a bug that always throws is cheaper than one that sometimes returns `[]`. But this is an operational-risk judgement and belongs to whoever owns that call.
 
 ## Closed Enhancements
+
+### ISS-008: Request-scoped tenant transaction for DB-hitting endpoints ✅
+
+- **Discovered:** Phase 17-02 (2026-09-06)
+- **Closed:** 2026-09-08 (Phase 20-01)
+- **Type:** Architecture / Correctness
+- **Original problem:** `TenantMiddleware` once tried to `SET LOCAL app.current_tenant` on a pool-acquired connection and released it before the handler ran — broken twice over, since `SET LOCAL` outside a transaction is a no-op and pgx rejects a parameterized `SET`. It was removed in 17-02, leaving no way for a Go handler to query an RLS-scoped table.
+- **Verified blocking, not theoretical:** the only Go handler touching the database before this phase was `user_orgs.go`, which reads `users` / `organizations` / `organization_memberships` — none RLS-scoped. **No Go handler had ever read an RLS-scoped table.** `GET /api/repositories` (20-03) is the first.
+- **Resolution: option 2, hardened.** `db.TenantScoper` opens a transaction, sets `app.current_tenant` from the verified claim, and runs the handler's callback inside it. Option 1 (middleware-opens-transaction) was rejected: it would hold a pooled connection and an open transaction for the life of every authenticated request, including `/api/chat/stream`, and it couples commit to HTTP status. Full comparison in `20-01-DESIGN.md`.
+- **The hardening is the part that matters.** Option 2's weakness is that a handler can forget. So tenant-scoped handlers are constructed with a `*db.TenantScoper` and **not** a `*pgxpool.Pool` — there is no unscoped path through the type, and giving a handler a pool becomes a visible act in `router.go` rather than an omission inside a handler. Same principle as 19-03 deleting the `X-Organization-ID` header instead of deprecating it.
+- **Files:** `services/backend/pkg/db/tenant.go` (new), `pkg/db/tenant_isolation_test.go` (new), `pkg/auth/middleware.go` (the reserved `db *pgxpool.Pool` parameter is gone, not ignored), `pkg/api/router.go`, `docs/isolation.md`.
+- **Surfaced ISS-013** — the failure mode for bypassing this turned out to be nondeterministic rather than merely silent, which is why the type refuses to hand out a pool rather than merely documenting that you shouldn't use one.
+- **Mutation-verified:** removing the `SET LOCAL` turns four tests red.
 
 ### ISS-009: `pkg/vectordb` does not compile against its pinned Qdrant client ✅
 

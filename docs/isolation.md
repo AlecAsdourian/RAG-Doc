@@ -27,6 +27,50 @@ The one endpoint that changes a caller's organization
 before writing the new claim; see
 [`auth-frontend-contract.md`](auth-frontend-contract.md).
 
+### Which mechanism a Go handler uses
+
+Reading the claim off the context is not enough to make a query safe — the
+database also has to be told. Two patterns, and picking the wrong one is
+the most likely way to introduce a leak in Phase 20+:
+
+**Touching a table with RLS** — `repositories`, `ingestion_runs`,
+`chunks`, `queries`, `retrievals`, `feedback` (migration 000008)? The
+handler is constructed with a **`*db.TenantScoper`** and runs every query
+inside it:
+
+```go
+type RepositoriesHandler struct {
+    scoper *db.TenantScoper   // deliberately NOT a *pgxpool.Pool
+}
+
+func (h *RepositoriesHandler) List(w http.ResponseWriter, r *http.Request) {
+    err := h.scoper.InTenantTx(r.Context(), func(tx pgx.Tx) error {
+        // every query on tx runs with app.current_tenant set
+    })
+}
+```
+
+`InTenantTx` takes the tenant from the request context and from nowhere
+else. There is no parameter through which a caller can name one — that is
+the `X-Organization-ID` vulnerability wearing a different hat.
+
+**Touching only `users`, `organizations`, or `organization_memberships`?**
+Use the pool and scope by the caller's `sub`. Those tables have no RLS,
+and `pkg/api/handlers/user_orgs.go` is the worked example. Forcing them
+through a tenant transaction would be wrong twice: it would require an
+organization claim that a user recovering their account does not have, and
+it would imply protection those tables do not carry.
+
+**Why the handler holds a scoper instead of a pool.** An unscoped query
+against an RLS table does not fail in a way you can rely on noticing. It
+returns **zero rows with no error** on a connection that has never been
+scoped, and **fails with SQLSTATE 22P02** on one that has — because a
+committed `SET LOCAL` leaves the setting as an empty string, and
+`""::uuid` is invalid. Same query, same pool, different outcome depending
+on which connection you get. A handler that has no pool cannot make that
+mistake at all. See ISS-013, and
+`pkg/db/tenant_isolation_test.go`, which demonstrates both halves.
+
 **2. DB trigger (database layer).**
 Migration 000009 attaches `assert_tenant_scoped()` as a
 `BEFORE INSERT/UPDATE/DELETE` trigger to every tenant-scoped table
