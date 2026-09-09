@@ -127,7 +127,6 @@ func NewRouterWithValidatorAndAdmin(
 	// and NOT with dbpool, so an unscoped query is not something they can
 	// express. See 20-01-DESIGN.md.
 	tenantScoper := db.NewTenantScoper(dbpool)
-	_ = tenantScoper // first consumer lands in 20-03 (repositories CRUD)
 
 	// GitHub App client. Optional at construction, matching the Supabase
 	// admin client above: without credentials we warn loudly and run
@@ -149,7 +148,8 @@ func NewRouterWithValidatorAndAdmin(
 		slog.Warn("GITHUB_APP_ID or GITHUB_APP_PRIVATE_KEY_PATH unset; " +
 			"repository connection and GitHub webhooks are unavailable")
 	}
-	_ = githubClient // consumers land in 20-03 and 20-04
+	// Repository CRUD. Takes the scoper, NOT dbpool — see 20-01-DESIGN.md.
+	repositoriesHandler := handlers.NewRepositoriesHandler(tenantScoper, githubClient, validate)
 
 	r := chi.NewRouter()
 
@@ -256,6 +256,17 @@ func NewRouterWithValidatorAndAdmin(
 		r.With(middleware.Timeout(60*time.Second)).Route("/api", func(r chi.Router) {
 			// Search endpoint
 			r.Post("/search", searchHandler.Search)
+
+			// Repositories. Tenant-scoped: every one of these reads or
+			// writes `repositories`, which carries RLS and the 000009
+			// trigger, so they sit inside this group rather than the
+			// user-scoped one above.
+			r.Route("/repositories", func(r chi.Router) {
+				r.Get("/", repositoriesHandler.List)
+				r.Post("/", repositoriesHandler.Connect)
+				r.Get("/{id}", repositoriesHandler.Get)
+				r.Delete("/{id}", repositoriesHandler.Delete)
+			})
 		})
 
 		// SSE streaming route - no timeout middleware (streams are long-lived)
