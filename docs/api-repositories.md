@@ -98,10 +98,16 @@ string-compare them or assume a trailing `Z`.
 one — it encodes a position in an ordering, not an identifier, and a
 client that parses it will break when the ordering changes.
 
-Cursor rather than offset because **this list shifts while you page
-through it**: the GitHub webhook (Phase 20-05) inserts repositories
-without the user doing anything, and offset pagination skips and
-duplicates rows that were already visible when that happens.
+Cursor rather than offset because **this list can shift while you page
+through it**, and offset pagination skips and duplicates rows that were
+already visible when that happens.
+
+(An earlier version of this paragraph said the Phase 20-05 webhook
+*inserts* repositories without the user doing anything. It does not —
+20-05 deliberately creates no rows, because the webhook payload's
+repository shape has no `default_branch` and inventing one would add a
+repository nobody asked to connect. The webhook re-points and re-queues
+rows that already exist. Connecting stays a deliberate act.)
 
 **A held cursor will not surface every new row, and cannot.**
 `created_at` is assigned when the inserting transaction *starts*, but the

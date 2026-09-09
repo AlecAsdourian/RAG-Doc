@@ -90,6 +90,16 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Fix:** move the context key and its accessors to a leaf package (`pkg/tenantctx`) that both can import. Mechanical: the key already has accessors as of 20-01, so the change is an import rewrite across five call sites.
 - **Not done in 20-01** because the cycle does not exist, the benefit is speculative, and the refactor would have widened a plan that already grew a security fix.
 
+### ISS-019: `push` and `installation_repositories` payload shapes are unverified
+
+- **Discovered:** Phase 20-05 (2026-09-09)
+- **Type:** Testing / Contract
+- **Priority:** MEDIUM — Phase 21 acts on what these handlers write, so a wrong shape here becomes a wrong sync there
+- **Description:** 20-05's `installation` handler is tested against real deliveries captured from the live App. `push` and `installation_repositories` are tested against payloads written from GitHub's documentation, because no such delivery has ever reached a capture server. Their tests are named `UNVERIFIED_*` so nobody mistakes them for evidence about the shape.
+- **Why this is not pedantry:** capturing the `installation` payloads in 20-02 corrected three specs — `size` was in kilobytes not bytes (wrong by ~1000×), the callback could not be JWT-authenticated, and the repository shape was reduced. Documentation-derived fixtures are how a suite ends up agreeing with itself and disagreeing with the sender.
+- **How to capture:** start a tunnel, point the App's webhook URL at it, run a capture server, then (a) push to a connected repository and (b) add and remove a repository from the installation in GitHub's settings. The existing fixtures in `services/backend/pkg/api/handlers/testdata/github/` show the envelope format.
+- **One thing to fix while doing it:** the existing captures stored the body **parsed**, not as raw bytes, so their real signatures cannot be replayed. Capture the raw body too, and a signature test can then run against a genuine GitHub signature rather than a self-signed one.
+
 ### ISS-018: A Redis outage at startup disables GitHub installs until the process restarts
 
 - **Discovered:** Phase 20-04 review (2026-09-09)

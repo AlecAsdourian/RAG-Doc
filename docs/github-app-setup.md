@@ -225,11 +225,19 @@ With ngrok and the backend running, the App's **Advanced** tab shows
 **Recent Deliveries**. Installing the App should have produced an
 `installation` delivery.
 
-At this stage the backend has no `/webhooks/github` route yet, so the
-delivery will show a **404** — that is expected and still proves the
-tunnel and URL are correct. The **Redeliver** button on that tab replays
-any past delivery, which is what makes webhook development bearable: you
-do not have to keep installing and uninstalling to get a payload.
+**As of 20-05 the backend serves `/webhooks/github`**, so a delivery
+should show a **202**. (Before that it 404'd, which still proved the
+tunnel and URL were right — if you are following this runbook against an
+older checkout, a 404 here is expected.)
+
+A **401** means the signature did not verify: `GITHUB_WEBHOOK_SECRET` in
+`.env` does not match the secret set on the App.
+
+The **Redeliver** button on that tab replays any past delivery, which is
+what makes webhook development bearable — you do not have to keep
+installing and uninstalling to get a payload. Redelivery is safe: the
+receiver is idempotent on `X-GitHub-Delivery`, so a replayed event is
+answered 202 and processed once.
 
 ---
 
