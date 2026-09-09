@@ -30,6 +30,7 @@ import (
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/auth"
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/client"
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/db"
+	"github.com/yourusername/smart-docs-platform/services/backend/pkg/github"
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/testing/isolation"
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/testing/isolation/testjwt"
 )
@@ -63,9 +64,24 @@ func TestRepositoriesIsolation(t *testing.T) {
 		}))
 		t.Cleanup(deadRAG.Close)
 
+		// A WORKING GitHub client, deliberately.
+		//
+		// With none, every path through Connect stops at the 503 before it
+		// reaches the installation lookup, and scenario 4 would pass
+		// because the endpoint was switched off rather than because the
+		// scoped read refused. The stub reports the repository orgA asks
+		// for as visible, so the ONLY thing that can refuse the connect is
+		// the tenant scope.
 		router := api.NewRouterWithValidatorAndAdmin(
 			pool, client.NewRAGClient(deadRAG.URL), testjwt.NewValidator(), nil,
-			api.Config{LogLevel: slog.LevelWarn},
+			api.Config{
+				LogLevel: slog.LevelWarn,
+				GitHubRepositories: &stubLister{repos: []github.Repository{{
+					ID: 12345, Name: "cross-tenant-probe", Visibility: "private",
+					DefaultBranch: "main",
+					CloneURL:      "https://github.com/someone/cross-tenant-probe.git",
+				}}},
+			},
 		)
 		server := httptest.NewServer(router)
 		t.Cleanup(server.Close)
@@ -170,6 +186,11 @@ func TestRepositoriesIsolation(t *testing.T) {
 			cursor := ""
 			for page := 0; page < 20; page++ {
 				resp := listRepositories(t, server.URL, tokenA, cursor+"&limit=2")
+				// The handler queries limit+1 to learn whether another page
+				// exists. Dropping the truncation that follows leaves every
+				// other assertion here green while pages silently overlap.
+				require.LessOrEqual(t, len(resp.Repositories), 2,
+					"a page must never exceed the requested limit")
 				for _, repo := range resp.Repositories {
 					require.Truef(t, ownedByA[repo.ID],
 						"pagination walked into another tenant: repository %s", repo.ID)

@@ -90,6 +90,15 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Fix:** move the context key and its accessors to a leaf package (`pkg/tenantctx`) that both can import. Mechanical: the key already has accessors as of 20-01, so the change is an import rewrite across five call sites.
 - **Not done in 20-01** because the cycle does not exist, the benefit is speculative, and the refactor would have widened a plan that already grew a security fix.
 
+### ISS-015: The isolation scanner's coverage match is method-blind
+
+- **Discovered:** Phase 20-03 review (2026-09-08), while fixing the nested-`chi.Route` blind spot
+- **Type:** Testing / CI
+- **Priority:** LOW — the ratchet works; this is the last soft edge in it
+- **Description:** `scripts/ci/check-isolation-tests.py` decides coverage by looking for the endpoint's path in an isolation-test file. It cannot see which HTTP method the test exercises, so an existing test that only does `GET /api/things` marks a newly added `POST /api/things` as covered.
+- **Why it was not fixed with the rest of 20-03's scanner work:** every cheap way to add method-awareness reads a Go test for method tokens (`http.MethodPost`, `"POST"`, helper wrappers) and guesses. A gate that fails a PR because the author spelled the method differently gets disabled, and a disabled gate is worse than a loose one. Worth doing properly — resolve the handler symbol per route and check the test drives that handler — or not at all.
+- **What is NOT affected:** every mutation route in a nested `chi.Route` block is now detected with its full path, and an endpoint whose path resolves to `/` is always reported missing rather than matched by any file. Both are pinned by tests in `scripts/ci/test_check_isolation.py`.
+
 ### ISS-013: Unscoped access to an RLS table behaves differently depending on connection history
 
 - **Discovered:** Phase 20-01 (2026-09-08), while writing the tests for `TenantScoper`

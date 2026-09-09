@@ -5,7 +5,7 @@ layout to build_report, and asserts the coverage decision. No live git
 repo required — the diff string bypasses run_diff, and file-existence
 checks read from a pytest tmp_path.
 
-Seven scenarios per the 17-05 plan:
+The seven original scenarios per the 17-05 plan:
 
 1. Go mutation endpoint, no matching test → missing
 2. Go mutation endpoint, matching test file → covered
@@ -14,6 +14,10 @@ Seven scenarios per the 17-05 plan:
 5. Python mutation endpoint, no matching test → missing
 6. Python mutation endpoint, matching test file → covered
 7. Read endpoint (r.Get / @router.get) → not reported at all
+
+Plus the multi-line and marker-scoping cases added by PR #11's review, and
+the nested-`chi.Route` group added by PR #21's — see the block at the end
+of this file.
 """
 
 from __future__ import annotations
@@ -50,6 +54,17 @@ def _diff(file: str, added: list[str], context_lines: list[str] | None = None) -
     body = "\n".join(all_lines)
     header = f"+++ b/{file}\n@@ -1,{len(ctx)} +1,{len(all_lines)} @@\n"
     return header + body
+
+
+def _write(root: Path, rel: str, lines: list[str]) -> None:
+    """Lay `lines` down on disk at `rel`, starting at line 1.
+
+    Route-prefix resolution reads the post-image from disk, so a diff whose
+    hunk starts at line 1 needs a file whose lines 1..N are the same ones.
+    """
+    target = root / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 # ---------- Scenarios ----------
@@ -247,6 +262,174 @@ def test_skip_marker_on_line_above_route_still_applies(tmp_path: Path):
     )
     assert len(report.skipped) == 1
     assert report.skipped[0].endpoint.path == "/webhooks/vendor"
+
+
+# ---------- Nested chi.Route groups (PR #21 review, finding H1) ----------
+#
+# Before these, a `r.Route("/x", func(r chi.Router) {` line joined with
+# every route inside it — its `(` stays unclosed until the `})` several
+# lines later — so the whole block surfaced as ONE logical line, and a
+# greedy `.*` in an anchored pattern reported only the LAST registration
+# in it. On PR #21 that meant `POST /api/repositories` was never checked
+# at all, and the `DELETE` beside it was reported as `/{id}`: a path no
+# test can contain, from a line number pointing at the wrong route.
+
+
+def test_all_mutation_routes_in_a_chi_route_block_are_detected(tmp_path: Path):
+    lines = [
+        'func routes(r chi.Router) {',
+        '\tr.Route("/api/things", func(r chi.Router) {',
+        '\t\tr.Get("/", h.List)',
+        '\t\tr.Post("/", h.Create)',
+        '\t\tr.Get("/{id}", h.Get)',
+        '\t\tr.Delete("/{id}", h.Delete)',
+        '\t})',
+        '}',
+    ]
+    _write(tmp_path, "services/backend/pkg/api/router.go", lines)
+    report = scanner.build_report(
+        _diff("services/backend/pkg/api/router.go", lines), tmp_path
+    )
+
+    assert {(e.method, e.path) for e in report.missing} == {
+        ("POST", "/api/things"),
+        ("DELETE", "/api/things/{id}"),
+    }, "every mutation route in the block must be reported, with its full path"
+
+    # And at the line it is actually registered on, not the block opener's.
+    by_method = {e.method: e for e in report.missing}
+    assert by_method["POST"].line == 4
+    assert by_method["DELETE"].line == 6
+
+
+def test_route_prefix_resolves_when_the_block_opener_is_unchanged(tmp_path: Path):
+    """The common shape: a PR adds one route to an existing group. The
+    `r.Route(...)` opener is a context line, so the prefix is not in the
+    diff at all and has to come from the file on disk.
+    """
+    lines = [
+        '\tr.Route("/api/widgets", func(r chi.Router) {',
+        '\t\tr.Get("/", h.List)',
+        '\t\tr.Delete("/{id}", h.Delete)',
+        '\t})',
+    ]
+    _write(tmp_path, "services/backend/pkg/api/router.go", lines)
+    diff = _diff(
+        "services/backend/pkg/api/router.go",
+        added=['\t\tr.Delete("/{id}", h.Delete)'],
+        context_lines=lines[:2],
+    )
+    report = scanner.build_report(diff, tmp_path)
+
+    assert [e.path for e in report.missing] == ["/api/widgets/{id}"]
+
+
+def test_parameterised_route_is_covered_by_its_static_prefix(tmp_path: Path):
+    """A Go test drives `DELETE /api/widgets/{id}` by building
+    `"/api/widgets/" + id`. The literal `{id}` appears nowhere, so
+    requiring it would make every parameterised route permanently
+    uncoverable.
+    """
+    router = "services/backend/pkg/api/router.go"
+    test = "services/backend/pkg/api/handlers/widgets_isolation_test.go"
+    router_lines = [
+        '\tr.Route("/api/widgets", func(r chi.Router) {',
+        '\t\tr.Delete("/{id}", h.Delete)',
+        '\t})',
+    ]
+    test_line = '\tdo(t, http.MethodDelete, "/api/widgets/"+other.ID, tokenA)'
+    _write(tmp_path, router, router_lines)
+    _write(tmp_path, test, ["package handlers_test", test_line])
+
+    report = scanner.build_report(
+        _diff(router, router_lines) + "\n" + _diff(test, [test_line]), tmp_path
+    )
+
+    assert report.passed()
+    assert [e.path for e in report.covered] == ["/api/widgets/{id}"]
+
+
+def test_unresolvable_root_path_is_never_vacuously_covered(tmp_path: Path):
+    """`r.Post("/", ...)` with no resolvable prefix used to match every
+    file in the repository, because `"/" in text` is true of all of them.
+    An endpoint we cannot name is not an endpoint we can call covered.
+    """
+    test = "pkg/api/thing_isolation_test.go"
+    _write(tmp_path, test, ['// exercises "/api/anything"'])
+
+    report = scanner.build_report(
+        _diff("pkg/api/mount.go", ['\tr.Post("/", h.Create)'])
+        + "\n"
+        + _diff(test, ['// exercises "/api/anything"']),
+        tmp_path,
+    )
+
+    assert not report.passed()
+    assert [e.path for e in report.missing] == ["/"]
+
+
+def test_block_opener_with_a_trailing_comment_still_ends_the_join(tmp_path: Path):
+    """`{ // note` puts the brace off end-of-line. If that stops the
+    opener being recognised, the whole group collapses back into one
+    logical line and its routes go missing again.
+    """
+    lines = [
+        '\tr.Route("/api/things", func(r chi.Router) { // tenant-scoped',
+        '\t\tr.Post("/", h.Create)',
+        '\t\tr.Delete("/{id}", h.Delete)',
+        '\t})',
+    ]
+    _write(tmp_path, "services/backend/pkg/api/router.go", lines)
+    report = scanner.build_report(
+        _diff("services/backend/pkg/api/router.go", lines), tmp_path
+    )
+
+    assert {(e.method, e.path) for e in report.missing} == {
+        ("POST", "/api/things"),
+        ("DELETE", "/api/things/{id}"),
+    }
+
+
+def test_every_registration_on_one_logical_line_is_reported(tmp_path: Path):
+    """The backstop for any opener shape `_opens_block` does not know.
+
+    When several registrations do end up on one logical line, all of them
+    must surface. Reporting only the last is how `POST /api/repositories`
+    stayed invisible while the `DELETE` beside it was flagged.
+    """
+    line = (
+        '\tr.Group(func(r chi.Router) { '
+        'r.Post("/api/a", h.A); r.Delete("/api/b", h.B) })'
+    )
+    _write(tmp_path, "services/backend/pkg/api/router.go", [line])
+    report = scanner.build_report(
+        _diff("services/backend/pkg/api/router.go", [line]), tmp_path
+    )
+
+    assert {(e.method, e.path) for e in report.missing} == {
+        ("POST", "/api/a"),
+        ("DELETE", "/api/b"),
+    }
+
+
+def test_skip_marker_in_a_route_block_binds_to_its_own_route(tmp_path: Path):
+    """One marker, two routes in the same group: the marked one is
+    skipped and its neighbour is still demanded.
+    """
+    lines = [
+        '\tr.Route("/api/hooks", func(r chi.Router) {',
+        '\t\t// @skip-isolation-test: signature-verified, carries no tenant data',
+        '\t\tr.Post("/github", h.Webhook)',
+        '\t\tr.Delete("/{id}", h.Delete)',
+        '\t})',
+    ]
+    _write(tmp_path, "services/backend/pkg/api/router.go", lines)
+    report = scanner.build_report(
+        _diff("services/backend/pkg/api/router.go", lines), tmp_path
+    )
+
+    assert [s.endpoint.path for s in report.skipped] == ["/api/hooks/github"]
+    assert [e.path for e in report.missing] == ["/api/hooks/{id}"]
 
 
 def test_read_endpoints_are_not_reported(tmp_path: Path):

@@ -23,6 +23,17 @@ import (
 type Config struct {
 	LogJSON  bool
 	LogLevel slog.Level
+
+	// GitHubRepositories overrides the GitHub client the repositories
+	// handler talks to. Left nil in production, where the client is built
+	// from GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY_PATH below.
+	//
+	// A seam rather than a fourth NewRouterWith… constructor. Without it
+	// nothing can exercise POST /api/repositories past its first
+	// authorization check, because the real client's baseURL is unexported
+	// — which is how that endpoint's entire persist path shipped with no
+	// test over it.
+	GitHubRepositories handlers.InstallationRepositoryLister
 }
 
 // NewRouter creates a Chi router with middleware chain and route groups.
@@ -149,7 +160,17 @@ func NewRouterWithValidatorAndAdmin(
 			"repository connection and GitHub webhooks are unavailable")
 	}
 	// Repository CRUD. Takes the scoper, NOT dbpool — see 20-01-DESIGN.md.
-	repositoriesHandler := handlers.NewRepositoriesHandler(tenantScoper, githubClient, validate)
+	//
+	// The handler takes an interface, and a nil *github.Client assigned to
+	// one produces a NON-nil interface holding a nil pointer. Passing
+	// githubClient straight through would therefore defeat the handler's
+	// own `h.github == nil` check and panic on the first connect in a
+	// degraded deployment. Only assign when there is really a client.
+	repositoryGitHub := cfg.GitHubRepositories
+	if repositoryGitHub == nil && githubClient != nil {
+		repositoryGitHub = githubClient
+	}
+	repositoriesHandler := handlers.NewRepositoriesHandler(tenantScoper, repositoryGitHub, validate)
 
 	r := chi.NewRouter()
 

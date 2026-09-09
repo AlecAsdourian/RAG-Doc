@@ -10,9 +10,14 @@ Behavior:
   a mutation-endpoint pattern (Go: `.Post/Put/Patch/Delete("path", ...)`
   or `HandleFunc("METHOD path", ...)`; Python: `@router.post("path")`
   etc.).
+- Resolve each Go endpoint's FULL path by walking the enclosing
+  `chi.Route`/`Mount` prefixes in the file on disk, so a route registered
+  as `"/{id}"` inside `Route("/api/repositories")` is reported — and
+  matched — as `/api/repositories/{id}`.
 - For each detected endpoint, check whether any test file in the same
   diff (matching `*_isolation_test.go` or `test_*_isolation.py`)
-  references the endpoint path string.
+  references the endpoint's full path, or its static prefix (the part
+  before the first `{`, since a test builds a real id in place of it).
 - If not covered, look for a `@skip-isolation-test: <reason>` marker on
   the endpoint's line or within its diff hunk. A non-empty reason is
   required.
@@ -42,15 +47,23 @@ from typing import Iterable
 
 # ---------- Pattern registry ----------
 
-# Matches an added line (starts with `+`). Groups: (method, path).
+# Route-registration patterns. Groups: (method, path).
+#
+# Deliberately NOT anchored on the diff's leading `+`. They are used two
+# ways, and an anchor breaks both: scanned across a logical added line
+# (whose `+` has already been stripped, and which may carry more than one
+# registration), and searched against raw diff lines by
+# `endpoint_skip_reason` to find registration boundaries — where an
+# unchanged route sitting between a skip marker and an endpoint is every
+# bit as much a boundary as an added one.
 _GO_METHOD_CALL = re.compile(
-    r'^\+.*\b(?:[A-Za-z_][A-Za-z0-9_]*)\.(Post|Put|Patch|Delete)\s*\(\s*"([^"]+)"'
+    r'\b(?:[A-Za-z_][A-Za-z0-9_]*)\.(Post|Put|Patch|Delete)\s*\(\s*"([^"]+)"'
 )
 _GO_HANDLE_FUNC = re.compile(
-    r'^\+.*HandleFunc\s*\(\s*"(POST|PUT|PATCH|DELETE)\s+([^"]+)"'
+    r'HandleFunc\s*\(\s*"(POST|PUT|PATCH|DELETE)\s+([^"]+)"'
 )
 _PY_DECORATOR = re.compile(
-    r'^\+\s*@\w+\.(post|put|patch|delete)\s*\(\s*[\'"]([^\'"]+)[\'"]'
+    r'@\w+\.(post|put|patch|delete)\s*\(\s*[\'"]([^\'"]+)[\'"]'
 )
 
 ENDPOINT_PATTERNS: dict[str, list[re.Pattern[str]]] = {
@@ -77,10 +90,11 @@ TEST_FILE_PATTERNS: list[re.Pattern[str]] = [
 @dataclass
 class Endpoint:
     method: str
-    path: str
+    path: str  # full path, including any enclosing chi Route/Mount prefix
     file: str
     line: int
     lang: str
+    raw_path: str = ""  # the literal in the registration, before prefixing
 
 
 @dataclass
@@ -186,6 +200,11 @@ def _iter_logical_added_lines(hunk: Hunk) -> Iterable[tuple[int, int, str]]:
     reported line number and `hunk_idx` are those of the FIRST line in the
     joined sequence.
 
+    A line that OPENS A BLOCK ends the join even though its parentheses are
+    unbalanced — see `_opens_block`. Without that, an added
+    `r.Route("/x", func(r chi.Router) {` swallows every route in the block,
+    because its `(` stays unclosed until the `})` several routes later.
+
     For Python and other languages, each added line is its own event —
     multi-line decorators are exotic enough that the added complexity is
     not worth it.
@@ -221,9 +240,14 @@ def _iter_logical_added_lines(hunk: Hunk) -> Iterable[tuple[int, int, str]]:
                 # indent to keep the joined content readable for the regex.
                 pending_content = pending_content + " " + content.lstrip()
             line_no += 1
-            # If parens are balanced (Go multi-line join) OR we're not Go,
-            # emit this event and reset.
-            if hunk.lang != "go" or _parens_balanced(pending_content):
+            # Emit and reset when we're not Go, when the Go parens have
+            # closed, or when the line opened a block (whose parens will
+            # not close for many lines and must not swallow them).
+            if (
+                hunk.lang != "go"
+                or _parens_balanced(pending_content)
+                or _opens_block(pending_content)
+            ):
                 yield from _flush()
         elif raw.startswith("-"):
             # deleted line — flush any pending join, does not advance line no
@@ -242,34 +266,143 @@ def _parens_balanced(text: str) -> bool:
     return text.count("(") <= text.count(")")
 
 
-def added_endpoints(hunk: Hunk) -> Iterable[tuple[Endpoint, int]]:
+# `//` that is not the `//` of a scheme (`https://`). Naive, but it keeps a
+# URL literal from truncating a line before its braces are counted.
+_GO_LINE_COMMENT = re.compile(r'(?<!:)//')
+
+
+def _strip_line_comment(text: str) -> str:
+    m = _GO_LINE_COMMENT.search(text)
+    return text[: m.start()] if m else text
+
+
+# A trailing `func(...) {` — the shape of every chi sub-router opener
+# (`r.Route("/x", func(r chi.Router) {`, `r.Group(func(r chi.Router) {`)
+# and of an inline handler closure (`r.Post("/x", func(w, r) {`). In both
+# cases the registration on this line is complete for our purposes and the
+# unclosed `(` belongs to a block, not to a wrapped call.
+_GO_BLOCK_OPENER = re.compile(r'func\s*\([^()]*\)\s*\{\s*$')
+
+
+def _opens_block(text: str) -> bool:
+    """True if `text` ends by opening a block — comments discounted, so a
+    `{ // note` opener still counts.
+
+    On already-joined content the comment strip can cut too much and this
+    returns False, putting the block back on one logical line. That
+    degrades to the pre-fix behaviour rather than to a wrong answer,
+    because `added_endpoints` scans every match on a logical line.
+    """
+    return bool(_GO_BLOCK_OPENER.search(_strip_line_comment(text).rstrip()))
+
+
+# A `chi` sub-router opener whose path prefix applies to every route
+# registered inside it.
+_GO_ROUTE_PREFIX = re.compile(r'\.\s*(?:Route|Mount)\s*\(\s*"([^"]*)"')
+
+# repo_root is part of the key: the scanner's own test suite builds a
+# different tmp_path per test against one module-level cache.
+_PREFIX_CACHE: dict[tuple[str, str], dict[int, str]] = {}
+
+
+def route_prefixes(repo_root: Path, rel_path: str) -> dict[int, str]:
+    """Map 1-based line number -> the chi Route/Mount prefix in effect there.
+
+    Read from the file ON DISK rather than reconstructed from the diff,
+    because the prefix usually is not in the diff: a PR that adds one route
+    inside an existing `r.Route("/api", ...)` block has the opener as a
+    context line. Without this, that route reports as `/{id}` — a path no
+    test will ever contain, and one that tells a reader nothing in the PR
+    comment either.
+
+    Brace counting is the same cheap approximation `_parens_balanced` is.
+    It is accurate for route tables and wrong in the presence of a brace
+    inside a string literal; the failure mode is a wrong prefix on a
+    reported endpoint, which surfaces as a spurious FAIL rather than a
+    silent pass.
+    """
+    key = (str(repo_root), rel_path)
+    cached = _PREFIX_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    prefixes: dict[int, str] = {}
+    try:
+        source = (repo_root / rel_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        _PREFIX_CACHE[key] = prefixes
+        return prefixes
+
+    stack: list[tuple[int, str]] = []  # (brace depth when opened, prefix)
+    depth = 0
+    for line_no, line in enumerate(source.splitlines(), start=1):
+        code = _strip_line_comment(line)
+
+        # Recorded BEFORE this line's own opener is pushed: a route
+        # registered on the opener line itself is outside its own prefix.
+        prefixes[line_no] = "".join(p for _, p in stack)
+
+        opened = code.count("{")
+        closed = code.count("}")
+        route = _GO_ROUTE_PREFIX.search(code)
+        if route and opened > closed:
+            stack.append((depth, route.group(1)))
+        depth += opened - closed
+        while stack and depth <= stack[-1][0]:
+            stack.pop()
+
+    _PREFIX_CACHE[key] = prefixes
+    return prefixes
+
+
+def join_route_path(prefix: str, path: str) -> str:
+    """Join a chi Route/Mount prefix with the leaf route's own path.
+
+    chi serves `Route("/repositories")` + `Post("/")` at
+    `/repositories`, so the trailing slash a bare `/` leaf contributes is
+    dropped; duplicate slashes are collapsed.
+    """
+    joined = re.sub(r'/{2,}', '/', (prefix or "") + (path or ""))
+    if len(joined) > 1:
+        joined = joined.rstrip("/")
+    return joined or "/"
+
+
+def added_endpoints(hunk: Hunk, repo_root: Path) -> Iterable[tuple[Endpoint, int]]:
     """Yield (endpoint, hunk_line_idx) for each mutation route in this hunk.
 
     The `hunk_line_idx` points to the first raw line of the registration
     (so multi-line-wrapped routes report the line where `.Post(` begins,
     not the line where the string literal happens to sit). It is used by
     `endpoint_skip_reason` to scan for a per-endpoint skip marker.
+
+    Every match on a logical line is yielded, not just the first. A greedy
+    `.*` in an anchored pattern silently reports only the LAST registration
+    on a joined line, which is how `POST /api/repositories` went unchecked
+    while the `DELETE` beside it was flagged.
     """
     if hunk.lang == "other":
         return
+    prefixes = route_prefixes(repo_root, hunk.file) if hunk.lang == "go" else {}
     for line_no, hunk_idx, content in _iter_logical_added_lines(hunk):
-        # `content` has no leading `+`; re-add it so the same patterns
-        # (which anchor on `^\+`) match uniformly.
-        needle = "+" + content
+        seen: set[tuple[str, str]] = set()
         for pat in ENDPOINT_PATTERNS[hunk.lang]:
-            m = pat.match(needle)
-            if m:
+            for m in pat.finditer(content):
+                method, raw_path = m.group(1).upper(), m.group(2)
+                if (method, raw_path) in seen:
+                    continue
+                seen.add((method, raw_path))
                 yield (
                     Endpoint(
-                        method=m.group(1).upper(),
-                        path=m.group(2),
+                        method=method,
+                        path=join_route_path(prefixes.get(line_no, ""), raw_path),
                         file=hunk.file,
                         line=line_no,
                         lang=hunk.lang,
+                        raw_path=raw_path,
                     ),
                     hunk_idx,
                 )
-                break
 
 
 # How many lines *above* the endpoint's registration to scan for a
@@ -287,6 +420,10 @@ def endpoint_skip_reason(hunk: Hunk, endpoint_idx: int) -> str | None:
     endpoints — the lookback halts the moment it encounters a line that
     itself is another route registration, so an endpoint at hunk index 1
     does not inherit the marker from a different endpoint at index 0.
+
+    The boundary check is a `search`, so an UNCHANGED route between a
+    marker and the endpoint stops the lookback too. A context line is as
+    real a route as an added one.
     """
     lo = max(0, endpoint_idx - _SKIP_LOOKBACK)
     patterns = ENDPOINT_PATTERNS.get(hunk.lang, [])
@@ -294,7 +431,7 @@ def endpoint_skip_reason(hunk: Hunk, endpoint_idx: int) -> str | None:
         raw = hunk.lines[idx]
         if idx != endpoint_idx:
             # A different route registration boundary — do not cross it.
-            if any(p.match(raw) for p in patterns):
+            if any(p.search(raw) for p in patterns):
                 return None
         m = SKIP_MARKER.search(raw)
         if m:
@@ -320,10 +457,39 @@ def collect_test_file_paths(diff_text: str) -> set[str]:
     return paths
 
 
+def coverage_needles(endpoint: Endpoint) -> list[str]:
+    """The strings whose presence in a test file counts as coverage.
+
+    The full path, then its STATIC PREFIX — everything before the first
+    path parameter. A Go test drives `DELETE /api/repositories/{id}` by
+    building `"/api/repositories/" + id`, so the literal `{id}` appears
+    nowhere; requiring it would mean no parameterised route could ever be
+    covered.
+
+    A path of `/` yields nothing, so an endpoint whose full path could not
+    be resolved past the root is reported as missing rather than matched by
+    every file in the repository. Same for a static prefix of `/`.
+
+    Known limitation: this is method-blind. A test that only exercises
+    `GET /api/things` marks a newly added `POST /api/things` as covered.
+    The scanner is a ratchet against forgetting, not a proof of coverage.
+    """
+    if endpoint.path == "/":
+        return []
+    needles = [endpoint.path]
+    static = endpoint.path.split("{", 1)[0]
+    if static != endpoint.path and len(static) > 1:
+        needles.append(static)
+    return needles
+
+
 def test_files_reference(
     paths: set[str], endpoint: Endpoint, repo_root: Path
 ) -> bool:
-    """True if any of the given test files contains the endpoint's path."""
+    """True if any of the given test files references the endpoint."""
+    needles = coverage_needles(endpoint)
+    if not needles:
+        return False
     for rel in paths:
         target = repo_root / rel
         if not target.exists():
@@ -333,7 +499,7 @@ def test_files_reference(
             text = target.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        if endpoint.path in text:
+        if any(n in text for n in needles):
             return True
     return False
 
@@ -352,7 +518,7 @@ def build_report(diff_text: str, repo_root: Path) -> Report:
         # route shouldn't count as an unprotected mutation endpoint.
         if any(p.search(hunk.file) for p in TEST_FILE_PATTERNS):
             continue
-        for endpoint, hunk_idx in added_endpoints(hunk):
+        for endpoint, hunk_idx in added_endpoints(hunk, repo_root):
             reason = endpoint_skip_reason(hunk, hunk_idx)
             if reason is not None:
                 report.skipped.append(
@@ -396,7 +562,8 @@ def print_human_report(report: Report, verbose: bool) -> None:
         print()
         print(
             "Add a test in `*_isolation_test.go` (Go) or `test_*_isolation.py` "
-            "(Python) that references the endpoint path or handler name."
+            "(Python) that references the endpoint path. For a parameterised "
+            "route, the part before the first `{` is enough."
         )
         print(
             "To intentionally skip (rare): add `// @skip-isolation-test: <reason>` "

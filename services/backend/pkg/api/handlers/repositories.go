@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -30,6 +31,19 @@ const (
 	maxPageSize     = 100
 )
 
+// InstallationRepositoryLister is the slice of the GitHub client that
+// Connect needs.
+//
+// An interface rather than *github.Client because the concrete client's
+// baseURL is unexported, so a test in this package cannot point it at a
+// stub — which meant the whole persist path of Connect (the project join,
+// the upsert, the twelve-column scan) had never been executed by any test
+// in the repository. The same seam `auth.TokenValidator` and
+// `auth.AdminClient` already provide, for the same reason.
+type InstallationRepositoryLister interface {
+	ListInstallationRepositories(ctx context.Context, installationID int64) ([]github.Repository, error)
+}
+
 // RepositoriesHandler serves the repository CRUD surface.
 //
 // It holds a *db.TenantScoper and NOT a *pgxpool.Pool. Every table it
@@ -40,7 +54,7 @@ const (
 // 20-01-DESIGN.md.
 type RepositoriesHandler struct {
 	scoper   *db.TenantScoper
-	github   *github.Client
+	github   InstallationRepositoryLister
 	validate *validator.Validate
 }
 
@@ -49,9 +63,14 @@ type RepositoriesHandler struct {
 // githubClient may be nil (the router runs degraded without App
 // credentials). List, get and delete still work; connect refuses with 503
 // rather than reporting a success it did not perform.
+//
+// CALLERS MUST PASS A LITERAL nil, not a nil *github.Client. A nil pointer
+// stored in an interface makes the interface itself non-nil, so the `==
+// nil` check below would pass and Connect would dereference it. See the
+// guard in router.go.
 func NewRepositoriesHandler(
 	scoper *db.TenantScoper,
-	githubClient *github.Client,
+	githubClient InstallationRepositoryLister,
 	validate *validator.Validate,
 ) *RepositoriesHandler {
 	return &RepositoriesHandler{scoper: scoper, github: githubClient, validate: validate}
@@ -121,10 +140,24 @@ func (h *RepositoriesHandler) List(w http.ResponseWriter, r *http.Request) {
 	if err := h.scoper.InTenantTx(ctx, func(tx pgx.Tx) error {
 		// Cursor pagination on (created_at, id), NOT OFFSET.
 		//
-		// Offset pagination skips and duplicates rows when the underlying
-		// set changes between pages, and this set changes without the user
+		// Offset pagination skips and duplicates ALREADY-VISIBLE rows when
+		// the set shifts under it, and this set shifts without the user
 		// doing anything: the 20-05 webhook inserts repositories while
-		// someone is paging through them.
+		// someone is paging through them. Keyset pagination fixes that.
+		//
+		// It does NOT fix commit-order skew, and an earlier version of this
+		// comment claimed it did. `created_at DEFAULT NOW()` is the
+		// TRANSACTION START time, but a row only becomes visible at commit,
+		// so a transaction that began before the client's cursor and commits
+		// after it lands a row permanently behind the cursor. Measured: a
+		// late-committing insert is invisible to a resumed page and stays
+		// invisible.
+		//
+		// Nothing cheap fixes that — Postgres exposes no commit-order
+		// column — so the contract says so instead: a client watching for
+		// new repositories re-polls from the first page rather than
+		// trusting a held cursor to surface them. See
+		// docs/api-repositories.md.
 		//
 		// `id` breaks ties, so two repositories created in the same
 		// microsecond still order deterministically.
@@ -177,10 +210,30 @@ func (h *RepositoriesHandler) List(w http.ResponseWriter, r *http.Request) {
 	render.Render(w, r, &RepositoryListResponse{Repositories: repos, NextCursor: next})
 }
 
+// canonicalUUID accepts only the one spelling of a UUID this API emits.
+//
+// `uuid.Parse` is a PARSER, NOT A VALIDATOR: it also accepts
+// `urn:uuid:<v>`, `{<v>}`, unhyphenated hex and uppercase. Postgres
+// accepts some of those and rejects others, so handing its output through
+// unexamined turns a malformed id into SQLSTATE 22P02 — an unhandled 500
+// — for exactly the inputs Postgres happens to dislike. Measured on the
+// cursor path before this existed: `urn:uuid:…` → 500, `{…}` → 200.
+//
+// pkg/db/tenant.go reaches the same conclusion from the other direction
+// (there the value is interpolated, because SET LOCAL cannot bind). One
+// rule for both: a UUID from outside is canonical or it is refused.
+func canonicalUUID(raw string) (string, bool) {
+	parsed, err := uuid.Parse(raw)
+	if err != nil {
+		return "", false
+	}
+	return parsed.String(), parsed.String() == raw
+}
+
 // Get handles GET /api/repositories/{id}.
 func (h *RepositoriesHandler) Get(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	if _, err := uuid.Parse(id); err != nil {
+	id, ok := canonicalUUID(chi.URLParam(r, "id"))
+	if !ok {
 		// 404, not 400. "Malformed id" and "not yours" should be
 		// indistinguishable for the same reason as below.
 		render.Render(w, r, ErrNotFound())
@@ -223,6 +276,7 @@ type DeleteRepositoryResponse struct {
 	RepositoryID     string `json:"repository_id"`
 	ChunksDeleted    int64  `json:"chunks_deleted"`
 	IngestionsGone   int64  `json:"ingestion_runs_deleted"`
+	FeedbackDeleted  int64  `json:"feedback_deleted"`
 	IrreversibleWarn string `json:"note"`
 }
 
@@ -230,10 +284,17 @@ func (d *DeleteRepositoryResponse) Render(http.ResponseWriter, *http.Request) er
 
 // Delete handles DELETE /api/repositories/{id}.
 //
-// THIS DELETES INGESTED DATA. The FK chain is
-// repositories → ingestion_runs → chunks → retrievals, all ON DELETE
-// CASCADE (migrations 000002-000004), so removing a repository removes
-// everything derived from it.
+// THIS DELETES INGESTED DATA. The real cascade, all ON DELETE CASCADE
+// across migrations 000002-000005:
+//
+//	repositories ─┬─> ingestion_runs ─> chunks
+//	              └─> chunks ─> retrievals ─> feedback
+//
+// `chunks` hangs off `repositories` DIRECTLY as well as through
+// `ingestion_runs` (000003 denormalizes `repository_id` for query
+// performance), and the chain does not stop at `retrievals` — user-written
+// `feedback` goes too. `queries` survive; only the retrievals that cited
+// this repository's chunks are removed.
 //
 // That is the intended behaviour rather than an accident of the schema.
 // A "disconnect" that left the chunks in place would keep a repository's
@@ -245,14 +306,14 @@ func (d *DeleteRepositoryResponse) Render(http.ResponseWriter, *http.Request) er
 // The response reports the counts so a client can show what was lost
 // rather than a bare 204.
 func (h *RepositoriesHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	if _, err := uuid.Parse(id); err != nil {
+	id, ok := canonicalUUID(chi.URLParam(r, "id"))
+	if !ok {
 		render.Render(w, r, ErrNotFound())
 		return
 	}
 
 	ctx := r.Context()
-	var chunks, runs int64
+	var chunks, runs, feedback int64
 	var found bool
 
 	if err := h.scoper.InTenantTx(ctx, func(tx pgx.Tx) error {
@@ -264,6 +325,18 @@ func (h *RepositoriesHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		}
 		if cerr := tx.QueryRow(ctx,
 			`SELECT count(*) FROM ingestion_runs WHERE repository_id = $1`, id).Scan(&runs); cerr != nil {
+			return cerr
+		}
+		// Feedback is USER-AUTHORED and two edges down the cascade
+		// (chunks → retrievals → feedback), so it was being destroyed
+		// without appearing in the response. Counted separately because it
+		// is the one thing here a user cannot regenerate by re-ingesting.
+		if cerr := tx.QueryRow(ctx, `
+			SELECT count(*)
+			FROM feedback f
+			JOIN retrievals rt ON rt.id = f.retrieval_id
+			JOIN chunks c ON c.id = rt.chunk_id
+			WHERE c.repository_id = $1`, id).Scan(&feedback); cerr != nil {
 			return cerr
 		}
 
@@ -288,14 +361,21 @@ func (h *RepositoriesHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	render.Render(w, r, &DeleteRepositoryResponse{
-		Status:         "deleted",
-		RepositoryID:   id,
-		ChunksDeleted:  chunks,
-		IngestionsGone: runs,
-		IrreversibleWarn: "this removed the repository and everything ingested from it; " +
-			"reconnecting requires a full re-ingestion",
+		Status:          "deleted",
+		RepositoryID:    id,
+		ChunksDeleted:   chunks,
+		IngestionsGone:  runs,
+		FeedbackDeleted: feedback,
+		IrreversibleWarn: "this removed the repository, everything ingested from it, and any " +
+			"feedback left on answers that cited it; reconnecting requires a full re-ingestion",
 	})
 }
+
+// errNoDefaultProject means the caller's organization predates migration
+// 000010's one-default-project-per-organization guarantee. A server-side
+// problem, not a client one, so it must not be folded into the 404s.
+var errNoDefaultProject = errors.New(
+	"organization has no default project; it predates the provisioning that creates one")
 
 // Connect handles POST /api/repositories.
 func (h *RepositoriesHandler) Connect(w http.ResponseWriter, r *http.Request) {
@@ -304,8 +384,17 @@ func (h *RepositoriesHandler) Connect(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, MaxRepositoryBodyBytes)
 
 	var req ConnectRepositoryRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(&req); err != nil {
 		render.Render(w, r, ErrInvalidRequest(err))
+		return
+	}
+	// Decode reads ONE value and stops, so `{...} <<<GARBAGE>>>` was being
+	// accepted as a valid body. Anything after the object means the client
+	// sent something other than what it thinks it sent.
+	if dec.More() {
+		render.Render(w, r, ErrInvalidRequest(errors.New(
+			"request body must contain exactly one JSON object")))
 		return
 	}
 	if err := h.validate.Struct(req); err != nil {
@@ -382,34 +471,65 @@ func (h *RepositoriesHandler) Connect(w http.ResponseWriter, r *http.Request) {
 	// STEP 3 — persist.
 	var created Repository
 	err = h.scoper.InTenantTx(ctx, func(tx pgx.Tx) error {
-		// The project comes from the caller's own default, resolved inside
-		// the scope rather than passed in. `projects` has no RLS, so this
-		// is scoped by the explicit organization_id join through the
-		// installation we already proved is ours.
+		// Re-read the installation inside THIS transaction rather than
+		// trusting step 1: the GitHub round-trip happened in between, and
+		// the installation can have been deleted since. Its own 404 rather
+		// than the project lookup's, so "your installation went away"
+		// and "your organization has no default project" stop sharing one
+		// opaque 500.
+		var orgID string
+		if ierr := tx.QueryRow(ctx,
+			`SELECT organization_id::text FROM github_installations WHERE id = $1`,
+			req.InstallationID).Scan(&orgID); ierr != nil {
+			return fmt.Errorf("re-resolve installation: %w", ierr)
+		}
+
+		// The project comes from the caller's own default. `projects` has
+		// no RLS, so it is scoped by the organization_id read above — off
+		// a row RLS already proved is ours.
 		var projectID string
-		if perr := tx.QueryRow(ctx, `
-			SELECT p.id::text
-			FROM projects p
-			JOIN github_installations gi ON gi.organization_id = p.organization_id
-			WHERE gi.id = $1 AND p.is_default
-		`, req.InstallationID).Scan(&projectID); perr != nil {
+		if perr := tx.QueryRow(ctx,
+			`SELECT id::text FROM projects WHERE organization_id = $1 AND is_default`,
+			orgID).Scan(&projectID); perr != nil {
+			if errors.Is(perr, pgx.ErrNoRows) {
+				// Not a 404: the caller did nothing wrong. Migration 000010
+				// guarantees one default project per organization, so this
+				// means an organization created before that ran.
+				return errNoDefaultProject
+			}
 			return fmt.Errorf("resolve default project: %w", perr)
 		}
 
+		// Upsert on (project_id, github_repo_id) — migration 000011.
+		//
+		// NOT on the installation: that is a credential, and it is exactly
+		// what changes when the App is uninstalled and reinstalled. Keying
+		// on it meant the documented recovery path raised 23505 against
+		// `UNIQUE (project_id, git_url)` and surfaced as a 500. Keying on
+		// GitHub's stable repository id makes the same call RELINK the
+		// orphaned row instead.
 		return tx.QueryRow(ctx, `
 			INSERT INTO repositories
 			  (project_id, installation_id, github_repo_id, name, git_url,
 			   default_branch, visibility, size_kb, archived, sync_state)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')
-			ON CONFLICT (installation_id, github_repo_id)
-			  WHERE installation_id IS NOT NULL AND github_repo_id IS NOT NULL
+			ON CONFLICT (project_id, github_repo_id)
+			  WHERE github_repo_id IS NOT NULL
 			DO UPDATE SET
+			  installation_id = EXCLUDED.installation_id,
 			  name = EXCLUDED.name,
 			  git_url = EXCLUDED.git_url,
 			  default_branch = EXCLUDED.default_branch,
 			  visibility = EXCLUDED.visibility,
 			  size_kb = EXCLUDED.size_kb,
 			  archived = EXCLUDED.archived,
+			  -- Re-queue only when the installation actually changed. A
+			  -- plain re-connect refreshes metadata and must not stomp a
+			  -- 'syncing' run; a relinked repository has to be fetched
+			  -- again through the new credential.
+			  sync_state = CASE
+			    WHEN repositories.installation_id IS DISTINCT FROM EXCLUDED.installation_id
+			    THEN 'pending' ELSE repositories.sync_state END,
 			  updated_at = NOW()
 			RETURNING id::text, name, git_url, default_branch, github_repo_id,
 			          installation_id::text, visibility, size_kb, archived,
@@ -424,7 +544,16 @@ func (h *RepositoriesHandler) Connect(w http.ResponseWriter, r *http.Request) {
 			&created.LastSyncedAt, &created.CreatedAt,
 		)
 	})
-	if err != nil {
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// The installation vanished between the two transactions. Same 404
+		// as "not yours" — from the caller's side nothing distinguishes them.
+		render.Render(w, r, ErrNotFound())
+		return
+	case errors.Is(err, errNoDefaultProject):
+		render.Render(w, r, ErrInternal(errNoDefaultProject))
+		return
+	case err != nil:
 		render.Render(w, r, ErrInternal(fmt.Errorf("connect repository: %w", err)))
 		return
 	}
@@ -466,10 +595,11 @@ func decodeCursor(raw string) (listCursor, error) {
 	if err != nil {
 		return listCursor{}, errors.New("cursor is not valid; use the next_cursor from a previous response")
 	}
-	if _, err := uuid.Parse(parts[1]); err != nil {
+	id, ok := canonicalUUID(parts[1])
+	if !ok {
 		return listCursor{}, errors.New("cursor is not valid; use the next_cursor from a previous response")
 	}
-	return listCursor{createdAt: &ts, id: &parts[1]}, nil
+	return listCursor{createdAt: &ts, id: &id}, nil
 }
 
 func parsePageSize(raw string) (int, error) {

@@ -64,7 +64,7 @@ jobs:
               '❌ **Isolation test coverage missing**',
               'The following mutation endpoints were added or modified without a matching isolation test:',
               missing.join('\n'),
-              'Add a test in `*_isolation_test.go` (Go) or `test_*_isolation.py` (Python) that references the endpoint path or handler name.',
+              'Add a test in `*_isolation_test.go` (Go) or `test_*_isolation.py` (Python) that references the endpoint path. For a parameterised route the part before the first `{` is enough — a test that builds `"/api/things/" + id` counts.',
               'To intentionally skip (rare — health checks, webhooks that carry no tenant data): add `// @skip-isolation-test: <reason>` (Go) or `# @skip-isolation-test: <reason>` (Python) on the route line. The reason must be non-empty.',
               skipped.length
                 ? '**Endpoints explicitly skipped in this PR (informational):**\n' + skipped.join('\n')
