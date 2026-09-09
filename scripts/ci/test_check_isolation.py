@@ -605,6 +605,54 @@ def test_a_block_comment_opener_inside_a_line_comment_is_inert(tmp_path: Path):
     }
 
 
+def test_a_commented_out_group_supplies_no_prefix(tmp_path: Path):
+    """This is the whole reason `_scan_go` returns two views, and it was
+    unpinned: route paths are read from the comments-blanked text, so a
+    registration that only exists in a comment cannot push a prefix.
+    """
+    # The first line is the sharp one: a real `{` opens a group, so the
+    # push happens either way, and the ONLY `.Route(` on the line is in
+    # the comment. Reading the path from the raw line would adopt
+    # `/legacy/v0` as the prefix.
+    lines = [
+        '\tr.Group(func(r chi.Router) { // r.Route("/legacy/v0", func(r chi.Router) {',
+        '\t\tr.Post("/api/things", h.Create)',
+        '\t})',
+    ]
+    _write(tmp_path, "services/backend/pkg/api/router.go", lines)
+    report = scanner.build_report(
+        _diff("services/backend/pkg/api/router.go", lines), tmp_path
+    )
+
+    assert [(e.method, e.path) for e in report.missing] == [("POST", "/api/things")]
+
+
+def test_line_numbering_survives_exotic_whitespace_in_a_literal(tmp_path: Path):
+    """`splitlines()` breaks on a real VT, FF, NEL and the separator
+    characters; `split("\\n")` does not.
+
+    A VT inside a string literal is kept in the comments-blanked view and
+    blanked to a space in the code view, so `splitlines()` gives the two
+    views different line counts and every route after it is looked up
+    against another line's prefix. The character below is a genuine
+    \\x0b, not the two-character escape — the escape proves nothing.
+    """
+    lines = [
+        '\tconst banner = "page\x0bbreak"',
+        '\tr.Route("/api/things", func(r chi.Router) {',
+        '\t\tr.Delete("/{id}", h.Drop)',
+        '\t})',
+    ]
+    _write(tmp_path, "services/backend/pkg/api/router.go", lines)
+    report = scanner.build_report(
+        _diff("services/backend/pkg/api/router.go", lines), tmp_path
+    )
+
+    assert [(e.method, e.path) for e in report.missing] == [
+        ("DELETE", "/api/things/{id}")
+    ]
+
+
 def test_segments_must_share_one_line_in_order(tmp_path: Path):
     """N-M2. Matching segments independently anywhere in the file left the
     free pass intact in a narrower form — a stray `// TODO: cover /resync`

@@ -242,9 +242,10 @@ def _iter_logical_added_lines(hunk: Hunk) -> Iterable[tuple[int, int, str]]:
     pending_start_no: int | None = None
     pending_start_idx: int | None = None
     pending_content: str | None = None
+    pending_code: str = ""
 
     def _flush() -> Iterable[tuple[int, int, str]]:
-        nonlocal pending_start_no, pending_start_idx, pending_content
+        nonlocal pending_start_no, pending_start_idx, pending_content, pending_code
         if pending_content is not None:
             yield (
                 pending_start_no or 0,
@@ -254,28 +255,37 @@ def _iter_logical_added_lines(hunk: Hunk) -> Iterable[tuple[int, int, str]]:
             pending_start_no = None
             pending_start_idx = None
             pending_content = None
+            pending_code = ""
 
     for idx, raw in enumerate(hunk.lines):
         if raw.startswith("+++"):
             continue
         if raw.startswith("+"):
             content = raw[1:]
+            # Parens are counted on the line WITHOUT its comment. A prose
+            # comment routinely carries an unbalanced `(`, and one that
+            # does used to open a join that swallowed the real routes
+            # after it — they were then reported at the comment's line
+            # number, under the comment's (wrong) prefix.
+            code = _strip_line_comment(content) if hunk.lang == "go" else content
             if pending_content is None:
                 pending_content = content
+                pending_code = code
                 pending_start_no = line_no
                 pending_start_idx = idx
             else:
                 # Continuation of a wrapped registration; strip leading
                 # indent to keep the joined content readable for the regex.
                 pending_content = pending_content + " " + content.lstrip()
+                pending_code = pending_code + " " + code.lstrip()
             line_no += 1
             # Emit and reset when we're not Go, when the Go parens have
             # closed, or when the line opened a block (whose parens will
             # not close for many lines and must not swallow them).
             if (
                 hunk.lang != "go"
-                or _parens_balanced(pending_content)
-                or _opens_block(pending_content)
+                or _parens_balanced(pending_code)
+                or _opens_block(pending_code)
             ):
                 yield from _flush()
         elif raw.startswith("-"):
@@ -306,8 +316,16 @@ def _scan_go(source: str) -> tuple[str, str]:
       used for reading a route's path, which lives in a literal, while
       still ignoring a commented-out registration.
 
-    Newlines and total length are preserved in both, so line numbers and
-    offsets into the original still line up.
+    Total length is preserved in both, and every `\n` in the source stays
+    a `\n`, so offsets into the original still line up.
+
+    That is NOT the same as "line counts are preserved" — an earlier
+    version of this docstring claimed it was. `str.splitlines()` also
+    breaks on `\v \f \x1c \x1d \x1e \x85    ` and a lone `\r`,
+    and those survive inside a literal while being blanked to a space
+    outside one, so the two views can disagree about how many lines there
+    are. Callers that index by line must therefore `split("\n")`, which is
+    what `route_prefixes` does.
 
     Why a scanner and not a regex alternation. The first version of this
     was one, and it had a hole big enough to hand a destructive route a
@@ -324,9 +342,14 @@ def _scan_go(source: str) -> tuple[str, str]:
     the repositories prefix and matched the repositories test. `/*` inside
     a `//` comment did the same through a second door.
 
-    The cure is ordering: a comment is recognised BEFORE a literal, so
-    nothing inside a comment can open one. Left to right, one pass, one
-    state — which is also how Go itself reads the file.
+    THE INVARIANT TO PRESERVE IS STATEFULNESS, NOT BRANCH ORDER. An
+    earlier version of this docstring credited the ordering of the checks
+    below, and that is measurably wrong: swapping the literal check above
+    the comment checks changes nothing, because the branches can never
+    both apply at one index (`//` starts with `/`, a literal with a
+    quote). What fixes it is that entering `//` mode is STICKY until the
+    newline, so a quote encountered inside a comment is never a delimiter.
+    Refactor the branches freely; do not flatten the mode.
     """
     code: list[str] = []      # literals AND comments blanked
     kept: list[str] = []      # only comments blanked
@@ -341,9 +364,10 @@ def _scan_go(source: str) -> tuple[str, str]:
         ch = source[i]
 
         if mode is None:
-            # A COMMENT IS RECOGNISED BEFORE A LITERAL. That ordering is
-            # the whole fix: nothing inside a comment can open a string or
-            # a rune, so an apostrophe in English prose is inert.
+            # Order between these branches is arbitrary — they cannot
+            # collide at one index. What matters is that the comment modes
+            # are STICKY (see the docstring): once inside one, a quote is
+            # just a character, so an apostrophe in English prose is inert.
             if source.startswith("//", i):
                 mode, i = "//", i + 2
                 emit("  ", "  ")
@@ -468,7 +492,11 @@ def route_prefixes(repo_root: Path, rel_path: str) -> dict[int, str]:
         _PREFIX_CACHE[key] = prefixes
         return prefixes
 
-    code_lines, kept_lines = (v.splitlines() for v in _scan_go(source))
+    # split("\n"), NOT splitlines(): the latter also breaks on \v, \f, the
+    # separator characters and a lone \r, which survive inside a literal
+    # and are blanked outside one — so the two views would disagree about
+    # which line a route is on.
+    code_lines, kept_lines = (v.split("\n") for v in _scan_go(source))
     stack: list[tuple[int, str]] = []  # (brace depth when opened, prefix)
     depth = 0
     for line_no in range(1, len(code_lines) + 1):

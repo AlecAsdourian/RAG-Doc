@@ -48,7 +48,7 @@ key-decisions:
   - "git_url stops being a key for GitHub-sourced rows (000011). For those it is DERIVED from github_repo_id, and a rename frees the old URL, so two rows can briefly hold the same stored URL. That must not be a 500 on an unrelated connect."
   - "The isolation scanner was fixed rather than worked around. Flattening the routes or planting a `/{id}` literal in the test would have turned the check green while leaving POST /api/repositories unchecked."
 
-issues-created: [ISS-015, ISS-016]
+issues-created: [ISS-015, ISS-016, ISS-017]
 issues-closed: []
 
 duration: ~1 hour
@@ -178,6 +178,20 @@ Replaced with a single-pass scanner. The fix is ordering: **a comment is recogni
 
 **N-L4 / N-L5 / N-L6 / N-L8 — four more claims corrected.** The docs said "you will not get a duplicate" when three real gaps remain (URL spelling, pre-existing duplicates, a cross-project race); the verification table said 11/11 when ten subtests ran; a comment called the join "what scopes this" when RLS already does and the join is the second layer; and the rollback message said "resolve the rows named below" while naming only counts.
 
+## Fourth review round: approved, with two of my explanations wrong
+
+The reviewer approved. Two of its five LOW findings were **claims about why the fix works**, both measurably false, and both fixed here rather than filed — a maintainer told to guard the wrong invariant will reintroduce the hole.
+
+**The stated mechanism for the N-H1 fix was wrong, in three places.** The comment, the docstring and this summary all credited *branch ordering* ("a comment is recognised before a literal"). Measured: swapping the branches changes nothing and all tests still pass, because they cannot both apply at one index — `//` starts with `/`, a literal with a quote. The real invariant is **statefulness**: `//` mode is sticky until the newline, so a quote inside a comment is never a delimiter. Corrected, and the docstring now says explicitly that the branches may be reordered but the mode must not be flattened.
+
+**"Newlines and total length are preserved" did not mean what it said.** Length holds; line *counts* do not. `str.splitlines()` also breaks on `\v \f \x1c \x1d \x1e \x85    ` and a lone `\r`, which survive inside a literal and are blanked outside one — so the two views could disagree about which line a route is on. `route_prefixes` now uses `split("\n")`, pinned by a test carrying a genuine `\x0b` (the two-character escape proves nothing, which is how the first attempt at that test passed against the bug).
+
+**Writing those two tests found a fourth real bug.** A comment carrying an unbalanced `(` — ordinary English prose — opened a diff join that swallowed the route lines after it, which were then reported at the comment's line number under the comment's prefix. Parens are now counted on the comment-stripped line.
+
+Both of the tests written for this round initially **passed against the bug they were named for**, and only died once sharpened. That is the same failure as writing the conclusion before the measurement, one level down: a test that cannot fail is a claim, not evidence.
+
+The remaining three findings are ISS-017.
+
 ## Verification
 
 | Check | Result |
@@ -189,7 +203,7 @@ Replaced with a single-pass scanner. The fix is ordering: **a comment is recogni
 | `TestDeleteReportsTheWholeCascade` | pass |
 | `migrate up` → `down 1` → `up` on an EMPTY scratch database | clean each time, ends `11 \| f` |
 | `down 1` on a database holding rows 000011 legalises | refuses by design, names the offending groups, applies nothing; `force 11` recovers |
-| `pytest scripts/ci/test_check_isolation.py` | 32 pass |
+| `pytest scripts/ci/test_check_isolation.py` | 34 pass |
 | CI isolation scanner | PASS — `POST /api/repositories` and `DELETE /api/repositories/{id}`, both now actually resolved and matched |
 
 `-race` was NOT run locally — this machine has no gcc, and `go test -race`

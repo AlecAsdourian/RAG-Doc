@@ -10,14 +10,14 @@ See: .planning/PROJECT.md (updated 2026-01-08; product-vision reframe recorded i
 ## Current Position
 
 Milestone: v1.0 MVP (9 phases: 17-25)
-Phase: 19 COMPLETE — Auth Wiring & Org Provisioning. Phase 20 PLANNED, not started.
-Plan: 19-01 through 19-04 all merged. Phase 20 planned as 5 plans (see 20-CONTEXT.md).
-Status: Phase 17 closed 2026-09-06. Phase 18 deprioritized. Phase 19 closed 2026-09-08 — tenant identity now comes only from a Supabase-signed claim and multi-org switching works. An infrastructure pass then closed ISS-009/010/011 and gave the project its first CI job that compiles the Go code.
-Last activity: 2026-09-08 — Phase 20 planned; awaiting the GitHub App registration (user action)
+Phase: 20 IN PROGRESS — Repository Integration. 20-01, 20-02, 20-03 merged; 20-04 and 20-05 remain.
+Plan: 19-01 through 19-04 all merged. Phase 20 is 5 plans (see 20-CONTEXT.md), 3 of 5 done.
+Status: Phase 17 closed 2026-09-06. Phase 18 deprioritized. Phase 19 closed 2026-09-08. The GitHub App is registered and its contract verified against the live API (20-02). Repositories now have a tenant-scoped CRUD API (20-03).
+Last activity: 2026-09-09 — 20-03 merged after four review rounds
 
-Progress: v1.0 MVP █░░░░░░░░ 1/9 phases complete, Phase 19 at 4/4 plans (Phase 18 Observability deferred — see project_phase18_deprioritized memory)
+Progress: v1.0 MVP █░░░░░░░░ 1/9 phases complete, Phase 20 at 3/5 plans (Phase 18 Observability deferred — see project_phase18_deprioritized memory)
 
-**Note on this section's history:** 19-01 and 19-02 both shipped without updating STATE.md, so this file sat two plans stale. Brought current in 19-03.
+**Note on this section's history:** 19-01 and 19-02 both shipped without updating STATE.md, so this file sat two plans stale. Brought current in 19-03 — and then went stale again through 20-01/20-02/20-03, which is why the note is worth keeping. Update this file in the same commit as the summary, not afterwards.
 
 ## Performance Metrics
 
@@ -75,7 +75,12 @@ Recent decisions still affecting current work:
 - **ISS-005:** Supabase Native OAuth webhook handler — **scheduled: Phase 19-01**
 - **ISS-006:** Test database connectivity — **✅ closed 2026-09-05** in Phase 17-01 via testcontainers-go harness (`pkg/testing/isolation`); see ISSUES.md
 - **ISS-007:** JWT-carried tenant claim — **✅ closed 2026-09-08** in Phase 19-03. Tenant identity now comes only from the Supabase-signed `app_metadata.organization_id` claim; the `X-Organization-ID` path is deleted, including from CORS. Closed without the per-request membership re-check the original filing called for — reasoning in ISSUES.md and 19-03-SUMMARY.md.
-- **ISS-008:** Request-scoped tenant transaction for DB-hitting endpoints — **filed 2026-09-06** during 17-02; must resolve before any Phase 20+ handler reads a tenant-scoped table directly from Go. See ISSUES.md.
+- **ISS-008:** Request-scoped tenant transaction for DB-hitting endpoints — **✅ closed 2026-09-08** in Phase 20-01 (`db.TenantScoper`). Handlers touching an RLS table take the scoper and not a pool, so an unscoped query is inexpressible rather than merely discouraged.
+- **ISS-013:** Unscoped access to an RLS table behaves differently depending on connection history — **filed 2026-09-08** during 20-01. Not live (the scoper makes it unreachable), but it is a heisenbug generator and the fix is now known to be a one-line `AfterConnect` sentinel rather than a six-table migration. It bit a test during 20-03.
+- **ISS-014:** `pkg/db` imports `pkg/auth`, inverting the layering — **filed 2026-09-08** during 20-01.
+- **ISS-015:** The isolation scanner's coverage match is method-blind — **filed 2026-09-08** during 20-03's review. The nested-block, middleware-wrapped and multi-segment holes it originally also claimed are closed and pinned.
+- **ISS-016:** `sync_state` has no lease, so a relink can re-queue a run already in flight — **filed 2026-09-09** during 20-03's review. **Must be settled before Phase 21 builds the queue**, not after.
+- **ISS-017:** Three residual soft edges in the isolation scanner — **filed 2026-09-09**, all LOW and none reachable today.
 - **ISS-009:** `pkg/vectordb` build — **✅ closed 2026-09-08.** Qdrant client bumped v1.7.0 → v1.19.2; the pin had always predated the API the package was written against. Fixing it surfaced a panicking unit test that had never been able to run.
 - **ISS-010:** Isolation harness parallel race — **✅ closed 2026-09-08.** Role setup now holds a `pg_advisory_xact_lock`; verified over 5 cold-container parallel runs.
 - **ISS-011:** OAuth callback routes — **✅ closed 2026-09-08** by unmounting them (not repairing). Repairing the 500 alone would have converted a loud failure into a silently claim-less account. Handlers kept as reference; deleting them is a planner/user call.
@@ -85,21 +90,25 @@ Recent decisions still affecting current work:
 
 ### Blockers/Concerns
 
-- **User action needed:** GitHub App registration during Phase 20-01 (creating the App in GitHub UI is a manual step — planner will hand user a runbook when we get there)
+- ~~**User action needed:** GitHub App registration~~ — **done 2026-09-08.** App id 4880866 (`rag-doc-dev`); private key lives outside the repository.
 - **User action needed:** Deployment target choice in Phase 24-01 (recommend I bring back options + trade-offs at that point)
 - **User action needed:** Observability stack choice in Phase 18 (self-hosted vs SaaS — cost implications)
 
 ## Session Continuity
 
-Last session: 2026-09-08
-Stopped at: 19-04 executed and opened as a PR; reviewer launched
+Last session: 2026-09-09
+Stopped at: 20-03 merged. Nothing in flight.
 Resume file: None
 
-Next command suggested: `/gsd:execute-plan .planning/phases/20-repository-integration/20-01-PLAN.md`.
+Next command suggested: `/gsd:execute-plan .planning/phases/20-repository-integration/20-04-PLAN.md`.
 
-**20-01 can start immediately** — it resolves ISS-008 and depends on nothing external.
+**20-04 (installation flow) can start immediately.** Nothing external blocks it — the App is registered and its credentials are in the environment. Two things it must get right, both established by 20-02's live verification:
+- `GET /api/github/callback` must be mounted **outside** `JWTAuthMiddleware`. A browser following GitHub's redirect sends no `Authorization` header.
+- A missing `state` parameter must be **refused**, not defaulted.
+- Carried in: `redactSecrets` covers `ghs_`/`ghu_` but not `gho_`, which is exactly what 20-04's OAuth flow produces.
+- The dead GitLab handlers get deleted here.
 
-**20-02 onward are BLOCKED on a user action:** registering the GitHub App by following `docs/github-app-setup.md` (~20 minutes, needs an ngrok tunnel). This cannot be scripted — GitHub requires a human in their UI, and the private key is shown once. The runbook ends with a checklist of four things to hand back.
+**The GitHub App registration is DONE** (2026-09-08). `docs/github-app-setup.md` remains the runbook if it ever has to be redone; the App's contract was verified against the live API before any code was written against it, which corrected three specs in the plan.
 
 **Why ISS-008 comes first, verified rather than assumed:** `repositories` is RLS-scoped (000008) and carries the 000009 trigger. The only Go handler touching the database today is `user_orgs.go`, which reads `users`/`organizations`/`organization_memberships` — none of which have RLS. So no Go handler has ever read an RLS-scoped table, and `GET /api/repositories` is the first. Without the request-scoped tenant transaction it returns zero rows with no error.
 

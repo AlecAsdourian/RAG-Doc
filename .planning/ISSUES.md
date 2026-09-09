@@ -90,6 +90,26 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Fix:** move the context key and its accessors to a leaf package (`pkg/tenantctx`) that both can import. Mechanical: the key already has accessors as of 20-01, so the change is an import rewrite across five call sites.
 - **Not done in 20-01** because the cycle does not exist, the benefit is speculative, and the refactor would have widened a plan that already grew a security fix.
 
+### ISS-017: Three residual soft edges in the isolation scanner
+
+- **Discovered:** Phase 20-03 fourth review pass (2026-09-09), after the approval
+- **Type:** Testing / CI
+- **Priority:** LOW — none is reachable in this codebase today; all three are cheap when someone is next in the file
+- **Why filed rather than fixed:** the scanner took three rounds to close the free pass and each round's fix produced the next finding. These are contrived or unreachable, and the marginal value of a fourth change to a file that now has 34 tests is lower than the risk of introducing a fifth.
+
+1. **A prefix can still leak out of a string literal.** Route paths are read from the comments-blanked view, which keeps literals, so a line that opens a real brace *and* mentions `.Route("…")` inside a string pushes that path:
+   ```go
+   for _, s := range []string{`.Route("/evil"`} {
+       r.Post("/wipe", h.Wipe)
+   ```
+   reports `POST /evil/wipe`. The important direction — a commented-out registration — is closed and pinned. Fix: require the match offset to fall outside every literal span.
+
+2. **Two `_scan_go` behaviours are correct but unpinned.** Dropping rune tracking entirely, and dropping backslash-escape handling inside literals, both survive the suite. The shipped code handles `'{'`, `'"'`, `"say \"hi\""` and `'\''` correctly — verified by hand, not by test. Without rune tracking, `if c == '"' {` opens a runaway string that blanks the rest of the file.
+
+3. **A leading `/` is now required, which drops a Go 1.22 ServeMux host pattern.** `mux.HandleFunc("POST example.com/api/wipe", h.Wipe)` is invisible. No impact while this repo is chi-only, and the leading slash is what stopped `cache.Delete("session-key")` reading as a route — but the module docstring advertises `HandleFunc("METHOD path")` without the caveat.
+
+- **Also noted:** the adoption query's `p.organization_id` predicate cannot be mutation-tested, because no test can simulate "RLS regressed". It is documented as the second layer rather than the scope, which is the honest framing.
+
 ### ISS-016: `sync_state` has no lease, so a relink can re-queue a run already in flight
 
 - **Discovered:** Phase 20-03 second review (2026-09-09)
