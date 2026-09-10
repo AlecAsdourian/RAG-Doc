@@ -1,0 +1,206 @@
+---
+phase: 20-repository-integration
+plan: 05
+subsystem: api
+
+requires:
+  - phase: 20-02
+    provides: the verified webhook payload shapes and the captured deliveries
+  - phase: 20-01
+    provides: db.TenantScoper — every RLS write here goes through it
+provides:
+  - "POST /webhooks/github — HMAC-verified, idempotent by delivery id"
+  - "Migration 000012 — github_webhook_deliveries, github_installation_tenants (the trigger-maintained discovery index), uninstalled_at"
+  - "docs/api-github-webhooks.md — including what Phase 21's queue must consume"
+affects: [21 (the queue reads sync_state = 'pending'), 22 (ingestion)]
+
+tech-stack:
+  added: []
+  patterns:
+    - "Verify the signature over the RAW body before parsing: parsing attacker-controlled JSON is work done for someone who has not proved who they are"
+    - "A webhook has no tenant — it DISCOVERS one. Do that with a trigger-maintained table that has no RLS, not a SECURITY DEFINER function: FORCE RLS applies to the table owner too, so the function works only where the app and the tables have different owners. Everything done with the answer goes through a normal tenant transaction."
+    - "Verify in the shape you DEPLOY, not the shape you test. A privilege split that exists only in the harness turns a verified property into a false one."
+    - "Record intent, never start work. A goroutine begun in a webhook dies with the process and takes the only record of the work with it"
+    - "An unrecognised event is 202, not 4xx — the delivery log is the first place anyone looks when webhooks seem broken"
+    - "A constant-time comparison cannot be mutation-tested functionally; == and hmac.Equal agree on every input and differ only in timing"
+
+key-files:
+  created:
+    - services/backend/pkg/api/handlers/github_webhook.go
+    - services/backend/pkg/api/handlers/github_webhook_events.go
+    - services/backend/pkg/api/handlers/github_webhook_isolation_test.go
+    - services/backend/pkg/api/handlers/github_webhook_constanttime_test.go
+    - services/backend/migrations/000012_webhook_deliveries.up.sql / .down.sql
+    - docs/api-github-webhooks.md
+  modified:
+    - services/backend/pkg/api/router.go
+    - services/backend/pkg/api/handlers/main_test.go
+    - docs/api-repositories.md, docs/github-app-setup.md
+    - .planning/ROADMAP.md, .planning/STATE.md
+
+key-decisions:
+  - "An installation we do not recognise is NOT adopted. Linking it to whoever acted most recently hands one customer's GitHub account to another — 20-04's review demonstrated that exact attack in its non-webhook form, and nothing in the payload identifies one of our users."
+  - "installation.deleted keeps the row and the repositories. An uninstall means access was lost, not that the user asked us to forget what we ingested; repositories.installation_id is ON DELETE SET NULL, so deleting the installation would silently orphan everything under it."
+  - "A webhook never creates a repository row. Not because the schema refuses it — default_branch is NOT NULL DEFAULT 'main', so a half-row would be accepted and would quietly claim the wrong branch — but because connecting a repository is a deliberate act, and a permission-scope change is not that act."
+  - "github_webhook_deliveries has no RLS, deliberately: a delivery arrives before we know whose it is, and installation.deleted concerns a tenant that is going away."
+  - "Only a FINISHED delivery is a duplicate. One left 'processing' or 'failed' is re-claimed on redelivery, because no handler here can be partially applied — each writes in one tenant transaction and is idempotent by key."
+  - "Migration numbered 000012, not the plan's 000011 — that number was taken by 20-03, which was written after the plan. golang-migrate keys on the integer."
+  - "Tenant discovery uses a trigger-maintained table with no RLS, not a SECURITY DEFINER function. FORCE RLS applies to the table owner, so the function only worked in the harness — and EXECUTE-to-PUBLIC made it an enumeration primitive for any database role."
+  - "A delivery left 'processing' or 'failed' is re-claimable. No handler here can be partially applied, so the usual argument for refusing a replay does not apply, and refusing one silently dropped events forever."
+
+issues-created: [ISS-019]
+issues-closed: []
+
+duration: ~2 hours
+completed: 2026-09-09
+---
+
+# Phase 20 Plan 05: the webhook receiver
+
+**Closes Phase 20.** Everything here records intent; Phase 21 builds the queue that acts on it.
+
+## Tenant discovery: two wrong answers before the right one
+
+**First wrong answer.** The initial draft used the raw pool for every write, with a comment saying *"where it touches RLS tables it builds a scope explicitly — see `withInstallationTenant`"*. That function did not exist. Every `UPDATE` silently matched zero rows, because that is what an unscoped write to a `FORCE ROW LEVEL SECURITY` table does.
+
+The problem underneath is real: **a webhook has no tenant, it has to discover one**, and `github_installations` is FORCE RLS so even the lookup is filtered.
+
+**Second wrong answer, and this one shipped in the first commit.** I added a `SECURITY DEFINER` function and wrote "verified rather than assumed" next to it. It *was* verified — in the test harness, where migrations run as a superuser and the application connects as a separate non-superuser role, so the function inherited a privilege the caller lacked.
+
+`FORCE ROW LEVEL SECURITY` applies policies **to the table owner too**, and `SECURITY DEFINER` only switches `current_user` to the function's owner. In the deployment shape this repo actually documents — application and tables owned by the same role — the function is filtered exactly like a direct read and returns nothing. The receiver would have answered `202` to every event while doing nothing at all: no error, no warning, a plausible outcome in the delivery log, and no test in the suite able to see it.
+
+Review reproduced it on a database owned by a `NOSUPERUSER NOBYPASSRLS` role. This is the same failure as the morning's `.env` problem, one layer down: **I verified in the shape we test, not the shape we deploy.**
+
+**The right answer stops depending on privileges.** `github_installation_tenants` is an ordinary table with no RLS, holding only the installation-to-tenant mapping, maintained by a trigger so it cannot drift. It behaves identically whoever owns it and whoever connects — and it is strictly *less* exposed than the function was, because `EXECUTE` defaults to `PUBLIC`: any database role at all could call the old one and enumerate the whole map by guessing small sequential ids. Verified under a production-shaped role: direct read 0 rows, discovery table returns the tenant, a grant-less role gets `permission denied`.
+
+## What the plan asked for that cannot be done
+
+The plan's verification list says: *"Mutation-check the signature verification: replace `hmac.Equal` with `==` and confirm a test fails."*
+
+I ran that mutation. **No test failed, and none could.** `==` and `hmac.Equal` return the same answer for every input; they differ only in how long they take. The property is timing, not behaviour.
+
+A timing test would be the behavioural equivalent and would be flaky on a shared CI runner — and a test that fails randomly gets deleted, after which the property is unguarded for real. So `TestSignatureComparisonIsConstantTime` reads the source and asserts `hmac.Equal` is used. That is a weaker kind of test, it is the strongest one available for this property, and the file says so rather than implying it proved something behavioural.
+
+## Decisions the plan asked to be made and written down
+
+**An orphan installation is not adopted.** A user can install from GitHub's directory without passing through our flow, so `installation.created` routinely arrives for an installation belonging to no organization of ours. Adopting it — linking to whoever acted most recently — is the same cross-tenant bug 20-04's review demonstrated. Nothing in the payload identifies one of *our* users; `sender` is a GitHub login and mapping those would be an authorization decision made from an unauthenticated request. The installation stays live-and-unlinked until the user completes the flow from inside the app, which is a normal state.
+
+**Where the full repository fetch happens: not here.** The payload's repository shape is reduced — no `default_branch` (which is `NOT NULL`), no `size`, `visibility` or `archived`. Fetching inline would make webhook processing depend on GitHub being reachable at delivery time. So the webhook re-points and re-queues rows that already exist and creates none; `POST /api/repositories` remains the only thing that connects a repository.
+
+## Fixture provenance, stated because it matters
+
+The `installation` tests run against **real captured deliveries** — envelope, headers and body, from the live App on 2026-09-08. Those confirmed `sha256=` + 64 hex, a UUID delivery id, and the reduced repository shape.
+
+`push` and `installation_repositories` have **no captured payload**; no such delivery has ever reached a capture server. Their tests are built from GitHub's documentation and are named `UNVERIFIED_*` so nobody mistakes them for evidence about the payload shape. They hold the handler logic honestly and say nothing trustworthy about what GitHub actually sends.
+
+This is not a formality. Capturing the installation payloads in 20-02 corrected three specs, including a size field wrong by ~1000×. **ISS-019** records capturing these two as real work.
+
+One limitation of the captured fixtures worth knowing: the capture server stored the body **parsed**, not as raw bytes, so the real signatures cannot be replayed — re-serialising JSON does not reproduce GitHub's exact bytes. Signature tests therefore sign their own payloads with a test secret. The *shapes* and *headers* are real; the *signatures* in the fixtures are unusable.
+
+## Review round: the fix that only worked in the harness
+
+Approved on everything but one blocker, and the blocker was the tenant-discovery function above. Alongside it:
+
+**The `EXECUTE` grant made the function an enumeration primitive.** Review demonstrated a role with *zero* table grants reading the complete installation-to-organization map by calling it across a range of ids. GitHub installation ids are small and sequential. Gone with the function.
+
+**`installation_repositories.added` had no positive test.** The only test asserted a negative — that no repository row is created — which a handler doing *nothing at all* satisfies perfectly, and review showed exactly that no-op surviving the suite. The one path the event exists for was uncovered. Now asserted, along with the two second-layer filters that also survived.
+
+**A delivery that died mid-flight was poisoned forever.** The first design treated any existing row as a duplicate, justified by "replaying a partially-applied event is worse than one recorded as failed". Review pointed out that **no handler here can be partially applied** — each does all its writes in one tenant transaction and each is an idempotent update by key. So the justification was false and the cost was real: a panic, an OOM or a deploy restart silently dropped an uninstall forever. `processing` and `failed` are now re-claimable; finished deliveries are still duplicates.
+
+**`github_webhook_deliveries.organization_id` was described in the migration and written by nothing.** Now populated when the tenant is discovered.
+
+**Four doc claims corrected**, all of them the failure mode Task 4 exists to prevent: `default_branch` was said to be `NOT NULL` and to block a half-row insert (it is `NOT NULL DEFAULT 'main'`, so the insert would *succeed* and quietly claim the wrong branch — the decision is right, the stated mechanism was not); stand-down was described as matching what an uninstall does (it is the opposite — uninstall keeps the link); `installation.deleted` was said to stand down repositories, without the qualifier that a `synced` one keeps its state; and `GITHUB_WEBHOOK_SECRET` became mandatory at startup with no runbook mentioning it.
+
+**One mutation still survives, and it is honest that it does.** Dropping the `p.organization_id = $2` predicate from the `added` update changes nothing observable, because RLS already restricts the rows. It is a second layer, and a second layer cannot be measured while the first one works. Recorded rather than dressed up as covered — the same call as PR #22's equivalent.
+
+## The fix that CI caught and the local run did not
+
+Making `processing` deliveries re-claimable introduced a real bug, and my local suite passed it three times.
+
+A row is `processing` for exactly as long as a worker is still handling it. Re-claiming on that alone means twelve concurrent redeliveries all re-claim each other and **all process** — the precise thing the idempotency design exists to prevent. Locally the winner finished fast enough that the others always saw a terminal outcome; on GitHub's slower runner, every racer won and `Idempotency_ConcurrentDuplicatesProduceOneEffect` failed with 0 duplicates instead of 11.
+
+The rule now has two halves: `failed` is re-claimable immediately, and `processing` only once it is older than five minutes — long enough that a live handler is never overtaken (the route carries a 30-second timeout).
+
+**A correction to an earlier version of this paragraph**, which said both halves were pinned by their own test. Only the `processing` half was; deleting the `'failed'` disjunct entirely left the suite green — and `failed` is the half that matters more in practice, since an ordinary 500 writes it while `processing` only survives a crash. Now covered.
+
+**And a claim softened.** This paragraph said five minutes is "short enough that GitHub's own redelivery schedule recovers a genuinely lost event". That rests on GitHub redelivering at all, redelivering *again* after the five-minute mark, and reusing the delivery id — the last of which ISS-019 records as unverified, and the plan for this phase warned specifically against designing around a vendor's retry behaviour. A delivery that fails and is never redelivered stays lost until a resync exists.
+
+Worth naming the shape: **a concurrency test that passes locally has told you very little.** The local run is one scheduler, one machine, one load profile. This one was green three times in a row on a bug CI found on the first try.
+
+## Third review round: the replacement had its own silent-202
+
+The trigger-maintained table was the right call and verified in the production shape — but it shipped with the same failure mode it was written to remove, narrowed to installations that already existed.
+
+**H2 — the backfill mirrored nothing.** `INSERT ... SELECT FROM github_installations` under FORCE RLS with no tenant set selects zero rows, so on the deploy that ships this feature every already-connected organization would silently stop receiving webhook effects. The migration excused it: *"the trigger populates each row the first time it is next written, and existing installations are re-read by the webhook on any subsequent event."* **The second half is false** — `resolveInstallation` reads only the mirror, so every handler answers "unknown installation" and writes nothing. No webhook event can heal it. The backfill now loops per organization, setting the tenant for each; verified against installations created *before* the migration ran.
+
+**M6 — the mirror could drift after all.** Re-keying an installation left the old GitHub id pointing at it forever, so a freed id kept routing to the wrong tenant. "Maintained by a trigger so it cannot drift" was asserted three times and was an overstatement. The trigger now deletes the stale key, and `installation_id` is UNIQUE so the drift is unrepresentable rather than merely handled.
+
+**M7 — I dropped a hardening while removing the thing that carried it.** The SECURITY DEFINER function pinned `search_path`, and I made a point of why; the replacement trigger did not. Measured: a temp table named `github_installation_tenants` swallowed the mirror write while the parent insert succeeded, leaving an installation that exists and can never be resolved. Pinned, and the body is schema-qualified.
+
+**Two mutation-table rows overstated their kills** — `recordOutcome` and the stand-down installation filter each kill one subtest, not four and two. Corrected above. Every other row reproduced exactly.
+
+**Also noted, not fixed:** the app role holds INSERT/UPDATE/DELETE on the mirror, not just SELECT, and a write there rewrites tenant routing. The migration cannot name `rag_doc_app` (20-02's rule) and in production the app *is* the owner, so there is no grant to tighten from here. Worth saying rather than implying "strictly less exposed" holds on every axis — it holds on the PUBLIC axis, which was M1's, and not on this one.
+
+## Fourth review round: the backfill poisoned the next migration
+
+Approved pending one change, and it was a good catch about a thing I had just added.
+
+**The per-tenant loop worked and left the connection unusable.** Setting `app.current_tenant` for each organization mirrors correctly — and once a custom GUC is touched in a session it cannot be returned to NULL. `RESET` and `set_config(..., '', true)` both leave `''`, which is *worse* than unset: `current_setting(...)::uuid` then raises 22P02 instead of filtering to zero rows. That is ISS-013, which this repo filed months ago and which this very test file cites by number. Review demonstrated an ordinary migration 000013 reading an RLS table dying on it, leaving the database dirty at a version with nothing to do with the cause — and the isolation harness applies migrations the same way, so it would have broken at container setup the moment anyone added one.
+
+My "leave no tenant set behind" line described the opposite of what it did.
+
+The backfill now lifts `FORCE` for one statement instead. `ALTER TABLE` takes an ACCESS EXCLUSIVE lock held to the end of the transaction, so no other session can read the table while the guard is down — the window is closed by the lock rather than by hoping. RLS itself stays enabled; only the owner-also-applies flag moves. It is also O(1) statements rather than O(organizations). Verified: pre-existing installation mirrored, `FORCE` restored, `app.current_tenant` still NULL, and a subsequent RLS read returns zero rows rather than erroring.
+
+**Three counts in the tables above were wrong for the third round running**, and the cause was the same each time: I corrected the table and then added tests in the same commit without re-measuring. They are now taken from a run — `grep -c` on the verbose output and on the mutation's failures — rather than reasoned about. That is the cheap habit I should have adopted the first time.
+
+## Verification
+
+| Check | Result |
+|---|---|
+| `go build ./...`, `go vet ./...`, `gofmt` | clean |
+| `go test -p 1 ./...` | all pass, container rebuilt from scratch |
+| `TestGitHubWebhook` | **25/25** (counted from a run, not from arithmetic), plus `-shuffle=on` green repeatedly |
+| `migrate up` → `down 1` → `up` on a scratch database | clean each time |
+| CI isolation scanner | PASS, with `POST /webhooks/github` reported as **skipped** with a reason — checked in the JSON, not just the exit code |
+| Tenant discovery under a `NOSUPERUSER NOBYPASSRLS` owner | direct read 0 rows; discovery table returns the tenant; grant-less role denied |
+| Backfill of installations created BEFORE the migration, same role | mirrored (was 0 rows) |
+| `app.current_tenant` after migrating | still NULL; a later RLS read returns 0 rows rather than raising 22P02 |
+| Re-keying an installation | old mapping removed, no stale route |
+| A temp table shadowing the mirror | write lands in the real table |
+
+`-race` was not run locally (no gcc; it needs cgo). CI runs it.
+
+### Mutation testing
+
+| Mutation | Result |
+|---|---|
+| Signature check removed | both signature scenarios fail |
+| Signature verified AFTER parsing | `Signature_IsCheckedOverTheRawBodyBeforeParsing` fails, only it |
+| Duplicate deliveries reprocessed | both idempotency scenarios fail |
+| `hmac.Equal` → `==` | **no functional test fails, and none can** — caught by the source-level guard instead |
+
+Review round:
+
+| Mutation | Result |
+|---|---|
+| `recordAddedRepositories` does nothing | `UNVERIFIED_RepositoriesAdded…Repoints…`, `AddedOnlyTouchesTheOwningOrganization` |
+| Installation filter dropped from `standDownRepositories` | `RemovedOnlyTouchesTheNamedInstallation`, only it |
+| `recordOutcome` disabled | `DeliveryRecordsItsOutcomeAndTenant`, `AFailedDeliveryIsReclaimableImmediately` |
+| Unfinished deliveries treated as duplicates again | `AnUnfinishedDeliveryCanBeReprocessed`, only it |
+| Staleness window removed (any `processing` re-claimable) | `ADeliveryBeingProcessedRightNowIsNotReclaimable`, only it |
+| The `'failed'` disjunct removed | `AFailedDeliveryIsReclaimableImmediately`, only it |
+| `suspended_at` no longer cleared on `created` | `InstallationCreated_ClearsBothStaleMarkers`, only it |
+| Commented-out `hmac.Equal` beside a live `==` | `TestSignatureComparisonIsConstantTime` |
+| Mirror read replaced by a direct `github_installations` read | 18 subtests |
+| `p.organization_id` predicate dropped | **survives** — RLS already covers it; see above |
+
+## Notes for what comes next
+
+- **Phase 21's work item is a `repositories` row with `sync_state = 'pending'`.** There is no queue table; inventing one was Phase 21's decision to make, not this plan's. The query and the three traps are in `docs/api-github-webhooks.md`.
+- **ISS-016 should be settled before the queue is built.** `sync_state` is a status column used as a queue, with no lease or owner, and this phase adds a second writer to it.
+- **ISS-019** — capture real `push` and `installation_repositories` deliveries and replace the documentation-derived fixtures.
+- **The delivery table grows forever.** Migration 000012 carries the pruning statement; Phase 24 owns scheduling it.
+
+---
+*Phase: 20-repository-integration — COMPLETE*
+*Completed: 2026-09-09*

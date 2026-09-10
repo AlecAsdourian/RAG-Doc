@@ -10,12 +10,12 @@ See: .planning/PROJECT.md (updated 2026-01-08; product-vision reframe recorded i
 ## Current Position
 
 Milestone: v1.0 MVP (9 phases: 17-25)
-Phase: 20 IN PROGRESS — Repository Integration. 20-01, 20-02, 20-03 merged; 20-04 and 20-05 remain.
-Plan: 19-01 through 19-04 all merged. Phase 20 is 5 plans (see 20-CONTEXT.md), 3 of 5 done.
+Phase: 20 COMPLETE — Repository Integration. All five plans merged. Phase 21 (Job Infrastructure) is next.
+Plan: Phases 17, 19 and 20 closed. Phase 21 not yet planned.
 Status: Phase 17 closed 2026-09-06. Phase 18 deprioritized. Phase 19 closed 2026-09-08. The GitHub App is registered and its contract verified against the live API (20-02). Repositories now have a tenant-scoped CRUD API (20-03).
-Last activity: 2026-09-09 — 20-03 merged after four review rounds
+Last activity: 2026-09-09 — Phase 20 closed; 20-05 (webhooks) merged
 
-Progress: v1.0 MVP █░░░░░░░░ 1/9 phases complete, Phase 20 at 3/5 plans (Phase 18 Observability deferred — see project_phase18_deprioritized memory)
+Progress: v1.0 MVP ██░░░░░░░ 2/9 phases complete, Phase 20 at 5/5 plans (Phase 18 Observability deferred — see project_phase18_deprioritized memory)
 
 **Note on this section's history:** 19-01 and 19-02 both shipped without updating STATE.md, so this file sat two plans stale. Brought current in 19-03 — and then went stale again through 20-01/20-02/20-03, which is why the note is worth keeping. Update this file in the same commit as the summary, not afterwards.
 
@@ -97,18 +97,40 @@ Recent decisions still affecting current work:
 ## Session Continuity
 
 Last session: 2026-09-09
-Stopped at: 20-03 merged. Nothing in flight.
+Stopped at: Phase 20 complete. Nothing in flight.
 Resume file: None
 
-Next command suggested: `/gsd:execute-plan .planning/phases/20-repository-integration/20-04-PLAN.md`.
+Next command suggested: plan Phase 21 (`/gsd:plan-phase 21`). It has no PLAN files yet.
 
-**20-04 (installation flow) can start immediately.** Nothing external blocks it — the App is registered and its credentials are in the environment. Two things it must get right, both established by 20-02's live verification:
-- `GET /api/github/callback` must be mounted **outside** `JWTAuthMiddleware`. A browser following GitHub's redirect sends no `Authorization` header.
-- A missing `state` parameter must be **refused**, not defaulted.
-- Carried in: `redactSecrets` covers `ghs_`/`ghu_` but not `gho_`, which is exactly what 20-04's OAuth flow produces.
-- The dead GitLab handlers get deleted here.
+**Settle ISS-016 as part of planning Phase 21, not after.** `sync_state` on
+`repositories` is a status column being used as a queue: no lease, no owner,
+no attempt counter, so two workers can believe they own the same repository.
+Phase 20 added a second writer to it (the webhook), which makes the race
+easier to hit. The queue's shape is Phase 21's decision and this is the input
+to it.
 
-**The GitHub App registration is DONE** (2026-09-08). `docs/github-app-setup.md` remains the runbook if it ever has to be redone; the App's contract was verified against the live API before any code was written against it, which corrected three specs in the plan.
+**What Phase 21 inherits, concretely:** a work item is a `repositories` row
+with `sync_state = 'pending'`. There is no queue table — 20-05 deliberately
+did not invent one. `docs/api-github-webhooks.md` has the query and three
+traps: rows with `installation_id IS NULL` are unsyncable rather than failed
+and must not be retried; a suspended or uninstalled installation cannot mint
+a token, so check `suspended_at` / `uninstalled_at` before attempting a sync.
+
+**The GitHub App is fully configured** (registration 2026-09-08; user
+authorization and client credentials 2026-09-09). Its contract was verified
+against the live API before code was written against it, which corrected
+three specs. `docs/github-app-setup.md` is the runbook if it ever has to be
+redone — note it now has a REQUIRED user-authorization step, without which
+the install callback fails closed.
+
+**Two env-loading traps, hit for real on 2026-09-09** and documented in
+`docs/local-development.md`: a UTF-8 BOM in `.env` makes the documented
+`set -a && . ./.env && set +a` fail on line 1 and export nothing; and an
+unquoted Windows path loses its backslashes when sourced, so the backend
+panics naming a path that is not the one in the file. Also,
+docker-compose's `backend` service passes none of the GitHub or Supabase
+variables through and would panic on the missing `SUPABASE_WEBHOOK_SECRET`
+— run the backend directly.
 
 **Why ISS-008 comes first, verified rather than assumed:** `repositories` is RLS-scoped (000008) and carries the 000009 trigger. The only Go handler touching the database today is `user_orgs.go`, which reads `users`/`organizations`/`organization_memberships` — none of which have RLS. So no Go handler has ever read an RLS-scoped table, and `GET /api/repositories` is the first. Without the request-scoped tenant transaction it returns zero rows with no error.
 

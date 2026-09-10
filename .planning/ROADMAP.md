@@ -107,11 +107,11 @@ Consequences, now settled by 19-04:
 **Plans:** 5 (planned 2026-09-08 — see `20-CONTEXT.md`)
 
 Plans:
-- [ ] 20-01: **Request-scoped tenant transaction (ISS-008)** — a Go handler primitive that sets `app.current_tenant` from the verified claim, plus tests proving that bypassing it fails detectably
-- [ ] 20-02: GitHub App contract verification + schema — verify against the live App FIRST, then migration adding `github_installations` (RLS + tenant trigger) and the new `repositories` columns; GitHub client with App JWT and installation tokens
-- [ ] 20-03: Repositories CRUD API — `POST/GET/GET :id/DELETE /api/repositories`; tenant-scoped, cursor-paginated, isolation-tested
-- [ ] 20-04: Installation flow — `GET /api/github/install`, `GET /api/github/callback` (CSRF-stated, organization bound to the state token), list-installation-repositories; deletes the dead GitLab handlers
-- [ ] 20-05: Webhook receiver — `POST /webhooks/github`, HMAC-SHA256 over the raw body, idempotent by delivery id, handling push / installation / installation_repositories as recorded intent (the queue is Phase 21)
+- [x] 20-01: **Request-scoped tenant transaction (ISS-008)** — a Go handler primitive that sets `app.current_tenant` from the verified claim, plus tests proving that bypassing it fails detectably
+- [x] 20-02: GitHub App contract verification + schema — verify against the live App FIRST, then migration adding `github_installations` (RLS + tenant trigger) and the new `repositories` columns; GitHub client with App JWT and installation tokens
+- [x] 20-03: Repositories CRUD API — `POST/GET/GET :id/DELETE /api/repositories`; tenant-scoped, cursor-paginated, isolation-tested
+- [x] 20-04: Installation flow — `GET /api/github/install`, `GET /api/github/callback` (CSRF-stated, organization bound to the state token), list-installation-repositories; deletes the dead GitLab handlers
+- [x] 20-05: Webhook receiver — `POST /webhooks/github`, HMAC-SHA256 over the raw body, idempotent by delivery id, handling push / installation / installation_repositories as recorded intent (the queue is Phase 21)
 
 **Planning notes (2026-09-08).** Five plans, not four, and the order changed. Three things drove it:
 

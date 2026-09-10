@@ -32,6 +32,10 @@ type Config struct {
 	// rather than on any function we control.
 	LogWriter io.Writer
 
+	// GitHubWebhookSecret overrides GITHUB_WEBHOOK_SECRET. Tests set it so
+	// they can sign their own payloads; production leaves it empty.
+	GitHubWebhookSecret string
+
 	// GitHubInstallations, InstallStates, GitHubAppSlug and FrontendURL
 	// override the installation flow's dependencies. Left unset in
 	// production, where they come from the environment and from Redis.
@@ -259,6 +263,16 @@ func NewRouterWithValidatorAndAdmin(
 	if installGitHub == nil && githubClient != nil {
 		installGitHub = githubClient
 	}
+	// GitHub webhook receiver. Panics on an empty secret, per 19-01 — the
+	// signature is the ONLY authentication this endpoint has, so a
+	// deployment without a secret would be accepting unsigned events from
+	// anyone.
+	githubWebhookSecret := cfg.GitHubWebhookSecret
+	if githubWebhookSecret == "" {
+		githubWebhookSecret = os.Getenv("GITHUB_WEBHOOK_SECRET")
+	}
+	githubWebhookHandler := handlers.NewGitHubWebhookHandler(dbpool, tenantScoper, githubWebhookSecret)
+
 	githubInstallHandler := handlers.NewGitHubInstallHandler(
 		tenantScoper, installStates, installGitHub, appSlug, frontendURL)
 
@@ -324,6 +338,17 @@ func NewRouterWithValidatorAndAdmin(
 	// real consumer, so the install flow's own wiring reports its
 	// availability, and a probe that dialled Redis purely to log about it
 	// cost every router construction a full connect timeout.
+
+	// GitHub webhook receiver — PUBLIC, authenticated entirely by its HMAC
+	// signature. GitHub holds no token of ours.
+	//
+	// The marker below is ON THE ROUTE LINE, not above it. The scanner
+	// looks back three lines; review measured this sitting at exactly that
+	// edge, one added comment away from silently falling out of the
+	// "skipped" report. Its tenant scoping is asserted on resulting rows in
+	// TestGitHubWebhook rather than through a JWT, because a state token
+	// and a signature are what carry authority here.
+	r.With(middleware.Timeout(30*time.Second)).Post("/webhooks/github", githubWebhookHandler.Receive) // @skip-isolation-test: signature-verified and tenant-resolving; no caller identity to isolate against
 
 	// GitHub App callback — PUBLIC, and that is the whole point.
 	//

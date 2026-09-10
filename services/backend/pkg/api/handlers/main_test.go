@@ -17,9 +17,20 @@ import (
 	"testing"
 )
 
+// TestGitHubWebhookSecret is the secret this package's tests sign with.
+// Exported within the package so the webhook tests can produce signatures
+// the router will accept, rather than reaching for the env var.
+const TestGitHubWebhookSecret = "isolation-tests-github-webhook-secret-not-for-production"
+
 func TestMain(m *testing.M) {
 	if os.Getenv("SUPABASE_WEBHOOK_SECRET") == "" {
 		os.Setenv("SUPABASE_WEBHOOK_SECRET", "isolation-tests-webhook-secret-not-for-production")
+	}
+	// 20-05 added the same fail-loud for the GitHub receiver: its HMAC
+	// signature is the only authentication it has, so an empty secret
+	// panics at construction rather than accepting unsigned deliveries.
+	if os.Getenv("GITHUB_WEBHOOK_SECRET") == "" {
+		os.Setenv("GITHUB_WEBHOOK_SECRET", TestGitHubWebhookSecret)
 	}
 	os.Exit(m.Run())
 }
