@@ -4,6 +4,24 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 ## Open Enhancements
 
+### ISS-020: The semantic cache is not tenant-scoped, and it answers before RLS can
+
+- **Discovered:** 2026-09-10, by the reviewer session on PR #24, while checking a claim in that PR that turned out to be wrong. Independently verified against the code before filing.
+- **Type:** Security / Tenant isolation
+- **Priority:** HIGH — this is a cross-tenant read path with no database backstop, and it is live today.
+- **The chain, each link verified:**
+  1. `services/workers/workers/generation/semantic_cache.py:149` keys entries as `cache:query:{query_hash}:{repository_id}`. **No `organization_id` anywhere in the key or the stored entry.**
+  2. `answer_generator.py:104-128` consults the cache at the **top** of `generate()`, before any retrieval. A hit returns without touching Postgres — so the RLS policy on `chunks` never runs.
+  3. `pkg/api/handlers/search.go:58-95` takes `repository_id` from the request body with `validate:"required,uuid"` — a **format** check. Nothing queries whether that repository belongs to the caller's organization.
+- **What contains it today, partially:** the handler does forward the caller's `organization_id` from the tenant context, and the Python retrieval path does a post-hoc RLS re-read of results. That backstop is real for the retrieval path — **and the cache sits in front of it**, so a cache hit skips it entirely.
+- **Impact:** a caller who holds another organization's `repository_id` can receive a cached answer generated for that organization, provided the query hash matches and the entry is within TTL. The only control is the unguessability of a v4 UUID.
+- **Why that is not an acceptable control here:** this is the same shape as the 20-04 installation-takeover finding — `GetInstallation` proved an installation was *real*, not that the caller *controlled* it. Possessing an identifier is not proof of entitlement, and we already decided that once.
+- **The fix is small, which is the good news.** `organization_id` is already in scope: `AnswerGenerator.generate` takes it at `answer_generator.py:76`. It simply is not used in the cache key. Include it in the key and in **both** invalidation patterns (`semantic_cache.py:70,179,244` use `cache:query:*:{repository_id}`, which would otherwise miss org-scoped keys and silently stop invalidating).
+- **Regression guard required:** a cross-tenant cache test — org A asks a question, org B asks the identical question against A's `repository_id`, B must not receive A's answer. Note that the CI isolation gate cannot catch this: it scans mutation endpoints, and this is a `POST` whose leak is in a cache layer the scanner does not model.
+- **⚠ D2/R6 does not fix this.** Moving vectors into Postgres puts RLS over the *retrieval* path. The cache is Redis and sits in front of Postgres, so it is unaffected by that decision. Do not let the v2 substrate work be mistaken for a fix.
+- **Also flagged alongside it, lower severity:** `pkg/vectordb`'s `DeleteByChunkID` has no tenant predicate. Latent only — the package is currently unimported (and was uncompilable from Phase 3 to Phase 19), but it should not be wired up as-is.
+
+
 ### ISS-001: Implement shared type definitions for cross-phase data contracts
 
 - **Discovered:** Phase 12 Task 3 (2026-01-12)
