@@ -15,7 +15,7 @@ re-derivation.
 
 | PR | Scope | Review | State |
 |----|-------|--------|-------|
-| **#24** | v2 substrate design, research, D1–D4 | Blocking, 10 findings | Needs rework — §5 below |
+| **#24** | v2 substrate design, research, D1–D4 | Blocking, 10 findings | **Rework complete** — decisions, design and research all revised; awaiting re-review |
 | **#25** | Phase 21 research + context, ISS-016 | Blocking, 8 findings | Needs rework — §6 below. Two decisions still open. |
 | **#26** | ISS-020 semantic cache | Blocking → **addressed** | Fix + tests pushed; awaiting re-review |
 
@@ -269,15 +269,15 @@ moved a sandbox and a hosting constraint on the roadmap.
       recall delta.
 
 ### Research
-- [ ] **R-A** — rewrite per K3.
-- [ ] **R-B** — drop the "RLS is specially bad" framing; RLS and a plain `WHERE`
+- [x] **R-A** — rewrite per K3.
+- [x] **R-B** — drop the "RLS is specially bad" framing; RLS and a plain `WHERE`
       measured byte-identical.
-- [ ] **R-C** — re-check against the current MCP revision; it was written
+- [x] **R-C** — re-check against the current MCP revision; it was written
       against one since superseded.
-- [ ] **R-G** — qualify the "71 false alarms" figure: it is our arithmetic on
+- [x] **R-G** — qualify the "71 false alarms" figure: it is our arithmetic on
       "88 of 96 vs 17", from an unrefereed preprint using synthetic repositories
       with n=1 per condition.
-- [ ] **All sections** — rebuild every Sources list from pages actually fetched.
+- [x] **All sections** — rebuild every Sources list from pages actually fetched.
       Remove anything that cannot be found in a cited page.
 
 ### Sequencing
