@@ -147,13 +147,13 @@ and the shape my §5 experiment actually measured.
 
 ---
 
-## 3. The two decisions still open
+## 3. The two decisions, now settled
 
-Recommendations given; both need confirming before #25 can be reworked.
+**Both confirmed by the user 2026-09-10.** The recommendations below were accepted as written; #25 is unblocked.
 
-### O1 — ISS-016 scope
+### O1 — ISS-016 scope · CONFIRMED
 
-**Recommendation: narrow it.** ISS-016 becomes the racing-relink half only,
+**Decision: narrow it.** ISS-016 becomes the racing-relink half only,
 which Phase 21 genuinely closes. The second half — *a `failed` repository cannot
 be retried through the public API* — becomes its own issue, owned by whichever
 phase works the API surface (22 or 23).
@@ -163,9 +163,9 @@ contradiction the reviewer found came from trying to have it both ways —
 `21-RESEARCH.md` claimed the retry loop closed it, `21-CONTEXT.md` put API retry
 out of scope, `ISSUES.md` said it closes when Phase 21 ships.
 
-### O2 — `failed` vs `dead`
+### O2 — `failed` vs `dead` · CONFIRMED
 
-**Recommendation: collapse `failed`.** On a failed attempt, set `state='queued'`
+**Decision: collapse `failed`.** On a failed attempt, set `state='queued'`
 with `run_after` in the future and record `last_error`. `dead` becomes the only
 failure terminal.
 
@@ -220,14 +220,14 @@ moved a sandbox and a hosting constraint on the roadmap.
 ## 5. Rework checklist — PR #24
 
 ### Factual corrections
-- [ ] **§2.1** — remove "callers resolve the repository under RLS first"; it is
+- [x] **§2.1** — remove "callers resolve the repository under RLS first"; it is
       false. Replace with what is actually there: `search.go`/`chat.go` take
       `repository_id` from the body with a format check only, and the real
       partial containment is the post-hoc RLS re-read in
       `query_engine.py:286-348` — partial because metadata counts at `:216-223`
       bypass it and the Qdrant leg at `:264-281` is org-unscoped.
-- [ ] **§2.1** — cross-reference ISS-020, ISS-021.
-- [ ] **§2 inventory, parser row** — `method_declaration` appears nowhere, so
+- [x] **§2.1** — cross-reference ISS-020, ISS-021.
+- [x] **§2 inventory, parser row** — `method_declaration` appears nowhere, so
       **every Go method is invisible** to the parser, including D1's own worked
       example `RepositoriesHandler.Connect`. Also note "TypeScript" is the
       JavaScript grammar.
@@ -235,36 +235,36 @@ moved a sandbox and a hosting constraint on the roadmap.
       the only optimistic one.
 
 ### Decisions
-- [ ] **D1** — add `kind` to the unique key; the triple collides in all four
+- [x] **D1** — add `kind` to the unique key; the triple collides in all four
       languages (Go double `init()`, Python `@property`/`@x.setter`, TS
       declaration merging).
-- [ ] **D1** — record that alias resolution to leaf definitions **requires an
+- [x] **D1** — record that alias resolution to leaf definitions **requires an
       import graph**, so D1 depends on D3 tier 1. Currently documented as
       independent.
-- [ ] **D2** — state the denormalization sub-decision explicitly per K4:
+- [x] **D2** — state the denormalization sub-decision explicitly per K4:
       `chunks` gains `organization_id`, maintained by trigger, and the RLS
       policy moves from a two-hop `EXISTS` to scalar equality.
-- [ ] **D2** — justify partitioning on **index-size runway** (K1), and mark the
+- [x] **D2** — justify partitioning on **index-size runway** (K1), and mark the
       recall claim as contested rather than load-bearing.
-- [ ] **D2** — address `MODULUS 64` at scale: at a few thousand orgs each tenant
+- [x] **D2** — address `MODULUS 64` at scale: at a few thousand orgs each tenant
       is ~1.3% of its partition. Either justify the modulus or state the
       revisit trigger.
-- [ ] **D3** — make `to_symbol_id` nullable; `NOT NULL` makes
+- [x] **D3** — make `to_symbol_id` nullable; `NOT NULL` makes
       `evidence='unknown'` unrepresentable and discards exactly what tier 2
       would later upgrade.
-- [ ] **D3** — retier per K3: tier 2 is customer-CI upload, not our sandbox.
-- [ ] **D4** — change `ON DELETE CASCADE` on `memory_anchors`; it destroys
+- [x] **D3** — retier per K3: tier 2 is customer-CI upload, not our sandbox.
+- [x] **D4** — change `ON DELETE CASCADE` on `memory_anchors`; it destroys
       `span_digest_at_binding`, making `unprovable` unreachable and D1's
       deferred rename detection impossible.
 - [ ] **`chunks.symbol_id`** — one nullable FK does not fit chunking that is not
       symbol-aligned. Decide: a join table, or state the limitation.
 
 ### The measurement
-- [ ] **§5** — reframe honestly. It measured scalar-equality RLS on a table with
+- [x] **§5** — reframe honestly. It measured scalar-equality RLS on a table with
       a stored `organization_id`; `chunks` has neither today. Under K4 that
       becomes the shape we are building — so the experiment describes the
       *target* schema, not the current one. Say that plainly.
-- [ ] **§5** — note the reviewer reproduced the planner flip to exact search
+- [x] **§5** — note the reviewer reproduced the planner flip to exact search
       *without* partitioning, so the b-tree companion index may account for the
       recall delta.
 
@@ -281,8 +281,8 @@ moved a sandbox and a hosting constraint on the roadmap.
       Remove anything that cannot be found in a cited page.
 
 ### Sequencing
-- [ ] Unwind the sandbox from the ingestion path; return it to the fleet layer.
-- [ ] Remove the nested-virtualization constraint on Phase 24.
+- [x] Unwind the sandbox from the ingestion path; return it to the fleet layer.
+- [x] Remove the nested-virtualization constraint on Phase 24.
 - [ ] Re-cost R3 and the affected sequence steps.
 
 ---
