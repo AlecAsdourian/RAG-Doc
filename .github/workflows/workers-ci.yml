@@ -1,0 +1,95 @@
+name: Workers CI
+
+# Runs the Python worker test suite on every PR.
+#
+# This did not exist until 2026-09-10, and its absence is ISS-022. Only two
+# workflows existed before it: `backend-ci.yml`, which is Go, and
+# `isolation-check.yml`, which runs a diff scanner and executes no tests. So
+# NOTHING had ever run `pytest` — the entire Python half of the tenant-isolation
+# guarantee, `services/workers/tests/isolation/`, had never been executed by CI.
+#
+# It was worse than untested, because it looked tested: the isolation ratchet in
+# `isolation-check.yml` accepts a Python isolation test as coverage for a Python
+# mutation endpoint. A test that never ran could satisfy the gate that exists to
+# force real coverage.
+#
+# Same class of failure as the one recorded at the top of `backend-ci.yml`:
+# `pkg/vectordb` stayed uncompilable from Phase 3 to Phase 19 because nothing in
+# CI invoked a compiler. This is that, for Python.
+#
+# The gate is the whole `tests/` directory, not a curated list — for the reason
+# given in backend-ci.yml, which applies verbatim here. All 24 tests were
+# measured passing locally before this workflow was written; none of them were
+# broken, they had simply never been run.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: workers-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    defaults:
+      run:
+        working-directory: services/workers
+
+    # The Postgres-backed isolation tests provision their own database through
+    # testcontainers (the Phase 17-01 harness), so no Postgres service is
+    # declared here — Docker is available on GitHub-hosted runners and the
+    # harness uses it directly.
+    #
+    # Redis is different: `tests/isolation/test_semantic_cache_isolation.py`
+    # talks to a plain Redis and does not provision one, deliberately, so that
+    # it stays runnable on a developer machine with a one-line `docker run`.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: services/workers/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run the worker test suite
+        env:
+          # SETTING THIS IS WHAT MAKES THE CACHE TESTS GATE.
+          #
+          # `test_semantic_cache_isolation.py` skips when REDIS_URL is UNSET
+          # (the courtesy for a developer machine with no Redis) and FAILS when
+          # it is set but Redis is unreachable. Setting it here is therefore the
+          # difference between those tests guarding something and reporting a
+          # green "skipped" while guarding nothing — which is the exact
+          # pathology ISS-022 describes, and which the first version of that
+          # test file reproduced.
+          REDIS_URL: redis://localhost:6379
+          # Not used by any test that runs here; present so an accidental live
+          # call fails loudly on an obviously fake key rather than reaching the
+          # real API with whatever happens to be in the environment.
+          OPENAI_API_KEY: test-key-not-used-by-any-test-in-ci
+        run: pytest tests/ -v --tb=short
