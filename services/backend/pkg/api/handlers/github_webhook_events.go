@@ -31,9 +31,9 @@ import (
 // handleInstallation covers created / deleted / suspend / unsuspend.
 func (h *GitHubWebhookHandler) handleInstallation(
 	ctx context.Context, p *githubWebhookEnvelope,
-) (string, error) {
+) (string, *string, error) {
 	if p.Installation == nil {
-		return "ignored: no installation", nil
+		return "ignored: no installation", nil, nil
 	}
 	id := p.Installation.ID
 
@@ -62,21 +62,23 @@ func (h *GitHubWebhookHandler) handleInstallation(
 		// from a verified claim, and 20-04's callback links it.
 		_, orgID, known, err := h.resolveInstallation(ctx, id)
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
 		var updated bool
+		var tenant *string
 		if known {
+			tenant = &orgID
 			if updated, err = h.refreshInstallation(ctx, orgID, p); err != nil {
-				return "", err
+				return "", tenant, err
 			}
 		}
 		if !updated {
 			slog.Info("github webhook: installation created outside our flow; not adopted",
 				slog.Int64("github_installation_id", id),
 				slog.String("account", p.Installation.Account.Login))
-			return "unlinked: awaiting in-app connect", nil
+			return "unlinked: awaiting in-app connect", tenant, nil
 		}
-		return "installation refreshed", nil
+		return "installation refreshed", tenant, nil
 
 	case "deleted":
 		// KEEP THE ROW AND KEEP THE REPOSITORIES.
@@ -99,9 +101,9 @@ func (h *GitHubWebhookHandler) handleInstallation(
 
 	case "new_permissions_accepted":
 		// Nothing stored depends on the permission set today.
-		return "ignored: permissions", nil
+		return "ignored: permissions", nil, nil
 	default:
-		return "ignored: " + p.Action, nil
+		return "ignored: " + p.Action, nil, nil
 	}
 }
 
@@ -122,7 +124,11 @@ func (h *GitHubWebhookHandler) refreshInstallation(
 			  account_login = $2,
 			  account_type = $3,
 			  repository_selection = $4,
+			  -- A fresh created event means the App is installed and active,
+			  -- so neither marker can still be true. Clearing only
+			  -- uninstalled_at left a reinstalled App looking suspended.
 			  uninstalled_at = NULL,
+			  suspended_at = NULL,
 			  updated_at = NOW()
 			WHERE github_installation_id = $1
 		`, p.Installation.ID, p.Installation.Account.Login,
@@ -136,14 +142,15 @@ func (h *GitHubWebhookHandler) refreshInstallation(
 	return affected > 0, nil
 }
 
-func (h *GitHubWebhookHandler) markUninstalled(ctx context.Context, id int64) (string, error) {
+func (h *GitHubWebhookHandler) markUninstalled(ctx context.Context, id int64) (string, *string, error) {
 	internalID, orgID, ok, err := h.resolveInstallation(ctx, id)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if !ok {
-		return "ignored: unknown installation", nil
+		return "ignored: unknown installation", nil, nil
 	}
+	tenant := &orgID
 
 	var stoodDown int64
 	err = h.inTenant(ctx, orgID, func(tx pgx.Tx) error {
@@ -166,18 +173,18 @@ func (h *GitHubWebhookHandler) markUninstalled(ctx context.Context, id int64) (s
 		return rerr
 	})
 	if err != nil {
-		return "", fmt.Errorf("mark uninstalled: %w", err)
+		return "", tenant, fmt.Errorf("mark uninstalled: %w", err)
 	}
 
 	slog.Info("github webhook: installation uninstalled",
 		slog.Int64("github_installation_id", id),
 		slog.Int64("repositories_stood_down", stoodDown))
-	return "uninstalled", nil
+	return "uninstalled", tenant, nil
 }
 
 func (h *GitHubWebhookHandler) setSuspended(
 	ctx context.Context, id int64, suspended bool,
-) (string, error) {
+) (string, *string, error) {
 	var clause string
 	if suspended {
 		clause = "suspended_at = NOW()"
@@ -186,39 +193,40 @@ func (h *GitHubWebhookHandler) setSuspended(
 	}
 	internalID, orgID, ok, err := h.resolveInstallation(ctx, id)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if !ok {
-		return "ignored: unknown installation", nil
+		return "ignored: unknown installation", nil, nil
 	}
+	tenant := &orgID
 	if err := h.inTenant(ctx, orgID, func(tx pgx.Tx) error {
 		_, e := tx.Exec(ctx,
 			"UPDATE github_installations SET "+clause+", updated_at = NOW() WHERE id = $1",
 			internalID)
 		return e
 	}); err != nil {
-		return "", fmt.Errorf("set suspended: %w", err)
+		return "", tenant, fmt.Errorf("set suspended: %w", err)
 	}
 	if suspended {
-		return "suspended", nil
+		return "suspended", tenant, nil
 	}
-	return "unsuspended", nil
+	return "unsuspended", tenant, nil
 }
 
 // handleInstallationRepositories covers added / removed.
 func (h *GitHubWebhookHandler) handleInstallationRepositories(
 	ctx context.Context, p *githubWebhookEnvelope,
-) (string, error) {
+) (string, *string, error) {
 	if p.Installation == nil {
-		return "ignored: no installation", nil
+		return "ignored: no installation", nil, nil
 	}
 
 	internalID, orgID, ok, err := h.resolveInstallation(ctx, p.Installation.ID)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if !ok {
-		return "ignored: unknown installation", nil
+		return "ignored: unknown installation", nil, nil
 	}
 
 	switch p.Action {
@@ -231,7 +239,7 @@ func (h *GitHubWebhookHandler) handleInstallationRepositories(
 		// re-ingest, and only if they notice.
 		return h.standDownRepositories(ctx, internalID, orgID, p.RepositoriesRemoved)
 	default:
-		return "ignored: " + p.Action, nil
+		return "ignored: " + p.Action, &orgID, nil
 	}
 }
 
@@ -239,19 +247,26 @@ func (h *GitHubWebhookHandler) handleInstallationRepositories(
 //
 // **A webhook cannot populate a repositories row on its own** — verified
 // 2026-09-08. The payload's repository shape is REDUCED: id, node_id,
-// name, full_name, private, and nothing else. No `default_branch`, which
-// is NOT NULL; no `size_kb`, `visibility` or `archived`.
+// name, full_name, private, and nothing else. No `default_branch`, no
+// `size_kb`, `visibility` or `archived`.
 //
-// So this does not insert. It records the ids against the installation and
-// leaves the connect to `POST /api/repositories`, which has an
-// installation token and can fetch the full shape. Inserting a half-row
-// with invented defaults would put a repository in the product that
-// nobody asked to connect, and it would carry a made-up default branch.
+// The reason is not that the schema would refuse the insert — an earlier
+// version of this comment said `default_branch` is NOT NULL and would
+// stop us, and that is wrong: 000001 declares it
+// `NOT NULL DEFAULT 'main' `, so a half-row would be accepted and would
+// silently claim the default branch is `main`. Being accepted is what
+// makes it dangerous.
+//
+// The real reason is a product one: connecting a repository is a
+// deliberate act, and a webhook firing because someone widened a
+// permission scope is not that act. So this records the ids against the
+// installation and leaves the connect to `POST /api/repositories`,
+// which has an installation token and can fetch the real shape.
 func (h *GitHubWebhookHandler) recordAddedRepositories(
 	ctx context.Context, installationID, orgID string, repos []githubWebhookRepo,
-) (string, error) {
+) (string, *string, error) {
 	if len(repos) == 0 {
-		return "no repositories added", nil
+		return "no repositories added", &orgID, nil
 	}
 
 	// Existing rows for these ids DO get re-pointed at this installation
@@ -283,7 +298,7 @@ func (h *GitHubWebhookHandler) recordAddedRepositories(
 		return e
 	})
 	if err != nil {
-		return "", fmt.Errorf("re-point known repositories: %w", err)
+		return "", &orgID, fmt.Errorf("re-point known repositories: %w", err)
 	}
 
 	slog.Info("github webhook: repositories added to installation",
@@ -293,25 +308,31 @@ func (h *GitHubWebhookHandler) recordAddedRepositories(
 		slog.String("repositories", strings.Join(names, ",")))
 
 	return fmt.Sprintf("added: %d offered, %d already known and re-queued",
-		len(repos), affected), nil
+		len(repos), affected), &orgID, nil
 }
 
 // standDownRepositories marks repositories we can no longer reach.
 func (h *GitHubWebhookHandler) standDownRepositories(
 	ctx context.Context, installationID, orgID string, repos []githubWebhookRepo,
-) (string, error) {
+) (string, *string, error) {
 	if len(repos) == 0 {
-		return "no repositories removed", nil
+		return "no repositories removed", &orgID, nil
 	}
 	ids := make([]int64, 0, len(repos))
 	for _, r := range repos {
 		ids = append(ids, r.ID)
 	}
 
-	// installation_id is set to NULL, matching what an uninstall does and
-	// what docs/api-repositories.md already documents: the repository and
-	// everything ingested from it are kept, and it cannot be re-synced
-	// until access is restored.
+	// installation_id is set to NULL: the repository and everything
+	// ingested from it are kept, and it cannot be re-synced until access
+	// is restored — the state docs/api-repositories.md documents.
+	//
+	// This is deliberately NOT what an uninstall does. An uninstall KEEPS
+	// the link, because the installation row survives and a reinstall
+	// relinks through it. Here the installation is still live and simply
+	// no longer covers this repository, so the link is what became false.
+	// (An earlier comment claimed the two behaved identically. They do
+	// not, and the tests assert both.)
 	var affected int64
 	err := h.inTenant(ctx, orgID, func(tx pgx.Tx) error {
 		tag, e := tx.Exec(ctx, `
@@ -325,20 +346,20 @@ func (h *GitHubWebhookHandler) standDownRepositories(
 		return e
 	})
 	if err != nil {
-		return "", fmt.Errorf("stand down repositories: %w", err)
+		return "", &orgID, fmt.Errorf("stand down repositories: %w", err)
 	}
-	return fmt.Sprintf("removed: %d repositories stood down", affected), nil
+	return fmt.Sprintf("removed: %d repositories stood down", affected), &orgID, nil
 }
 
 // handlePush marks a repository as needing a sync.
 func (h *GitHubWebhookHandler) handlePush(
 	ctx context.Context, p *githubWebhookEnvelope,
-) (string, error) {
+) (string, *string, error) {
 	if p.Repository == nil {
-		return "ignored: no repository", nil
+		return "ignored: no repository", nil, nil
 	}
 	if p.Installation == nil {
-		return "ignored: no installation", nil
+		return "ignored: no installation", nil, nil
 	}
 
 	// DEFAULT BRANCH ONLY. Ingesting every feature branch is not the
@@ -347,18 +368,18 @@ func (h *GitHubWebhookHandler) handlePush(
 	// on the payload, not a stored value, so a repository whose default
 	// branch changed is handled without us noticing the change.
 	if p.Repository.DefaultBranch == "" {
-		return "ignored: no default branch on payload", nil
+		return "ignored: no default branch on payload", nil, nil
 	}
 	if p.Ref != "refs/heads/"+p.Repository.DefaultBranch {
-		return "ignored: not the default branch", nil
+		return "ignored: not the default branch", nil, nil
 	}
 
 	internalID, orgID, ok, err := h.resolveInstallation(ctx, p.Installation.ID)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if !ok {
-		return "ignored: unknown installation", nil
+		return "ignored: unknown installation", nil, nil
 	}
 
 	// Only repositories we already track. A push to a repository nobody
@@ -378,12 +399,12 @@ func (h *GitHubWebhookHandler) handlePush(
 		affected = tag.RowsAffected()
 		return e
 	}); err != nil {
-		return "", fmt.Errorf("queue push: %w", err)
+		return "", &orgID, fmt.Errorf("queue push: %w", err)
 	}
 	if affected == 0 {
-		return "ignored: repository not connected", nil
+		return "ignored: repository not connected", &orgID, nil
 	}
-	return "queued", nil
+	return "queued", &orgID, nil
 }
 
 // resolveInstallation maps GitHub's numeric id to our row.
@@ -396,13 +417,21 @@ func (h *GitHubWebhookHandler) handlePush(
 func (h *GitHubWebhookHandler) resolveInstallation(
 	ctx context.Context, githubInstallationID int64,
 ) (internalID string, orgID string, ok bool, err error) {
-	// github_installation_owner is SECURITY DEFINER (migration 000012).
-	// It is the ONE sanctioned crossing of the tenant boundary in this
-	// file, and it exists because the boundary is what we are trying to
-	// find: `github_installations` is FORCE RLS, so a direct read here
-	// returns zero rows rather than an error — verified, not assumed.
+	// github_installation_tenants is the discovery index (migration
+	// 000012): an ordinary table with no RLS, maintained by a trigger on
+	// github_installations so it cannot drift.
+	//
+	// It exists because the tenant boundary is what we are trying to find.
+	// github_installations is FORCE RLS, so a direct read here returns
+	// zero rows — verified under a NOSUPERUSER NOBYPASSRLS owner, which is
+	// the deployment shape this repo documents. An earlier version used a
+	// SECURITY DEFINER function and was verified only in the test harness,
+	// where migrations run as a superuser; in production it would have
+	// returned nothing and the receiver would have 202'd every event while
+	// doing nothing.
 	err = h.pool.QueryRow(ctx,
-		"SELECT installation_id::text, organization_id::text FROM github_installation_owner($1)",
+		"SELECT installation_id::text, organization_id::text "+
+			"FROM github_installation_tenants WHERE github_installation_id = $1",
 		githubInstallationID).Scan(&internalID, &orgID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", "", false, nil

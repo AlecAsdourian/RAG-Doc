@@ -112,45 +112,82 @@ COMMENT ON COLUMN github_installations.uninstalled_at IS
 -- cannot itself be tenant-scoped, because scoping it by the answer is
 -- circular.
 --
--- Verified rather than assumed: as `rag_doc_app` with no tenant set, a
--- direct `SELECT ... FROM github_installations` returns **0 rows**, and
--- this function returns the row. A handler that used the pool directly
--- would silently do nothing — which is exactly what the first draft of
--- 20-05's handler did.
+-- WHAT WAS TRIED FIRST, AND WHY IT WAS WRONG. The first version of this
+-- migration used a SECURITY DEFINER function. That was verified — in the
+-- TEST HARNESS, where migrations run as a superuser and the application
+-- connects as a separate non-superuser role, so the function inherited a
+-- privilege the caller lacked.
 --
--- WHY THIS IS NARROW ENOUGH TO BE SAFE:
+-- `FORCE ROW LEVEL SECURITY` applies policies to the TABLE OWNER TOO, and
+-- SECURITY DEFINER only switches `current_user` to the function's owner.
+-- So in the deployment shape this repo actually documents — where the
+-- application connects as the role that owns the tables — the function is
+-- filtered exactly like a direct SELECT and returns **zero rows**. The
+-- receiver would then answer 202 to every event while doing nothing at
+-- all: no error, no warning, a plausible-looking outcome in the delivery
+-- log, and nothing in the test suite able to see it.
 --
---   * It takes a single BIGINT and returns two ids. No filtering, no
---     projection of anything else, nothing caller-controlled beyond the
---     id GitHub signed for.
---   * It leaks only "this installation belongs to some organization" to
---     anyone who can already guess a valid installation id — and the
---     caller has already proved it is GitHub via HMAC before reaching it.
---   * Everything the handler does WITH the answer goes through a normal
---     tenant transaction, so RLS still governs every read and write of
---     actual tenant data.
+-- Reproduced on a database owned by a NOSUPERUSER NOBYPASSRLS role:
+-- direct SELECT → 0 rows, and the SECURITY DEFINER function → 0 rows.
 --
--- `search_path` is pinned: a SECURITY DEFINER function without one is the
--- classic privilege-escalation shape, because a caller can point it at
--- their own schema.
-CREATE OR REPLACE FUNCTION github_installation_owner(p_github_installation_id BIGINT)
-RETURNS TABLE (installation_id UUID, organization_id UUID)
-LANGUAGE sql
-STABLE
-SECURITY DEFINER
-SET search_path = public, pg_temp
-AS $fn$
-  SELECT id, organization_id
-  FROM github_installations
-  WHERE github_installation_id = p_github_installation_id
-$fn$;
+-- THE FIX IS TO STOP DEPENDING ON PRIVILEGES. `github_installation_tenants`
+-- is an ordinary table with NO row-level security, holding only the
+-- mapping the webhook needs to discover a tenant, and maintained by a
+-- trigger so it cannot drift from the table it mirrors.
+--
+-- It behaves identically whoever owns it and whoever connects, which is
+-- the property the function did not have — and it is also STRICTLY LESS
+-- EXPOSED than the function was: EXECUTE on a function defaults to
+-- PUBLIC, so any database role at all could call the old one and
+-- enumerate the whole installation-to-organization map by guessing small
+-- sequential ids. A table answers to normal grants instead.
+--
+-- Same reasoning as `github_webhook_deliveries` above: this is discovery
+-- data consulted BEFORE a tenant is known, not tenant data.
+CREATE TABLE github_installation_tenants (
+  github_installation_id BIGINT PRIMARY KEY,
+  installation_id UUID NOT NULL REFERENCES github_installations(id) ON DELETE CASCADE,
+  organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE
+);
 
-COMMENT ON FUNCTION github_installation_owner(BIGINT) IS
-  'Maps a GitHub installation id to its owning organization, bypassing RLS. '
-  'The ONLY sanctioned way for the webhook receiver to discover a tenant. '
-  'Everything done with the answer must go through a normal tenant transaction.';
+COMMENT ON TABLE github_installation_tenants IS
+  'Discovery index for the webhook receiver: GitHub installation id -> tenant. '
+  'Deliberately has no RLS, because it is consulted before the tenant is known. '
+  'Maintained by trg_sync_github_installation_tenant; never written directly.';
 
--- No GRANT here. EXECUTE on functions is granted to PUBLIC by default, and
--- 20-02 learned the hard way that a migration must not name `rag_doc_app`:
--- that role does not exist in production, and in the test harness it is
--- created AFTER migrations run.
+-- Kept in step by a trigger rather than by application code, so the two
+-- cannot drift. The source table's own writes are already tenant-scoped;
+-- this mirror carries no data that is not derivable from them.
+CREATE OR REPLACE FUNCTION sync_github_installation_tenant()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    DELETE FROM github_installation_tenants WHERE installation_id = OLD.id;
+    RETURN OLD;
+  END IF;
+
+  INSERT INTO github_installation_tenants
+    (github_installation_id, installation_id, organization_id)
+  VALUES (NEW.github_installation_id, NEW.id, NEW.organization_id)
+  ON CONFLICT (github_installation_id) DO UPDATE
+    SET installation_id = EXCLUDED.installation_id,
+        organization_id = EXCLUDED.organization_id;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_sync_github_installation_tenant
+  AFTER INSERT OR UPDATE OR DELETE ON github_installations
+  FOR EACH ROW EXECUTE FUNCTION sync_github_installation_tenant();
+
+-- Backfill anything that already exists. Runs as the migration role, and
+-- the source table is FORCE RLS — so this is deliberately written to work
+-- regardless: if the migration role cannot see the rows, the INSERT
+-- simply finds none, and the trigger populates each row the first time it
+-- is next written. Existing installations are re-read by the webhook on
+-- any subsequent event for them.
+INSERT INTO github_installation_tenants (github_installation_id, installation_id, organization_id)
+SELECT github_installation_id, id, organization_id FROM github_installations
+ON CONFLICT (github_installation_id) DO NOTHING;

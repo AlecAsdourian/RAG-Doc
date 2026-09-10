@@ -132,6 +132,14 @@ set -a && . ./.env && set +a
 go run .
 ```
 
+**Two secrets are required or the backend refuses to start**, both by
+design (an unsigned webhook receiver is worse than none):
+
+- `SUPABASE_WEBHOOK_SECRET` — since 19-01.
+- `GITHUB_WEBHOOK_SECRET` — since 20-05. Note the confusing pair of lines
+  you get without it: a WARN saying GitHub webhooks are *unavailable*,
+  immediately followed by a panic *because* of them.
+
 **Two traps in that one line, both hit for real on 2026-09-09.** `.` is
 shell *sourcing*, so the file is interpreted as bash rather than parsed as
 a `KEY=VALUE` list:

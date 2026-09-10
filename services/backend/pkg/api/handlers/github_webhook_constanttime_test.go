@@ -4,6 +4,7 @@ package handlers
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -29,7 +30,17 @@ import (
 func TestSignatureComparisonIsConstantTime(t *testing.T) {
 	src, err := os.ReadFile("github_webhook.go")
 	require.NoError(t, err)
-	body := string(src)
+
+	// Scoped to verifySignature's body. Searching the whole file would
+	// pass on the string appearing in a comment or in dead code — review
+	// noted that exact bound.
+	whole := string(src)
+	start := strings.Index(whole, "func (h *GitHubWebhookHandler) verifySignature(")
+	require.GreaterOrEqual(t, start, 0, "verifySignature was renamed; update this test")
+	rest := whole[start:]
+	end := strings.Index(rest, "\n}\n")
+	require.Greater(t, end, 0, "could not find the end of verifySignature")
+	body := rest[:end]
 
 	require.Contains(t, body, "hmac.Equal(",
 		"the webhook signature comparison must use hmac.Equal; a plain == leaks how "+

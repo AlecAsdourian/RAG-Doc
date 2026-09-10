@@ -48,16 +48,29 @@ GitHub redelivers on failure, and the **Redeliver** button in the App's
 Advanced settings is a normal part of development, so duplicates are
 routine rather than exceptional.
 
-**A 500 is not automatically retried into success.** The delivery row is
-written before processing, so GitHub's redelivery of a failed event
-arrives with the same id and is treated as a duplicate. That is
-deliberate: replaying a partially-applied event is worse than recording
-it as failed. Recovery is a resync (Phase 21), not a redelivery.
+**A delivery that did not finish CAN be redelivered.** The row is written
+before processing with `outcome = 'processing'`, and a redelivery of
+anything still `processing` or `failed` is re-claimed and processed
+again. Only a finished delivery is treated as a duplicate.
+
+That is a correction to an earlier design which treated any existing row
+as a duplicate, on the reasoning that replaying a partially-applied event
+is worse than recording it as failed. **No handler here can be partially
+applied** — each does all of its writes in one tenant transaction and
+each is an idempotent update by key — so that reasoning bought nothing
+and cost a great deal: a transient database blip, a deploy restart or a
+panic mid-handler silently dropped an uninstall or a suspend forever.
 
 That table is **not tenant-scoped**, unlike everything else this phase
 touches — a delivery arrives before we know whose it is, and
 `installation.deleted` concerns a tenant that is going away. It also
 **grows forever**; migration 000012 carries the pruning statement.
+
+`github_installation_tenants` is the other table here without row-level
+security, for the same reason: it is the index the receiver consults to
+*discover* a tenant, so it cannot be scoped by the answer. It is
+maintained by a trigger on `github_installations` and is never written
+directly.
 
 ---
 
@@ -73,7 +86,7 @@ process and takes the only record of the work with it.
 |---|---|
 | `created`, already linked | Refreshes account name, type and repository selection. **Never** changes which organization owns it. |
 | `created`, unknown | **Nothing.** See below. |
-| `deleted` | Marks `uninstalled_at`. Repositories are kept and stood down to `never_synced`. |
+| `deleted` | Marks `uninstalled_at`. Repositories are **kept**; those that were `pending` or `syncing` are stood down to `never_synced`. One already `synced` keeps that state — it is simply not re-synced until the App returns. |
 | `suspend` / `unsuspend` | Sets or clears `suspended_at`. |
 
 **An installation we do not recognise is not adopted.** A user can
@@ -103,12 +116,19 @@ and how to recover from it.
 
 **A webhook cannot create a repository row.** Verified 2026-09-08: the
 payload's repository shape is reduced to `id`, `node_id`, `name`,
-`full_name`, `private` — with no `default_branch`, which is `NOT NULL`,
-and no `size`, `visibility` or `archived`. Creating a row would mean
-inventing a default branch and adding a repository nobody asked to
-connect. Connecting stays a deliberate act through
-`POST /api/repositories`, which has an installation token and can fetch
-the real shape.
+`full_name`, `private` — no `default_branch`, `size`, `visibility` or
+`archived`.
+
+The reason is not that the database would refuse it. `default_branch` is
+`NOT NULL DEFAULT 'main'`, so a half-row *would* be accepted and would
+silently claim the default branch is `main` — being accepted is what
+makes it dangerous. (An earlier version of this page said the `NOT NULL`
+would stop us. It would not.)
+
+The reason is a product one: connecting a repository is a deliberate act,
+and a webhook firing because someone widened a permission scope is not
+that act. Connecting stays with `POST /api/repositories`, which has an
+installation token and can fetch the real shape.
 
 ### `push`
 

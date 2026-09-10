@@ -99,6 +99,7 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Why this is not pedantry:** capturing the `installation` payloads in 20-02 corrected three specs — `size` was in kilobytes not bytes (wrong by ~1000×), the callback could not be JWT-authenticated, and the repository shape was reduced. Documentation-derived fixtures are how a suite ends up agreeing with itself and disagreeing with the sender.
 - **How to capture:** start a tunnel, point the App's webhook URL at it, run a capture server, then (a) push to a connected repository and (b) add and remove a repository from the installation in GitHub's settings. The existing fixtures in `services/backend/pkg/api/handlers/testdata/github/` show the envelope format.
 - **One thing to fix while doing it:** the existing captures stored the body **parsed**, not as raw bytes, so their real signatures cannot be replayed. Capture the raw body too, and a signature test can then run against a genuine GitHub signature rather than a self-signed one.
+- **And capture a REDELIVERY of the same event.** The whole idempotency design rests on `X-GitHub-Delivery` being stable when GitHub redelivers, and `github-app-setup.md` tells readers redelivery is safe on that basis. The two fixtures we have are different events with different ids, so nothing in the repo actually evidences stability — it is documented as verified and is not. The Redeliver button makes this a one-minute check once a tunnel is up.
 
 ### ISS-018: A Redis outage at startup disables GitHub installs until the process restarts
 

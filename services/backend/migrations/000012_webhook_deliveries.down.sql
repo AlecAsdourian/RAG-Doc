@@ -6,7 +6,9 @@
 -- individually idempotent against their own tables) but it is the reason
 -- this file is not a no-op worth skipping.
 
-DROP FUNCTION IF EXISTS github_installation_owner(BIGINT);
+DROP TRIGGER IF EXISTS trg_sync_github_installation_tenant ON github_installations;
+DROP FUNCTION IF EXISTS sync_github_installation_tenant();
+DROP TABLE IF EXISTS github_installation_tenants;
 
 DROP INDEX IF EXISTS idx_github_webhook_deliveries_installation;
 DROP INDEX IF EXISTS idx_github_webhook_deliveries_received_at;

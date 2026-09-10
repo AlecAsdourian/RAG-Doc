@@ -342,10 +342,13 @@ func NewRouterWithValidatorAndAdmin(
 	// GitHub webhook receiver — PUBLIC, authenticated entirely by its HMAC
 	// signature. GitHub holds no token of ours.
 	//
-	// @skip-isolation-test: signature-verified and tenant-resolving; there is no
-	// caller identity to isolate against, and its tenant scoping is asserted on
-	// resulting rows in TestGitHubWebhook rather than through a JWT.
-	r.With(middleware.Timeout(30*time.Second)).Post("/webhooks/github", githubWebhookHandler.Receive)
+	// The marker below is ON THE ROUTE LINE, not above it. The scanner
+	// looks back three lines; review measured this sitting at exactly that
+	// edge, one added comment away from silently falling out of the
+	// "skipped" report. Its tenant scoping is asserted on resulting rows in
+	// TestGitHubWebhook rather than through a JWT, because a state token
+	// and a signature are what carry authority here.
+	r.With(middleware.Timeout(30*time.Second)).Post("/webhooks/github", githubWebhookHandler.Receive) // @skip-isolation-test: signature-verified and tenant-resolving; no caller identity to isolate against
 
 	// GitHub App callback — PUBLIC, and that is the whole point.
 	//

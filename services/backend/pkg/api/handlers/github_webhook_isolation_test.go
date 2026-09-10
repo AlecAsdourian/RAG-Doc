@@ -200,6 +200,17 @@ func visibleInstallationCount(t *testing.T, pool *pgxpool.Pool, orgID string, gh
 	return n
 }
 
+// deliveryRecord reads a delivery's outcome and recorded tenant.
+func deliveryRecord(t *testing.T, pool *pgxpool.Pool, deliveryID string) (string, *string) {
+	t.Helper()
+	var outcome string
+	var org *string
+	require.NoError(t, pool.QueryRow(context.Background(),
+		`SELECT outcome, organization_id::text FROM github_webhook_deliveries
+		 WHERE delivery_id = $1`, deliveryID).Scan(&outcome, &org))
+	return outcome, org
+}
+
 // deliveryCount reads github_webhook_deliveries, which is deliberately
 // NOT tenant-scoped (see migration 000012) — so an unscoped read is
 // correct here, unlike everywhere else in this file.
@@ -543,6 +554,140 @@ func TestGitHubWebhook(t *testing.T) {
 			require.Equal(t, http.StatusAccepted, status)
 			require.Equal(t, before, countRepositories(t, pool, orgA),
 				"a webhook cannot populate a repositories row; it lacks default_branch")
+		})
+
+		t.Run("UNVERIFIED_RepositoriesAddedRepointsAndQueuesWhatWeAlreadyTrack", func(t *testing.T) {
+			// The POSITIVE assertion for `added`, and the reason it matters:
+			// the only other test for this event asserts a NEGATIVE (no row
+			// created), which a handler that does nothing at all satisfies
+			// perfectly. Review demonstrated exactly that — a total no-op
+			// survived the whole suite.
+			oldInst := seedLinkedInstallation(t, pool, orgA.ID, 781000)
+			newInst := seedLinkedInstallation(t, pool, orgA.ID, 781100)
+			repo := seedRepoUnder(t, pool, orgA, oldInst, 781001, "synced")
+
+			body := fmt.Sprintf(`{"action":"added",
+				"installation":{"id":781100,"account":{"login":"x","type":"User"},
+				"repository_selection":"selected"},
+				"repositories_added":[{"id":781001,"name":"r","full_name":"o/r","private":true}]}`)
+
+			status, resp := deliver(t, srv, "installation_repositories",
+				uniqueDelivery("repos-added-positive"), []byte(body), "")
+			require.Equal(t, http.StatusAccepted, status)
+			require.Contains(t, resp, "already known and re-queued")
+
+			state, installation := repoSyncState(t, pool, orgA.ID, repo)
+			require.Equal(t, "pending", state, "a repository we regained access to must be queued")
+			require.NotNil(t, installation)
+			require.Equal(t, newInst, *installation,
+				"the repository must be re-pointed at the installation that now covers it")
+		})
+
+		t.Run("AddedOnlyTouchesTheOwningOrganization", func(t *testing.T) {
+			// The project join inside recordAddedRepositories is the second
+			// layer under RLS. Review found dropping it survived the suite.
+			const shared = int64(782001)
+			instA := seedLinkedInstallation(t, pool, orgA.ID, 782000)
+			repoA := seedRepoUnder(t, pool, orgA, instA, shared, "synced")
+
+			instB := seedLinkedInstallation(t, pool, orgB.ID, 782100)
+			repoB := seedRepoUnder(t, pool, orgB, instB, shared, "synced")
+
+			body := fmt.Sprintf(`{"action":"added",
+				"installation":{"id":782000,"account":{"login":"x","type":"User"},
+				"repository_selection":"selected"},
+				"repositories_added":[{"id":%d,"name":"r","full_name":"o/r","private":true}]}`, shared)
+
+			status, _ := deliver(t, srv, "installation_repositories",
+				uniqueDelivery("added-cross"), []byte(body), "")
+			require.Equal(t, http.StatusAccepted, status)
+
+			stateA, _ := repoSyncState(t, pool, orgA.ID, repoA)
+			stateB, _ := repoSyncState(t, pool, orgB.ID, repoB)
+			require.Equal(t, "pending", stateA)
+			require.Equal(t, "synced", stateB,
+				"cross-tenant leak: added for orgA's installation queued orgB's repository")
+		})
+
+		t.Run("RemovedOnlyTouchesTheNamedInstallation", func(t *testing.T) {
+			// standDownRepositories filters on installation_id as well as
+			// the repo ids. Review found dropping that filter survived —
+			// it would stand down same-org repositories under a DIFFERENT
+			// installation.
+			instOne := seedLinkedInstallation(t, pool, orgA.ID, 783000)
+			instTwo := seedLinkedInstallation(t, pool, orgA.ID, 783100)
+			target := seedRepoUnder(t, pool, orgA, instOne, 783001, "synced")
+			bystander := seedRepoUnder(t, pool, orgA, instTwo, 783002, "synced")
+
+			body := `{"action":"removed",
+				"installation":{"id":783000,"account":{"login":"x","type":"User"},
+				"repository_selection":"selected"},
+				"repositories_removed":[
+					{"id":783001,"name":"a","full_name":"o/a","private":true},
+					{"id":783002,"name":"b","full_name":"o/b","private":true}]}`
+
+			status, _ := deliver(t, srv, "installation_repositories",
+				uniqueDelivery("removed-scoped"), []byte(body), "")
+			require.Equal(t, http.StatusAccepted, status)
+
+			targetState, targetInst := repoSyncState(t, pool, orgA.ID, target)
+			byState, byInst := repoSyncState(t, pool, orgA.ID, bystander)
+			require.Equal(t, "never_synced", targetState)
+			require.Nil(t, targetInst)
+			require.Equal(t, "synced", byState,
+				"a repository under a different installation must be untouched")
+			require.NotNil(t, byInst)
+		})
+
+		t.Run("DeliveryRecordsItsOutcomeAndTenant", func(t *testing.T) {
+			// Review found recordOutcome could be disabled entirely with the
+			// suite still green — which is also what made a poisoned
+			// 'processing' row invisible. And migration 000012 described an
+			// organization_id column that no code wrote.
+			ghID := int64(784000)
+			seedLinkedInstallation(t, pool, orgA.ID, ghID)
+			id := uniqueDelivery("outcome")
+			body := fmt.Sprintf(`{"action":"suspend","installation":{"id":%d,
+				"account":{"login":"x","type":"User"},"repository_selection":"selected"}}`, ghID)
+
+			status, _ := deliver(t, srv, "installation", id, []byte(body), "")
+			require.Equal(t, http.StatusAccepted, status)
+
+			outcome, org := deliveryRecord(t, pool, id)
+			require.Equal(t, "suspended", outcome,
+				"the delivery must record what was done, not stay 'processing'")
+			require.NotNil(t, org, "the discovered tenant must be recorded")
+			require.Equal(t, orgA.ID, *org)
+		})
+
+		t.Run("AnUnfinishedDeliveryCanBeReprocessed", func(t *testing.T) {
+			// A delivery that died mid-flight — a panic, an OOM, a deploy
+			// restart — leaves 'processing' behind. Treating that as a
+			// duplicate meant GitHub's redelivery was answered 202 and
+			// dropped, permanently, with no way back.
+			ghID := int64(785000)
+			instID := seedLinkedInstallation(t, pool, orgA.ID, ghID)
+			id := uniqueDelivery("poisoned")
+
+			// Simulate the corpse of a previous attempt.
+			_, err := pool.Exec(context.Background(), `
+				INSERT INTO github_webhook_deliveries (delivery_id, event, action, outcome)
+				VALUES ($1, 'installation', 'suspend', 'processing')`, id)
+			require.NoError(t, err)
+
+			body := fmt.Sprintf(`{"action":"suspend","installation":{"id":%d,
+				"account":{"login":"x","type":"User"},"repository_selection":"selected"}}`, ghID)
+			status, resp := deliver(t, srv, "installation", id, []byte(body), "")
+			require.Equal(t, http.StatusAccepted, status)
+			require.NotContains(t, resp, "duplicate",
+				"an unfinished delivery must be re-claimable, not dropped")
+
+			_, suspended, _, _ := installationRow(t, pool, orgA.ID, instID)
+			require.NotNil(t, suspended, "the redelivery must actually have been processed")
+
+			// And once finished, it IS a duplicate.
+			_, again := deliver(t, srv, "installation", id, []byte(body), "")
+			require.Contains(t, again, "duplicate")
 		})
 
 		t.Run("CrossTenant_AWebhookCannotTouchAnotherOrgsRepositories", func(t *testing.T) {

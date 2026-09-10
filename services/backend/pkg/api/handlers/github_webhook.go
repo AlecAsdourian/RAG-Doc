@@ -26,7 +26,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/render"
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/db"
@@ -219,7 +219,7 @@ func (h *GitHubWebhookHandler) Receive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	outcome, err := h.dispatch(ctx, event, &payload)
+	outcome, tenant, err := h.dispatch(ctx, event, &payload)
 	if err != nil {
 		slog.Error("github webhook: handler failed",
 			slog.String("event", event), slog.String("delivery", delivery),
@@ -230,13 +230,13 @@ func (h *GitHubWebhookHandler) Receive(w http.ResponseWriter, r *http.Request) {
 		// `docs/api-github-webhooks.md`: recovery is a resync, not a
 		// redelivery, because a partially-applied event replayed is worse
 		// than one recorded as failed.
-		h.recordOutcome(ctx, delivery, "failed")
+		h.recordOutcome(ctx, delivery, "failed", tenant)
 		render.Status(r, http.StatusInternalServerError)
 		render.JSON(w, r, map[string]string{"status": "error", "error": "handler failed"})
 		return
 	}
 
-	h.recordOutcome(ctx, delivery, outcome)
+	h.recordOutcome(ctx, delivery, outcome, tenant)
 	h.accept(w, r, outcome)
 }
 
@@ -245,14 +245,32 @@ func (h *GitHubWebhookHandler) accept(w http.ResponseWriter, r *http.Request, ou
 	render.JSON(w, r, map[string]string{"status": "accepted", "outcome": outcome})
 }
 
-// claimDelivery inserts the delivery row, returning false if it already
-// existed.
+// terminalOutcome reports whether a recorded outcome means "done".
 //
-// The UNIQUE constraint is the lock. Two concurrent redeliveries of the
-// same event both reach this, one INSERT succeeds and the other conflicts,
-// and only the winner proceeds — which is why this is an INSERT rather
-// than a SELECT-then-INSERT. Tested concurrently rather than reasoned
-// about.
+// 'processing' is what a claim writes before the handler runs, so finding
+// one means a previous attempt died mid-flight — a panic, an OOM, a
+// deploy restart. 'failed' means the handler returned an error. Neither
+// is a finished state, and both may be retried.
+func terminalOutcome(outcome string) bool {
+	return outcome != "processing" && outcome != "failed"
+}
+
+// claimDelivery claims a delivery, returning false if it is a duplicate of
+// one already FINISHED.
+//
+// The UNIQUE constraint is the lock. Two concurrent redeliveries both
+// reach this, one wins, and only the winner proceeds — which is why it is
+// an INSERT rather than a SELECT-then-INSERT. Tested concurrently rather
+// than reasoned about.
+//
+// A delivery left 'processing' or 'failed' IS re-claimable, and that is a
+// correction. The first version treated any existing row as a duplicate,
+// justified by "replaying a partially-applied event is worse than one
+// recorded as failed" — but no handler here can be partially applied:
+// every one does all of its writes in a single tenant transaction, and
+// every one is an idempotent UPDATE by key. So the cost was real (a
+// transient database blip silently dropped an uninstall forever) and the
+// stated benefit did not exist.
 func (h *GitHubWebhookHandler) claimDelivery(
 	ctx context.Context, delivery, event, action string, installationID int64,
 ) (bool, error) {
@@ -265,26 +283,46 @@ func (h *GitHubWebhookHandler) claimDelivery(
 		actionValue = &action
 	}
 
-	tag, err := h.pool.Exec(ctx, `
+	// The DO UPDATE ... WHERE is what makes an unfinished delivery
+	// re-claimable: when the WHERE is false the update does nothing, no
+	// row is returned, and the caller sees a duplicate. ON CONFLICT takes
+	// a row lock, so concurrent racers still serialise to exactly one
+	// winner.
+	var id string
+	err := h.pool.QueryRow(ctx, `
 		INSERT INTO github_webhook_deliveries
 		  (delivery_id, event, action, github_installation_id, outcome)
 		VALUES ($1, $2, $3, $4, 'processing')
-		ON CONFLICT (delivery_id) DO NOTHING
-	`, delivery, event, actionValue, installation)
+		ON CONFLICT (delivery_id) DO UPDATE
+		  SET outcome = 'processing', received_at = NOW()
+		  WHERE github_webhook_deliveries.outcome IN ('processing', 'failed')
+		RETURNING id::text
+	`, delivery, event, actionValue, installation).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return false, nil
-		}
 		return false, err
 	}
-	return tag.RowsAffected() > 0, nil
+	return true, nil
 }
 
-func (h *GitHubWebhookHandler) recordOutcome(ctx context.Context, delivery, outcome string) {
+// recordOutcome finishes a delivery, annotating it with the tenant if one
+// was discovered.
+//
+// `organization_id` is written HERE and nowhere else. Migration 000012
+// describes it as "filled in when the handler works out which tenant an
+// event belonged to"; for one commit that was a description of something
+// no code did.
+func (h *GitHubWebhookHandler) recordOutcome(
+	ctx context.Context, delivery, outcome string, orgID *string,
+) {
 	if _, err := h.pool.Exec(ctx, `
-		UPDATE github_webhook_deliveries SET outcome = $2 WHERE delivery_id = $1
-	`, delivery, outcome); err != nil {
+		UPDATE github_webhook_deliveries
+		SET outcome = $2,
+		    organization_id = COALESCE($3::uuid, organization_id)
+		WHERE delivery_id = $1
+	`, delivery, outcome, orgID); err != nil {
 		// Not fatal: the work was done, only the annotation is missing.
 		slog.Warn("github webhook: could not record outcome",
 			slog.String("delivery", delivery), slog.String("error", err.Error()))
@@ -298,15 +336,17 @@ func (h *GitHubWebhookHandler) recordOutcome(ctx context.Context, delivery, outc
 // else fills the App's delivery log with red for events nobody cares
 // about — which is the first place someone looks when webhooks appear
 // broken, so filling it with noise has a real cost.
+// dispatch returns the outcome, the tenant it discovered (nil when it did
+// not discover one), and an error.
 func (h *GitHubWebhookHandler) dispatch(
 	ctx context.Context, event string, p *githubWebhookEnvelope,
-) (string, error) {
+) (string, *string, error) {
 	switch event {
 	case "ping":
 		// Sent once when the App is created. No action, no installation.
 		// Answering anything but success makes the very first entry in the
 		// delivery log a failure.
-		return "pong", nil
+		return "pong", nil, nil
 	case "installation":
 		return h.handleInstallation(ctx, p)
 	case "installation_repositories":
@@ -314,6 +354,6 @@ func (h *GitHubWebhookHandler) dispatch(
 	case "push":
 		return h.handlePush(ctx, p)
 	default:
-		return "ignored", nil
+		return "ignored", nil, nil
 	}
 }
