@@ -61,7 +61,7 @@ repository end-to-end under the multi-tenant model yet.**
 
 | Component | State | Notes |
 |-----------|-------|-------|
-| Tree-sitter parsing | Built | Python, Go, TypeScript, JavaScript. Extracts *definitions* — functions, classes, docstrings, ancestor chain, `breadcrumb`. **No references, calls, or imports.** |
+| Tree-sitter parsing | **Partial** | Extracts *definitions* — functions, classes, docstrings, ancestor chain, `breadcrumb`. **No references, calls, or imports.** ⚠ Two overstatements corrected after review: `method_declaration` appears nowhere in the parser, so **every Go method is invisible** — including D1's own worked example `RepositoriesHandler.Connect`; and "TypeScript" is the JavaScript grammar, not a TypeScript one. Fixing both is a prerequisite for D1, not a follow-up. |
 | Chunking | Built | Semantic and fixed-size, plus a summary generator. |
 | Embeddings | Built | OpenAI, batched. |
 | Full-text search | Built | Postgres GIN on `content` and `breadcrumb`. |
@@ -88,13 +88,32 @@ application-supplied `repository_id` filter, applied in
 at all** — so a defence-in-depth org filter cannot be added without re-embedding
 everything.
 
-**This is not a live exploit.** `repository_id` is a required argument and
-callers resolve the repository under RLS first. The problem is the failure
-shape: if that check were ever missed, Postgres returns zero rows and Qdrant
-returns another tenant's code. One store fails safe, the other fails open —
-and the one that fails open has no schema hook to fix later.
+**⚠ The first draft said "callers resolve the repository under RLS first."
+That is false, and it made a real hole look closed.** Corrected 2026-09-10
+after review.
 
-Feeds **R6** and **D2** directly.
+What is actually there:
+
+- `pkg/api/handlers/search.go:58-95` and `chat.go:32` take `repository_id` from
+  the **request body** with `validate:"required,uuid"` — a *format* check.
+  **No query anywhere asks whether that repository belongs to the caller's
+  organization.** The handler does forward the caller's `organization_id` from
+  the tenant context, which is what the Python side then uses.
+- The real partial containment is a **post-hoc RLS re-read**:
+  `_enrich_results_with_metadata` (`query_engine.py:286-348`, called
+  unconditionally at `:202`) re-reads the returned chunk ids under
+  `require_tenant` and drops rows RLS withholds.
+- It is *partial*: the metadata counts at `:216-223` bypass that filter, and the
+  Qdrant leg at `:264-281` is org-unscoped.
+
+So the failure shape stands and is worse than described — Postgres fails safe,
+Qdrant fails open, and the backstop is a re-read rather than the store itself.
+
+**And a path that skips even that:** the semantic cache is consulted before
+retrieval and returns without touching Postgres. See **ISS-020** (fixed) and
+**ISS-021** (why it was not exploitable — the cache has never run).
+
+Feeds **R6**, **D2** and **D5** directly.
 
 ---
 
@@ -212,14 +231,25 @@ So: **two tiers over one graph.**
 | Tier | Method | Coverage | Accuracy | Needs |
 |------|--------|----------|----------|-------|
 | 1 | tree-sitter + import resolution + scope matching | 100% of repos | ~80%, confidence-scored | nothing new |
-| 2 | SCIP indexers | repos that build | precise | a hardened sandbox |
+| 2 | precise SCIP, run in the **customer's CI** and uploaded | repos whose owners opt in | precise | none |
 
 Tier 2 edges **upgrade** tier-1 edges in place rather than replacing the graph.
 The per-edge confidence score — originally proposed so retrieval could rank on
 edge quality — turns out to be the mechanism that lets both tiers coexist.
 
-Tier 1 belongs in the pipeline now. Tier 2 slips to its own phase and gets its
-sandbox free, because **F1 builds the same sandbox for agent execution**.
+**⚠ Corrected 2026-09-10.** The claim above -- that SCIP requires the
+repository's build environment, therefore executes untrusted code, therefore
+needs a sandbox -- found only the *precise* mode and treated its requirement as
+SCIP's. Precise navigation is opt-in and requires the repository owner to
+upload an index they generated **in their own CI**. We never execute a
+customer's build, so **no sandbox is on this path**, and Phase 24 loses the
+nested-virtualization constraint this claim had imposed.
+
+Build-free *syntactic* SCIP is deliberately not written in as a middle rung --
+it may simply be tier 1 under another name. Evaluate before adopting.
+
+Tier 1 belongs in the pipeline now. Tier 2 is gated on customer opt-in, not on
+infrastructure we have to build.
 
 See `RESEARCH.md` § R-A for sources.
 
@@ -834,7 +864,7 @@ themselves can wait.
 | 5 | MCP server **with F18's envelope** | F11 + F18 | 56–88h |
 | 6 | Fleet layer | F5, F2, F7, F4 | 72–108h |
 | 7 | Registry, topology, dashboard | F19–F21 | 84–126h |
-| 8 | Sandbox, precise graph, conflict prediction | F1, R3 tier 2, F3 | 60–95h |
+| 8 | Precise graph and conflict prediction | R3 tier 2, F3 | 40–70h |
 | 9 | Docs as a rendering | F12, F13 | 30–50h |
 
 Step 3 is the real gate. It is the step that tells us whether months of
@@ -845,10 +875,12 @@ Step 5 now carries F18, because R-C found that MCP forbids token passthrough —
 so the envelope *is* the token the server mints, and the two cannot be
 sequenced apart.
 
-Step 8 is one sandbox with two payoffs: it isolates agent execution *and* it is
-what lets us run SCIP's build-dependent indexers on untrusted customer code.
-Firecracker, per R-E — which also puts a nested-virtualization constraint on
-Phase 24's deploy-target choice.
+Step 8 no longer carries a sandbox. That was an artefact of the SCIP error
+corrected in R3: tier 2 runs in the customer's CI, so nothing on the ingestion
+path executes untrusted code. **F1's sandbox moves back to the fleet layer**
+(step 6), where it isolates *agent* execution -- its original and only real
+justification -- and **Phase 24 loses the nested-virtualization constraint**,
+which materially widens the hosting options.
 
 **A structural note on this ordering.** It deliberately puts the three most
 defensible features — F3, F9, F19 — after the unglamorous work they depend on.

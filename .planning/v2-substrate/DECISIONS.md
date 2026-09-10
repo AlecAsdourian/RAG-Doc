@@ -1,6 +1,7 @@
 # v2 Substrate — Decisions D1–D4
 
-**Status:** Settled, pending reviewer approval.
+**Status:** Revised 2026-09-10 after review. See `REWORK.md` for the decisions
+taken between the first draft and this one.
 **Decided:** 2026-09-10
 **Inputs:** `DESIGN.md` (the proposals), `RESEARCH.md` (R-A…R-G), plus the
 measurement in §5 of this document.
@@ -49,7 +50,13 @@ CREATE TABLE symbols (
   first_seen_commit TEXT NOT NULL,
   last_seen_commit  TEXT NOT NULL,
 
-  UNIQUE (repository_id, file_path, symbol_path)
+  -- `kind` IS PART OF THE KEY, and that is not defensive padding: the
+  -- triple without it collides in all four languages we parse.
+  --   Go         two `init()` in one file, both at package scope
+  --   Python     `@property` and `@x.setter` share a name
+  --   TypeScript declaration merging (an interface and a function, same name)
+  -- Found in review. Adding it later is a re-ingest.
+  UNIQUE (repository_id, file_path, symbol_path, kind)
 );
 ```
 
@@ -78,6 +85,19 @@ Two specifics come from **R-G / EA-Graph**, which measured this exact design:
    would otherwise create a second identity for the same code and generate
    phantom drift on both.
 
+### ⚠ D1 depends on D3 tier 1, which the first draft missed
+
+Alias resolution to the leaf definition **requires an import graph** — following
+a re-export in a barrel file to what it re-exports means knowing what the file
+imports. That is exactly what D3's tier-1 resolver builds.
+
+So these are not independent decisions and cannot be sequenced apart: **the
+tier-1 import resolution has to land before, or with, symbol identity.** Until
+it does, alias-heavy code produces multiple identities for one artifact — the
+precise failure EA-Graph warns about.
+
+Phase 22 must order them accordingly.
+
 ### Known limitation, stated rather than hidden
 
 **A rename changes `symbol_path`, therefore changes `symbol_id`.** Name-based
@@ -104,11 +124,26 @@ and it can be added later without a migration because it only writes rows.
 ### Decision
 
 **Adopt pgvector. Drop Qdrant. Partition `chunks` by `HASH (organization_id)`
-with `MODULUS 64`.**
+with `MODULUS 64`. Add a stored `organization_id` to `chunks`, maintained by
+trigger (D5).**
 
-Both halves are the decision. Partitioning is not a follow-up optimisation —
-see §5, where it is the difference between 80% and 100% recall in the shape we
-deploy.
+Three parts, and the third was missing from the first draft: **a partition key
+must be a column on the table, and `chunks` does not have one today.** Tenancy
+is derived through `repositories → projects → organizations`, and the RLS policy
+is a two-hop `EXISTS` join. Partitioning by organization therefore requires
+denormalising it onto the row — which is a decision with its own drift risk, not
+a mechanical consequence. See **D5**.
+
+**On why partitioning is kept.** The first draft justified it on recall, citing
+§5. Review contested that: the planner flip to exact search reproduces *without*
+partitioning, so the b-tree companion index may account for the delta. That
+argument is now marked contested and is **not** load-bearing.
+
+The argument that does stand is **index-size runway.** pgvector's "comfortable
+to ~10M vectors" guidance is about holding one HNSW graph in memory. With 64
+partitions each holding ~1/64 of the rows, and queries pruned to one partition,
+the working set is a single partition's index — so the ceiling extends well past
+10M aggregate. That is a structural property, independent of any measurement.
 
 ```sql
 CREATE TABLE chunks (
@@ -128,6 +163,21 @@ CREATE INDEX ON chunks (organization_id);   -- pgvector's own recommendation
 ```
 
 Session default: `hnsw.iterative_scan = relaxed_order`.
+
+### On `MODULUS 64`, and when it stops being right
+
+64 is chosen so that partition count stays bounded and planning time stays flat,
+while each partition holds a small enough slice to keep its HNSW graph resident.
+
+**The honest limit:** the modulus fixes a *ratio*, not a size. At a few thousand
+organisations each tenant is roughly 1.3% of its own partition — a lower
+selectivity than the 2.5% §5 measured, so co-tenancy within a partition grows
+with customer count rather than shrinking.
+
+**Revisit trigger:** more than ~1,000 organisations, or a measured p95 we cannot
+meet. Changing the modulus rewrites every row, which is the re-ingest this
+document exists to avoid — so treat it as a one-way door and re-measure before
+the customer count gets there, not after.
 
 ### Why HASH rather than LIST
 
@@ -175,8 +225,23 @@ is the consistency hazard we are removing.
 
 ### Decision
 
-**Build tier 1 (build-free) in Phase 22. Defer tier 2 (SCIP) behind the
-sandbox. Lock the edge schema now.**
+**Build tier 1 (build-free) in Phase 22. Tier 2 is precise SCIP run in the
+customer's CI and uploaded to us. Lock the edge schema now.**
+
+**Revised 2026-09-10.** The first draft put tier 2 "behind the sandbox",
+because R-A concluded SCIP indexers must run the repository's build and
+therefore execute untrusted code. That found only the *precise* mode and
+treated its requirement as SCIP's.
+
+Precise navigation is opt-in and requires the *owner* to upload an index per
+repository -- they run the indexer in their own CI. **We never execute a
+customer's build**, so no sandbox is on this path at all, and Phase 24 loses
+the nested-virtualization constraint that claim had imposed.
+
+Build-free *syntactic* SCIP is deliberately NOT written in as a middle rung:
+what the documentation describes is `syntax_kind` for highlighting plus a
+search-based fallback, which may simply be tier 1 under another name. Evaluate
+it against tier 1 before adopting; do not assume it.
 
 The schema is the part that cannot slip, because it is what lets tier 2 upgrade
 tier 1 later without a migration.
@@ -186,7 +251,13 @@ CREATE TABLE symbol_edges (
   organization_id UUID NOT NULL,
   repository_id   UUID NOT NULL,
   from_symbol_id  UUID NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
-  to_symbol_id    UUID NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+  -- NULLABLE, deliberately. An unresolved reference -- we saw a call to a
+  -- name we could not bind -- is exactly what `evidence='unknown'` is for,
+  -- and it is precisely what tier 2 would later upgrade. NOT NULL made that
+  -- state unrepresentable and would have thrown the rows away.
+  to_symbol_id    UUID REFERENCES symbols(id) ON DELETE CASCADE,
+  -- The unresolved name, kept so tier 2 has something to bind later.
+  to_symbol_name  TEXT,
 
   edge_kind TEXT NOT NULL,        -- calls|imports|references|implements|extends
 
@@ -197,8 +268,20 @@ CREATE TABLE symbol_edges (
 
   source_tier SMALLINT NOT NULL,  -- 1 = heuristic, 2 = SCIP
 
-  PRIMARY KEY (organization_id, from_symbol_id, to_symbol_id, edge_kind)
+  -- to_symbol_id is nullable, so it cannot carry the primary key. A surrogate
+  -- key plus a partial unique index on each of the two shapes.
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+  CHECK (to_symbol_id IS NOT NULL OR to_symbol_name IS NOT NULL)
 );
+
+CREATE UNIQUE INDEX idx_symbol_edges_resolved
+  ON symbol_edges (organization_id, from_symbol_id, to_symbol_id, edge_kind)
+  WHERE to_symbol_id IS NOT NULL;
+
+CREATE UNIQUE INDEX idx_symbol_edges_unresolved
+  ON symbol_edges (organization_id, from_symbol_id, to_symbol_name, edge_kind)
+  WHERE to_symbol_id IS NULL;
 ```
 
 **Upgrade rule** — tier 2 overwrites tier 1, never the reverse:
@@ -273,7 +356,17 @@ CREATE TABLE memories (
 
 CREATE TABLE memory_anchors (
   memory_id UUID NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-  symbol_id UUID NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+
+  -- NOT `ON DELETE CASCADE`. Deleting the symbol is precisely the event that
+  -- makes an anchored memory `unprovable` -- cascading would destroy the
+  -- anchor, and with it `span_digest_at_binding`, so the terminal state could
+  -- never be reached and D1's deferred rename detection (which matches on that
+  -- digest) would be impossible. The row outlives the symbol on purpose.
+  symbol_id UUID REFERENCES symbols(id) ON DELETE SET NULL,
+
+  -- Kept independently of the FK, so the anchor is still identifiable after
+  -- the symbol row is gone.
+  symbol_path_at_binding TEXT NOT NULL,
 
   -- The symbol's span_digest AT BINDING TIME. Drift = this no longer matches
   -- symbols.span_digest.
@@ -333,12 +426,97 @@ Phases 21–22 writes them.
 
 ---
 
+## D5 — Denormalised tenancy is maintained by trigger, everywhere
+
+### Decision
+
+**Any table that stores an `organization_id` it does not own gets a trigger on
+the parent that keeps it in step. No exceptions, and no application-code
+maintenance.**
+
+### Why this is a decision and not a detail
+
+Review surfaced this twice without either report naming it as one thing.
+
+Neither `chunks` nor `repositories` carries `organization_id`. Tenancy is
+derived: `chunks → ingestion_runs / repositories → projects → organizations`,
+and the RLS policies are two-hop `EXISTS` joins.
+
+Two things in this redesign need it **stored**, not derived:
+
+| Table | Why it needs a stored column |
+|-------|------------------------------|
+| `chunks` | a partition key must be a column on the table (D2) |
+| `ingestion_jobs` | a worker claims a job before it knows the tenant (Phase 21, L5) |
+
+Both are therefore two-hop copies that can drift from the truth they mirror. A
+drifted `organization_id` on `chunks` is a chunk filed under the wrong tenant —
+which, once RLS reads that column instead of the join, means it is *served* to
+the wrong tenant.
+
+### We have already solved this once, and cited the wrong half of it
+
+Migration `000012` contains both patterns, and PR #25 cited the wrong one:
+
+- `github_webhook_deliveries` — no RLS, `organization_id` a nullable
+  **annotation** never used to authorize. Fine, because nothing reads it to make
+  a decision.
+- `github_installation_tenants` — a **trigger-maintained mirror**
+  (`sync_github_installation_tenant`), built that way precisely because drift
+  was representable and the value *is* an authorization input.
+
+Our two new cases are the second kind, not the first.
+
+### The pattern to follow
+
+`sync_github_installation_tenant` is the reference implementation, and its
+details were each paid for by a review round:
+
+- `SET search_path = public, pg_temp` and a schema-qualified body — an
+  unqualified write is resolvable through a caller's temp schema, and that was
+  measured landing a mirror write in a `TEMP` table.
+- A `DELETE` branch for `TG_OP = 'DELETE'`.
+- A stale-key delete before the upsert, so a re-key cannot leave the old value
+  pointing at the row.
+
+### Consequence worth having
+
+Once `chunks.organization_id` is stored, the RLS policy becomes **scalar
+equality** rather than a two-hop `EXISTS` join — simpler, faster, and (see §5)
+the shape the partition-pruning measurement actually used.
+
+### Verification required in Phase 22
+
+- Re-parenting a repository to a project in another organisation updates every
+  dependent `organization_id`.
+- A trigger-disabled bulk load followed by re-enabling does **not** leave drift
+  — or the load path is documented as forbidden.
+- A drift-detection query exists and is run in CI: any row whose stored
+  `organization_id` disagrees with the join is a hard failure.
+
+---
+
 ## 5. Measured evidence for D2
 
 R-B flagged one thing as explicitly unverified: *"partition pruning on
 `current_setting('app.current_tenant')` is runtime pruning, not plan-time … this
 must be confirmed with `EXPLAIN ANALYZE` against a partitioned table under a
 real tenant transaction, not assumed."*
+
+**⚠ Read this first: the experiment used a schema we do not have today.**
+Review caught it and it matters. The test table carried a **stored**
+`organization_id` and an RLS policy of scalar equality. Real `chunks` has
+neither — no such column, and a two-hop `EXISTS` join through `repositories`
+and `projects`.
+
+So `Subplans Removed: 15` came from a predicate the current codebase cannot
+produce. **Under D2 + D5 that becomes exactly the shape we are building** — the
+column is added and the policy is rewritten to scalar equality — so the
+experiment describes the *target* schema rather than the current one. That is a
+meaningful result and it is not the one the first draft claimed.
+
+Nothing here has been measured against a two-hop `EXISTS` policy. If D5 were
+dropped, none of §5 would apply.
 
 Measured 2026-09-10 on PostgreSQL 17.11 with pgvector, in the deployment shape
 this repo documents: tables owned by a `NOSUPERUSER NOBYPASSRLS` role, `FORCE
@@ -377,6 +555,15 @@ The post-index filter, exactly as described: the HNSW walk returns candidates,
 | Unpartitioned, HNSW default | **8 / 10** |
 | Unpartitioned, `iterative_scan = relaxed_order` | **8 / 10** |
 | **Partitioned** | **10 / 10** |
+
+**⚠ Contested.** An independent reviewer reproduced the planner flipping to
+exact search *without* partitioning, which would mean the b-tree companion index
+accounts for the delta rather than partitioning. That has not been re-measured
+here.
+
+**D2 no longer rests on this table.** The argument that carries it is
+index-size runway (see D2), which is structural. Treat these numbers as
+suggestive, not as the justification.
 
 Two things worth noting, one of them a correction to R-B:
 
