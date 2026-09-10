@@ -409,11 +409,16 @@ func (h *GitHubWebhookHandler) handlePush(
 
 // resolveInstallation maps GitHub's numeric id to our row.
 //
-// Reads `github_installations` WITHOUT a tenant scope, deliberately: the
-// whole point is to discover which tenant this event belongs to, so
-// scoping the lookup by the answer would be circular. It is safe because
-// the only input is a numeric id GitHub signed for, and the only outputs
-// are used to scope the writes that follow.
+// Reads the MIRROR — `github_installation_tenants` — without a tenant
+// scope, deliberately: the whole point is to discover which tenant this
+// event belongs to, so scoping the lookup by the answer would be
+// circular. It is safe because the only input is a numeric id GitHub
+// signed for, and the only outputs are used to scope the writes that
+// follow.
+//
+// (This line said `github_installations` until review caught it — in the
+// one function whose reading-the-wrong-table behaviour was the original
+// blocker on this PR.)
 func (h *GitHubWebhookHandler) resolveInstallation(
 	ctx context.Context, githubInstallationID int64,
 ) (internalID string, orgID string, ok bool, err error) {

@@ -141,17 +141,30 @@ The trigger-maintained table was the right call and verified in the production s
 
 **Also noted, not fixed:** the app role holds INSERT/UPDATE/DELETE on the mirror, not just SELECT, and a write there rewrites tenant routing. The migration cannot name `rag_doc_app` (20-02's rule) and in production the app *is* the owner, so there is no grant to tighten from here. Worth saying rather than implying "strictly less exposed" holds on every axis — it holds on the PUBLIC axis, which was M1's, and not on this one.
 
+## Fourth review round: the backfill poisoned the next migration
+
+Approved pending one change, and it was a good catch about a thing I had just added.
+
+**The per-tenant loop worked and left the connection unusable.** Setting `app.current_tenant` for each organization mirrors correctly — and once a custom GUC is touched in a session it cannot be returned to NULL. `RESET` and `set_config(..., '', true)` both leave `''`, which is *worse* than unset: `current_setting(...)::uuid` then raises 22P02 instead of filtering to zero rows. That is ISS-013, which this repo filed months ago and which this very test file cites by number. Review demonstrated an ordinary migration 000013 reading an RLS table dying on it, leaving the database dirty at a version with nothing to do with the cause — and the isolation harness applies migrations the same way, so it would have broken at container setup the moment anyone added one.
+
+My "leave no tenant set behind" line described the opposite of what it did.
+
+The backfill now lifts `FORCE` for one statement instead. `ALTER TABLE` takes an ACCESS EXCLUSIVE lock held to the end of the transaction, so no other session can read the table while the guard is down — the window is closed by the lock rather than by hoping. RLS itself stays enabled; only the owner-also-applies flag moves. It is also O(1) statements rather than O(organizations). Verified: pre-existing installation mirrored, `FORCE` restored, `app.current_tenant` still NULL, and a subsequent RLS read returns zero rows rather than erroring.
+
+**Three counts in the tables above were wrong for the third round running**, and the cause was the same each time: I corrected the table and then added tests in the same commit without re-measuring. They are now taken from a run — `grep -c` on the verbose output and on the mutation's failures — rather than reasoned about. That is the cheap habit I should have adopted the first time.
+
 ## Verification
 
 | Check | Result |
 |---|---|
 | `go build ./...`, `go vet ./...`, `gofmt` | clean |
 | `go test -p 1 ./...` | all pass, container rebuilt from scratch |
-| `TestGitHubWebhook` | 26/26, run repeatedly; the concurrency subtests green on consecutive runs |
+| `TestGitHubWebhook` | **25/25** (counted from a run, not from arithmetic), plus `-shuffle=on` green repeatedly |
 | `migrate up` → `down 1` → `up` on a scratch database | clean each time |
 | CI isolation scanner | PASS, with `POST /webhooks/github` reported as **skipped** with a reason — checked in the JSON, not just the exit code |
 | Tenant discovery under a `NOSUPERUSER NOBYPASSRLS` owner | direct read 0 rows; discovery table returns the tenant; grant-less role denied |
 | Backfill of installations created BEFORE the migration, same role | mirrored (was 0 rows) |
+| `app.current_tenant` after migrating | still NULL; a later RLS read returns 0 rows rather than raising 22P02 |
 | Re-keying an installation | old mapping removed, no stale route |
 | A temp table shadowing the mirror | write lands in the real table |
 
@@ -172,13 +185,13 @@ Review round:
 |---|---|
 | `recordAddedRepositories` does nothing | `UNVERIFIED_RepositoriesAdded…Repoints…`, `AddedOnlyTouchesTheOwningOrganization` |
 | Installation filter dropped from `standDownRepositories` | `RemovedOnlyTouchesTheNamedInstallation`, only it |
-| `recordOutcome` disabled | `DeliveryRecordsItsOutcomeAndTenant`, only it |
+| `recordOutcome` disabled | `DeliveryRecordsItsOutcomeAndTenant`, `AFailedDeliveryIsReclaimableImmediately` |
 | Unfinished deliveries treated as duplicates again | `AnUnfinishedDeliveryCanBeReprocessed`, only it |
 | Staleness window removed (any `processing` re-claimable) | `ADeliveryBeingProcessedRightNowIsNotReclaimable`, only it |
 | The `'failed'` disjunct removed | `AFailedDeliveryIsReclaimableImmediately`, only it |
 | `suspended_at` no longer cleared on `created` | `InstallationCreated_ClearsBothStaleMarkers`, only it |
 | Commented-out `hmac.Equal` beside a live `==` | `TestSignatureComparisonIsConstantTime` |
-| Mirror read replaced by a direct `github_installations` read | 16 subtests |
+| Mirror read replaced by a direct `github_installations` read | 18 subtests |
 | `p.organization_id` predicate dropped | **survives** — RLS already covers it; see above |
 
 ## Notes for what comes next

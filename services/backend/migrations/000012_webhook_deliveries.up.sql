@@ -204,7 +204,7 @@ CREATE TRIGGER trg_sync_github_installation_tenant
   AFTER INSERT OR UPDATE OR DELETE ON github_installations
   FOR EACH ROW EXECUTE FUNCTION sync_github_installation_tenant();
 
--- Backfill, PER TENANT.
+-- Backfill.
 --
 -- A plain `INSERT ... SELECT FROM github_installations` mirrors NOTHING:
 -- the source is FORCE RLS and the migration runs with no tenant set, so
@@ -212,31 +212,36 @@ CREATE TRIGGER trg_sync_github_installation_tenant
 -- did exactly that and excused it — "the trigger populates each row the
 -- first time it is next written, and existing installations are re-read
 -- by the webhook on any subsequent event" — which is false in its second
--- half. `resolveInstallation` reads ONLY this table; an installation
+-- half. `resolveInstallation` reads ONLY the mirror; an installation
 -- missing from it makes every handler answer "unknown installation" and
--- write nothing, so no webhook event can ever heal it. On the deploy that
+-- write nothing, so no webhook event can heal it. On the deploy that
 -- shipped this feature, every already-connected organization would have
--- silently stopped receiving webhook effects — 202 on everything, a
--- plausible outcome in the delivery log — until each user re-ran the
+-- silently stopped receiving webhook effects until each user re-ran the
 -- install flow.
 --
--- So: set the tenant for each organization in turn and copy what becomes
--- visible. `organizations` carries no RLS (000008 scopes repositories,
--- ingestion_runs, chunks, queries, retrievals and feedback), so the loop
--- can enumerate it.
-DO $$
-DECLARE
-  org RECORD;
-BEGIN
-  FOR org IN SELECT id FROM organizations LOOP
-    PERFORM set_config('app.current_tenant', org.id::text, true);
-    INSERT INTO github_installation_tenants
-      (github_installation_id, installation_id, organization_id)
-    SELECT github_installation_id, id, organization_id
-    FROM github_installations
-    ON CONFLICT (github_installation_id) DO NOTHING;
-  END LOOP;
-  -- Leave no tenant set behind for whatever runs next in this session.
-  PERFORM set_config('app.current_tenant', '', true);
-END;
-$$;
+-- The obvious fix — loop over organizations setting `app.current_tenant`
+-- for each — WORKS AND POISONS THE CONNECTION. Once a custom GUC is set
+-- in a session it cannot be returned to NULL: `RESET` and
+-- `set_config(..., '', true)` both leave it as the empty string, and `''`
+-- is worse than unset, because `current_setting(...)::uuid` then raises
+-- 22P02 instead of filtering to zero rows. That is ISS-013, and the next
+-- migration in the same run that reads an RLS table dies on it — leaving
+-- the database dirty at a version that has nothing to do with the cause.
+-- Measured: an ordinary migration 000013 reading `github_installations`
+-- failed with `invalid input syntax for type uuid: ""`.
+--
+-- So: lift FORCE for the length of one statement instead. `ALTER TABLE`
+-- takes an ACCESS EXCLUSIVE lock held to the end of this transaction, so
+-- no other session can read the table while the guard is down — the
+-- window is closed by the lock, not by hoping nobody looks. RLS itself
+-- stays enabled throughout; only the owner-also-applies flag moves, and
+-- it is restored two statements later.
+ALTER TABLE github_installations NO FORCE ROW LEVEL SECURITY;
+
+INSERT INTO github_installation_tenants
+  (github_installation_id, installation_id, organization_id)
+SELECT github_installation_id, id, organization_id
+FROM github_installations
+ON CONFLICT (github_installation_id) DO NOTHING;
+
+ALTER TABLE github_installations FORCE ROW LEVEL SECURITY;
