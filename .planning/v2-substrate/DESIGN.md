@@ -239,7 +239,7 @@ a quiet "indexed 3 commits ago" instead of silently wrong context.
 
 Cheap, and it converts our worst failure mode from invisible to visible.
 
-### R6 — Collapse Qdrant into Postgres with pgvector · 20–30h · **decide before 22**
+### R6 — Collapse Qdrant into Postgres with pgvector · 26–38h · **decide before 22**
 
 We write chunks to Postgres and vectors to Qdrant in two separate,
 non-transactional writes. That is a permanent consistency hazard — a chunk in
@@ -258,7 +258,37 @@ collections. We are nowhere near that, and we can move back if we ever are.
 Carrying a distributed-consistency problem now, to avoid a migration we may
 never need, is the wrong trade.
 
-*Pending research R-B before this is final.*
+**Research R-B confirmed this on scale grounds too** — pgvector HNSW matches or
+beats Qdrant at 1M vectors on equivalent compute, and the consensus threshold
+for leaving Postgres is roughly 10–50M. Our estimated ceiling is ~10M
+(100 orgs × 5 repos × 20k chunks); near-term we are well under 1M.
+
+**But R-B also found the thing that would have made a naive adoption fail
+silently.** The HNSW index is not security-aware: Postgres applies RLS policies
+as security quals *after* the index scan returns its candidates. With a
+selective tenant filter — which our RLS policy always is — the candidate set
+may contain too few passing rows, and the query returns fewer results than
+asked for, or quietly worse ones, **with no error**.
+
+A single-tenant test database cannot detect this: with one tenant, every
+candidate passes. Same failure class as 000012's `SECURITY DEFINER` lookup and
+20-05's re-claim rule — correct in the shape it was tested, wrong in the shape
+it deploys.
+
+So R6 carries four implementation requirements, not one:
+
+1. **Partition `chunks` by organization.** Turns the tenant filter into
+   partition pruning, with a smaller HNSW index per partition. Structurally
+   removes the problem rather than tuning around it — and, like R2, is cheap now
+   and expensive later. *This belongs in D2's answer.*
+2. **`hnsw.iterative_scan`** (pgvector 0.8+), `strict_order` or `relaxed_order`,
+   tuned with `max_scan_tuples` and `hnsw.scan_mem_multiplier`.
+3. **A btree index on the filter column** beside the HNSW index — pgvector's own
+   recommendation.
+4. **A recall test with many tenants**, measured against an exact-search
+   baseline. Nothing else can catch a regression here.
+
+See `RESEARCH.md` § R-B.
 
 ### R7 — Memories as first-class objects · 16–24h
 
@@ -282,7 +312,7 @@ the code graph and the fleet registry, which nobody else does. Marked ★.
 
 ### Parallel safety
 
-**F1 — Worktree per agent, container per run · 30–50h**
+**F1 — Worktree per agent, microVM per run · 20–35h · table stakes**
 
 Two things people conflate. *Isolation of edits* is a git worktree — cheap,
 shares the object store, native, each agent gets its own branch and working
@@ -292,6 +322,33 @@ container, a different problem with different failure modes.
 
 Worktrees first. They solve the day-one problem: two agents stepping on each
 other's files.
+
+**Research R-E confirmed the split and demoted the item.** Worktree-per-agent is
+*the established default* in 2026, not a novel idea: JetBrains shipped
+first-class support in 2026.1, VS Code in July 2025, Cursor in 2026.1; Claude
+Code has `--worktree`; and Intent, AQ, Atlas, Nimbalyst and Warp already
+automate worktree creation, assignment, review and cleanup.
+
+**So F1 is table stakes.** Adopt the standard pattern as cheaply as possible and
+spend the differentiation budget on F2, F3 and F9, which none of those tools
+has. The literature states the gap almost exactly: *"a good multi-agent
+orchestration tool would combine the speed of local worktrees with the isolation
+of cloud environments, plus coordination features that neither has"* — which is
+F1 + F2 + F3 + F5.
+
+It also independently confirms the edit/runtime split: *"git worktrees alone are
+not enough to stop one task's runtime from trampling another task's ports,
+databases, caches, secrets, or test state."*
+
+**⚠ The execution half needs a microVM, not a container.** Containers share the
+host kernel across ~350 syscalls; one bug is an escape. For agent-authored code
+and for R3 tier 2's `npm install` on customer repositories, that is not
+adequate. **Firecracker** (own guest kernel on KVM, ~125ms boot, <5 MiB per VM,
+powers Lambda and Fargate) is the recommendation, with **gVisor** (~50ms,
+userspace syscall interception) as the fallback where KVM is unavailable.
+
+*This puts a constraint on Phase 24:* the deploy target must offer nested
+virtualization, or we fall back to gVisor. Several managed platforms do not.
 
 **F2 — Advisory claims over symbols · 16–24h**
 
@@ -400,12 +457,50 @@ claims about code that no longer exists and gets slowly more dangerous than
 having no memory at all. Invalidation is not a nice-to-have; it is what makes
 the product viable at month twelve.
 
+**Research R-G turned that from a hunch into the best-supported claim in this
+document.** "Context rot" — divergence between agent-facing docs and the code
+they describe — was measured in **23.0% of 356 repositories**. The mechanism is
+exactly the one stated above:
+
+> *"While missing elements announce themselves through errors, stale elements do
+> not."*
+
+> *"RAG has no model of time — when a function is renamed, RAG retrieves both
+> the stale and current value with near-identical embedding similarity."*
+
+That last line is why R5 and F9 are not polish: embedding similarity cannot
+distinguish the old truth from the new one, so no amount of better retrieval
+fixes it.
+
+There is prior art to build on rather than guess at — **EA-Graph**
+(artifact-anchored verification memory under upstream drift) is directly this
+design, and should be read **before D4's anchor schema is locked**. And **STALE**
+is a benchmark for "can an agent tell when its memories went stale", which gives
+F9 a measurable success criterion instead of an assertion. See `RESEARCH.md`
+§ R-G for all four papers.
+
 **F10 — Contradiction detection · 12–20h**
 
 Two memories on the same anchor that disagree. Surface the conflict rather than
 silently returning both — an agent handed contradictory context performs *worse*
 than one handed nothing, because it picks one at random and proceeds with full
 confidence.
+
+**Research R-G showed this was under-specified.** The literature separates two
+cases, and the above describes only the easy one:
+
+- **Explicit conflict** — two memories on the same anchor that disagree.
+  Detectable, and what F10 solves.
+- **Implicit conflict** — *a later observation invalidates an earlier memory
+  without explicit negation*. Named as **the critical failure mode**, and it
+  needs contextual inference; there is a benchmark of 400 expert-validated
+  scenarios.
+
+Our anchoring model gives a partial answer the general case lacks: when the
+anchor's content hash changes we know *something* invalidated the memory, even
+if we cannot infer *what*. **F10 should claim the explicit case and treat
+anchor-hash change as a partial signal for the implicit one** — stronger than
+nothing, weaker than semantic conflict detection, and honest about which.
 
 ### The hive-mind endpoint
 
@@ -430,14 +525,32 @@ is the §2.1 situation again with a new logo.
 **Build the graph as tables in Postgres, keep the query interface abstract**,
 and move to a real graph engine when we hit a query we cannot express or a
 latency we cannot meet. The interface is the valuable part; the storage engine
-is swappable behind it. *Pending research R-D.*
+is swappable behind it.
+
+**Research R-D confirmed this, and named the boundary.** Our query shape —
+bounded fan-out from a node to fill a context budget — is the one case where
+Postgres is reported to *win* rather than merely suffice: a properly indexed
+edge table handles tens of millions of edges with sub-second responses at
+typical depths, and it is one less system.
+
+Postgres loses at deep path enumeration (measured p50 334ms / p95 1.8s against
+Neo4j's 28ms), at dense relationships, and at genuine graph *algorithms* —
+PageRank, community detection, weighted shortest path. None of those is on the
+roadmap; several are plausible v3 features (automatic architecture summaries,
+suggested module boundaries), so this is a revisit-later, not a never.
+
+**⚠ One correctness item, not a tuning one.** Postgres's recursive executor
+keeps no visited set across iterations, and call graphs are cyclic — recursive
+and mutually recursive functions. A naive `WITH RECURSIVE` over call edges
+**will not terminate**. Use the `CYCLE` clause (PostgreSQL 14+) or an explicit
+path array with a membership check. See `RESEARCH.md` § R-D.
 
 **One failure mode to design around:** "one endpoint" can collapse into a single
 `query()` that does everything — and then the agent is playing a phrasing
 guessing game against a natural-language interface. Agents are *much* better at
 picking from a typed menu than at wording one universal question.
 
-**F11 — A small set of sharply-typed MCP tools · 24–40h**
+**F11 — A small set of sharply-typed MCP tools · 32–52h**
 
 One fuzzy tool, the rest exact:
 
@@ -455,6 +568,29 @@ One fuzzy tool, the rest exact:
 
 Nine tools an agent can hold in its head, each with an obvious answer shape.
 That is the hive-mind endpoint — it just isn't a single function.
+
+**Research R-C added an auth design and coupled this to F18.** The MCP
+specification (November 2025) requires **OAuth 2.1 with PKCE** for any
+internet-reachable server and **explicitly prohibits token passthrough** — we
+may not accept an agent's token and forward it to GitHub or Supabase.
+
+That prohibition is a gift. The token our MCP server mints is exactly where
+F18's capability envelope lives: an agent authenticates and receives a token
+scoped to its agent type's tools, memory scopes, repositories and paths. The
+spec forbids the shortcut that would have let us defer designing the envelope,
+so **F11 and F18 should be planned together rather than in sequence.**
+
+**⚠ And one hardening requirement.** Of 30+ MCP CVEs filed in early 2026,
+**43% were command injection** — and our tool list is almost entirely
+string-taking tools. Every parameter is an injection surface. This repo already
+has the lesson from another angle: `uuid.Parse` is a parser, not a validator,
+and the fix was to validate the whole *class* of input rather than the one
+instance a reviewer found. Same discipline here, designed in rather than added
+after a finding.
+
+(Context worth knowing: 25% of public MCP servers have no authentication at all
+and 53% rely on static API keys. Implementing the spec properly is a
+differentiator in this market, not table stakes.)
 
 ---
 
@@ -475,10 +611,27 @@ makes an agent type *ours* is that it also carries an enforced envelope:
   memory, or only propose?
 - which repositories and paths it may touch
 
-That is F6 arriving with a home. Markdown-with-frontmatter is the right format —
-it is what Claude Code's own `.claude/agents/*.md` already uses, so importing
-one is a file upload and nothing else, and definitions people have already
-written come across unchanged.
+That is F6 arriving with a home.
+
+**Research R-F settled the format, and found a distinction that matters.** There
+are two formats in this space and conflating them would be a design error:
+
+| Format | What it is | Shape |
+|--------|-----------|-------|
+| **AGENTS.md** | Cross-tool standard at repo root; how to build, test and change *this project* | Plain markdown, **no frontmatter** |
+| **`.claude/agents/*.md`** | Claude Code subagent — a *role* | Markdown + **YAML frontmatter** |
+
+**F18 imports the second.** AGENTS.md is project context, a different feature.
+
+The good news is that Claude Code's frontmatter (`name`, `description`, `tools`,
+`model`, permissions) is a **strict subset of our envelope** — we add credential
+scope, memory scopes, and repository/path restrictions. So an existing Claude
+Code subagent **imports unchanged**, and the fields it does not express get the
+narrowest default — which is exactly the security rule below already requires
+for third-party definitions. The format decision and the security decision turn
+out to be the same decision.
+
+Keep field names identical where they overlap, so import stays lossless.
 
 **★ F19 — A registry where definitions carry evidence · 30–45h**
 
@@ -500,6 +653,10 @@ signal has nothing good left to surface.
 **Schema constraint:** outcome stats aggregate across tenants, so they must be
 counts only, behind a minimum-sample threshold, with nothing that could describe
 a tenant's code.
+
+**Cold start, answered by R-F:** the registry does not launch empty. Every
+Claude Code subagent definition people have already written is a valid import,
+so the seed corpus already exists in public repositories and gists.
 
 **F20 — Topology is a file; the canvas is a view of it · 30–45h**
 
@@ -613,9 +770,15 @@ re-ingesting every repository we've indexed.
 unlock, and the one thing here genuinely expensive to retrofit.
 
 ### D2 — pgvector, or stay on Qdrant?
-**Recommendation: pgvector.** (R6, 20–30h) One transaction, RLS over the
-vectors, one thing to back up — and it closes the §2.1 asymmetry rather than
-papering over it. *Confirm against research R-B before locking.*
+**Recommendation: pgvector, and partition `chunks` by organization.** (R6,
+26–38h) One transaction, RLS over the vectors, one thing to back up — and it
+closes the §2.1 asymmetry rather than papering over it. Confirmed on scale
+grounds by R-B.
+
+**The partitioning half is not optional and not a follow-up.** RLS makes every
+vector query a filtered query, which is pgvector's worst case; partitioning
+converts the tenant filter into partition pruning and removes the failure mode
+structurally. Adding partitions after rows exist is a rewrite. See R6.
 
 ### D3 — Does ingest emit graph edges from day one?
 **Recommendation: emit the events and build tier 1; defer SCIP.** (R3, 20–30h)
@@ -648,22 +811,28 @@ themselves can wait.
 
 | # | Step | Covers | Est. |
 |---|------|--------|------|
-| 1 | Finish research, settle D1–D4 and ISS-016 | R-B…R-G | 32–46h + 8–12h |
+| 1 | ~~Research~~ ✅ done; settle D1–D4 and ISS-016 | read EA-Graph first | 8–12h |
 | 2 | Phases 21 and 22 with the decisions folded in | roadmap scope + R2, R5, R6, R3 tier 1 | roadmap |
 | 3 | **Prove retrieval quality on one real repository** | index RAG-Doc itself; 30 questions with known answers; measure | 16–24h |
 | 4 | Agent-facing retrieval surface | R1, R4, R7 | 34–54h |
-| 5 | MCP server | F11 | 24–40h |
+| 5 | MCP server **with F18's envelope** | F11 + F18 | 56–88h |
 | 6 | Fleet layer | F5, F2, F7, F4 | 72–108h |
-| 7 | Agent types, topology, dashboard | F18–F21 | 108–162h |
-| 8 | Sandbox, precise graph, conflict prediction | F1, R3 tier 2, F3 | 70–110h |
+| 7 | Registry, topology, dashboard | F19–F21 | 84–126h |
+| 8 | Sandbox, precise graph, conflict prediction | F1, R3 tier 2, F3 | 60–95h |
 | 9 | Docs as a rendering | F12, F13 | 30–50h |
 
 Step 3 is the real gate. It is the step that tells us whether months of
 retrieval work actually produce good answers, and it is the easiest to skip and
 most expensive to have skipped.
 
+Step 5 now carries F18, because R-C found that MCP forbids token passthrough —
+so the envelope *is* the token the server mints, and the two cannot be
+sequenced apart.
+
 Step 8 is one sandbox with two payoffs: it isolates agent execution *and* it is
 what lets us run SCIP's build-dependent indexers on untrusted customer code.
+Firecracker, per R-E — which also puts a nested-virtualization constraint on
+Phase 24's deploy-target choice.
 
 **A structural note on this ordering.** It deliberately puts the three most
 defensible features — F3, F9, F19 — after the unglamorous work they depend on.
@@ -690,6 +859,18 @@ the order.
 - **Cost model for the substrate.** PROJECT.md's constraint is LLM cost at
   scale. Memory writes and graph construction add embedding and storage cost per
   tenant that nothing currently models.
+- **What fraction of real repositories build in a cold clone?** (R-A) Determines
+  whether SCIP tier 2 is a headline feature or a bonus. Measurable: clone the top
+  N public repos per language and count.
+- **Does SCIP's symbol format map onto R2's `symbol_id`?** (R-A) If it does,
+  tier 2 gets much cheaper.
+- **Incremental indexing has no tier-2 equivalent.** (R-A) SCIP indexers run
+  whole-project; Phase 22's changed-files-only re-index does not obviously
+  compose with that.
+- **Does partition pruning fire on `current_setting('app.current_tenant')`?**
+  (R-B) It is runtime rather than plan-time pruning. Must be confirmed with
+  `EXPLAIN ANALYZE` against a partitioned table inside a real tenant
+  transaction — not assumed.
 
 ---
 
@@ -698,3 +879,10 @@ the order.
 - 2026-09-10 — rev 2: added F18–F21 (agent types, registry, topology,
   dashboard); folded in research R-A, which revised R3 and D3 downward and
   pulled the sandbox forward into step 8
+- 2026-09-10 — rev 3: folded in research R-B through R-G. Changed: D2 gained a
+  partitioning requirement; R6 gained four implementation requirements; F1
+  demoted to table stakes and given a microVM dependency; F10 split into
+  explicit and implicit conflict; F11 gained an OAuth design and merged into a
+  step with F18; F18's format decided; F19's cold start answered; the graph
+  store confirmed with cycle handling flagged. See `RESEARCH.md` § *What the
+  research changed*.
