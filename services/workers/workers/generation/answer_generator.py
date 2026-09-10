@@ -120,6 +120,7 @@ class AnswerGenerator:
                 cached_response = self.semantic_cache.get_cached_response(
                     query=query,
                     query_embedding=embedding_vector,
+                    organization_id=organization_id,
                     repository_id=repository_id,
                 )
 
@@ -202,6 +203,7 @@ class AnswerGenerator:
             self.semantic_cache.cache_response(
                 query=query,
                 query_embedding=embedding_vector,
+                organization_id=organization_id,
                 repository_id=repository_id,
                 response=result,
             )

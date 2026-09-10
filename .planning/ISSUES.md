@@ -4,6 +4,19 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 ## Open Enhancements
 
+### ISS-022: No CI job runs the Python worker tests, so every Python isolation test is decorative
+
+- **Discovered:** 2026-09-10, while adding the ISS-020 regression guard and looking for the job that would run it.
+- **Type:** Testing / CI
+- **Priority:** MEDIUM-HIGH — this silently voids a whole directory of security tests.
+- **What is missing:** `.github/workflows/` contains only `backend-ci.yml` (Go: build, vet, test, race) and `isolation-check.yml` (runs `scripts/ci/check-isolation-tests.py`, a diff scanner that is itself Python but executes no test suite). **Nothing runs `pytest`.**
+- **Consequence:** everything in `services/workers/tests/isolation/` — the Python half of the tenant-isolation guarantee — has never been executed by CI. The Go isolation tests gate every PR; their Python counterparts gate nothing.
+- **It is worse than untested, because it looks tested.** The isolation CI gate accepts a Python isolation test as coverage for a Python mutation endpoint. So a test that never runs can satisfy the ratchet that exists to force real coverage.
+- **Second-order:** the `services/workers/venv` did not have `testcontainers` installed even though `requirements.txt` declares `testcontainers[postgres]>=4.0.0`, and `tests/isolation/conftest.py` imports it at module scope. So the directory could not be collected locally either — no import error had ever been surfaced by anything.
+- **Same class as a failure already recorded in STATE.md:** `pkg/vectordb` stayed uncompilable from Phase 3 to Phase 19 because nothing in CI invoked a compiler. This is that, for Python.
+- **Recommendation:** add a `workers-ci.yml` running `pytest` with a Redis service container and Docker available for testcontainers. The ISS-020 guard (`tests/isolation/test_semantic_cache_isolation.py`) needs only Redis and `REDIS_URL`, so it can gate immediately; the Postgres-backed tests need Docker-in-CI and may need work before they pass.
+- **⚠ Until this lands, the ISS-020 regression guard is documentation, not enforcement.** It has been verified by hand (5 pass on the fix; 4 fail when the fix is reverted) but nothing stops a future change from reopening the leak.
+
 ### ISS-021: The semantic cache has never run, and repairing it would arm ISS-020
 
 - **Discovered:** 2026-09-10, by the reviewer session on PR #26 while checking the severity of ISS-020. Independently verified.
