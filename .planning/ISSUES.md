@@ -4,20 +4,6 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 ## Open Enhancements
 
-### ISS-022: No CI job runs the Python worker tests, so every Python isolation test is decorative
-
-- **Discovered:** 2026-09-10, while adding the ISS-020 regression guard and looking for the job that would run it.
-- **Type:** Testing / CI
-- **Priority:** MEDIUM-HIGH — this silently voids a whole directory of security tests.
-- **What is missing:** `.github/workflows/` contains only `backend-ci.yml` (Go: build, vet, test, race) and `isolation-check.yml` (runs `scripts/ci/check-isolation-tests.py`, a diff scanner that is itself Python but executes no test suite). **Nothing runs `pytest`.**
-- **Consequence:** everything in `services/workers/tests/isolation/` — the Python half of the tenant-isolation guarantee — has never been executed by CI. The Go isolation tests gate every PR; their Python counterparts gate nothing.
-- **It is worse than untested, because it looks tested.** The isolation CI gate accepts a Python isolation test as coverage for a Python mutation endpoint. So a test that never runs can satisfy the ratchet that exists to force real coverage.
-- **Second-order:** the `services/workers/venv` did not have `testcontainers` installed even though `requirements.txt` declares `testcontainers[postgres]>=4.0.0`, and `tests/isolation/conftest.py` imports it at module scope. So the directory could not be collected locally either — no import error had ever been surfaced by anything.
-- **Same class as a failure already recorded in STATE.md:** `pkg/vectordb` stayed uncompilable from Phase 3 to Phase 19 because nothing in CI invoked a compiler. This is that, for Python.
-- **Recommendation:** add a `workers-ci.yml` running `pytest` with a Redis service container and Docker available for testcontainers. The ISS-020 guard (`tests/isolation/test_semantic_cache_isolation.py`) needs only Redis and `REDIS_URL`, so it can gate immediately; the Postgres-backed tests need Docker-in-CI and may need work before they pass.
-- **⚠ Until this lands, the ISS-020 regression guard is documentation, not enforcement.** Verified by hand — 8 pass on the fix, and each control fails its own mutation — but nothing stops a future change from reopening the leak.
-- **The guard is now written to fail rather than skip** when `REDIS_URL` is set and Redis is unreachable, so once a CI job exists it cannot report green while guarding nothing. With `REDIS_URL` unset it still skips, which is the courtesy for a developer machine with no Redis.
-
 ### ISS-021: The semantic cache has never run, so a documented cost control has been absent since Phase 12
 
 - **Discovered:** 2026-09-10, by the reviewer session on PR #26 while checking the severity of ISS-020. Independently verified.
@@ -27,7 +13,8 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Why nobody noticed:** the call is wrapped in `try/except Exception` and the failure is reported as `logger.warning(f"Failed to initialize SemanticCache: {e}")`. `semantic_cache` stays `None`, and `AnswerGenerator` treats `None` as "caching disabled". The system degrades silently to exactly the behaviour it would have if the feature had never been written.
 - **Signature drift, not a typo:** `main.py` is Phase 05; `SemanticCache` landed in Phase 12 with a different constructor. No test covers the wiring.
 - **Impact:** Phase 12's research put semantic caching at roughly a 40% hit rate and treated it as a primary defence for PROJECT.md's stated cost constraint. That saving has been **0% realized since Phase 12**. Any cost projection that assumed it is wrong.
-- **⚠ The ordering gate moved, it did not go away.** The original gate was "do not repair this before ISS-020 is org-scoped, or you arm the leak". ISS-020 shipped 2026-09-10, so that one is discharged. **The remaining gate is ISS-022:** repairing the constructor turns the cache on while its regression guard runs in no CI job. Fix ISS-022 first, then this.
+- **The ordering gate is now fully discharged, as of 2026-09-10.** It had two parts and both are done: ISS-020 org-scoped the key, and ISS-022 put the guard in CI. Repairing the constructor is therefore safe to do now — the cache will come up tenant-scoped, with 8 isolation tests gating every PR against regression.
+- **When it is repaired, expect it to be the first time this code has ever executed.** It has been dead since Phase 12, so treat a green test suite as necessary rather than sufficient; the read path in particular has never run against a populated cache outside the new tests.
 - **Class problem worth a separate look:** a bare `except Exception` + `logger.warning` around service initialization turns any wiring bug into silent feature loss. Worth auditing the other optional-dependency initializations in `main.py` on the same pass.
 
 ### ISS-001: Implement shared type definitions for cross-phase data contracts
@@ -216,11 +203,27 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 ## Closed Enhancements
 
+### ISS-022: No CI job runs the Python worker tests ✅
+
+- **Discovered:** 2026-09-10, while adding the ISS-020 regression guard and looking for the job that would run it.
+- **Type:** Testing / CI
+- **Resolved:** 2026-09-10 by `.github/workflows/workers-ci.yml`. Runs `pytest tests/` on every PR with a Redis service container; testcontainers provisions its own Postgres. **Verified by a real run, not by inspection: 24 passed in 12.25s** (run 34540233783). Every test was already passing locally — none were broken, they had simply never been executed.
+- **Priority when open:** MEDIUM-HIGH — it silently voided a whole directory of security tests.
+- **What is missing:** `.github/workflows/` contains only `backend-ci.yml` (Go: build, vet, test, race) and `isolation-check.yml` (runs `scripts/ci/check-isolation-tests.py`, a diff scanner that is itself Python but executes no test suite). **Nothing runs `pytest`.**
+- **Consequence:** everything in `services/workers/tests/isolation/` — the Python half of the tenant-isolation guarantee — has never been executed by CI. The Go isolation tests gate every PR; their Python counterparts gate nothing.
+- **It is worse than untested, because it looks tested.** The isolation CI gate accepts a Python isolation test as coverage for a Python mutation endpoint. So a test that never runs can satisfy the ratchet that exists to force real coverage.
+- **Second-order:** the `services/workers/venv` did not have `testcontainers` installed even though `requirements.txt` declares `testcontainers[postgres]>=4.0.0`, and `tests/isolation/conftest.py` imports it at module scope. So the directory could not be collected locally either — no import error had ever been surfaced by anything.
+- **Same class as a failure already recorded in STATE.md:** `pkg/vectordb` stayed uncompilable from Phase 3 to Phase 19 because nothing in CI invoked a compiler. This is that, for Python.
+- **What was done:** added `workers-ci.yml` running `pytest` with a Redis service container and Docker available for testcontainers. The ISS-020 guard (`tests/isolation/test_semantic_cache_isolation.py`) needs only Redis and `REDIS_URL`, so it can gate immediately; the Postgres-backed tests need Docker-in-CI and may need work before they pass.
+- **The ISS-020 guard now enforces.** It was documentation until this landed.
+- **The guard is now written to fail rather than skip** when `REDIS_URL` is set and Redis is unreachable, so once a CI job exists it cannot report green while guarding nothing. With `REDIS_URL` unset it still skips, which is the courtesy for a developer machine with no Redis.
+
+
 ### ISS-020: The semantic cache key is not tenant-scoped ✅
 
 - **Discovered:** 2026-09-10, by the reviewer session on PR #24. **Substantially corrected 2026-09-10** after the reviewer session on PR #26 checked the original entry — see the corrections note at the end, which matters more than the finding.
 - **Type:** Security / Tenant isolation
-- **Resolved:** 2026-09-10. Key is now `cache:query:{hash}:{organization_id}:{repository_id}`; all repo-scoped scan patterns carry the organization; `clear_cache`/`get_cache_stats` refuse a falsy organization and require `all_tenants=True` for a global flush; the stored `organization_id` is re-checked on read. Guarded by `services/workers/tests/isolation/test_semantic_cache_isolation.py` (8 tests, mutation-verified). **⚠ That guard does not gate until ISS-022 is fixed.**
+- **Resolved:** 2026-09-10. Key is now `cache:query:{hash}:{organization_id}:{repository_id}`; all repo-scoped scan patterns carry the organization; `clear_cache`/`get_cache_stats` refuse a falsy organization and require `all_tenants=True` for a global flush; the stored `organization_id` is re-checked on read. Guarded by `services/workers/tests/isolation/test_semantic_cache_isolation.py` (8 tests, mutation-verified). That guard runs in CI as of 2026-09-10 (ISS-022).
 - **Priority when open:** MEDIUM (latent). **Not currently exploitable, because the cache never runs** — see ISS-021. It becomes live the moment that is repaired.
 - **The chain, each link verified:**
   1. `semantic_cache.py:149` writes keys as `cache:query:{query_hash}:{repository_id}`; `:70` reads by scanning `cache:query:*:{repository_id}`. **No organization component in either.**
