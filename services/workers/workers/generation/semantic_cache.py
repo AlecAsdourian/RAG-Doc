@@ -203,6 +203,7 @@ class SemanticCache:
         self,
         organization_id: Optional[UUID] = None,
         repository_id: Optional[UUID] = None,
+        all_tenants: bool = False,
     ):
         """
         Clear cached entries.
@@ -213,25 +214,43 @@ class SemanticCache:
                 identifies a key, and matching on it without the tenant would
                 reach across organizations.
             repository_id: Optional repository UUID to clear within the org.
+            all_tenants: Flush EVERY tenant's entries. Must be passed
+                explicitly; there is no way to reach a global flush by omitting
+                arguments.
 
         Raises:
-            ValueError: if `repository_id` is given without `organization_id`.
+            ValueError: if no `organization_id` is given without
+                `all_tenants=True`, or if `all_tenants` is combined with a scope.
         """
-        if repository_id is not None and organization_id is None:
+        # A GLOBAL FLUSH IS OPT-IN, NOT A FALLTHROUGH.
+        #
+        # The first version of this guard checked `organization_id is None`
+        # while the branches below tested truthiness. An empty string passed
+        # the guard, failed every branch, and fell through to `cache:query:*`
+        # -- deleting every tenant's entries. Found in review, reproduced.
+        #
+        # Now: anything falsy is refused, and the global pattern is only
+        # reachable by asking for it by name.
+        if all_tenants:
+            if organization_id or repository_id:
+                raise ValueError(
+                    "all_tenants=True cannot be combined with organization_id "
+                    "or repository_id"
+                )
+        elif not organization_id:
             raise ValueError(
-                "clear_cache requires organization_id when repository_id is given; "
-                "a repository id alone does not identify a cache key (ISS-020)"
+                "clear_cache requires organization_id, or all_tenants=True for a "
+                "deliberate global flush (ISS-020)"
             )
         try:
-            if organization_id and repository_id:
+            if all_tenants:
+                pattern = "cache:query:*"
+            elif repository_id:
                 pattern = (
                     f"cache:query:*:{str(organization_id)}:{str(repository_id)}"
                 )
-            elif organization_id:
-                pattern = f"cache:query:*:{str(organization_id)}:*"
             else:
-                # No tenant given: a deliberate global flush, admin only.
-                pattern = "cache:query:*"
+                pattern = f"cache:query:*:{str(organization_id)}:*"
 
             keys = list(self.redis_client.scan_iter(match=pattern))
 
@@ -286,6 +305,7 @@ class SemanticCache:
         self,
         organization_id: Optional[UUID] = None,
         repository_id: Optional[UUID] = None,
+        all_tenants: bool = False,
     ) -> Dict[str, int]:
         """
         Get cache statistics.
@@ -301,20 +321,28 @@ class SemanticCache:
         Raises:
             ValueError: if `repository_id` is given without `organization_id`.
         """
-        if repository_id is not None and organization_id is None:
+        # Same guard as clear_cache, for the same reason -- a falsy
+        # organization_id must not fall through to the all-tenants pattern.
+        if all_tenants:
+            if organization_id or repository_id:
+                raise ValueError(
+                    "all_tenants=True cannot be combined with organization_id "
+                    "or repository_id"
+                )
+        elif not organization_id:
             raise ValueError(
-                "get_cache_stats requires organization_id when repository_id is given "
+                "get_cache_stats requires organization_id, or all_tenants=True "
                 "(ISS-020)"
             )
         try:
-            if organization_id and repository_id:
+            if all_tenants:
+                pattern = "cache:query:*"
+            elif repository_id:
                 pattern = (
                     f"cache:query:*:{str(organization_id)}:{str(repository_id)}"
                 )
-            elif organization_id:
-                pattern = f"cache:query:*:{str(organization_id)}:*"
             else:
-                pattern = "cache:query:*"
+                pattern = f"cache:query:*:{str(organization_id)}:*"
 
             keys = list(self.redis_client.scan_iter(match=pattern))
 

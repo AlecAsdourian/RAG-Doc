@@ -35,6 +35,19 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
 EMBEDDING = [0.1] * 16
 
 
+# WHETHER AN UNREACHABLE REDIS IS A SKIP OR A FAILURE DEPENDS ON INTENT.
+#
+# The first version of this file skipped unconditionally when Redis was
+# unreachable -- so with no Redis the suite reported "5 skipped", exit 0, and
+# looked green. That is precisely the pathology ISS-022 describes, reproduced
+# inside the guard written for it. Found in review.
+#
+# Now: if REDIS_URL was set deliberately (as CI will), an unreachable Redis is
+# a FAILURE, because someone asked for these tests to run. If it is unset, we
+# are on a developer machine with no Redis and skipping is the courtesy.
+_REDIS_EXPLICIT = "REDIS_URL" in os.environ
+
+
 def _redis_available() -> bool:
     try:
         redis_lib.from_url(REDIS_URL, socket_connect_timeout=2).ping()
@@ -43,10 +56,21 @@ def _redis_available() -> bool:
         return False
 
 
+_REDIS_UP = _redis_available()
+
 pytestmark = pytest.mark.skipif(
-    not _redis_available(),
-    reason=f"no Redis at {REDIS_URL}; set REDIS_URL to run",
+    not _REDIS_UP and not _REDIS_EXPLICIT,
+    reason=f"no Redis at {REDIS_URL} and REDIS_URL is unset; set it to run",
 )
+
+
+def test_redis_is_reachable_when_explicitly_configured():
+    """Fails loudly rather than skipping green when CI's Redis is down."""
+    assert _REDIS_UP, (
+        f"REDIS_URL is set to {REDIS_URL} but Redis is unreachable. These are "
+        "tenant-isolation tests: a silent skip here would report success while "
+        "guarding nothing (see ISS-022)."
+    )
 
 
 @pytest.fixture
@@ -219,3 +243,50 @@ def test_clear_cache_refuses_repository_without_organization(cache):
 
     with pytest.raises(ValueError, match="organization_id"):
         cache.get_cache_stats(repository_id=uuid.uuid4())
+
+
+def test_falsy_organization_cannot_reach_the_global_flush(cache):
+    """The bug review found in the first version of this fix.
+
+    The guard tested `organization_id is None` while the branches tested
+    truthiness, so an empty string passed the guard, matched no branch, and
+    fell through to `cache:query:*` -- deleting every tenant's entries.
+    """
+    org_a, org_b = uuid.uuid4(), uuid.uuid4()
+    repo = uuid.uuid4()
+
+    for org in (org_a, org_b):
+        cache.cache_response(
+            query="how does auth work",
+            query_embedding=EMBEDDING,
+            organization_id=org,
+            repository_id=repo,
+            response={"answer": f"answer for {org}", "sources": []},
+        )
+
+    for falsy in ("", None, 0):
+        with pytest.raises(ValueError, match="organization_id"):
+            cache.clear_cache(organization_id=falsy, repository_id=repo)
+        with pytest.raises(ValueError, match="organization_id"):
+            cache.clear_cache(organization_id=falsy)
+
+    # Nothing was deleted by any of those calls.
+    remaining = list(cache.redis_client.scan_iter(match="cache:query:*"))
+    assert len(remaining) == 2, (
+        f"a falsy organization_id flushed the cache: {len(remaining)} of 2 keys left"
+    )
+
+
+def test_global_flush_requires_asking_for_it(cache):
+    """`all_tenants=True` is the only route to the global pattern."""
+    org = uuid.uuid4()
+    cache.cache_response(
+        query="q", query_embedding=EMBEDDING, organization_id=org,
+        repository_id=uuid.uuid4(), response={"answer": "a", "sources": []},
+    )
+
+    with pytest.raises(ValueError, match="all_tenants"):
+        cache.clear_cache(organization_id=org, all_tenants=True)
+
+    cache.clear_cache(all_tenants=True)
+    assert not list(cache.redis_client.scan_iter(match="cache:query:*"))
