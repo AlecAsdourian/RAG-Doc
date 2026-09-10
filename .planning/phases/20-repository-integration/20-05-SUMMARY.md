@@ -113,13 +113,23 @@ Approved on everything but one blocker, and the blocker was the tenant-discovery
 
 **One mutation still survives, and it is honest that it does.** Dropping the `p.organization_id = $2` predicate from the `added` update changes nothing observable, because RLS already restricts the rows. It is a second layer, and a second layer cannot be measured while the first one works. Recorded rather than dressed up as covered — the same call as PR #22's equivalent.
 
+## The fix that CI caught and the local run did not
+
+Making `processing` deliveries re-claimable introduced a real bug, and my local suite passed it three times.
+
+A row is `processing` for exactly as long as a worker is still handling it. Re-claiming on that alone means twelve concurrent redeliveries all re-claim each other and **all process** — the precise thing the idempotency design exists to prevent. Locally the winner finished fast enough that the others always saw a terminal outcome; on GitHub's slower runner, every racer won and `Idempotency_ConcurrentDuplicatesProduceOneEffect` failed with 0 duplicates instead of 11.
+
+The rule now has two halves: `failed` is re-claimable immediately, and `processing` only once it is older than five minutes — long enough that a live handler is never overtaken, short enough that GitHub's own redelivery schedule recovers a genuinely lost event. Both halves are pinned by their own test and both mutations die.
+
+Worth naming the shape: **a concurrency test that passes locally has told you very little.** The local run is one scheduler, one machine, one load profile. This one was green three times in a row on a bug CI found on the first try.
+
 ## Verification
 
 | Check | Result |
 |---|---|
 | `go build ./...`, `go vet ./...`, `gofmt` | clean |
 | `go test -p 1 ./...` | all pass, container rebuilt from scratch |
-| `TestGitHubWebhook` | 22/22 |
+| `TestGitHubWebhook` | 23/23, and the concurrency subtests run green three times consecutively |
 | `migrate up` → `down 1` → `up` on a scratch database | clean each time |
 | CI isolation scanner | PASS, with `POST /webhooks/github` reported as **skipped** with a reason — checked in the JSON, not just the exit code |
 | Tenant discovery under a `NOSUPERUSER NOBYPASSRLS` owner | direct read 0 rows; discovery table returns the tenant; grant-less role denied |
@@ -143,6 +153,7 @@ Review round:
 | Installation filter dropped from `standDownRepositories` | `UNVERIFIED_RepositoriesRemoved…`, `RemovedOnlyTouchesTheNamedInstallation` |
 | `recordOutcome` disabled | four subtests, including `DeliveryRecordsItsOutcomeAndTenant` |
 | Unfinished deliveries treated as duplicates again | `AnUnfinishedDeliveryCanBeReprocessed`, only it |
+| Staleness window removed (any `processing` re-claimable) | `ADeliveryBeingProcessedRightNowIsNotReclaimable`, only it |
 | `p.organization_id` predicate dropped | **survives** — RLS already covers it; see above |
 
 ## Notes for what comes next

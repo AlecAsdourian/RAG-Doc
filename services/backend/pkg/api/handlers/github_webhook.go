@@ -245,6 +245,15 @@ func (h *GitHubWebhookHandler) accept(w http.ResponseWriter, r *http.Request, ou
 	render.JSON(w, r, map[string]string{"status": "accepted", "outcome": outcome})
 }
 
+// abandonedProcessingAfter is how long a delivery may sit 'processing'
+// before we assume the attempt died — a panic, an OOM, a deploy restart.
+//
+// Long enough that a slow-but-live handler is never overtaken (these do a
+// handful of indexed UPDATEs; a second would be remarkable), short enough
+// that GitHub's own redelivery schedule can recover a genuinely lost
+// event without anyone intervening.
+const abandonedProcessingAfter = "5 minutes"
+
 // terminalOutcome reports whether a recorded outcome means "done".
 //
 // 'processing' is what a claim writes before the handler runs, so finding
@@ -263,14 +272,19 @@ func terminalOutcome(outcome string) bool {
 // an INSERT rather than a SELECT-then-INSERT. Tested concurrently rather
 // than reasoned about.
 //
-// A delivery left 'processing' or 'failed' IS re-claimable, and that is a
-// correction. The first version treated any existing row as a duplicate,
-// justified by "replaying a partially-applied event is worse than one
-// recorded as failed" — but no handler here can be partially applied:
-// every one does all of its writes in a single tenant transaction, and
-// every one is an idempotent UPDATE by key. So the cost was real (a
-// transient database blip silently dropped an uninstall forever) and the
-// stated benefit did not exist.
+// A 'failed' delivery is re-claimable immediately, and a 'processing' one
+// becomes re-claimable once it is older than abandonedProcessingAfter.
+// That is a correction: the first version treated any existing row as a
+// duplicate, justified by "replaying a partially-applied event is worse
+// than one recorded as failed" — but no handler here can be partially
+// applied (each writes in one tenant transaction, each is an idempotent
+// UPDATE by key), so the cost was real and the benefit did not exist.
+//
+// THE AGE CHECK IS NOT OPTIONAL, and its absence was caught by CI rather
+// than locally. Without it, a row is re-claimable for the whole time the
+// winner is still working on it — so twelve concurrent redeliveries all
+// re-claim each other and all process. Locally the winner finished fast
+// enough to hide it; on a slower runner every racer won.
 func (h *GitHubWebhookHandler) claimDelivery(
 	ctx context.Context, delivery, event, action string, installationID int64,
 ) (bool, error) {
@@ -295,9 +309,11 @@ func (h *GitHubWebhookHandler) claimDelivery(
 		VALUES ($1, $2, $3, $4, 'processing')
 		ON CONFLICT (delivery_id) DO UPDATE
 		  SET outcome = 'processing', received_at = NOW()
-		  WHERE github_webhook_deliveries.outcome IN ('processing', 'failed')
+		  WHERE github_webhook_deliveries.outcome = 'failed'
+		     OR (github_webhook_deliveries.outcome = 'processing'
+		         AND github_webhook_deliveries.received_at < NOW() - $5::interval)
 		RETURNING id::text
-	`, delivery, event, actionValue, installation).Scan(&id)
+`, delivery, event, actionValue, installation, abandonedProcessingAfter).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}

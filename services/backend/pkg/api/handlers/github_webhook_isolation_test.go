@@ -669,10 +669,14 @@ func TestGitHubWebhook(t *testing.T) {
 			instID := seedLinkedInstallation(t, pool, orgA.ID, ghID)
 			id := uniqueDelivery("poisoned")
 
-			// Simulate the corpse of a previous attempt.
+			// The corpse of a previous attempt — and it must be OLD.
+			// A row that is still 'processing' recently is a delivery some
+			// other worker is handling RIGHT NOW, and re-claiming that is
+			// how twelve concurrent redeliveries all end up processing.
 			_, err := pool.Exec(context.Background(), `
-				INSERT INTO github_webhook_deliveries (delivery_id, event, action, outcome)
-				VALUES ($1, 'installation', 'suspend', 'processing')`, id)
+				INSERT INTO github_webhook_deliveries
+				  (delivery_id, event, action, outcome, received_at)
+				VALUES ($1, 'installation', 'suspend', 'processing', NOW() - INTERVAL '1 hour')`, id)
 			require.NoError(t, err)
 
 			body := fmt.Sprintf(`{"action":"suspend","installation":{"id":%d,
@@ -688,6 +692,31 @@ func TestGitHubWebhook(t *testing.T) {
 			// And once finished, it IS a duplicate.
 			_, again := deliver(t, srv, "installation", id, []byte(body), "")
 			require.Contains(t, again, "duplicate")
+		})
+
+		t.Run("ADeliveryBeingProcessedRightNowIsNotReclaimable", func(t *testing.T) {
+			// The other half of the re-claim rule, and the half CI caught
+			// and local runs did not: a FRESH 'processing' row belongs to
+			// a worker that is still going. Re-claiming it means two
+			// workers process the same event.
+			ghID := int64(786000)
+			instID := seedLinkedInstallation(t, pool, orgA.ID, ghID)
+			id := uniqueDelivery("in-flight")
+
+			_, err := pool.Exec(context.Background(), `
+				INSERT INTO github_webhook_deliveries (delivery_id, event, action, outcome)
+				VALUES ($1, 'installation', 'suspend', 'processing')`, id)
+			require.NoError(t, err)
+
+			body := fmt.Sprintf(`{"action":"suspend","installation":{"id":%d,
+				"account":{"login":"x","type":"User"},"repository_selection":"selected"}}`, ghID)
+			status, resp := deliver(t, srv, "installation", id, []byte(body), "")
+			require.Equal(t, http.StatusAccepted, status)
+			require.Contains(t, resp, "duplicate",
+				"a delivery still in flight must not be re-claimed")
+
+			_, suspended, _, _ := installationRow(t, pool, orgA.ID, instID)
+			require.Nil(t, suspended, "the in-flight delivery was processed a second time")
 		})
 
 		t.Run("CrossTenant_AWebhookCannotTouchAnotherOrgsRepositories", func(t *testing.T) {
