@@ -334,6 +334,42 @@ func TestGitHubWebhook(t *testing.T) {
 				"orgB must not see an installation refreshed for orgA")
 		})
 
+		t.Run("InstallationCreated_ClearsBothStaleMarkers", func(t *testing.T) {
+			// A fresh `created` means the App is installed and active, so
+			// neither uninstalled_at nor suspended_at can still be true.
+			// Clearing only the first left a reinstalled App looking
+			// suspended — and Phase 21 is told to check that column before
+			// attempting a sync, so it would refuse to sync forever.
+			// A synthetic payload with its own id, deliberately: the
+			// captured fixture's installation id is already seeded by
+			// another subtest, and two seeds of the same id collide on
+			// 000010's UNIQUE constraint. Passed alone this test was green
+			// and in the suite it was not — an order dependence, which is
+			// its own small lesson about running a new test both ways.
+			const ghID = int64(788000)
+			instID := seedLinkedInstallation(t, pool, orgA.ID, ghID)
+			payload := fmt.Sprintf(`{"action":"created","installation":{"id":%d,
+				"account":{"login":"acme","type":"Organization"},
+				"repository_selection":"selected"}}`, ghID)
+
+			scoper := db.NewTenantScoper(pool)
+			require.NoError(t, scoper.InTenantTx(
+				auth.ContextWithOrgID(context.Background(), orgA.ID),
+				func(tx pgx.Tx) error {
+					_, e := tx.Exec(context.Background(), `
+						UPDATE github_installations
+						SET suspended_at = NOW(), uninstalled_at = NOW() WHERE id = $1`, instID)
+					return e
+				}))
+
+			status, _ := deliver(t, srv, "installation", uniqueDelivery("recreated"), []byte(payload), "")
+			require.Equal(t, http.StatusAccepted, status)
+
+			uninstalled, suspended, _, _ := installationRow(t, pool, orgA.ID, instID)
+			require.Nil(t, uninstalled, "a reinstall must clear uninstalled_at")
+			require.Nil(t, suspended, "a reinstall must clear suspended_at too")
+		})
+
 		t.Run("InstallationDeleted_KeepsTheRowAndTheRepositories", func(t *testing.T) {
 			d := loadCaptured(t, "installation-deleted")
 			ghID := installationIDOf(t, d.Body)
@@ -692,6 +728,37 @@ func TestGitHubWebhook(t *testing.T) {
 			// And once finished, it IS a duplicate.
 			_, again := deliver(t, srv, "installation", id, []byte(body), "")
 			require.Contains(t, again, "duplicate")
+		})
+
+		t.Run("AFailedDeliveryIsReclaimableImmediately", func(t *testing.T) {
+			// The half that matters most in practice, and the half that had
+			// no test: an ordinary 500 writes 'failed', while 'processing'
+			// only survives a crash. Deleting the failed disjunct entirely
+			// used to leave the suite green.
+			//
+			// No staleness window applies here: a failed attempt is provably
+			// finished, so there is no live worker to overtake.
+			ghID := int64(787000)
+			instID := seedLinkedInstallation(t, pool, orgA.ID, ghID)
+			id := uniqueDelivery("failed-half")
+
+			_, err := pool.Exec(context.Background(), `
+				INSERT INTO github_webhook_deliveries (delivery_id, event, action, outcome)
+				VALUES ($1, 'installation', 'suspend', 'failed')`, id)
+			require.NoError(t, err)
+
+			body := fmt.Sprintf(`{"action":"suspend","installation":{"id":%d,
+				"account":{"login":"x","type":"User"},"repository_selection":"selected"}}`, ghID)
+			status, resp := deliver(t, srv, "installation", id, []byte(body), "")
+			require.Equal(t, http.StatusAccepted, status)
+			require.NotContains(t, resp, "duplicate",
+				"a failed delivery must be re-claimable at once, with no waiting period")
+
+			_, suspended, _, _ := installationRow(t, pool, orgA.ID, instID)
+			require.NotNil(t, suspended, "the retry must actually have been processed")
+
+			outcome, _ := deliveryRecord(t, pool, id)
+			require.Equal(t, "suspended", outcome, "the retry must overwrite 'failed'")
 		})
 
 		t.Run("ADeliveryBeingProcessedRightNowIsNotReclaimable", func(t *testing.T) {

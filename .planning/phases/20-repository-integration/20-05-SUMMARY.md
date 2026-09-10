@@ -119,9 +119,27 @@ Making `processing` deliveries re-claimable introduced a real bug, and my local 
 
 A row is `processing` for exactly as long as a worker is still handling it. Re-claiming on that alone means twelve concurrent redeliveries all re-claim each other and **all process** — the precise thing the idempotency design exists to prevent. Locally the winner finished fast enough that the others always saw a terminal outcome; on GitHub's slower runner, every racer won and `Idempotency_ConcurrentDuplicatesProduceOneEffect` failed with 0 duplicates instead of 11.
 
-The rule now has two halves: `failed` is re-claimable immediately, and `processing` only once it is older than five minutes — long enough that a live handler is never overtaken, short enough that GitHub's own redelivery schedule recovers a genuinely lost event. Both halves are pinned by their own test and both mutations die.
+The rule now has two halves: `failed` is re-claimable immediately, and `processing` only once it is older than five minutes — long enough that a live handler is never overtaken (the route carries a 30-second timeout).
+
+**A correction to an earlier version of this paragraph**, which said both halves were pinned by their own test. Only the `processing` half was; deleting the `'failed'` disjunct entirely left the suite green — and `failed` is the half that matters more in practice, since an ordinary 500 writes it while `processing` only survives a crash. Now covered.
+
+**And a claim softened.** This paragraph said five minutes is "short enough that GitHub's own redelivery schedule recovers a genuinely lost event". That rests on GitHub redelivering at all, redelivering *again* after the five-minute mark, and reusing the delivery id — the last of which ISS-019 records as unverified, and the plan for this phase warned specifically against designing around a vendor's retry behaviour. A delivery that fails and is never redelivered stays lost until a resync exists.
 
 Worth naming the shape: **a concurrency test that passes locally has told you very little.** The local run is one scheduler, one machine, one load profile. This one was green three times in a row on a bug CI found on the first try.
+
+## Third review round: the replacement had its own silent-202
+
+The trigger-maintained table was the right call and verified in the production shape — but it shipped with the same failure mode it was written to remove, narrowed to installations that already existed.
+
+**H2 — the backfill mirrored nothing.** `INSERT ... SELECT FROM github_installations` under FORCE RLS with no tenant set selects zero rows, so on the deploy that ships this feature every already-connected organization would silently stop receiving webhook effects. The migration excused it: *"the trigger populates each row the first time it is next written, and existing installations are re-read by the webhook on any subsequent event."* **The second half is false** — `resolveInstallation` reads only the mirror, so every handler answers "unknown installation" and writes nothing. No webhook event can heal it. The backfill now loops per organization, setting the tenant for each; verified against installations created *before* the migration ran.
+
+**M6 — the mirror could drift after all.** Re-keying an installation left the old GitHub id pointing at it forever, so a freed id kept routing to the wrong tenant. "Maintained by a trigger so it cannot drift" was asserted three times and was an overstatement. The trigger now deletes the stale key, and `installation_id` is UNIQUE so the drift is unrepresentable rather than merely handled.
+
+**M7 — I dropped a hardening while removing the thing that carried it.** The SECURITY DEFINER function pinned `search_path`, and I made a point of why; the replacement trigger did not. Measured: a temp table named `github_installation_tenants` swallowed the mirror write while the parent insert succeeded, leaving an installation that exists and can never be resolved. Pinned, and the body is schema-qualified.
+
+**Two mutation-table rows overstated their kills** — `recordOutcome` and the stand-down installation filter each kill one subtest, not four and two. Corrected above. Every other row reproduced exactly.
+
+**Also noted, not fixed:** the app role holds INSERT/UPDATE/DELETE on the mirror, not just SELECT, and a write there rewrites tenant routing. The migration cannot name `rag_doc_app` (20-02's rule) and in production the app *is* the owner, so there is no grant to tighten from here. Worth saying rather than implying "strictly less exposed" holds on every axis — it holds on the PUBLIC axis, which was M1's, and not on this one.
 
 ## Verification
 
@@ -129,10 +147,13 @@ Worth naming the shape: **a concurrency test that passes locally has told you ve
 |---|---|
 | `go build ./...`, `go vet ./...`, `gofmt` | clean |
 | `go test -p 1 ./...` | all pass, container rebuilt from scratch |
-| `TestGitHubWebhook` | 23/23, and the concurrency subtests run green three times consecutively |
+| `TestGitHubWebhook` | 26/26, run repeatedly; the concurrency subtests green on consecutive runs |
 | `migrate up` → `down 1` → `up` on a scratch database | clean each time |
 | CI isolation scanner | PASS, with `POST /webhooks/github` reported as **skipped** with a reason — checked in the JSON, not just the exit code |
 | Tenant discovery under a `NOSUPERUSER NOBYPASSRLS` owner | direct read 0 rows; discovery table returns the tenant; grant-less role denied |
+| Backfill of installations created BEFORE the migration, same role | mirrored (was 0 rows) |
+| Re-keying an installation | old mapping removed, no stale route |
+| A temp table shadowing the mirror | write lands in the real table |
 
 `-race` was not run locally (no gcc; it needs cgo). CI runs it.
 
@@ -150,10 +171,14 @@ Review round:
 | Mutation | Result |
 |---|---|
 | `recordAddedRepositories` does nothing | `UNVERIFIED_RepositoriesAdded…Repoints…`, `AddedOnlyTouchesTheOwningOrganization` |
-| Installation filter dropped from `standDownRepositories` | `UNVERIFIED_RepositoriesRemoved…`, `RemovedOnlyTouchesTheNamedInstallation` |
-| `recordOutcome` disabled | four subtests, including `DeliveryRecordsItsOutcomeAndTenant` |
+| Installation filter dropped from `standDownRepositories` | `RemovedOnlyTouchesTheNamedInstallation`, only it |
+| `recordOutcome` disabled | `DeliveryRecordsItsOutcomeAndTenant`, only it |
 | Unfinished deliveries treated as duplicates again | `AnUnfinishedDeliveryCanBeReprocessed`, only it |
 | Staleness window removed (any `processing` re-claimable) | `ADeliveryBeingProcessedRightNowIsNotReclaimable`, only it |
+| The `'failed'` disjunct removed | `AFailedDeliveryIsReclaimableImmediately`, only it |
+| `suspended_at` no longer cleared on `created` | `InstallationCreated_ClearsBothStaleMarkers`, only it |
+| Commented-out `hmac.Equal` beside a live `==` | `TestSignatureComparisonIsConstantTime` |
+| Mirror read replaced by a direct `github_installations` read | 16 subtests |
 | `p.organization_id` predicate dropped | **survives** — RLS already covers it; see above |
 
 ## Notes for what comes next

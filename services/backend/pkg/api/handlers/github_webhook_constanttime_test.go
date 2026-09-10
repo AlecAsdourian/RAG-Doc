@@ -42,6 +42,19 @@ func TestSignatureComparisonIsConstantTime(t *testing.T) {
 	require.Greater(t, end, 0, "could not find the end of verifySignature")
 	body := rest[:end]
 
+	// Strip comments before looking. Review showed a commented-out
+	// `hmac.Equal(` sitting next to a live `==` satisfying the check —
+	// the scoping fixed file-scope but not this.
+	var code strings.Builder
+	for _, line := range strings.Split(body, "\n") {
+		if idx := strings.Index(line, "//"); idx >= 0 {
+			line = line[:idx]
+		}
+		code.WriteString(line)
+		code.WriteString("\n")
+	}
+	body = code.String()
+
 	require.Contains(t, body, "hmac.Equal(",
 		"the webhook signature comparison must use hmac.Equal; a plain == leaks how "+
 			"many leading bytes matched, which is enough to forge a signature byte by byte")

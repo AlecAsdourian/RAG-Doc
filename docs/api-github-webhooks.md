@@ -48,10 +48,26 @@ GitHub redelivers on failure, and the **Redeliver** button in the App's
 Advanced settings is a normal part of development, so duplicates are
 routine rather than exceptional.
 
-**A delivery that did not finish CAN be redelivered.** The row is written
-before processing with `outcome = 'processing'`, and a redelivery of
-anything still `processing` or `failed` is re-claimed and processed
-again. Only a finished delivery is treated as a duplicate.
+**A delivery that did not finish CAN be redelivered**, under two
+different rules:
+
+- **`failed`** — re-claimable immediately. The attempt is provably over,
+  so there is no live worker to collide with.
+- **`processing`** — re-claimable only once the row is **older than five
+  minutes**. A `processing` row usually means a worker is still on it,
+  and re-claiming that is how a burst of concurrent redeliveries all end
+  up processing the same event. Five minutes is far beyond any real
+  handler here (the route carries a 30-second timeout) and short enough
+  to recover from a crash.
+
+Only a finished delivery is a duplicate outright.
+
+**Do not rely on this to recover a lost event on its own.** It recovers
+one *if* GitHub redelivers, *and* redelivers again after the five-minute
+mark, *and* reuses `X-GitHub-Delivery`. The last of those is recorded as
+unverified in ISS-019, and the plan for this phase warned against
+designing around a vendor's retry behaviour. A delivery that fails and is
+never redelivered stays lost until a resync exists (Phase 21).
 
 That is a correction to an earlier design which treated any existing row
 as a duplicate, on the reasoning that replaying a partially-applied event
@@ -60,6 +76,10 @@ applied** — each does all of its writes in one tenant transaction and
 each is an idempotent update by key — so that reasoning bought nothing
 and cost a great deal: a transient database blip, a deploy restart or a
 panic mid-handler silently dropped an uninstall or a suspend forever.
+
+The five-minute rule is the correction to the correction: allowing any
+`processing` row to be re-claimed reintroduced the concurrency bug the
+delivery table exists to prevent.
 
 That table is **not tenant-scoped**, unlike everything else this phase
 touches — a delivery arrives before we know whose it is, and

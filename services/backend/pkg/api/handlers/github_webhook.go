@@ -254,16 +254,6 @@ func (h *GitHubWebhookHandler) accept(w http.ResponseWriter, r *http.Request, ou
 // event without anyone intervening.
 const abandonedProcessingAfter = "5 minutes"
 
-// terminalOutcome reports whether a recorded outcome means "done".
-//
-// 'processing' is what a claim writes before the handler runs, so finding
-// one means a previous attempt died mid-flight — a panic, an OOM, a
-// deploy restart. 'failed' means the handler returned an error. Neither
-// is a finished state, and both may be retried.
-func terminalOutcome(outcome string) bool {
-	return outcome != "processing" && outcome != "failed"
-}
-
 // claimDelivery claims a delivery, returning false if it is a duplicate of
 // one already FINISHED.
 //

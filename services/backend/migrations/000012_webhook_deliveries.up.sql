@@ -146,7 +146,11 @@ COMMENT ON COLUMN github_installations.uninstalled_at IS
 -- data consulted BEFORE a tenant is known, not tenant data.
 CREATE TABLE github_installation_tenants (
   github_installation_id BIGINT PRIMARY KEY,
-  installation_id UUID NOT NULL REFERENCES github_installations(id) ON DELETE CASCADE,
+  -- UNIQUE, so an installation can hold at most ONE mapping and a stale
+  -- key cannot coexist with its replacement. The trigger below deletes
+  -- the old row on a re-key; this constraint is what makes the drift
+  -- unrepresentable rather than merely unlikely.
+  installation_id UUID NOT NULL UNIQUE REFERENCES github_installations(id) ON DELETE CASCADE,
   organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE
 );
 
@@ -155,20 +159,38 @@ COMMENT ON TABLE github_installation_tenants IS
   'Deliberately has no RLS, because it is consulted before the tenant is known. '
   'Maintained by trg_sync_github_installation_tenant; never written directly.';
 
--- Kept in step by a trigger rather than by application code, so the two
--- cannot drift. The source table's own writes are already tenant-scoped;
--- this mirror carries no data that is not derivable from them.
+-- Kept in step by a trigger rather than by application code.
+--
+-- `search_path` is pinned. The function this replaced was SECURITY
+-- DEFINER and pinned it for the classic reason; dropping the pin along
+-- with the definer was a mistake, because an unqualified write is still
+-- resolvable through a caller's temp schema. Measured: with a TEMP table
+-- named `github_installation_tenants` carrying a matching primary key,
+-- the parent INSERT succeeded and the mirror write landed in the temp
+-- table — leaving an installation that exists and can never be resolved.
 CREATE OR REPLACE FUNCTION sync_github_installation_tenant()
 RETURNS TRIGGER
 LANGUAGE plpgsql
+SET search_path = public, pg_temp
 AS $$
 BEGIN
   IF TG_OP = 'DELETE' THEN
-    DELETE FROM github_installation_tenants WHERE installation_id = OLD.id;
+    DELETE FROM public.github_installation_tenants WHERE installation_id = OLD.id;
     RETURN OLD;
   END IF;
 
-  INSERT INTO github_installation_tenants
+  -- Drop any mapping this installation used to have under a DIFFERENT
+  -- GitHub id. Without this, re-keying an installation left the old id
+  -- pointing at it forever: the freed id kept routing to this tenant, so
+  -- a later, legitimately-signed event for whoever GitHub next issued it
+  -- to would be applied inside the wrong organization. No code path
+  -- re-keys today; "maintained by a trigger so it cannot drift" was still
+  -- an overstatement until this line existed.
+  DELETE FROM public.github_installation_tenants
+  WHERE installation_id = NEW.id
+    AND github_installation_id <> NEW.github_installation_id;
+
+  INSERT INTO public.github_installation_tenants
     (github_installation_id, installation_id, organization_id)
   VALUES (NEW.github_installation_id, NEW.id, NEW.organization_id)
   ON CONFLICT (github_installation_id) DO UPDATE
@@ -182,12 +204,39 @@ CREATE TRIGGER trg_sync_github_installation_tenant
   AFTER INSERT OR UPDATE OR DELETE ON github_installations
   FOR EACH ROW EXECUTE FUNCTION sync_github_installation_tenant();
 
--- Backfill anything that already exists. Runs as the migration role, and
--- the source table is FORCE RLS — so this is deliberately written to work
--- regardless: if the migration role cannot see the rows, the INSERT
--- simply finds none, and the trigger populates each row the first time it
--- is next written. Existing installations are re-read by the webhook on
--- any subsequent event for them.
-INSERT INTO github_installation_tenants (github_installation_id, installation_id, organization_id)
-SELECT github_installation_id, id, organization_id FROM github_installations
-ON CONFLICT (github_installation_id) DO NOTHING;
+-- Backfill, PER TENANT.
+--
+-- A plain `INSERT ... SELECT FROM github_installations` mirrors NOTHING:
+-- the source is FORCE RLS and the migration runs with no tenant set, so
+-- the SELECT is filtered to zero rows. An earlier version of this file
+-- did exactly that and excused it — "the trigger populates each row the
+-- first time it is next written, and existing installations are re-read
+-- by the webhook on any subsequent event" — which is false in its second
+-- half. `resolveInstallation` reads ONLY this table; an installation
+-- missing from it makes every handler answer "unknown installation" and
+-- write nothing, so no webhook event can ever heal it. On the deploy that
+-- shipped this feature, every already-connected organization would have
+-- silently stopped receiving webhook effects — 202 on everything, a
+-- plausible outcome in the delivery log — until each user re-ran the
+-- install flow.
+--
+-- So: set the tenant for each organization in turn and copy what becomes
+-- visible. `organizations` carries no RLS (000008 scopes repositories,
+-- ingestion_runs, chunks, queries, retrievals and feedback), so the loop
+-- can enumerate it.
+DO $$
+DECLARE
+  org RECORD;
+BEGIN
+  FOR org IN SELECT id FROM organizations LOOP
+    PERFORM set_config('app.current_tenant', org.id::text, true);
+    INSERT INTO github_installation_tenants
+      (github_installation_id, installation_id, organization_id)
+    SELECT github_installation_id, id, organization_id
+    FROM github_installations
+    ON CONFLICT (github_installation_id) DO NOTHING;
+  END LOOP;
+  -- Leave no tenant set behind for whatever runs next in this session.
+  PERFORM set_config('app.current_tenant', '', true);
+END;
+$$;
