@@ -13,7 +13,7 @@ front, so a reader can tell whether it still matters before reading it.
 | Topic | Settles | State | Outcome |
 |-------|---------|-------|---------|
 | **R-A** Code graph construction | D3, and the cost of R3 | ✅ Done | Revised R3 down; pulled the sandbox forward |
-| **R-B** pgvector at our scale | D2 | ✅ Done | Confirmed pgvector; **added partitioning to D2** |
+| **R-B** pgvector at our scale | D2 | ✅ Done | Confirmed pgvector; **added partitioning to D2**. One claim later corrected by measurement — see `DECISIONS.md` § 5 |
 | **R-C** Multi-tenant MCP | F11 | ✅ Done | OAuth 2.1 + PKCE mandatory; F11 and F18 coupled |
 | **R-D** Graph queries in Postgres | The no-separate-graph-DB call | ✅ Done | Confirmed; cycle handling is a correctness item |
 | **R-E** Sandboxing and orchestration | F1, and R3 tier 2 | ✅ Done | Worktrees are table stakes; Firecracker named |
@@ -246,7 +246,14 @@ but this must be confirmed with `EXPLAIN ANALYZE` against a partitioned table
 under a real tenant transaction, not assumed.
 
 **2. `hnsw.iterative_scan`** (pgvector 0.8+). Keeps pulling candidates from the
-index until enough rows pass the filter. `strict_order` when exact distance
+index until enough rows pass the filter.
+
+> **⚠ Corrected by measurement, 2026-09-10.** This section presented iterative
+> scan as the primary mitigation. It was measured to change **nothing** —
+> 8/10 recall with and without it — while partitioning moved recall to 10/10.
+> Keep the setting; it is cheap and helps in other shapes. It is not the fix.
+> See `DECISIONS.md` § 5.
+ `strict_order` when exact distance
 ordering matters, `relaxed_order` for speed. Costs CPU, memory and tail latency.
 Tune with `max_scan_tuples` and `hnsw.scan_mem_multiplier` (a multiple of
 `work_mem`).

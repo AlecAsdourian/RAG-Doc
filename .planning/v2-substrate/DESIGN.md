@@ -3,7 +3,9 @@
 **Status:** Draft, under active research. Not yet a milestone.
 **Started:** 2026-09-10, after Phase 20 closed at `0c28704`
 **Owner:** worker session, at the user's direction
-**Companion:** `RESEARCH.md` in this directory — agenda and findings.
+**Companions in this directory:**
+`RESEARCH.md` — agenda and findings (R-A…R-G, all complete).
+`DECISIONS.md` — **D1–D4 settled, with schemas. Authoritative over §8 below.**
 
 > This document is the raw material for a v2 milestone. It is **not** a roadmap
 > and does not supersede `.planning/ROADMAP.md`. The planner session owns
@@ -298,6 +300,14 @@ The write path. A **memory** is a note, decision, gotcha or convention that:
 - carries provenance — which agent, which session, which commit, which PR
 - carries a confidence
 - has a lifecycle — `proposed → confirmed → stale → contradicted`
+
+**⚠ Superseded by D4.** Research R-G (EA-Graph) showed the single-confidence
+model collapses two different questions into one number. The settled model uses
+**two independent axes** — `evidence` (unknown < partial < proven) and
+`freshness` (fresh | stale | unprovable) — plus a separate `disposition`
+(retain | withdrawn), because a well-evidenced-but-stale claim and a
+fresh-but-weakly-evidenced claim call for different agent behaviour. See
+`DECISIONS.md` § D4.
 
 Retrieval then searches code and memories together, ranking memories on
 provenance and corroboration rather than embedding distance alone. This one
@@ -761,6 +771,12 @@ repository they care about.
 
 ## 8. Decisions blocking Phase 22
 
+> **These are now settled in `DECISIONS.md`, with concrete schemas and a
+> measurement.** What follows is the reasoning that led there, kept for
+> context. Where the two differ, `DECISIONS.md` wins — most notably D2, which
+> gained a partitioning requirement, and D4, which split confidence into two
+> independent axes.
+
 Everything else here can be decided later without cost. These four cannot,
 because Phase 22 writes the first real rows and changing them afterwards means
 re-ingesting every repository we've indexed.
@@ -879,6 +895,9 @@ the order.
 - 2026-09-10 — rev 2: added F18–F21 (agent types, registry, topology,
   dashboard); folded in research R-A, which revised R3 and D3 downward and
   pulled the sandbox forward into step 8
+- 2026-09-10 — rev 4: D1–D4 settled in `DECISIONS.md`, including a measured
+  answer to R-B's open pruning question. §8 is now context; `DECISIONS.md` is
+  authoritative. R7's confidence model superseded by D4's two-axis model.
 - 2026-09-10 — rev 3: folded in research R-B through R-G. Changed: D2 gained a
   partitioning requirement; R6 gained four implementation requirements; F1
   demoted to table stakes and given a microVM dependency; F10 split into
