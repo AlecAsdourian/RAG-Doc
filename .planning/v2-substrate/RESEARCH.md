@@ -8,6 +8,28 @@ front, so a reader can tell whether it still matters before reading it.
 
 ---
 
+## ⚠ On the Sources lists in this document
+
+**The first version of this document cited pages nobody had opened.** WebSearch
+returns a synthesized summary across results; the URLs it surfaces were listed
+as a Sources section as though each backed the claim beside it. Review found the
+consequences: the DBOS citation in `21-RESEARCH.md` was used to argue the
+*opposite* of that article's thesis, and two quoted figures could not be found
+in any cited page.
+
+Sources are therefore now split into two kinds, and the distinction is load
+bearing:
+
+- **Verified** — the page was fetched and the specific claim confirmed. What was
+  confirmed is stated inline.
+- **Surfaced by search, not opened** — a lead, not support. Nothing in the body
+  may rest on one of these.
+
+*A Sources list is a claim that I read them. Anything not marked Verified was
+not read.*
+
+---
+
 ## Agenda
 
 | Topic | Settles | State | Outcome |
@@ -68,7 +90,23 @@ SCIP emits precise **definitions and references** — which is the whole graph.
 
 ### The catch
 
-**Every SCIP indexer requires the repository's build environment.**
+**⚠ CORRECTED 2026-09-10. The original claim below is wrong, and it moved the
+roadmap before it was caught.**
+
+The original: *every SCIP indexer requires the repository's build environment,
+therefore running one executes untrusted customer code, therefore we need a
+hardened sandbox.* That pulled a Firecracker dependency forward and put a
+nested-virtualization constraint on Phase 24's deploy target.
+
+**It found only the *precise* mode and treated its requirement as SCIP's.**
+Verified against Sourcegraph's documentation: precise navigation is **opt-in and
+requires the repository owner to upload an index per repository** — they run the
+indexer in their own CI. We never execute a customer's build, so **no sandbox is
+on this path at all**, and the Phase 24 constraint is withdrawn.
+
+What remains true, and only of precise indexing run *by its owner*:
+
+**Precise SCIP indexers require the repository's build environment.**
 
 | Indexer | Requires |
 |---------|----------|
@@ -90,11 +128,23 @@ Three consequences for a SaaS that clones arbitrary customer repositories:
    customer code, in a multi-tenant service, that is arbitrary code execution by
    design. **This needs a hardened sandbox, which was not on the roadmap.**
 
-Point 3 is the finding that moved the plan. It was not guessable from the
-outside, and it converts "run SCIP in the ingest worker" from a small task into
-one that depends on infrastructure we had scheduled much later.
+Those three are why the *owner* runs the indexer rather than us — they are
+constraints on whoever executes the build, and the upload model puts that
+squarely on the customer's side of the line. None of them is a constraint on
+our infrastructure.
+
+**The lesson worth keeping:** point 3 was presented as the finding that moved
+the plan. It was actually a finding about one mode of a two-mode tool, promoted
+to a general claim on a single search result. Before a finding reorders the
+roadmap, look for the case that contradicts it.
 
 ### The alternative that has the opposite trade
+
+Note also that Sourcegraph ships a **syntactic** tier — `syntax_kind` plus a
+search-based fallback used when no precise index is available. It is
+deliberately **not** written into the plan as a middle rung, because what the
+documentation describes may simply be our tier 1 under another name. Evaluate it
+against tier 1 before adopting; do not assume it is better.
 
 **stack-graphs** (GitHub, built on tree-sitter) resolves names *without* the
 build environment — that is explicitly its design goal: name-binding rules
@@ -203,7 +253,17 @@ range, and far beyond anything v1 or v2 will see. Near-term we are well under
 **Threshold to watch: ~10M vectors.** Above that, revisit. `pgvectorscale` is
 the intermediate step before leaving Postgres.
 
-### ⚠ The finding that matters: RLS makes every query a filtered query
+### ⚠ The finding that matters: a selective filter degrades HNSW recall
+
+**Framing corrected 2026-09-10.** The original heading and body presented this
+as *RLS is specially bad for vector search*. It is not. Review measured RLS and
+an equivalent hand-written `WHERE` clause as **byte-identical** in plan and
+performance — Postgres injects the policy as an ordinary qual.
+
+The real finding is narrower and still matters: **any selective filter** hurts
+HNSW recall, and RLS guarantees that every one of our queries has one. So the
+consequence for us is the same; the mechanism is not RLS-specific, and
+describing it that way sent the mitigation search in the wrong direction.
 
 **The HNSW index is not security-aware.** Postgres injects RLS policies into the
 plan as *security quals*, evaluated on candidate rows the index already
@@ -297,16 +357,42 @@ which is moving.
 
 ### Summary
 
-The MCP specification (November 2025 revision) **requires OAuth 2.1 with PKCE**
-(S256) for any MCP server reachable over the internet, and **explicitly
-prohibits token passthrough**. Both requirements happen to push us toward the
-architecture F18 already wanted.
+**⚠ REWRITTEN 2026-09-10. The original was written against a superseded
+revision.**
 
-### What the spec requires
+It cited the **2025-11-25** revision and stated that OAuth 2.1 with PKCE is
+required for any internet-reachable server, "no exceptions".
 
-- OAuth 2.1 + PKCE, no exceptions for internet-reachable servers.
-- **No token passthrough.** We may not accept an agent's token and forward it
-  to GitHub or Supabase. The MCP server must mint its own credentials.
+**The current revision is 2026-07-28** — released 28 July 2026 and described as
+the largest revision since launch. It makes the protocol core **stateless**,
+adds an **extensions framework**, a **Tasks extension**, MCP Apps, header-based
+routing, cacheable list results and a formal deprecation policy — and it
+**realigns authorization toward OAuth 2.1 / OpenID Connect rather than mandating
+it universally**. Review reports it also drops `resources/subscribe`, session
+ids and SSE resumability, which the original R-C assumed were available.
+
+**What this changes for F11:**
+
+- "OAuth 2.1 + PKCE, no exceptions" is **not** an accurate statement of the
+  current spec. It remains the right choice *for us* — see below — but as our
+  decision, not as a requirement we are compelled by.
+- The **stateless core** matters more than the auth change. The original F11
+  design assumed a session-oriented server; a stateless core changes how per-
+  agent identity is carried on each request, and that has to be re-examined
+  before F11 is planned.
+- The **Tasks extension** may overlap F7's durable task objects. Worth reading
+  before building our own.
+
+**The prohibition on token passthrough is the part worth keeping** — an MCP
+server should mint its own credentials rather than forward the caller's. That
+remains the right architecture regardless of what the spec compels, and it is
+where F18's capability envelope belongs.
+
+### What we choose to implement
+
+- OAuth 2.1 + PKCE. Our decision, on the merits, not a spec mandate.
+- **No token passthrough.** We do not accept an agent's token and forward it to
+  GitHub or Supabase; the MCP server mints its own credentials.
 
 That second rule is a gift rather than a constraint: *the token the MCP server
 issues is exactly where F18's capability envelope belongs.* An agent
@@ -351,6 +437,12 @@ if we ever run more than one MCP server; premature at one.
 
 ### Sources
 
+**On the current revision (2026-07-28):**
+- [The 2026-07-28 Specification — MCP Blog](https://blog.modelcontextprotocol.io/posts/2026-07-28/) — *surfaced by search; read this before planning F11.*
+- [The 2026-07-28 Release Candidate — MCP Blog](https://blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate/) — *surfaced by search.*
+- [MCP specification version timeline](https://hidekazu-konishi.com/entry/mcp_specification_version_timeline.html) — *surfaced by search.*
+
+**On the superseded 2025-11-25 revision, which the original R-C was written against:**
 - [Diving into the MCP authorization specification — Descope](https://www.descope.com/blog/post/mcp-auth-spec)
 - [MCP OAuth 2.1 authentication guide 2026](https://baeseokjae.github.io/posts/mcp-oauth-authentication-guide-2026/)
 - [Multi-tenant MCP servers: auth, tenancy, rate limiting — PADISO](https://www.padiso.co/blog/multi-tenant-mcp-servers-auth-tenancy-rate-limiting/)
@@ -597,6 +689,18 @@ codebases they describe — was found in **23.0% of 356 repositories analyzed**
 (95% confidence, 5% margin). Nearly a quarter of repositories carry stale code
 references in their agent-facing documentation.
 
+**⚠ Weight these numbers carefully.** Review checked the underlying papers and
+they hold up as *existing and correctly quoted* — all four are real and every
+EA-Graph quotation verifies verbatim. But they are recent unrefereed preprints,
+and the EA-Graph evaluation in particular runs on **synthetic repositories with
+n=1 per condition**. The "**71 false alarms per 96 behaviours**" figure quoted
+in D1 is **our own arithmetic** on their reported "88 of 96 versus 17", not a
+number they state.
+
+That is enough to justify sub-path anchoring as the default — the direction of
+the result is clear and the mechanism is sound. It is **not** enough to quote as
+an established magnitude, and D1 should not lean on the precise figure.
+
 The mechanism is exactly the one F9 and R5 address:
 
 > *"While missing elements announce themselves through errors, stale elements do
@@ -660,7 +764,7 @@ than claiming to solve implicit conflict.
 ### Sources
 
 - [Context Rot in AI-Assisted Software Development (arXiv 2606.09090)](https://arxiv.org/html/2606.09090)
-- [EA-Graph: Artifact-Anchored Verification Memory (arXiv 2608.04278)](https://arxiv.org/html/2608.04278v1)
+- **Verified (fetched 2026-09-10)** — [EA-Graph: Artifact-Anchored Verification Memory (arXiv 2608.04278)](https://arxiv.org/html/2608.04278v1). Confirmed: the `(store, path, subpath)` identity triple, alias-resolution-to-leaf, span content digests, the three drift outcomes with `unprovable` terminal, the separate evidence/freshness lattices, and `DISP` kept apart from claim status. The "88 of 96 versus 17" figures are theirs; the "71 false alarms" derivation is ours.
 - [Temporal Validity in Retrieval Memory (arXiv 2606.26511)](https://arxiv.org/html/2606.26511v1)
 - [STALE: Can LLM Agents Know When Their Memories Are No Longer Valid? (arXiv 2605.06527)](https://arxiv.org/abs/2605.06527)
 - [awesome-harness-engineering](https://github.com/ai-boost/awesome-harness-engineering)
