@@ -2,9 +2,11 @@
 
 **Researched:** 2026-09-10
 **Domain:** Durable job queue for a Go producer and a Python consumer
-**Confidence:** HIGH on the throughput numbers and the constraints; HIGH on the
-recommendation, which turns on our constraints rather than on a close call
-between technologies.
+**Confidence:** HIGH on the recommendation, which turns on our constraints
+rather than on a close call between technologies. **LOW on the throughput
+figures as originally written** — review found several were misattributed or
+inverted. Corrected below, and the Sources list now distinguishes pages that
+were fetched from pages that were merely surfaced by a search.
 
 <research_summary>
 ## Summary
@@ -30,10 +32,12 @@ If the queue is in Redis, that is a dual-write across two systems, which is
 exactly the hazard D2 exists to delete. Re-introducing it in the phase that
 builds the retry loop would be inconsistent.
 
-**Our throughput is not a factor.** One job per repository connect and one per
-push, with sub-steps kept *inside* a job rather than fanned out. That is single-
-digit jobs per second at absolute peak and realistically far less — roughly
-three orders of magnitude below where Postgres-as-a-queue starts to hurt.
+**Our enqueue rate is not a factor**, though review corrected which axis
+matters. One job per repository connect and one per push, with sub-steps kept
+*inside* a job rather than fanned out — single-digit jobs per second at peak.
+But because a job holds a worker for minutes, the binding constraint is
+**concurrency**, not enqueue rate, and that figure is nearer the guidance than
+the first draft claimed. See the throughput section.
 
 **Primary recommendation:** a single `ingestion_jobs` table in Postgres, claimed
 with `FOR UPDATE SKIP LOCKED`, carrying its own lease, attempt counter and state
@@ -48,7 +52,7 @@ below.
 | Option | Cross-language | Transactional with chunk writes | Lease built in | Operational cost | Verdict |
 |--------|----------------|--------------------------------|----------------|------------------|---------|
 | **Postgres table + `SKIP LOCKED`** | ✅ both speak SQL | ✅ | ✋ we write it | none — already have Postgres | **Chosen** |
-| pgmq (extension) | ✅ SQL API | ✅ | ✅ visibility timeout | an extension to install | Close second — see below |
+| pgmq | ✅ SQL API | ✅ | ✅ visibility timeout | none — **pure-SQL install path exists** | Close second — see below |
 | Redis Streams | ✅ clients both | ❌ **different system** | ✅ PEL + `XAUTOCLAIM` | already running | Rejected |
 | Temporal | ✅ Go + Python SDKs | ❌ | ✅ | a stateful cluster | Rejected |
 | RabbitMQ / SQS | ✅ | ❌ | ✅ | a broker, or a cloud dependency | Rejected |
@@ -83,24 +87,39 @@ and Python both just run queries. Its visibility timeout *is* a lease, which is
 exactly what ISS-016 asks for, and it benchmarks at **over 11,000 messages per
 second on a 2-CPU container** — about a thousand times our need.
 
-Rejected for two specific reasons, neither of which is "not invented here":
+**⚠ Both original reasons were defective. Review was right, and the decision
+survives on one argument rather than two.**
 
-1. **It is an extension, and that is a deploy-target constraint.** Phase 24 has
-   to pick a host that supports it. R-E already added one such constraint
-   (nested virtualization for Firecracker) and D2 adds another (pgvector).
-   Spending a third on something we can write in about forty lines narrows the
-   deployment choice for little gain.
+**Reason 1 was factually wrong and is withdrawn.** It claimed pgmq is an
+extension and therefore a third deploy-target constraint after pgvector and
+nested virtualization. Verified against the pgmq README: there is a documented
+**pure-SQL install path** — *"use psql to install PGMQ's objects directly into
+the pgmq schema in Postgres. Use this method if you are running someplace that
+does not natively support the PGMQ Extension."* No `shared_preload_libraries`,
+no `pg_partman` dependency, no background worker. It would have constrained
+nothing.
 
-2. **Its data model is a message, ours is a job.** pgmq stores opaque JSONB with
-   read/delete/archive semantics. We need a state machine (`queued → running →
-   completed | failed | dead | superseded`), an attempt counter, foreign keys to
-   `repositories` and `ingestion_runs`, progress fields for the SSE endpoint, and
-   a row the admin endpoint in 21-03 can read directly. We would end up with a
-   jobs table *beside* pgmq and have to keep the two in step — a dual-write
-   problem again, this time inside one database.
+(The nested-virtualization constraint it invoked has since been withdrawn too,
+for unrelated reasons — see `v2-substrate/DECISIONS.md` K3.)
 
-If our throughput were two orders of magnitude higher, or if we did not need the
-job row to be a first-class queryable entity, pgmq would win.
+**Reason 2 was overstated and is narrowed.** Calling two tables written in one
+Postgres transaction a "dual write" drains the term this entire document runs
+on. A dual write is two systems with no shared transaction; two tables in one
+transaction is just a schema. That was rhetorical inflation and it does not
+survive.
+
+**What actually stands.** We need the queue row to be a **first-class queryable
+entity**, not an opaque JSONB message: a state machine, an attempt counter,
+foreign keys to `repositories` and `ingestion_runs`, progress fields that
+22-04's SSE endpoint reads, and a row 21-03's `GET /api/admin/jobs/:id` can
+select directly. With pgmq we would keep a jobs table alongside it and maintain
+the correspondence between them — more moving parts than the forty-line claim
+query it replaces, for a queue whose hard guarantees Postgres provides either
+way.
+
+That is a real argument, and it is thinner than the original two. **If a
+reviewer prefers pgmq on it, the decision should flip** — the cost of being
+wrong here is a library swap behind one interface, not a re-ingest.
 
 ### Why not Temporal
 
@@ -119,21 +138,59 @@ failure and compensation semantics.
 
 ## Throughput: why this is not a close call
 
-Published guidance on Postgres-as-a-queue converges:
+**⚠ This section was substantially wrong and has been rewritten.** Review
+checked every figure against the cited pages. What follows is what survived.
 
-| Load | Behaviour |
-|------|-----------|
-| < 1,000 jobs/**minute** | Within ~8% of a dedicated broker on throughput. p99 85ms vs 34ms — irrelevant for background work. |
-| ~1,000 jobs/**second** | Serialization failures dominate dequeues without careful locking. |
-| > a few thousand/second | Vacuum pressure on the jobs table becomes its own operational problem. Use a real broker. |
+**The DBOS citation was inverted — used to argue the opposite of its thesis.**
+The first draft cited *Making Postgres queues scale* as evidence of a ~1,000
+jobs/sec ceiling. Fetched and read: that number describes **a bug they fixed**
+(serialization failures from an over-strict isolation level), and the article's
+actual conclusion is that Postgres queues reach **30,000 workflow executions per
+second** after three optimisations — `SKIP LOCKED`, isolation tuning, and
+selective indexing.
 
-The stated tripwire is memorable: *"if your answer to 'how do I scale this' is
-'shard the queue table,' you have already outgrown it."*
+That is the strongest possible evidence *for* this decision, and the first draft
+turned it into evidence against.
+
+**Two figures could not be found in any cited page and are withdrawn:** the
+"within ~8% of a dedicated broker, p99 85ms vs 34ms" comparison, and the
+memorable *"if your answer to 'how do I scale this' is 'shard the queue table,'
+you have already outgrown it"* tripwire. Both came out of a search summary, not
+a source. They may well be real and quoted somewhere; they are not cited here
+until someone opens the page they are in.
+
+**What is left, attributed:**
+
+| Source | Claim |
+|--------|-------|
+| DBOS, *Making Postgres queues scale* (**fetched**) | 30k workflows/sec achievable; ~1,000/sec was a fixed bug, not a limit |
+| Microsoft, *Potential consequences of using Postgres as a job queue* (surfaced) | contention becomes a problem **under ~100 concurrent workers** — the figure that actually binds us |
+
+The honest summary is therefore the opposite of the first draft's: **Postgres as
+a queue scales further than claimed on the axis we were measuring, and our real
+constraint is worker concurrency rather than enqueue rate.**
 
 **Our load:** one job per repository connect, one per push webhook. A thousand
 active customer repositories pushing ten times a day each is ~10,000 jobs/day —
 about **0.1 jobs per second**. Peak bursts (an organization connecting fifty
 repositories at once) are still trivial.
+
+**⚠ That arithmetic is right and answers the wrong question.** Review caught it.
+L6 puts a whole repository ingest — minutes of clone, parse, embed — behind a
+*single* queue entry. So the binding constraint is not enqueue rate but
+**concurrency**: how many jobs are simultaneously `running`, each holding a
+worker and a lease.
+
+At 10,000 jobs/day averaging ten minutes, that is roughly **69 concurrent
+workers** if they were evenly spread, and more at peak. Microsoft's guidance
+puts contention trouble at *"under 100 concurrent workers"* for
+`SKIP LOCKED` — so the real figure is the same order of magnitude as the limit,
+not three below it.
+
+This does not reverse the decision: `SKIP LOCKED` contention is about *dequeue*
+frequency, and a worker holding a job for ten minutes dequeues very rarely. But
+**the comfortable-by-1000x claim was measuring the wrong axis**, and worker-pool
+sizing is now a real design input for 21-01 rather than a non-issue.
 
 **This holds only because of the granularity decision below.** Fanning out
 per-file or per-chunk jobs would put a single large repository at tens of
@@ -173,8 +230,13 @@ UPDATE ingestion_jobs SET
   updated_at        = NOW()
 WHERE id = (
   SELECT id FROM ingestion_jobs
-  WHERE (state = 'queued'  AND run_after <= NOW())
-     OR (state = 'running' AND lease_expires_at < NOW())   -- reclaim abandoned
+  WHERE attempts < max_attempts        -- ⚠ applies to BOTH branches below
+    AND (
+         (state = 'queued'  AND run_after <= NOW())
+      OR (state = 'running'                              -- reclaim abandoned
+          AND (lease_expires_at IS NULL                  -- ⚠ see below
+               OR lease_expires_at < NOW()))
+    )
   ORDER BY run_after
   FOR UPDATE SKIP LOCKED
   LIMIT 1
@@ -182,10 +244,39 @@ WHERE id = (
 RETURNING *;
 ```
 
-The `OR` branch is the lease recovery: a worker that died holding a job has it
-reclaimed once the lease lapses. Parenthesise both branches explicitly — `AND`
-binds tighter than `OR`, so the intended grouping happens to be the default, and
-relying on that is how the next person introduces a bug.
+**Two corrections from review, both of which would have shipped.**
+
+**1. `attempts < max_attempts` was missing, so poison jobs loop forever.** The
+original had no attempt guard on the reclaim branch. A job that reliably kills
+its worker is reclaimed, kills the next worker, is reclaimed again — and never
+reaches `dead`, because the transition to `dead` was to be written by the
+worker, which is the thing that does not survive. Dead-lettering that depends on
+the worker surviving is not dead-lettering. This was **pitfall #3 in this very
+document**, and the query below it did not implement it.
+
+The guard alone is not enough either: it stops the job being re-claimed but
+leaves it sitting in `running` forever, still occupying the unique index. So a
+**sweeper** is also required, run on the same schedule as the heartbeat:
+
+```sql
+UPDATE ingestion_jobs
+SET state = 'dead', updated_at = NOW()
+WHERE state = 'running'
+  AND attempts >= max_attempts
+  AND (lease_expires_at IS NULL OR lease_expires_at < NOW());
+```
+
+**2. `lease_expires_at IS NULL` stranded a job permanently.** `NULL < NOW()`
+evaluates to NULL, not true — so a `running` row with a null lease matched
+neither branch. It was invisible to every claim, while still occupying the
+partial unique index and therefore blocking every future job for that
+repository, silently and forever. A null lease is reachable from any partial
+write or manual intervention.
+
+Parenthesise the branches explicitly. `AND` binds tighter than `OR`, so the
+intended grouping happens to be the default — and relying on that is how the
+next person introduces a bug. With the `attempts` guard added the parentheses
+are now load-bearing rather than merely defensive.
 
 ### Heartbeat, not a long lease
 
@@ -216,11 +307,23 @@ The precise claim, because it is easy to overstate:
 
 ### Retry and dead-letter
 
-- `run_after = NOW() + backoff(attempts)` with jitter — exponential, capped.
-- `attempts >= max_attempts` → `state = 'dead'`. Terminal.
-- `failed` is retryable; `dead` is not. Keeping them distinct is what makes the
-  admin endpoint useful, and it closes the other half of ISS-016 (a `failed`
-  repository currently cannot be retried through the API at all).
+- A failed attempt sets `state = 'queued'` with
+  `run_after = NOW() + backoff(attempts)`, jittered, exponential, capped, and
+  records `last_error`.
+- `attempts >= max_attempts` → `state = 'dead'`, written by the sweeper above.
+  Terminal.
+
+**There is no `failed` state** — decision O2, taken after review. It had no edge
+back to the claimable set and no place in the partial unique index, so a failed
+job could neither be retried nor prevent a second live job for the same
+repository. Collapsing it removes a state and its transitions instead of adding
+an edge, and loses nothing: "currently failing" is
+`state = 'queued' AND attempts > 0`.
+
+**And this does not close the second half of ISS-016.** The original text
+claimed it did, which contradicted this phase's own Boundaries section. That
+half — retrying a `failed` repository through the public API — is now **ISS-023**
+and belongs to whichever phase works the API surface. See decision O1.
 
 ---
 
@@ -279,10 +382,39 @@ test, written deliberately, not inherited from the ratchet.
 
 ## Sources
 
+**The first version of this list cited pages nobody had opened.** WebSearch
+returns a synthesized summary across results; the URLs it surfaced were listed
+as though each backed the claim beside it. The consequence was the inverted DBOS
+citation above and two quotes that exist in no cited page.
+
+Sources are now split, and the distinction is load bearing: **Verified** means
+the page was fetched and the specific claim confirmed. Everything else is a
+lead, and nothing in the body may rest on it.
+
+### Verified — fetched, claim confirmed
+
+- **[Making Postgres queues scale (DBOS)](https://www.dbos.dev/blog/making-postgres-queues-scale)**
+  — fetched 2026-09-10. Confirmed: the ~1,000/sec figure is a **fixed bug**, not
+  a ceiling; the article's thesis is 30k workflows/sec via `SKIP LOCKED`,
+  isolation tuning and selective indexing. *The first draft cited this
+  backwards.*
+- **[pgmq](https://github.com/pgmq/pgmq)** — fetched 2026-09-10. Confirmed: a
+  documented **pure-SQL install path** (*"use psql to install PGMQ's objects
+  directly into the pgmq schema … if you are running someplace that does not
+  natively support the PGMQ Extension"*), no `shared_preload_libraries`, no
+  `pg_partman` dependency, no background worker. *This withdraws the first
+  draft's primary reason for rejecting pgmq.*
+
+### Surfaced by search, not opened — leads only
+
 - [You don't need a job queue — Postgres already has SKIP LOCKED (Prisma)](https://www.prisma.io/blog/you-dont-need-a-job-queue-postgres-already-has-skip-locked)
-- [Making Postgres queues scale (DBOS)](https://www.dbos.dev/blog/making-postgres-queues-scale)
 - [Potential consequences of using Postgres as a job queue (Microsoft)](https://techcommunity.microsoft.com/blog/adforpostgresql/potential-consequences-of-using-postgres-as-a-job-queue/4514332)
-- [pgmq](https://github.com/pgmq/pgmq) · [PGMQ: a self-regulating queue (Tembo)](https://legacy.tembo.io/blog/pgmq-self-regulating-queue/)
+  — the "under ~100 concurrent workers" figure comes from here and **should be
+  verified before 21-01 sizes the worker pool**, since it is now the binding
+  constraint.
+- [PGMQ: a self-regulating queue (Tembo)](https://legacy.tembo.io/blog/pgmq-self-regulating-queue/)
+  — the 11k msg/sec benchmark is attributed here and was **not** found on this
+  page by review; treat the number as unverified.
 - [XAUTOCLAIM for auto-reassignment in Redis Streams](https://oneuptime.com/blog/post/2026-03-31-redis-xautoclaim-auto-reassignment/view)
 - [XPENDING — Redis docs](https://redis.io/docs/latest/commands/xpending/)
 - [Reliable data processing: queues and workflows (Temporal)](https://temporal.io/blog/reliable-data-processing-queues-workflows)

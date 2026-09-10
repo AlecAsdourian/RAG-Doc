@@ -1,6 +1,8 @@
 # Phase 21: Ingestion Job Infrastructure — Context
 
-**Written:** 2026-09-10
+**Written:** 2026-09-10. **Revised the same day after review** — five
+correctness bugs in the schema, and two decisions (O1, O2) since confirmed.
+See `.planning/v2-substrate/REWORK.md` §6.
 **Research:** `21-RESEARCH.md` in this directory
 **Also depends on:** `.planning/v2-substrate/DECISIONS.md` (D2 in particular)
 
@@ -30,8 +32,21 @@ final state. 20-05's webhook writes go through the same upsert and inherit it.
 queue. Once a real work item exists, `sync_state` goes back to being what its
 name says — a status for the UI to read — and the race has nowhere to happen.
 
-ISS-016 also carries a second half: a `failed` repository cannot be retried
-through the API at all. The state machine below gives it somewhere to go.
+**ISS-016 is narrowed to the racing half, and that is decision O1.**
+
+The issue also carried a second half — *a `failed` repository cannot be retried
+through the public API at all*. That half is **not** in this phase, and the
+first draft tried to have it both ways: `21-RESEARCH.md` claimed the retry loop
+closed it, this document's Boundaries put API retry out of scope, and
+`ISSUES.md` said the whole issue closed when Phase 21 ships. Three files, three
+answers.
+
+An issue that half-closes never closes cleanly. So: **ISS-016 is the racing
+relink, which this phase genuinely closes.** The API-retry half is filed
+separately as **ISS-023** and belongs to whichever phase works the API surface.
+
+The state machine below makes the retry *possible*; exposing it is someone
+else's deliverable.
 
 ---
 
@@ -77,7 +92,15 @@ Three things that were conflated get three homes:
 CREATE TABLE ingestion_jobs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-  -- Tenant annotation, NOT an authorization input on this table. See L5.
+  -- ⚠ A TWO-HOP DENORMALISATION, MAINTAINED BY TRIGGER. See L5 and
+  -- `v2-substrate/DECISIONS.md` D5.
+  --
+  -- `repositories` has NO `organization_id`; tenancy runs
+  -- `repositories.project_id -> projects.organization_id`. So this column is a
+  -- copy of something two joins away and can drift from it. Because a worker
+  -- uses this value to scope every write it then makes, a drifted row writes
+  -- another tenant's data -- which makes it an authorization input, not the
+  -- annotation the first draft called it.
   organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   repository_id   UUID NOT NULL REFERENCES repositories(id)  ON DELETE CASCADE,
 
@@ -86,8 +109,20 @@ CREATE TABLE ingestion_jobs (
 
   job_type TEXT NOT NULL CHECK (job_type IN ('full_ingest','incremental')),
 
+  -- FIVE STATES, NOT SIX. `failed` was removed after review (decision O2).
+  --
+  -- It had no edge back to the claimable set and no place in the partial
+  -- unique index below, so a failed job could neither be retried nor prevent
+  -- a second live job for the same repository. Rather than add an edge, the
+  -- state goes: a failed attempt sets `state='queued'` with `run_after` in
+  -- the future and records `last_error`.
+  --
+  -- Nothing is lost. "This repository is currently failing" is
+  -- `state='queued' AND attempts > 0`, which both the admin endpoint and the
+  -- `sync_state` projection can read. `dead` remains the only failure
+  -- terminal.
   state TEXT NOT NULL CHECK (state IN
-    ('queued','running','completed','failed','dead','superseded')),
+    ('queued','running','completed','dead','superseded')),
 
   -- Lease. Short, extended by heartbeat. See L3.
   lease_owner      TEXT,
@@ -137,12 +172,23 @@ diagnose.
 
 ### L4 — Supersede, don't race. (This is the ISS-016 fix.)
 
-When a relink changes a repository's `installation_id`:
+When a relink changes a repository's `installation_id`, **in this order**:
 
-1. Enqueue a new job.
-2. Mark any `queued` or `running` job for that repository `superseded`.
+1. **Mark any `queued` or `running` job for that repository `superseded`.**
+2. **Then** enqueue the new job.
 3. A running worker checks its own `state` at each heartbeat and aborts
    cooperatively if it has been superseded.
+
+**⚠ The first draft had steps 1 and 2 the other way round, and that was a
+deterministic bug, not a race.** `CREATE UNIQUE INDEX` is not deferrable, so
+inserting a `queued` job while the old one is still `queued`/`running` violates
+the partial unique index immediately — raising 23505 in *exactly* the ISS-016
+case this decision exists to fix. Worse in bulk: an
+`installation_repositories.added` event re-queues N repositories in one
+statement and would fail wholesale rather than per row.
+
+Both statements belong in **one transaction**, so a crash between them cannot
+leave a repository with its old job superseded and no new one to replace it.
 
 The in-flight run holds a token for an App that was just uninstalled and will
 fail regardless — the point is that it fails *promptly and knowingly* rather
@@ -157,14 +203,26 @@ that remembers to do it.
 A worker claims a job **before** it knows the tenant — `organization_id` is on
 the row it is trying to claim. Scoping the claim by the answer is circular.
 
-Same situation and same resolution as 20-05's `github_webhook_deliveries`;
-migration `000012` carries the full reasoning and the new migration should carry
-an equivalent comment, so the next reader knows RLS was *decided against* rather
-than forgotten.
+**⚠ The first draft cited the wrong half of migration `000012`.** That
+migration contains two patterns and they are not interchangeable:
 
-`organization_id` on this table is an annotation the worker uses to open a
-tenant-scoped transaction for the actual chunk writes. It is never an
-authorization input on the queue itself.
+| Pattern | What it is | Fits us? |
+|---------|-----------|----------|
+| `github_webhook_deliveries` | no RLS, `organization_id` a nullable **annotation** never used to authorize | **No** — ours *is* used to authorize |
+| `github_installation_tenants` | no RLS, **trigger-maintained mirror**, the value *is* an authorization input | **Yes** |
+
+The first draft cited the first and copied its "annotation" language. But a
+worker uses `ingestion_jobs.organization_id` to scope every write it then makes,
+so a drifted value writes another tenant's data. That is the second pattern,
+and `github_installation_tenants` was built trigger-maintained *precisely
+because drift was representable*.
+
+**So: no RLS on the queue (the claim is genuinely pre-tenant), and
+`organization_id` maintained by a trigger on `repositories`** following
+`sync_github_installation_tenant` — schema-qualified body,
+`SET search_path = public, pg_temp`, a DELETE branch, and a stale-key delete
+before the upsert. See `v2-substrate/DECISIONS.md` **D5**, which makes this one
+rule for every denormalised tenancy column rather than a decision taken twice.
 
 **⚠ The consequence, which must not be discovered later:** 21-03's
 `GET /api/admin/jobs/:id` is a request handler reading a table with no RLS. It
@@ -217,10 +275,12 @@ admin endpoint, and retiring `sync_state` as a queue.
 - Cloning, parsing, embedding or storing anything — Phase 22.
 - The SSE progress endpoint — 22-04. This phase provides the `progress` column it
   will read.
-- pgvector, partitioning, `symbols`, `symbol_edges` — those are D1–D3 and land in
+- pgvector, partitioning, `symbols`, `symbol_edges` — those are D1–D3/D5 and land in
   Phase 22's migrations. **This phase must not assume they exist yet.**
-- Retrying a `failed` repository through the public API. The state machine makes
-  it possible; exposing it is Phase 22 or 23.
+- Retrying an exhausted (`dead`) repository through the public API — now
+  **ISS-023**, split out of ISS-016 by decision O1. The state machine makes it
+  possible; exposing it belongs to whichever phase works the API surface. All
+  three documents now agree on this, which the first draft did not.
 
 ---
 
