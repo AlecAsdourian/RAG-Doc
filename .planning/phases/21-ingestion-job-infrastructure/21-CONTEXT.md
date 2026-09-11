@@ -21,7 +21,12 @@ against PostgreSQL 17. Round 3 added the cases the earlier checks missed:
 W3 is the case that silently lost two of three repositories while reporting
 success, and W6 is an error that had been raised in two prior reviews without
 being addressed.
-**Also depends on:** `.planning/v2-substrate/DECISIONS.md` (D2 in particular)
+**Relationship to `.planning/v2-substrate/` (PR #24, unmerged):** none that
+blocks. That directory does not exist on `main`, and every rule this phase needs
+is stated here in full — L5 carries the tenancy trigger rather than referencing
+D5. References to it below are *context for a reader who has both*, not
+dependencies. L1's argument stands on chunks having been in Postgres since
+migration 000003, which is true today.
 
 ## Objective
 

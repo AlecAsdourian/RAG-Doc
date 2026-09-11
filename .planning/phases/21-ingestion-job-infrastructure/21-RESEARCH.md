@@ -135,11 +135,16 @@ extension-owned. pgmq 1.6.0 detached them deliberately.
 ### Why not Temporal
 
 Temporal solves multi-step durable workflows, which is genuinely what Phase 22's
-clone → parse → embed → store is. But the consensus in the literature is blunt
-about the fit: *"if your job is just a few background steps, a cron task, or a
-simple webhook chain, the platform feels bigger than the problem."* It is a
-stateful distributed system to operate, or a paid cloud dependency and a new
-vendor.
+clone → parse → embed → store is. The argument against it here is ours, not a
+citation: it is a stateful distributed system to operate, or a paid cloud
+dependency and a new vendor, and four sequential steps inside one job does not
+earn either.
+
+*(An earlier revision presented a direct quotation — "if your job is just a few
+background steps … the platform feels bigger than the problem" — as "the
+consensus in the literature". It came from a search summary, was traced to a
+vendor post comparing Temporal alternatives, and is withdrawn rather than
+re-attributed.)*
 
 Four sequential steps inside one job, at single-digit jobs per second, does not
 justify that. Revisit if the pipeline grows genuine fan-out with independent
@@ -231,7 +236,10 @@ Reasons:
   so per-chunk jobs would fight the batching that exists for cost control.
 - 22-04's SSE progress endpoint reports per repository, so a per-repository job
   is the natural thing to report on.
-- It keeps job volume three orders of magnitude below where Postgres hurts.
+- It keeps job volume far below any level at which Postgres-as-a-queue
+  struggles. (An earlier revision said "three orders of magnitude", a figure
+  this document withdraws in the throughput section above. The direction holds;
+  the magnitude was never sourced.)
 
 The cost is that a failure late in a long job re-runs the whole job. Mitigated by
 recording the last completed stage on the job row, so a retry can skip a
