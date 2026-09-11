@@ -10,10 +10,54 @@ See: .planning/PROJECT.md (updated 2026-01-08; product-vision reframe recorded i
 ## Current Position
 
 Milestone: v1.0 MVP (9 phases: 17-25)
-Phase: 20 COMPLETE — Repository Integration. All five plans merged. Phase 21 (Job Infrastructure) is next.
-Plan: Phases 17, 19 and 20 closed. Phase 21 not yet planned.
+Phase: 20 COMPLETE — Repository Integration. All five plans merged. Phase 21 (Job Infrastructure) is researched and has locked context; plans not yet broken out.
+Plan: Phases 17, 19 and 20 closed. Phase 21 researched 2026-09-10 (`21-RESEARCH.md`, `21-CONTEXT.md`); eight decisions locked (L1-L8); ISS-016 settled in that context, closes when the phase ships.
 Status: Phase 17 closed 2026-09-06. Phase 18 deprioritized. Phase 19 closed 2026-09-08. The GitHub App is registered and its contract verified against the live API (20-02). Repositories now have a tenant-scoped CRUD API (20-03).
-Last activity: 2026-09-09 — Phase 20 closed; 20-05 (webhooks) merged
+Last activity: 2026-09-10 — v2 substrate design/research/decisions (PR #24) and Phase 21 research/context (PR #25) both reviewed, both came back blocking, both reworked; ISS-020 fixed and Python CI added (PR #26)
+
+**v2 substrate work, 2026-09-10.** `.planning/v2-substrate/` holds `DESIGN.md`
+(the RAG redesign and 21 fleet proposals), `RESEARCH.md` (R-A…R-G), `DECISIONS.md`
+(D1–D5) and `REWORK.md` — **read REWORK.md first; it records what review
+overturned.** D1–D5 gate Phase 22 because that phase writes the first real rows.
+
+**Two claims that were in this file as settled fact are withdrawn:**
+
+- *"SCIP indexers must execute untrusted build commands, so a sandbox moves
+  forward."* **Wrong** — that describes only *precise* indexing, which is opt-in
+  and run by the repository owner in **their** CI. We never execute a customer's
+  build. The sandbox is back in the fleet layer and Phase 24's
+  nested-virtualization constraint is withdrawn.
+- *"The pruning question was measured rather than assumed."* **Measured against a
+  schema this repo does not have** — `chunks` has no `organization_id` and its
+  RLS policy is a two-hop `EXISTS` join, not the scalar equality the experiment
+  used. Under D2+D5 that becomes the target schema, so the result describes what
+  we are building, not what exists. D2 no longer rests on it; it rests on
+  index-size runway.
+
+**New in D5:** every denormalised `organization_id` is trigger-maintained,
+following `sync_github_installation_tenant`. Both `chunks` (partition key) and
+`ingestion_jobs` (pre-tenant claim) need one, and both can drift.
+
+**Phase 21 is decided but not planned.** `21-CONTEXT.md` locks **eight**
+decisions (L1–L8); L7 (a push against a live job sets `needs_rerun`) and L8
+(concurrent enqueues resolve through one per-row upsert) were added in the third
+rework. The headline reversal stands: the ROADMAP's tentative Redis Streams
+pick is rejected in favour of a Postgres `ingestion_jobs` table claimed with
+`FOR UPDATE SKIP LOCKED`, because the queue and the chunk writes then commit in
+one transaction.
+
+**Reworked after review.** Five correctness bugs were fixed in the schema
+(supersede-before-enqueue, a poison-job attempt guard plus sweeper, a null-lease
+strand, the `failed` state collapsed into `queued`-with-backoff, and the tenancy
+column guarded by a composite foreign key plus a `BEFORE INSERT` trigger on
+`ingestion_jobs` — NOT the mirror-trigger-on-`repositories` shape L5 explicitly
+rejects). The pgmq rejection was re-justified: its
+primary stated reason — "it is an extension" — is false, since pgmq ships a
+pure-SQL install path. **L1 does not depend on D2's contested half**; chunks
+have been in Postgres since migration 000003, so #25 targets `main` rather than
+stacking on #24.
+
+Breaking 21 into plans is the next planning task.
 
 Progress: v1.0 MVP ██░░░░░░░ 2/9 phases complete, Phase 20 at 5/5 plans (Phase 18 Observability deferred — see project_phase18_deprioritized memory)
 

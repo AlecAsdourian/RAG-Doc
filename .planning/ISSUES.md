@@ -103,6 +103,16 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Fix:** move the context key and its accessors to a leaf package (`pkg/tenantctx`) that both can import. Mechanical: the key already has accessors as of 20-01, so the change is an import rewrite across five call sites.
 - **Not done in 20-01** because the cycle does not exist, the benefit is speculative, and the refactor would have widened a plan that already grew a security fix.
 
+### ISS-023: A `failed` repository cannot be retried through the public API
+
+- **Discovered:** split out of ISS-016 on 2026-09-10 (decision O1).
+- **Type:** Usability / API surface
+- **Priority:** LOW-MEDIUM — there is a workaround (wait for the automatic retry), and no data is at risk.
+- **Description:** re-connecting a repository deliberately does not reset its sync state, so a repository whose ingestion has exhausted its attempts has no user-facing route back into the queue. Documented in `docs/api-repositories.md`.
+- **Why it is separate from ISS-016:** ISS-016 is a correctness bug about two writers racing for one repository, and Phase 21 closes it by making the work item a real queue entry. This is a missing *feature* on the API surface. Bundling them meant Phase 21 could only ever half-close the issue, which is exactly the contradiction review found across three files.
+- **What Phase 21 gives it:** the state machine makes the retry *possible* — `dead` is a terminal state a repository can be lifted out of by re-queueing with `attempts` reset. Exposing that is not Phase 21's deliverable.
+- **Owner:** whichever phase works the repository API surface (22 or 23).
+
 ### ISS-019: `push` and `installation_repositories` payload shapes are unverified
 
 - **Discovered:** Phase 20-05 (2026-09-09)
@@ -152,8 +162,12 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Description:** `POST /api/repositories` sets `sync_state = 'pending'` when a repository's `installation_id` changes. If the row was `syncing` at that moment, it is re-queued while the original run is still going, and whichever finishes last writes the final state. `idx_repositories_sync_state` is a partial index on `sync_state <> 'synced'`, so the Phase 21 worker will pick the re-queued row straight up.
 - **Why it was not simply avoided:** refusing to re-queue a `syncing` row is worse. The in-flight run holds an installation token for an App that was just uninstalled, so it will fail regardless — and leaving the row `syncing` strands it until that failure lands, with nothing to retry it.
 - **The actual gap:** `sync_state` is a status column being used as a queue, with no lease, owner or attempt counter. Two writers can believe they own the same repository. 20-05's webhook writes go through the same upsert, so it inherits this.
-- **What Phase 21 should do:** give the queue a lease (`sync_lease_owner`, `sync_lease_expires_at`) or move it out of `repositories` entirely. Then a relink can cancel or supersede a run rather than racing it.
-- **Also carried:** a `failed` repository cannot be retried through this API at all — re-connecting deliberately does not reset the state. Documented in `docs/api-repositories.md`; Phase 21 owns retry.
+- **~~What Phase 21 should do: give the queue a lease (`sync_lease_owner`, `sync_lease_expires_at`)~~** — superseded. Adding a lease to `sync_state` was the wrong fix; the column stops being a queue entirely. See the resolution below.
+- **Also carried:** a `failed` repository cannot be retried through this API at all — re-connecting deliberately does not reset the state. Documented in `docs/api-repositories.md`. **Split out as ISS-023** — Phase 21 does *not* own retry.
+- **NARROWED and SETTLED 2026-09-10; not yet shipped.** This issue is now **the racing-relink half only**. The second half — a `failed` repository cannot be retried through the public API — is split out as **ISS-023**, because an issue that half-closes never closes cleanly: the first draft of Phase 21 had three files giving three different answers about whether this closed when Phase 21 ships.
+- **The resolution, locked in `.planning/phases/21-ingestion-job-infrastructure/21-CONTEXT.md` (L2, L4):** not a lease on `sync_state`. The root cause is that a *status column* was used as a *queue*, so Phase 21 introduces `ingestion_jobs` as the work item, demotes `sync_state` to a projection the job writes and the UI reads, and makes a relink **supersede** an in-flight job rather than race it. A partial unique index on `(repository_id) WHERE state IN ('queued','running')` makes two live jobs unrepresentable — the guard is in the schema, not only in the code path that remembers it.
+- **⚠ Ordering matters and review caught it wrong the first time:** supersede **then** enqueue, both in one transaction. The reverse order raises 23505 against the non-deferrable partial unique index in exactly this issue's own scenario.
+- **Closes when Phase 21 ships.**
 
 ### ISS-015: The isolation scanner's coverage match is method-blind
 
