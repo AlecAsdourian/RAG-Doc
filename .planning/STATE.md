@@ -11,7 +11,7 @@ See: .planning/PROJECT.md (updated 2026-01-08; product-vision reframe recorded i
 
 Milestone: v1.0 MVP (9 phases: 17-25)
 Phase: 20 COMPLETE — Repository Integration. All five plans merged. Phase 21 (Job Infrastructure) is researched and has locked context; plans not yet broken out.
-Plan: Phases 17, 19 and 20 closed. Phase 21 researched 2026-09-10 (`21-RESEARCH.md`, `21-CONTEXT.md`); six decisions locked (L1-L6); ISS-016 settled in that context, closes when the phase ships.
+Plan: Phases 17, 19 and 20 closed. Phase 21 researched 2026-09-10 (`21-RESEARCH.md`, `21-CONTEXT.md`); eight decisions locked (L1-L8); ISS-016 settled in that context, closes when the phase ships.
 Status: Phase 17 closed 2026-09-06. Phase 18 deprioritized. Phase 19 closed 2026-09-08. The GitHub App is registered and its contract verified against the live API (20-02). Repositories now have a tenant-scoped CRUD API (20-03).
 Last activity: 2026-09-10 — v2 substrate design/research/decisions (PR #24) and Phase 21 research/context (PR #25) both reviewed, both came back blocking, both reworked; ISS-020 fixed and Python CI added (PR #26)
 
@@ -49,7 +49,9 @@ one transaction.
 **Reworked after review.** Five correctness bugs were fixed in the schema
 (supersede-before-enqueue, a poison-job attempt guard plus sweeper, a null-lease
 strand, the `failed` state collapsed into `queued`-with-backoff, and the tenancy
-column moved onto D5's trigger). The pgmq rejection was re-justified: its
+column guarded by a composite foreign key plus a `BEFORE INSERT` trigger on
+`ingestion_jobs` — NOT the mirror-trigger-on-`repositories` shape L5 explicitly
+rejects). The pgmq rejection was re-justified: its
 primary stated reason — "it is an extension" — is false, since pgmq ships a
 pure-SQL install path. **L1 does not depend on D2's contested half**; chunks
 have been in Postgres since migration 000003, so #25 targets `main` rather than
