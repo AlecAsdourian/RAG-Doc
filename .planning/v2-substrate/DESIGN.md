@@ -110,7 +110,8 @@ So the failure shape stands and is worse than described — Postgres fails safe,
 Qdrant fails open, and the backstop is a re-read rather than the store itself.
 
 **And a path that skips even that:** the semantic cache is consulted before
-retrieval and returns without touching Postgres. See **ISS-020** (fixed) and
+retrieval and returns without touching Postgres. See **ISS-020** (fix open in
+PR #26, not yet merged) and
 **ISS-021** (why it was not exploitable — the cache has never run).
 
 Feeds **R6**, **D2** and **D5** directly.
@@ -387,8 +388,11 @@ adequate. **Firecracker** (own guest kernel on KVM, ~125ms boot, <5 MiB per VM,
 powers Lambda and Fargate) is the recommendation, with **gVisor** (~50ms,
 userspace syscall interception) as the fallback where KVM is unavailable.
 
-*This puts a constraint on Phase 24:* the deploy target must offer nested
-virtualization, or we fall back to gVisor. Several managed platforms do not.
+*Phase 24, softened:* prefer a deploy target offering nested virtualization,
+falling back to gVisor where unavailable. **No longer a hard constraint** — the
+claim that made it one (SCIP needing to run customer builds) was withdrawn, and
+F1's microVM is justified by agent execution alone, which lands in step 6 rather
+than gating the deploy decision.
 
 **F2 — Advisory claims over symbols · 16–24h**
 

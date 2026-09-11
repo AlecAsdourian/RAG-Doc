@@ -174,7 +174,7 @@ and agent context — the same problem from the agent side.
 | Tier | Method | Coverage | Accuracy | Needs |
 |------|--------|----------|----------|-------|
 | 1 | tree-sitter + import resolution + scope matching | 100% of repos | ~80%, confidence-scored | nothing new |
-| 2 | SCIP indexers | repos that build | precise | a hardened sandbox |
+| 2 | precise SCIP, run in the **customer's CI** and uploaded to us | repos whose owners opt in | precise | **none** |
 
 Tier 2 **upgrades** tier-1 edges in place rather than replacing the graph. The
 per-edge confidence score — originally proposed so retrieval could rank on edge
@@ -193,9 +193,11 @@ tier 1's accuracy measures worse than expected.
 - **D3 changes** from "defer the resolver" to "build tier 1 now, defer SCIP" —
   and the thing that must be decided now narrows to the *edge schema* carrying a
   confidence score and a source tier.
-- **F1 (sandboxing) moves earlier and gets more valuable**: one sandbox
-  isolates agent execution *and* runs SCIP's build commands on untrusted code.
-  Two payoffs, one build.
+- **F1 (sandboxing) does NOT move earlier.** An earlier revision of this line
+  claimed one sandbox served both agent execution and SCIP indexing. Since the
+  customer runs the indexer in their own CI, ingestion never executes untrusted
+  code and the sandbox keeps only its original justification: isolating *agent*
+  execution in the fleet layer. It stays where it was.
 
 ### Open questions this leaves
 
@@ -352,8 +354,12 @@ construction.
 
 **Researched:** 2026-09-10
 **Settles:** F11
-**Confidence:** HIGH on the spec requirements; MEDIUM on ecosystem support,
-which is moving.
+**Confidence:** **LOW.** Originally HIGH, downgraded 2026-09-10: this section was
+written against MCP revision 2025-11-25, now superseded by 2026-07-28, and
+**every source for the current revision is marked "surfaced by search, not
+opened"**. Under this document's own sourcing rule nothing here may be relied
+on. The rewrite below states what changed; it does not establish it. **Fetch the
+2026-07-28 specification before F11 is planned.**
 
 ### Summary
 
@@ -589,7 +595,11 @@ That sentence is close to a description of F1 + F2 + F3 + F5.
   for R3 tier 2 — one build, two payoffs, as already sequenced in step 8.
 - **Phase 24's deploy-target decision gains a constraint:** the target must
   offer nested virtualization / KVM, or we fall back to gVisor. Several managed
-  platforms do not.
+  platforms do not. **This is a preference, not a requirement** — see K3: the
+  claim that made it a hard constraint (SCIP needing to run customer builds) was
+  withdrawn, and F1's microVM is justified by agent execution alone, which lands
+  much later. Phase 24 should prefer a host offering it where the cost is equal,
+  and is not blocked by one that does not.
 - **Strategic:** worktree plumbing is not where this product wins. F3 and F9
   are.
 
@@ -777,10 +787,10 @@ A summary for anyone reading `DESIGN.md` who wants to know which parts moved.
 
 | Item | Before research | After |
 |------|-----------------|-------|
-| **R3** | 30–50h of hand-written per-language resolvers | Two tiers; 20–30h now, SCIP deferred behind a sandbox |
+| **R3** | 30–50h of hand-written per-language resolvers | Two tiers; 20–30h now, precise SCIP run in the customer's CI — **no sandbox** |
 | **D3** | "defer the resolver" | "build tier 1 now, defer SCIP"; decide only the edge schema |
 | **R6 / D2** | pgvector, on consistency grounds | pgvector confirmed on scale evidence too — **plus partition by organization from day one**, iterative scan, and a multi-tenant recall test |
-| **F1** | 30–50h, implicitly novel | 20–35h, **table stakes**; adopt the standard pattern, spend differentiation elsewhere. Firecracker named. |
+| **F1** | 30–50h, implicitly novel | 20–35h, **table stakes**. Firecracker named, justified by agent execution alone — **not** by SCIP, and it does not move earlier. |
 | **F10** | "two memories that disagree" | Explicit vs implicit conflict; claim only the former honestly |
 | **F11** | 24–40h | 32–52h; OAuth 2.1 + PKCE mandatory, no token passthrough, injection-hardened parameters |
 | **F18** | "markdown with frontmatter" | Specifically Claude Code's subagent schema as a subset; AGENTS.md is a different thing |
@@ -788,7 +798,9 @@ A summary for anyone reading `DESIGN.md` who wants to know which parts moved.
 | **Graph store** | "probably Postgres" | Confirmed, with the boundary named and cycle handling flagged as correctness |
 | **F9** | a strong hunch | Externally validated, with prior art and a benchmark |
 
-**Two findings were not guessable and changed the sequence:** that SCIP indexers
-need to execute untrusted build commands (pulling the sandbox forward), and that
-RLS turns every vector query into the filtered-search case pgvector is worst at
-(adding partitioning to D2).
+**⚠ Both of the "two findings" this section originally celebrated were later
+overturned**, and that is the more useful lesson. The SCIP claim described only
+*precise* indexing and was withdrawn (K3). The RLS framing was wrong — RLS and a
+hand-written `WHERE` measure byte-identical; any selective filter does this.
+What survives is narrower: partitioning is justified on **index-size runway**,
+and ingestion needs no sandbox at all.

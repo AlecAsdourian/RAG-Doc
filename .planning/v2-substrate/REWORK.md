@@ -11,6 +11,12 @@ re-derivation.
 
 ---
 
+> **Second review round, 2026-09-10.** Three ticks in §5 were premature — the
+> SCIP unwind had landed in D3, R3 and §9 but not in R-A's recommendation
+> table, R-A's effect-on-plan, or R-E. Now finished. Separately, three of the
+> four revised schemas were invalid; **every schema in `DECISIONS.md` has now
+> been executed against PostgreSQL 17** rather than reasoned about.
+
 ## 1. Where the three PRs stand
 
 | PR | Scope | Review | State |

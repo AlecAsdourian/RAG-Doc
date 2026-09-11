@@ -1,6 +1,9 @@
 # v2 Substrate — Decisions D1–D4
 
-**Status:** Revised 2026-09-10 after review. See `REWORK.md` for the decisions
+**Status:** Revised 2026-09-10 after two review rounds. **Every schema in this
+document has now been executed against PostgreSQL 17** — the second review found
+three of four revisions invalid, which is what that measurement is for. What was
+verified is recorded under each decision. See `REWORK.md` for the decisions
 taken between the first draft and this one.
 **Decided:** 2026-09-10
 **Inputs:** `DESIGN.md` (the proposals), `RESEARCH.md` (R-A…R-G), plus the
@@ -27,9 +30,23 @@ the leaf definition** before the id is computed.
 
 ```sql
 CREATE TABLE symbols (
-  -- uuid_v5(NS_SYMBOL, repository_id || E'\0' || file_path || E'\0' || symbol_path)
+  -- uuid_v5(NS_SYMBOL, repository_id ||E'\0'|| file_path ||E'\0'||
+  --                    symbol_path ||E'\0'|| kind ||E'\0'|| ordinal)
+  --
   -- Deterministic, so a re-ingest of unchanged code produces the same id
   -- without a lookup, and two workers racing the same file agree.
+  --
+  -- ⚠ `kind` AND `ordinal` ARE BOTH IN THE HASH INPUT, and the second review
+  -- is why. An earlier revision added `kind` only to the UNIQUE constraint
+  -- below and not to the id, so the primary key collided first and the UNIQUE
+  -- was unreachable -- the fix was inert.
+  --
+  -- And `kind` alone does not disambiguate two of the three collisions this
+  -- schema exists to survive: Go's two package-scope `init()` are both
+  -- functions, and Python's `@property` / `@x.setter` pair are both function
+  -- definitions. Same path, same name, same kind. `ordinal` -- the 0-based
+  -- index of this symbol among those sharing (file_path, symbol_path, kind),
+  -- in source order -- is what separates them.
   id UUID PRIMARY KEY,
 
   organization_id UUID NOT NULL,          -- partition + RLS key (see D2)
@@ -56,7 +73,17 @@ CREATE TABLE symbols (
   --   Python     `@property` and `@x.setter` share a name
   --   TypeScript declaration merging (an interface and a function, same name)
   -- Found in review. Adding it later is a re-ingest.
-  UNIQUE (repository_id, file_path, symbol_path, kind)
+  -- 0-based index among symbols sharing (file_path, symbol_path, kind) in
+  -- this file, in source order. Almost always 0.
+  --
+  -- KNOWN LIMITATION, stated rather than discovered later: inserting a second
+  -- `init()` ABOVE an existing one renumbers it, changing its id, which reads
+  -- as a delete plus a create. That is rare, self-correcting on the next
+  -- ingest, and strictly better than the collision it replaces -- but it is
+  -- not free, and anchored memories on a renumbered symbol go `unprovable`.
+  ordinal SMALLINT NOT NULL DEFAULT 0,
+
+  UNIQUE (repository_id, file_path, symbol_path, kind, ordinal)
 );
 ```
 
@@ -73,10 +100,16 @@ anchored to code that does not hold still.
 Two specifics come from **R-G / EA-Graph**, which measured this exact design:
 
 1. **Sub-file granularity is not a refinement, it is the point.** EA-Graph
-   measured file-level invalidation against sub-path identity and found sub-path
-   avoided **~71 false alarms per 96 behaviours**. File-level anchoring produces
-   so much spurious drift that the signal becomes noise, which is the failure
-   mode that makes people turn staleness warnings off.
+   measured file-level invalidation against sub-path identity and found a large
+   reduction in spurious drift. File-level anchoring produces so much noise that
+   the signal is lost, which is the failure mode that makes people turn
+   staleness warnings off.
+
+   *The specific "~71 false alarms per 96 behaviours" figure quoted in an
+   earlier revision is withdrawn here — it is our arithmetic on their reported
+   counts, from an unrefereed preprint evaluated on synthetic repositories at
+   n=1 per condition. See `RESEARCH.md` § R-G. The direction of the result
+   carries this decision; the magnitude should not be quoted.*
 
 2. **Aliases must resolve to the leaf definition before identity is assigned.**
    In EA-Graph's words: *"the normalization function must follow these chains to
@@ -97,6 +130,34 @@ it does, alias-heavy code produces multiple identities for one artifact — the
 precise failure EA-Graph warns about.
 
 Phase 22 must order them accordingly.
+
+### Symbols are archived, not deleted
+
+**Decided after the second review.** `symbols` rows are never `DELETE`d by
+ingest. A symbol that disappears from the source gets `archived_at` set:
+
+```sql
+ALTER TABLE symbols ADD COLUMN archived_at TIMESTAMPTZ;
+CREATE INDEX idx_symbols_live ON symbols (repository_id, file_path)
+  WHERE archived_at IS NULL;
+```
+
+Three things fall out of it, and the third is the reason:
+
+1. **`memory_anchors.symbol_id` never dangles**, so it needs no `CASCADE` and no
+   nullable FK — the pair of bugs D4 went through.
+2. **`unprovable` becomes reachable**: the anchor still resolves, and the symbol
+   it resolves to is archived. That is a readable state rather than a dead
+   pointer.
+3. **Rename detection stops being aspirational.** D1 claims below that renames
+   can be picked up later by matching a vanished symbol's `span_digest` against
+   a newly-appeared one. That is only true if the vanished symbol's row still
+   exists to be matched. Under deletion the claim was false; under archival it
+   is simply deferred work.
+
+Cost: the table grows monotonically. `archived_at` plus the partial index above
+keeps live lookups off the dead rows, and pruning archived symbols with no
+anchors is a Phase 24 maintenance job, not a correctness concern.
 
 ### Known limitation, stated rather than hidden
 
@@ -289,9 +350,37 @@ CREATE UNIQUE INDEX idx_symbol_edges_unresolved
 ```sql
 INSERT INTO symbol_edges (...) VALUES (...)
 ON CONFLICT (organization_id, from_symbol_id, to_symbol_id, edge_kind)
+  WHERE to_symbol_id IS NOT NULL        -- ⚠ the partial index's predicate,
+                                        -- repeated. Without it Postgres raises
+                                        -- "no unique or exclusion constraint
+                                        -- matching the ON CONFLICT
+                                        -- specification" -- measured in review.
 DO UPDATE SET evidence = EXCLUDED.evidence, source_tier = EXCLUDED.source_tier
 WHERE EXCLUDED.source_tier > symbol_edges.source_tier;
 ```
+
+**⚠ That upsert alone does NOT retire the tier-1 guess.** An unresolved tier-1
+row lives in the *other* partial index, keyed on `to_symbol_name`, so tier 2's
+resolved insert never conflicts with it — it creates a second row and leaves the
+`unknown` phantom in place forever. Because path evidence composes by taking the
+minimum, that phantom makes answers *worse the better tier 2 gets*.
+
+**The reconciliation contract, decided:** tier 1 records the name it could not
+bind in `to_symbol_name`, and tier 2 deletes on exactly that tuple before
+inserting its resolved edge, in one transaction:
+
+```sql
+DELETE FROM symbol_edges
+WHERE organization_id = $1
+  AND from_symbol_id  = $2
+  AND edge_kind       = $3
+  AND to_symbol_id IS NULL
+  AND to_symbol_name  = $4;   -- the name tier 1 could not resolve
+```
+
+So `to_symbol_name` is **not** a debugging convenience — it is the join key the
+two tiers meet on, and tier 1 must record it even when it resolves successfully,
+or tier 2 has nothing to match.
 
 **Phase 22's chunk-level event payload widens now** to carry call-site and
 import candidates. Cheap — the parser already walks the tree — and it means the
@@ -357,12 +446,19 @@ CREATE TABLE memories (
 CREATE TABLE memory_anchors (
   memory_id UUID NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
 
-  -- NOT `ON DELETE CASCADE`. Deleting the symbol is precisely the event that
-  -- makes an anchored memory `unprovable` -- cascading would destroy the
-  -- anchor, and with it `span_digest_at_binding`, so the terminal state could
-  -- never be reached and D1's deferred rename detection (which matches on that
-  -- digest) would be impossible. The row outlives the symbol on purpose.
-  symbol_id UUID REFERENCES symbols(id) ON DELETE SET NULL,
+  -- ⚠ TWO EARLIER REVISIONS OF THIS LINE WERE BOTH WRONG, and the second was
+  -- worse than the first. `ON DELETE CASCADE` destroyed the anchor and with it
+  -- `span_digest_at_binding`, so `unprovable` was unreachable. Replacing it
+  -- with `ON DELETE SET NULL` was invalid: `symbol_id` sat in a composite
+  -- primary key and was therefore NOT NULL, so the clause raised at runtime and
+  -- REJECTED THE SYMBOL DELETE ENTIRELY -- breaking ingest's symbol reaping for
+  -- any repository that had memories. Measured against PostgreSQL 17 in review.
+  --
+  -- The actual fix is upstream: `symbols` rows are ARCHIVED, never deleted, so
+  -- there is no delete for this FK to react to.
+  -- Plain FK to a row that is ARCHIVED rather than deleted (see below), so
+  -- this never dangles and never needs to be nulled.
+  symbol_id UUID NOT NULL REFERENCES symbols(id),
 
   -- Kept independently of the FK, so the anchor is still identifiable after
   -- the symbol row is gone.
@@ -373,7 +469,9 @@ CREATE TABLE memory_anchors (
   span_digest_at_binding TEXT NOT NULL,
   bound_at_commit        TEXT NOT NULL,
 
-  PRIMARY KEY (memory_id, symbol_id)
+  -- Surrogate key, following D3's pattern for the same reason.
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  UNIQUE (memory_id, symbol_id)
 );
 ```
 
@@ -485,10 +583,52 @@ Once `chunks.organization_id` is stored, the RLS policy becomes **scalar
 equality** rather than a two-hop `EXISTS` join — simpler, faster, and (see §5)
 the shape the partition-pruning measurement actually used.
 
+### ⚠ Cross-organisation re-parenting is FORBIDDEN, not supported
+
+The first version of this decision listed "re-parenting a repository to a
+project in another organisation updates every dependent `organization_id`" as a
+verification criterion. **Review ran it: it fails** —
+`new row violates row-level security policy for table "chunks"`. Under
+`FORCE ROW LEVEL SECURITY` the trigger runs with the session's tenant context,
+and rewriting a chunk into a *different* tenant is exactly what the policy
+exists to prevent.
+
+The only ways through are `SECURITY DEFINER` — the bug migration 000012
+documents at length, and which this document cites as a cautionary tale three
+sections earlier — or `BYPASSRLS`. Both are worse than the problem.
+
+**So the criterion was wrong, not the schema.** Moving a repository between
+organisations is a tenant-boundary crossing, not a routine operation: nobody has
+asked for it, and permitting it would mean every denormalised column needs a
+privileged write path. It is refused:
+
+```sql
+-- on repositories
+CREATE OR REPLACE FUNCTION reject_cross_org_reparent() RETURNS TRIGGER
+LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
+BEGIN
+  IF (SELECT organization_id FROM public.projects WHERE id = NEW.project_id)
+     IS DISTINCT FROM
+     (SELECT organization_id FROM public.projects WHERE id = OLD.project_id) THEN
+    RAISE EXCEPTION
+      'cannot move repository % across organisations; export and re-ingest instead',
+      OLD.id;
+  END IF;
+  RETURN NEW;
+END; $$;
+```
+
+Re-parenting *within* one organisation stays allowed and is a no-op for every
+denormalised `organization_id`, so the trigger has nothing to do.
+
 ### Verification required in Phase 22
 
-- Re-parenting a repository to a project in another organisation updates every
-  dependent `organization_id`.
+- **Cross-organisation re-parenting is rejected** with a clear error. Same-org
+  re-parenting succeeds and leaves `organization_id` untouched.
+- Inserting a job or chunk whose `organization_id` disagrees with its
+  repository's is rejected at write time (a `BEFORE INSERT` trigger on the
+  child, not an `AFTER` mirror on the parent — an `AFTER` trigger on
+  `repositories` cannot validate a value a producer supplied on another table).
 - A trigger-disabled bulk load followed by re-enabling does **not** leave drift
   — or the load path is documented as forbidden.
 - A drift-detection query exists and is run in CI: any row whose stored
