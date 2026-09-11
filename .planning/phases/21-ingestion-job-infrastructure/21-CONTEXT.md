@@ -69,14 +69,39 @@ Three reasons, in order of weight:
 2. **Cross-language for free.** The producer is Go and the consumer is Python.
    A SQL interface is one implementation both speak; every language-native
    library would be two implementations hoping to agree.
-3. **Throughput is a non-issue.** One job per connect, one per push — around 0.1
-   jobs/second at realistic load, roughly three orders of magnitude below where
-   Postgres-as-a-queue degrades.
+3. **Enqueue rate is not a factor**, though it is not the axis that binds. One
+   job per connect, one per push. Because a job holds a worker for minutes, the
+   real constraint is *concurrency*, not enqueue rate — see the research doc's
+   throughput section, which was rewritten after review.
 
-pgmq was the close call and is documented as such in the research: rejected
-because it is a third deploy-target constraint after pgvector and nested
-virtualization, and because its message model would force a jobs table beside it
-that we would then have to keep in sync.
+**⚠ The pgmq rejection was re-argued after review, and this section previously
+carried two reasons that are both withdrawn.** It said pgmq is "a third
+deploy-target constraint" — false: pgmq ships a documented pure-SQL install path
+requiring no extension support. And it said pgmq's message model "would force a
+jobs table beside it that we would have to keep in sync — a dual-write problem
+inside one database", which drains the term this document runs on. Two tables in
+one transaction is a schema, not a dual write.
+
+**The surviving argument is sharper than either, and it is specific to ISS-016.**
+
+The guard that makes this phase work is a partial unique index —
+`(repository_id) WHERE state IN ('queued','running')` — which makes "two live
+jobs for one repository" unrepresentable rather than merely unlikely. **That
+guard cannot be expressed over pgmq at all:**
+
+- the index would have to live on `pgmq.q_<queue>`, which is extension-owned and
+  does not survive `drop_queue` or an extension upgrade;
+- and "live" is not a nameable state there — unread and in-flight are the same
+  row, separated only by a visibility timeout.
+
+Three smaller things compound it: pgmq has no supersede primitive (L4 needs
+one), message bodies are immutable where 22-04's SSE endpoint needs a mutable
+`progress` column, and a visibility timeout is a timer rather than a lease — so
+there is no owner identity to fence terminal writes against, which L3 now
+requires.
+
+pgmq would supply the one piece we can write in a few dozen lines of SQL, and
+cost us the four that matter. **Keep the table.**
 
 ### L2 — A new `ingestion_jobs` table. `sync_state` becomes a projection.
 
@@ -136,7 +161,20 @@ CREATE TABLE ingestion_jobs (
   last_stage TEXT,          -- clone|parse|embed|store
   progress   JSONB,         -- files_parsed, chunks_embedded, current_file
 
+  -- Set when a push arrives while this job is already live. The worker
+  -- re-queues once on completion and clears it. See L7.
+  needs_rerun BOOLEAN NOT NULL DEFAULT FALSE,
+
   last_error TEXT,
+
+  -- ⚠ DOES NOT CARRY CREDENTIALS OR AN INSTALLATION ID.
+  --
+  -- The worker resolves the repository's CURRENT installation when it claims
+  -- the job, not when the job was enqueued. Two reconnects racing produce one
+  -- job (L8), and if that job had snapshotted the loser's installation the
+  -- winner's newer credentials would be silently lost. Reading at claim time
+  -- makes the dedup safe: whichever request won, the job picks up current
+  -- state.
   payload    JSONB,
 
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -169,6 +207,24 @@ deliveries. Keep them consistent; if one changes, say why.
 **Reclaim increments `attempts`.** A job that repeatedly kills its worker must
 eventually dead-letter rather than loop forever. Easy to omit, painful to
 diagnose.
+
+**⚠ Every terminal write is fenced on the lease.** A worker may only write
+`completed`, `queued`-after-failure or `dead` for a job it still owns:
+
+```sql
+... WHERE id = $1 AND lease_owner = $2 AND state = 'running'
+```
+
+Without the fence, two bugs review found both fire. A worker whose lease expired
+and was reclaimed elsewhere still writes its result, clobbering the new
+attempt's. And a **superseded** worker (L4) writes `state='queued'` on its way
+out — which re-enters the partial unique index and collides with the replacement
+job that superseded it, raising 23505 on exactly the ISS-016 path. L4 itself
+says the superseded run "will fail regardless", so that collision is guaranteed,
+not occasional.
+
+With the fence, a superseded or reclaimed worker's write matches zero rows. It
+logs and exits. One `WHERE` clause closes both.
 
 ### L4 — Supersede, don't race. (This is the ISS-016 fix.)
 
@@ -219,10 +275,47 @@ because drift was representable*.
 
 **So: no RLS on the queue (the claim is genuinely pre-tenant), and
 `organization_id` maintained by a trigger on `repositories`** following
-`sync_github_installation_tenant` — schema-qualified body,
-`SET search_path = public, pg_temp`, a DELETE branch, and a stale-key delete
-before the upsert. See `v2-substrate/DECISIONS.md` **D5**, which makes this one
-rule for every denormalised tenancy column rather than a decision taken twice.
+`sync_github_installation_tenant`'s conventions: schema-qualified body,
+`SET search_path = public, pg_temp`.
+
+**⚠ It is a `BEFORE INSERT` trigger on `ingestion_jobs`, not an `AFTER` mirror
+on `repositories`.** An earlier revision said "maintained by a trigger on
+`repositories`", which review correctly rejected: an `AFTER` trigger on the
+*source* table cannot validate an `organization_id` a producer supplied on a
+*different* table at insert time. The check has to sit where the value arrives.
+
+```sql
+CREATE OR REPLACE FUNCTION ingestion_jobs_fix_tenant() RETURNS TRIGGER
+LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
+DECLARE real_org UUID;
+BEGIN
+  SELECT p.organization_id INTO real_org
+  FROM public.repositories r
+  JOIN public.projects p ON p.id = r.project_id
+  WHERE r.id = NEW.repository_id;
+
+  IF real_org IS NULL THEN
+    RAISE EXCEPTION 'repository % does not exist', NEW.repository_id;
+  END IF;
+  IF NEW.organization_id IS DISTINCT FROM real_org THEN
+    RAISE EXCEPTION 'organization_id % does not match repository % (owner %)',
+      NEW.organization_id, NEW.repository_id, real_org;
+  END IF;
+  RETURN NEW;
+END; $$;
+
+CREATE TRIGGER trg_ingestion_jobs_tenant
+  BEFORE INSERT OR UPDATE OF organization_id, repository_id ON ingestion_jobs
+  FOR EACH ROW EXECUTE FUNCTION ingestion_jobs_fix_tenant();
+```
+
+Rejecting rather than silently correcting, because a producer that supplies the
+wrong tenant has a bug worth surfacing.
+
+**This rule is stated here in full rather than by reference.** It is the same
+rule as `DECISIONS.md` D5, but D5 lives on an unmerged PR — and the point of
+retargeting this PR to `main` was that it should stand alone. Note the
+duplication so the two stay in step.
 
 **⚠ The consequence, which must not be discovered later:** 21-03's
 `GET /api/admin/jobs/:id` is a request handler reading a table with no RLS. It
@@ -230,6 +323,41 @@ rule for every denormalised tenancy column rather than a decision taken twice.
 and the CI isolation gate **will not catch a mistake**, because that gate scans
 mutation endpoints and this is a `GET`. This needs a deliberately written
 isolation test, not one inherited from the ratchet.
+
+### L7 — A push against a live job sets `needs_rerun`
+
+A repository ingest takes minutes, and L2's partial unique index allows only one
+live job per repository. A push arriving in that window therefore has nowhere to
+go — and since people push repeatedly, this is close to all steady-state volume,
+not an edge case.
+
+**Decision: the enqueue is `ON CONFLICT DO UPDATE SET needs_rerun = TRUE`.** The
+running worker finishes its current pass, sees the flag, clears it, and enqueues
+one fresh job before exiting. Nothing is lost, and a burst of ten pushes during
+one ingest produces exactly one follow-up rather than ten.
+
+Rejected: a second queued job (needs a second live state, so the unique index
+guard weakens) and accepting the loss (today's behaviour, and the reason this
+issue exists).
+
+### L8 — Concurrent enqueues resolve to one job, and that is correct
+
+Two reconnects landing together both try to enqueue; one hits 23505 on the
+partial unique index.
+
+**Decision: catch it and return success, not a 500.** Both callers asked for the
+same thing — "this repository should be queued with current credentials" — and
+one job satisfies both. The duplicate-key error is the index noticing the work
+is already scheduled, not work being dropped.
+
+**What makes that safe is the claim-time credential read** (see `payload` in
+L2). If the job snapshotted an installation at enqueue, the loser's newer
+credentials would be lost and the dedup would be silently wrong. Because the
+worker resolves the repository's current installation when it claims, whichever
+request won the race, the job runs with the latest state.
+
+An advisory lock was considered and rejected as machinery for a case where both
+callers wanted the same outcome.
 
 ### L6 — One job per repository ingestion
 

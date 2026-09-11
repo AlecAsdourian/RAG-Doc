@@ -181,16 +181,27 @@ L6 puts a whole repository ingest — minutes of clone, parse, embed — behind 
 **concurrency**: how many jobs are simultaneously `running`, each holding a
 worker and a lease.
 
-At 10,000 jobs/day averaging ten minutes, that is roughly **69 concurrent
-workers** if they were evenly spread, and more at peak. Microsoft's guidance
-puts contention trouble at *"under 100 concurrent workers"* for
-`SKIP LOCKED` — so the real figure is the same order of magnitude as the limit,
-not three below it.
+**⚠ The arithmetic that was here applied a full-ingest duration to push jobs,
+and leaned on a source this document files as unread.** Both are corrected.
 
-This does not reverse the decision: `SKIP LOCKED` contention is about *dequeue*
-frequency, and a worker holding a job for ten minutes dequeues very rarely. But
-**the comfortable-by-1000x claim was measuring the wrong axis**, and worker-pool
-sizing is now a real design input for 21-01 rather than a non-issue.
+A *full* ingest takes minutes; an *incremental* push re-index touches only
+changed files and is far shorter. Multiplying 10,000 daily pushes by a ten-minute
+full-ingest duration mixes the two and produces a concurrency figure with no
+referent. The honest position is that **we do not yet know the incremental
+duration**, because nothing ingests end to end — so worker-pool sizing is an
+open input for 21-01, to be measured in Phase 22 rather than asserted here.
+
+The earlier revision also quoted Microsoft's guidance as putting contention
+trouble *"under ~100 concurrent workers"*. That page is listed in this
+document's own Sources under **not opened**, and the rule stated there is that
+nothing in the body may rest on such an entry. A later reviewer who did fetch it
+reports the sense is the opposite — that under 100 workers Postgres is *fine*.
+Either way the claim comes out of the body until someone fetches it.
+
+**What survives, and it is enough:** concurrency rather than enqueue rate is the
+axis that binds, because a job holds a worker for the length of an ingest. The
+first draft's "three orders of magnitude of headroom" was measuring enqueue rate
+and is withdrawn.
 
 **This holds only because of the granularity decision below.** Fanning out
 per-file or per-chunk jobs would put a single large repository at tens of
@@ -261,10 +272,39 @@ leaves it sitting in `running` forever, still occupying the unique index. So a
 ```sql
 UPDATE ingestion_jobs
 SET state = 'dead', updated_at = NOW()
-WHERE state = 'running'
-  AND attempts >= max_attempts
-  AND (lease_expires_at IS NULL OR lease_expires_at < NOW());
+WHERE attempts >= max_attempts
+  AND (
+        state = 'queued'                       -- ⚠ clean-failure path
+     OR (state = 'running'                     -- crash path
+         AND (lease_expires_at IS NULL OR lease_expires_at < NOW()))
+  );
 ```
+
+**⚠ The `state = 'queued'` branch was missing in the first revision, and its
+absence recreated the very bug two other fixes had just closed.** A worker that
+fails *cleanly* on its last attempt writes `state='queued'` — that is what O2's
+collapse says to do. The sweeper filtered `state='running'`, so it could not see
+that row; the claim query skipped it on `attempts < max_attempts`; and it sat in
+`queued` holding the partial unique index forever, blocking every future job for
+that repository. The **common** failure path, reconstructed out of the fixes for
+the crash path and the state collapse.
+
+Belt and braces, the worker also writes `dead` **directly** when it fails on its
+final attempt, fenced on its lease, rather than writing `queued` and waiting for
+a sweep:
+
+```sql
+UPDATE ingestion_jobs
+SET state = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'queued' END,
+    run_after = NOW() + $3::interval,
+    last_error = $4,
+    lease_owner = NULL, lease_expires_at = NULL,
+    updated_at = NOW()
+WHERE id = $1 AND lease_owner = $2 AND state = 'running';
+```
+
+The sweeper is then the backstop for workers that die before running it, which
+is the only case it should ever fire on.
 
 **2. `lease_expires_at IS NULL` stranded a job permanently.** `NULL < NOW()`
 evaluates to NULL, not true — so a `running` row with a null lease matched
@@ -409,9 +449,10 @@ lead, and nothing in the body may rest on it.
 
 - [You don't need a job queue — Postgres already has SKIP LOCKED (Prisma)](https://www.prisma.io/blog/you-dont-need-a-job-queue-postgres-already-has-skip-locked)
 - [Potential consequences of using Postgres as a job queue (Microsoft)](https://techcommunity.microsoft.com/blog/adforpostgresql/potential-consequences-of-using-postgres-as-a-job-queue/4514332)
-  — the "under ~100 concurrent workers" figure comes from here and **should be
-  verified before 21-01 sizes the worker pool**, since it is now the binding
-  constraint.
+  — **nothing in this document rests on this page.** An earlier revision quoted a
+  "~100 concurrent workers" threshold from it, in the wrong direction, without
+  opening it. The claim has been removed from the body rather than re-quoted.
+  Fetch it before 21-01 sizes the worker pool.
 - [PGMQ: a self-regulating queue (Tembo)](https://legacy.tembo.io/blog/pgmq-self-regulating-queue/)
   — the 11k msg/sec benchmark is attributed here and was **not** found on this
   page by review; treat the number as unverified.
