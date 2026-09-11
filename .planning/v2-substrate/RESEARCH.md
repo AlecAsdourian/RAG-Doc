@@ -543,8 +543,13 @@ Two findings, and the second one should change how we spend effort.
 
 Containers share the host kernel. The Linux kernel exposes roughly 350
 syscalls, and one exploitable bug in any of them is a container escape. For
-running `npm install` on arbitrary customer repositories (R-A tier 2) or
 executing agent-authored code (F1), that is not adequate isolation.
+
+**⚠ This section originally also cited "running `npm install` on arbitrary
+customer repositories (R-A tier 2)" as a driver, and that is withdrawn** (K3):
+precise SCIP indexing runs in the *customer's* CI, so nothing on our ingestion
+path executes untrusted code. Read "our case" in the table below against agent
+execution alone.
 
 | Option | Isolation | Startup | Overhead | Use when |
 |--------|-----------|---------|----------|----------|
@@ -553,9 +558,9 @@ executing agent-authored code (F1), that is not adequate isolation.
 | Plain container | Shared kernel | fastest | lowest | trusted code only |
 
 Firecracker powers AWS Lambda and Fargate. **Recommendation: Firecracker for
-both agent execution and SCIP indexing**, gVisor as the fallback where KVM is
-not available (which may constrain the Phase 24 deploy-target decision — worth
-flagging to that phase).
+agent execution**, gVisor as the fallback where KVM is not available. **Not for
+SCIP indexing** — see the correction above. Phase 24 should prefer a host
+offering nested virtualization, but is not blocked by one that does not.
 
 ### Finding 2 — ⚠ worktree orchestration is table stakes, not differentiation
 
@@ -778,7 +783,12 @@ than claiming to solve implicit conflict.
 ### Sources
 
 - [Context Rot in AI-Assisted Software Development (arXiv 2606.09090)](https://arxiv.org/html/2606.09090)
-- **Verified (fetched 2026-09-10)** — [EA-Graph: Artifact-Anchored Verification Memory (arXiv 2608.04278)](https://arxiv.org/html/2608.04278v1). Confirmed: the `(store, path, subpath)` identity triple, alias-resolution-to-leaf, span content digests, the three drift outcomes with `unprovable` terminal, the separate evidence/freshness lattices, and `DISP` kept apart from claim status. The "88 of 96 versus 17" figures are theirs; the "71 false alarms" derivation is ours.
+- **Verified (fetched 2026-09-10), with one correction** — [EA-Graph: Artifact-Anchored Verification Memory (arXiv 2608.04278)](https://arxiv.org/html/2608.04278v1). Confirmed: the `(store, path, subpath)` identity triple, alias-resolution-to-leaf, span content digests, the three drift outcomes with `unprovable` terminal, the separate evidence/freshness lattices, and `DISP` kept apart from claim status. **⚠ The claim that "every EA-Graph
+  quotation verifies verbatim" is withdrawn:** the "while missing elements
+  announce themselves through errors, stale elements do not" line is two
+  separate sentences of theirs rewritten and joined, and the temporal-validity
+  block quote is likewise two sentences stitched. The substance is faithful; the
+  quotation marks were not earned. Both are paraphrase. The "88 of 96 versus 17" figures are theirs; the "71 false alarms" derivation is ours.
 - [Temporal Validity in Retrieval Memory (arXiv 2606.26511)](https://arxiv.org/html/2606.26511v1)
 - [STALE: Can LLM Agents Know When Their Memories Are No Longer Valid? (arXiv 2605.06527)](https://arxiv.org/abs/2605.06527)
 - [awesome-harness-engineering](https://github.com/ai-boost/awesome-harness-engineering)
