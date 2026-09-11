@@ -85,7 +85,10 @@ queues through SQL functions. It is a good piece of software and it solves our
 cross-language problem the same way we propose to: the interface is SQL, so Go
 and Python both just run queries. Its visibility timeout *is* a lease, which is
 exactly what ISS-016 asks for, and it benchmarks at **over 11,000 messages per
-second on a 2-CPU container** — about a thousand times our need.
+second on a 2-CPU container** — though that figure has **no first-party
+source**: the page it is attributed to is gone (`legacy.tembo.io` does not
+resolve) and it survives only in uncited third-party writeups. Treat it as
+folklore; the decision does not rest on it.
 
 **⚠ Both original reasons were defective. Review was right, and the decision
 survives on one argument rather than two.**
@@ -117,9 +120,17 @@ the correspondence between them — more moving parts than the forty-line claim
 query it replaces, for a queue whose hard guarantees Postgres provides either
 way.
 
-That is a real argument, and it is thinner than the original two. **If a
-reviewer prefers pgmq on it, the decision should flip** — the cost of being
-wrong here is a library swap behind one interface, not a re-ingest.
+**Reviewed and upheld.** The invitation to flip was taken up in the third
+review, which verified the surviving claims against pgmq's source: no supersede
+primitive (removal is by `msg_id`; the conditional read filter is experimental
+and cannot see in-flight messages), immutable message bodies in the supported
+API, and no owner identity to fence on. The decisive one is sharper than what
+was written here: **a pgmq row has no state column** (`msg_id, read_ct,
+enqueued_at, last_read_at, vt, message, headers`), so ISS-016's partial unique
+index has nothing to be partial over. See `21-CONTEXT.md` L1.
+
+One claim did **not** survive and is withdrawn: that the queue tables are
+extension-owned. pgmq 1.6.0 detached them deliberately.
 
 ### Why not Temporal
 
@@ -164,7 +175,7 @@ until someone opens the page they are in.
 | Source | Claim |
 |--------|-------|
 | DBOS, *Making Postgres queues scale* (**fetched**) | 30k workflows/sec achievable; ~1,000/sec was a fixed bug, not a limit |
-| Microsoft, *Potential consequences of using Postgres as a job queue* (surfaced) | contention becomes a problem **under ~100 concurrent workers** — the figure that actually binds us |
+| Microsoft, *Potential consequences of using Postgres as a job queue* | **withdrawn.** Quoted here in the wrong direction from a page nobody opened; a later reviewer who fetched it reports the sense is the opposite. Nothing in this document rests on it. |
 
 The honest summary is therefore the opposite of the first draft's: **Postgres as
 a queue scales further than claimed on the axis we were measuring, and our real

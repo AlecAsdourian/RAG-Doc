@@ -38,8 +38,10 @@ overturned.** D1–D5 gate Phase 22 because that phase writes the first real row
 following `sync_github_installation_tenant`. Both `chunks` (partition key) and
 `ingestion_jobs` (pre-tenant claim) need one, and both can drift.
 
-**Phase 21 is decided but not planned.** `21-CONTEXT.md` locks six decisions
-(L1–L6). The headline reversal stands: the ROADMAP's tentative Redis Streams
+**Phase 21 is decided but not planned.** `21-CONTEXT.md` locks **eight**
+decisions (L1–L8); L7 (a push against a live job sets `needs_rerun`) and L8
+(concurrent enqueues resolve through one per-row upsert) were added in the third
+rework. The headline reversal stands: the ROADMAP's tentative Redis Streams
 pick is rejected in favour of a Postgres `ingestion_jobs` table claimed with
 `FOR UPDATE SKIP LOCKED`, because the queue and the chunk writes then commit in
 one transaction.

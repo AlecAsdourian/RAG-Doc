@@ -89,10 +89,24 @@ The guard that makes this phase work is a partial unique index —
 jobs for one repository" unrepresentable rather than merely unlikely. **That
 guard cannot be expressed over pgmq at all:**
 
-- the index would have to live on `pgmq.q_<queue>`, which is extension-owned and
-  does not survive `drop_queue` or an extension upgrade;
-- and "live" is not a nameable state there — unread and in-flight are the same
-  row, separated only by a visibility timeout.
+**a pgmq row has no state column, so a partial index has nothing to be partial
+over.** Its columns are `msg_id, read_ct, enqueued_at, last_read_at, vt, message,
+headers` — "queued" and "running" are not values there, they are inferences from
+`vt` against `now()`. A predicate cannot be written over a distinction the
+schema does not make.
+
+**⚠ An earlier revision led with a different claim — that the index would sit on
+"extension-owned `pgmq.q_*` tables that do not survive `drop_queue` or an
+extension upgrade" — and it is false.** pgmq 1.6.0 deliberately *detached* queue
+tables from extension membership (the 1.5.2→1.6.0 migration runs
+`ALTER EXTENSION pgmq DROP TABLE`), precisely so queue data survives dump and
+restore. Only "does not survive `drop_queue`" is true, and trivially so.
+
+That is the **third** pgmq rejection reason to fail verification in three
+rounds — after "it is an extension, so it constrains our deploy target" and "a
+jobs table beside it is a dual write". The decision has survived each time, but
+the pattern is reaching for reasons rather than testing them, and it is recorded
+here so the next reader weighs the surviving argument on its own merit.
 
 Three smaller things compound it: pgmq has no supersede primitive (L4 needs
 one), message bodies are immutable where 22-04's SSE endpoint needs a mutable
@@ -117,8 +131,7 @@ Three things that were conflated get three homes:
 CREATE TABLE ingestion_jobs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-  -- ⚠ A TWO-HOP DENORMALISATION, MAINTAINED BY TRIGGER. See L5 and
-  -- `v2-substrate/DECISIONS.md` D5.
+  -- ⚠ A TWO-HOP DENORMALISATION, GUARDED BY A COMPOSITE FOREIGN KEY. See L5.
   --
   -- `repositories` has NO `organization_id`; tenancy runs
   -- `repositories.project_id -> projects.organization_id`. So this column is a
@@ -130,6 +143,22 @@ CREATE TABLE ingestion_jobs (
   repository_id   UUID NOT NULL REFERENCES repositories(id)  ON DELETE CASCADE,
 
   -- Set when the run begins, so the job points at its result record.
+  --
+  -- ⚠ A RETRY REUSES THIS ROW; it does not create a second one.
+  -- `ingestion_runs` carries `UNIQUE (repository_id, commit_sha)`, so attempt 2
+  -- inserting a fresh run for the same commit raises 23505 — a determinate
+  -- error on this phase's core path, raised in two reviews before it was
+  -- addressed. The worker therefore resolves the run rather than inserting it:
+  --
+  --   INSERT INTO ingestion_runs (repository_id, commit_sha, ...)
+  --   VALUES ($1, $2, ...)
+  --   ON CONFLICT (repository_id, commit_sha) DO UPDATE
+  --     SET started_at = NOW()
+  --   RETURNING id;
+  --
+  -- which is correct for a retry (same commit, same run) and for a superseded
+  -- run's replacement (same commit, run reopened). A job for a DIFFERENT commit
+  -- gets its own row, which is the normal case.
   ingestion_run_id UUID REFERENCES ingestion_runs(id) ON DELETE SET NULL,
 
   job_type TEXT NOT NULL CHECK (job_type IN ('full_ingest','incremental')),
@@ -192,6 +221,27 @@ CREATE INDEX idx_ingestion_jobs_claimable
 CREATE UNIQUE INDEX idx_ingestion_jobs_one_live_per_repo
   ON ingestion_jobs (repository_id)
   WHERE state IN ('queued','running');
+
+-- ⚠ COMPOSITE FOREIGN KEY: a mismatched tenant is unrepresentable, not merely
+-- rejected. This supersedes the BEFORE INSERT trigger's mismatch check (L5),
+-- which remains only for the clearer error message.
+--
+-- IT REQUIRES `repositories.organization_id`, which does not exist today --
+-- tenancy there runs `repositories.project_id -> projects.organization_id`. So
+-- this is a THIRD denormalisation under D5's rule, on an existing table:
+--
+--   ALTER TABLE repositories ADD COLUMN organization_id UUID;
+--   -- backfilled from projects, then trigger-maintained per D5
+--   ALTER TABLE repositories ADD CONSTRAINT repositories_id_org_key
+--     UNIQUE (id, organization_id);
+--
+-- Two things fall out of it that are worth having anyway: `repositories`' RLS
+-- policy can drop from a two-hop EXISTS join to scalar equality, and the column
+-- never changes, because D5 forbids cross-organisation re-parenting.
+ALTER TABLE ingestion_jobs
+  ADD CONSTRAINT ingestion_jobs_repo_tenant_fk
+  FOREIGN KEY (repository_id, organization_id)
+  REFERENCES repositories (id, organization_id) ON DELETE CASCADE;
 ```
 
 ### L3 — Short lease, extended by heartbeat
@@ -312,6 +362,25 @@ CREATE TRIGGER trg_ingestion_jobs_tenant
 Rejecting rather than silently correcting, because a producer that supplies the
 wrong tenant has a bug worth surfacing.
 
+**The composite foreign key in L2 is what makes a mismatch unrepresentable.**
+This trigger now exists for the error message, not the guarantee — a bare FK
+violation names a constraint, not the problem. Keep both; say which does what.
+
+**⚠ OPEN, deliberately not closed: drift on re-parent.** This trigger validates
+at INSERT and on UPDATE of its own columns. It is blind to the row's tenancy
+changing *underneath* it — a repository moved to a project in another
+organisation would leave every existing job carrying the old `organization_id`.
+
+Today that cannot happen: D5 forbids cross-organisation re-parenting, and
+migration `000008`'s `FOR ALL` policy on `repositories` already refuses it. So
+this is latent, not live.
+
+It is recorded rather than resolved because the answer depends on whether
+same-organisation project moves ever become a feature — if projects stay
+org-permanent, nothing more is needed; if they don't, the FK needs
+`ON UPDATE CASCADE` and the trigger needs a re-parent branch. **Phase 22 should
+revisit this rather than inherit it silently.**
+
 **This rule is stated here in full rather than by reference.** It is the same
 rule as `DECISIONS.md` D5, but D5 lives on an unmerged PR — and the point of
 retargeting this PR to `main` was that it should stand alone. Note the
@@ -331,24 +400,75 @@ live job per repository. A push arriving in that window therefore has nowhere to
 go — and since people push repeatedly, this is close to all steady-state volume,
 not an edge case.
 
-**Decision: the enqueue is `ON CONFLICT DO UPDATE SET needs_rerun = TRUE`.** The
-running worker finishes its current pass, sees the flag, clears it, and enqueues
-one fresh job before exiting. Nothing is lost, and a burst of ten pushes during
-one ingest produces exactly one follow-up rather than ten.
+**Decision: ONE enqueue statement, used by every producer** — push, relink and
+bulk `installation_repositories.added` alike.
 
-Rejected: a second queued job (needs a second live state, so the unique index
-guard weakens) and accepting the loss (today's behaviour, and the reason this
-issue exists).
+```sql
+INSERT INTO ingestion_jobs (organization_id, repository_id, job_type, state)
+VALUES ($1, $2, $3, 'queued')
+ON CONFLICT (repository_id) WHERE state IN ('queued','running')
+DO UPDATE SET needs_rerun = TRUE, updated_at = NOW()
+RETURNING id, (xmax <> 0) AS was_existing;
+```
+
+**⚠ The inference clause is not optional and three shorter forms all fail.**
+`ON CONFLICT DO UPDATE` without a target raises `42601`; `ON CONFLICT
+(repository_id)` raises `42P10`, because arbiter inference will not select a
+**partial** index unless the predicate is repeated. Only the form above works.
+An earlier revision of this section stated the first of those, which cannot be
+executed — measured in review.
+
+**Why one statement for all three producers.** An earlier revision had the relink
+path catch `23505` and return success (L8). That is fine for two reconnects of
+*one* repository, and wrong for a bulk add: three repositories racing a relink
+left **two of the three never queued while the handler reported success**. The
+per-row upsert has no such case — each row either enqueues or flags, and
+`was_existing` tells the caller which.
+
+**Reading the flag.** `RETURNING needs_rerun` after clearing it returns the
+**new** value, so the worker sees `false` and drops the rerun. `RETURNING OLD.*`
+is PostgreSQL 18 and errors on 17. Clear it conditionally instead and let the
+row count carry the answer:
+
+```sql
+UPDATE ingestion_jobs SET needs_rerun = FALSE, updated_at = NOW()
+WHERE id = $1 AND lease_owner = $2 AND needs_rerun
+RETURNING id;   -- a row here means "there was a rerun to do"
+```
+
+Then enqueue the follow-up **after** the current job leaves the live set — the
+completion write and the re-enqueue in that order, in one transaction. The
+reverse order raises `23505` against the partial unique index, which is the
+identical defect L4 was written to fix.
+
+**A push for a repository whose job is `dead` is accepted loss.** `dead` is
+outside the live set, so the upsert above inserts a fresh job rather than
+flagging — which is the desired behaviour. But a push arriving *between* the
+final failure and the sweep may flag a row that is about to become `dead`, and
+that flag is then never acted on. Stated rather than engineered around: the next
+push re-queues, and ISS-023 owns an explicit retry.
+
+Rejected: a second queued job (needs a second live state, weakening the guard)
+and accepting the loss unconditionally (today's behaviour, and the reason
+ISS-016 exists).
 
 ### L8 — Concurrent enqueues resolve to one job, and that is correct
 
 Two reconnects landing together both try to enqueue; one hits 23505 on the
 partial unique index.
 
-**Decision: catch it and return success, not a 500.** Both callers asked for the
-same thing — "this repository should be queued with current credentials" — and
-one job satisfies both. The duplicate-key error is the index noticing the work
-is already scheduled, not work being dropped.
+**Decision: the L7 upsert handles it; no error is raised to catch.** Each row
+either inserts or flags `needs_rerun`, and `was_existing` distinguishes the two.
+
+**⚠ The earlier "catch 23505 and return success" is withdrawn, and the reason is
+worth keeping.** It rested on "both callers asked for the same thing, so one job
+satisfies both" — true for two reconnects of *one* repository, false the moment
+a statement touches several. A bulk `installation_repositories.added` for three
+repositories racing a relink left **two of the three unqueued while the handler
+returned success**: silent loss, reported as a win. Measured in review.
+
+The general lesson: a dedup argument that holds per row does not survive being
+applied to a set.
 
 **What makes that safe is the claim-time credential read** (see `payload` in
 L2). If the job snapshotted an installation at enqueue, the loser's newer
@@ -385,8 +505,18 @@ Cost: a late failure re-runs the job. `last_stage` gives coarse resumability
   relink path no longer setting it to enqueue work.
 - `GET /api/admin/jobs/:id`, tenant-scoped **explicitly**, with its own isolation
   test.
+- **The sweeper** (L3 / research): moves exhausted jobs to `dead` from both
+  `queued` and `running`. Omitted from this list in an earlier revision despite
+  being the only thing that reaches a cleanly-failed job.
+- **Lease fencing on every terminal write** (L3) — `AND lease_owner = $2 AND
+  state = 'running'`.
+- **The `BEFORE INSERT` tenant trigger and the composite FK** (L2 / L5),
+  including `repositories.organization_id` and its backfill.
+- **The single per-row enqueue upsert** (L7), shared by push, relink and bulk.
 - An integration test covering enqueue → claim → heartbeat → complete, plus
   lease expiry → reclaim → retry → dead-letter.
+- A test that a **bulk** enqueue racing a relink queues *every* row — the case
+  that silently lost two of three before L8 was rewritten.
 - **A concurrency test that actually races.** Per `feedback_measure_before_claiming`
   and the 20-04 lesson: release N workers through a barrier against one claimable
   job and assert exactly one wins, repeated over several rounds on a warm pool. A
