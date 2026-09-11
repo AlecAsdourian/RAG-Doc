@@ -4,6 +4,23 @@
 correctness bugs in the schema, and two decisions (O1, O2) since confirmed.
 See `.planning/v2-substrate/REWORK.md` §6.
 **Research:** `21-RESEARCH.md` in this directory
+
+**Verification record.** The schema, trigger, claim query, sweeper, fenced write
+and enqueue upsert have been transcribed out of this document and executed
+against PostgreSQL 17. Round 3 added the cases the earlier checks missed:
+
+| | |
+|---|---|
+| W1 | the composite FK makes a mismatched tenant **unrepresentable**, not merely rejected |
+| W2 | the enqueue upsert parses — the three shorter forms do not |
+| W3 | a **bulk** enqueue racing a live job handles every row: 1 flagged, 2 inserted, all 3 repositories live |
+| W4 | the conditional clear reports a rerun; naive `RETURNING` yields `false` and would drop it |
+| W5 | complete-then-re-enqueue in that order raises no 23505 |
+| W6 | a retry reuses its `ingestion_runs` row instead of erroring on attempt 2 |
+
+W3 is the case that silently lost two of three repositories while reporting
+success, and W6 is an error that had been raised in two prior reviews without
+being addressed.
 **Also depends on:** `.planning/v2-substrate/DECISIONS.md` (D2 in particular)
 
 ## Objective
