@@ -592,7 +592,11 @@ That sentence is close to a description of F1 + F2 + F3 + F5.
 - **F1 scope narrows and its ambition drops.** Adopt the standard worktree
   pattern; do not invent one. Possibly 20–35h rather than 30–50h.
 - **Firecracker (or gVisor) is a named dependency** for F1's execution half and
-  for R3 tier 2 — one build, two payoffs, as already sequenced in step 8.
+  for agent execution **only**. ⚠ An earlier revision read "one build, two
+  payoffs … as already sequenced in step 8", pairing it with R3 tier 2. That
+  pairing is withdrawn (K3): precise SCIP runs in the customer's CI, so nothing
+  on the ingestion path executes untrusted code and the sandbox keeps its
+  original justification alone.
 - **Phase 24's deploy-target decision gains a constraint:** the target must
   offer nested virtualization / KVM, or we fall back to gVisor. Several managed
   platforms do not. **This is a preference, not a requirement** — see K3: the
@@ -792,7 +796,7 @@ A summary for anyone reading `DESIGN.md` who wants to know which parts moved.
 | **R6 / D2** | pgvector, on consistency grounds | pgvector confirmed on scale evidence too — **plus partition by organization from day one**, iterative scan, and a multi-tenant recall test |
 | **F1** | 30–50h, implicitly novel | 20–35h, **table stakes**. Firecracker named, justified by agent execution alone — **not** by SCIP, and it does not move earlier. |
 | **F10** | "two memories that disagree" | Explicit vs implicit conflict; claim only the former honestly |
-| **F11** | 24–40h | 32–52h; OAuth 2.1 + PKCE mandatory, no token passthrough, injection-hardened parameters |
+| **F11** | 24–40h | 32–52h. ⚠ **R-C is LOW confidence** — written against superseded MCP revision 2025-11-25; the current revision is 2026-07-28 and makes authorization *not* universally mandatory. Re-plan F11 only after fetching the current spec. |
 | **F18** | "markdown with frontmatter" | Specifically Claude Code's subagent schema as a subset; AGENTS.md is a different thing |
 | **F19** | cold-start problem unaddressed | Existing Claude Code subagent corpus is the seed |
 | **Graph store** | "probably Postgres" | Confirmed, with the boundary named and cycle handling flagged as correctness |

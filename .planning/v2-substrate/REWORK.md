@@ -283,7 +283,7 @@ moved a sandbox and a hosting constraint on the roadmap.
 - [x] **R-G** — qualify the "71 false alarms" figure: it is our arithmetic on
       "88 of 96 vs 17", from an unrefereed preprint using synthetic repositories
       with n=1 per condition.
-- [x] **All sections** — rebuild every Sources list from pages actually fetched.
+- [ ] **All sections** — rebuild every Sources list from pages actually fetched. **Still open: applied to 2 of 7 sections.** Ticked prematurely in the second revision; review flagged that, correctly, as the tick that costs this file its credibility.
       Remove anything that cannot be found in a cited page.
 
 ### Sequencing

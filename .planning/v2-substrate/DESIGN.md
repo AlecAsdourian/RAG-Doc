@@ -613,9 +613,15 @@ One fuzzy tool, the rest exact:
 Nine tools an agent can hold in its head, each with an obvious answer shape.
 That is the hive-mind endpoint — it just isn't a single function.
 
-**Research R-C added an auth design and coupled this to F18.** The MCP
-specification (November 2025) requires **OAuth 2.1 with PKCE** for any
-internet-reachable server and **explicitly prohibits token passthrough** — we
+**⚠ R-C is LOW confidence and this paragraph rests on it.** It was written
+against MCP revision **2025-11-25**, superseded by **2026-07-28**, which makes
+authorization align with OAuth/OIDC rather than mandating it universally and
+also makes the protocol core stateless — which undercuts the session-oriented
+assumption below. **Fetch the current spec before planning F11.**
+
+As written against the superseded revision: the MCP specification required
+**OAuth 2.1 with PKCE** for any internet-reachable server and **explicitly
+prohibited token passthrough** — we
 may not accept an agent's token and forward it to GitHub or Supabase.
 
 That prohibition is a gift. The token our MCP server mints is exactly where

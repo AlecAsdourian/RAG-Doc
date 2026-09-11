@@ -1,6 +1,10 @@
 # v2 Substrate — Decisions D1–D4
 
-**Status:** Revised 2026-09-10 after two review rounds. **Every schema in this
+> **This document defines D1–D5.** D5 was added in the second revision; several
+> cross-references elsewhere still read "D1–D4" and mean all five. The planner
+> should sequence **five** decisions.
+
+**Status:** Revised 2026-09-10 after three review rounds. **Every schema in this
 document has now been executed against PostgreSQL 17** — the second review found
 three of four revisions invalid, which is what that measurement is for. What was
 verified is recorded under each decision. See `REWORK.md` for the decisions
@@ -30,23 +34,30 @@ the leaf definition** before the id is computed.
 
 ```sql
 CREATE TABLE symbols (
-  -- uuid_v5(NS_SYMBOL, repository_id ||E'\0'|| file_path ||E'\0'||
-  --                    symbol_path ||E'\0'|| kind ||E'\0'|| ordinal)
+  -- uuid_v5(NS_SYMBOL, repository_id ||E'\x1f'|| file_path ||E'\x1f'||
+  --                    symbol_path ||E'\x1f'|| kind ||E'\x1f'|| ordinal)
+  --
+  -- E'\x1f' (ASCII unit separator), NOT E'\0'. Postgres rejects NUL bytes in
+  -- `text` outright, so the earlier revision's separator could not have been
+  -- executed -- caught in the third review, which is the point of transcribing
+  -- DDL out of the document rather than running a script beside it.
   --
   -- Deterministic, so a re-ingest of unchanged code produces the same id
   -- without a lookup, and two workers racing the same file agree.
   --
-  -- ⚠ `kind` AND `ordinal` ARE BOTH IN THE HASH INPUT, and the second review
-  -- is why. An earlier revision added `kind` only to the UNIQUE constraint
-  -- below and not to the id, so the primary key collided first and the UNIQUE
-  -- was unreachable -- the fix was inert.
+  -- ⚠ `kind` AND `ordinal` ARE BOTH IN THE HASH INPUT, and both are needed.
   --
-  -- And `kind` alone does not disambiguate two of the three collisions this
-  -- schema exists to survive: Go's two package-scope `init()` are both
-  -- functions, and Python's `@property` / `@x.setter` pair are both function
-  -- definitions. Same path, same name, same kind. `ordinal` -- the 0-based
-  -- index of this symbol among those sharing (file_path, symbol_path, kind),
-  -- in source order -- is what separates them.
+  -- `kind` separates the case it can: TypeScript declaration merging, where an
+  -- interface and a function share a name at the same scope.
+  --
+  -- `ordinal` separates the two it cannot: Go's two package-scope `init()` are
+  -- both functions, and Python's `@property` / `@x.setter` are both function
+  -- definitions -- same path, same name, SAME KIND. It is the 0-based index
+  -- among symbols sharing (file_path, symbol_path, kind), in source order.
+  --
+  -- History, because it shows the failure mode: one revision put `kind` in the
+  -- UNIQUE constraint but not the id, so the primary key collided first and the
+  -- constraint was unreachable. The fix was inert and looked correct.
   id UUID PRIMARY KEY,
 
   organization_id UUID NOT NULL,          -- partition + RLS key (see D2)
@@ -154,6 +165,33 @@ Three things fall out of it, and the third is the reason:
    a newly-appeared one. That is only true if the vanished symbol's row still
    exists to be matched. Under deletion the claim was false; under archival it
    is simply deferred work.
+
+**⚠ Ingest must UPSERT AND UNARCHIVE, not insert.** A symbol that is archived
+and then returns — a reverted commit, a branch merge, a file restored — computes
+the *same* deterministic id, so a plain `INSERT` raises
+`duplicate key value violates symbols_pkey`. Measured in the third review.
+Archival makes the id collision a normal event rather than an error:
+
+```sql
+INSERT INTO symbols (id, ...) VALUES (...)
+ON CONFLICT (id) DO UPDATE
+SET archived_at       = NULL,          -- resurrect
+    span_digest       = EXCLUDED.span_digest,
+    start_line        = EXCLUDED.start_line,
+    end_line          = EXCLUDED.end_line,
+    last_seen_commit  = EXCLUDED.last_seen_commit;
+```
+
+Note this interacts with D4: a memory anchored to a symbol that vanished and
+came back should return from `unprovable` to `stale` (the span may have changed)
+rather than straight to `fresh`. Comparing `span_digest` against
+`span_digest_at_binding` decides which.
+
+**Edges to archived symbols stay live.** Nothing filters them today, so a
+traversal can return a call to code that no longer exists. Every graph query
+must join `symbols` and exclude `archived_at IS NOT NULL`, or `symbol_edges`
+needs its own archival flag. Left as an explicit Phase 22 requirement rather
+than silently assumed.
 
 Cost: the table grows monotonically. `archived_at` plus the partial index above
 keeps live lookups off the dead rows, and pruning archived symbols with no
@@ -379,8 +417,17 @@ WHERE organization_id = $1
 ```
 
 So `to_symbol_name` is **not** a debugging convenience — it is the join key the
-two tiers meet on, and tier 1 must record it even when it resolves successfully,
-or tier 2 has nothing to match.
+two tiers meet on, and tier 1 must record it **on every edge, resolved or not**,
+or tier 2 has nothing to match. It is nullable only because the CHECK above
+allows either half; ingest should always populate it.
+
+**⚠ The `edge_kind` in that DELETE is a real hazard.** The two tiers can classify
+the same reference differently — tier 1 guessing `calls` where SCIP says
+`references`. When they disagree the DELETE matches nothing (`DELETE 0`,
+measured in review) and the phantom survives. Either the reconciliation omits
+`edge_kind`, accepting that it retires all tier-1 edges between that pair, or
+the tiers commit to one classification vocabulary. **Phase 22 must pick one and
+write it down**; omitting `edge_kind` is the safer default.
 
 **Phase 22's chunk-level event payload widens now** to carry call-site and
 import candidates. Cheap — the parser already walks the tree — and it means the
@@ -426,7 +473,9 @@ contradicted`. That collapses two different questions into one number.
 ```sql
 CREATE TABLE memories (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  organization_id UUID NOT NULL,
+  -- CASCADE, so tenant offboarding actually completes. See the delete
+  -- semantics note under memory_anchors.
+  organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   scope           TEXT NOT NULL CHECK (scope IN ('private','task','fleet')),
   author_agent_id UUID,
   body            TEXT NOT NULL,
@@ -456,9 +505,19 @@ CREATE TABLE memory_anchors (
   --
   -- The actual fix is upstream: `symbols` rows are ARCHIVED, never deleted, so
   -- there is no delete for this FK to react to.
-  -- Plain FK to a row that is ARCHIVED rather than deleted (see below), so
-  -- this never dangles and never needs to be nulled.
-  symbol_id UUID NOT NULL REFERENCES symbols(id),
+  -- ⚠ NULLABLE, WITH `ON DELETE SET NULL`. Archival removes the ROUTINE
+  -- delete, not every delete: `symbols.repository_id` cascades, so deleting a
+  -- repository (a shipped endpoint) or an organisation still reaps symbols. A
+  -- `NOT NULL` plain FK here made both of those fail outright once any memory
+  -- was anchored -- blocking tenant offboarding. Found in the third review.
+  --
+  -- This is now safe in a way it was not two revisions ago: `symbol_id` is no
+  -- longer part of the primary key, so it can actually be nulled.
+  --
+  -- Nothing is lost when it nulls: `symbol_path_at_binding` and
+  -- `span_digest_at_binding` below are kept precisely so the anchor stays
+  -- readable after its symbol is gone.
+  symbol_id UUID REFERENCES symbols(id) ON DELETE SET NULL,
 
   -- Kept independently of the FK, so the anchor is still identifiable after
   -- the symbol row is gone.
@@ -473,6 +532,19 @@ CREATE TABLE memory_anchors (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   UNIQUE (memory_id, symbol_id)
 );
+```
+
+**What happens to a memory when its repository or organisation is deleted.**
+Deleting a *repository* nulls the anchor's `symbol_id`; the memory survives with
+its text, provenance and `symbol_path_at_binding`, and moves to `unprovable`.
+Memories are organisation-scoped, not repository-scoped, so knowledge written
+while working on a repository outlives it.
+
+Deleting an *organisation* cascades everything, because tenant offboarding must
+actually complete. `memories.organization_id` carries
+`ON DELETE CASCADE` for that reason.
+
+```sql
 ```
 
 ### Why two axes instead of one number
@@ -602,11 +674,30 @@ organisations is a tenant-boundary crossing, not a routine operation: nobody has
 asked for it, and permitting it would mean every denormalised column needs a
 privileged write path. It is refused:
 
+**First, what is already doing the work.** Migration `000008`'s policy on
+`repositories` is `FOR ALL USING (...)`, and a `FOR ALL` policy without an
+explicit `WITH CHECK` applies its `USING` expression to written rows too. So
+RLS *already* refuses a cross-organisation re-parent. The trigger below adds a
+**readable error**, not a new guarantee — worth having, worth not overstating.
+
 ```sql
--- on repositories
 CREATE OR REPLACE FUNCTION reject_cross_org_reparent() RETURNS TRIGGER
 LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
 BEGIN
+  -- ⚠ UPDATE ONLY. An earlier revision shipped this function with no
+  -- CREATE TRIGGER at all, and the natural attachment -- BEFORE INSERT OR
+  -- UPDATE -- makes EVERY INSERT fail, because OLD is not defined in a
+  -- BEFORE INSERT trigger. Attached for DELETE it breaks every delete.
+  -- Measured in the third review. The guard and the attachment below are
+  -- both load-bearing.
+  IF TG_OP <> 'UPDATE' THEN
+    RETURN NEW;
+  END IF;
+
+  IF NEW.project_id IS NOT DISTINCT FROM OLD.project_id THEN
+    RETURN NEW;                     -- not a re-parent at all
+  END IF;
+
   IF (SELECT organization_id FROM public.projects WHERE id = NEW.project_id)
      IS DISTINCT FROM
      (SELECT organization_id FROM public.projects WHERE id = OLD.project_id) THEN
@@ -616,7 +707,15 @@ BEGIN
   END IF;
   RETURN NEW;
 END; $$;
+
+CREATE TRIGGER trg_reject_cross_org_reparent
+  BEFORE UPDATE OF project_id ON repositories
+  FOR EACH ROW EXECUTE FUNCTION reject_cross_org_reparent();
 ```
+
+A repository moved to a project that does not exist yields `NULL` on both sides
+of the comparison, which `IS DISTINCT FROM` treats as equal — so the FK on
+`project_id` is what rejects that case, as it should.
 
 Re-parenting *within* one organisation stays allowed and is a no-op for every
 denormalised `organization_id`, so the trigger has nothing to do.
