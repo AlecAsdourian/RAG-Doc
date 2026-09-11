@@ -4,6 +4,19 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 ## Open Enhancements
 
+### ISS-021: The semantic cache has never run, so a documented cost control has been absent since Phase 12
+
+- **Discovered:** 2026-09-10, by the reviewer session on PR #26 while checking the severity of ISS-020. Independently verified.
+- **Type:** Correctness / Cost
+- **Priority:** MEDIUM — nothing is broken by its absence, but a documented cost control has been silently absent since Phase 12.
+- **What is wrong:** `services/workers/api/main.py:64-68` constructs `SemanticCache(redis_url=..., qdrant_url=..., openai_api_key=...)`. The actual signature (`semantic_cache.py`) is `(redis_url, embedding_generator, similarity_threshold=0.95, ttl=3600)`. Two unexpected keyword arguments, one missing required argument — a guaranteed `TypeError`.
+- **Why nobody noticed:** the call is wrapped in `try/except Exception` and the failure is reported as `logger.warning(f"Failed to initialize SemanticCache: {e}")`. `semantic_cache` stays `None`, and `AnswerGenerator` treats `None` as "caching disabled". The system degrades silently to exactly the behaviour it would have if the feature had never been written.
+- **Signature drift, not a typo:** `main.py` is Phase 05; `SemanticCache` landed in Phase 12 with a different constructor. No test covers the wiring.
+- **Impact:** Phase 12's research put semantic caching at roughly a 40% hit rate and treated it as a primary defence for PROJECT.md's stated cost constraint. That saving has been **0% realized since Phase 12**. Any cost projection that assumed it is wrong.
+- **The ordering gate is now fully discharged, as of 2026-09-10.** It had two parts and both are done: ISS-020 org-scoped the key, and ISS-022 put the guard in CI. Repairing the constructor is therefore safe to do now — the cache will come up tenant-scoped, with 8 isolation tests gating every PR against regression.
+- **When it is repaired, expect it to be the first time this code has ever executed.** It has been dead since Phase 12, so treat a green test suite as necessary rather than sufficient; the read path in particular has never run against a populated cache outside the new tests.
+- **Class problem worth a separate look:** a bare `except Exception` + `logger.warning` around service initialization turns any wiring bug into silent feature loss. Worth auditing the other optional-dependency initializations in `main.py` on the same pass.
+
 ### ISS-001: Implement shared type definitions for cross-phase data contracts
 
 - **Discovered:** Phase 12 Task 3 (2026-01-12)
@@ -189,6 +202,45 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Recommendation:** the `AfterConnect` sentinel, giving deterministically **loud**. With `TenantScoper` in place an unscoped query is by definition a bug, and a bug that always throws is cheaper than one that sometimes returns `[]`. Still an operational-risk judgement — a 500 is worse than an empty list for a user who trips it — so it belongs to whoever owns that call, but it is now a pool-constructor line rather than a schema change.
 
 ## Closed Enhancements
+
+### ISS-022: No CI job runs the Python worker tests ✅
+
+- **Discovered:** 2026-09-10, while adding the ISS-020 regression guard and looking for the job that would run it.
+- **Type:** Testing / CI
+- **Resolved:** 2026-09-10 by `.github/workflows/workers-ci.yml`. Runs `pytest tests/` on every PR with a Redis service container; testcontainers provisions its own Postgres. **Verified by a real run, not by inspection: 24 passed in 12.25s** (run 34540233783). Every test was already passing locally — none were broken, they had simply never been executed.
+- **Priority when open:** MEDIUM-HIGH — it silently voided a whole directory of security tests.
+- **What is missing:** `.github/workflows/` contains only `backend-ci.yml` (Go: build, vet, test, race) and `isolation-check.yml` (runs `scripts/ci/check-isolation-tests.py`, a diff scanner that is itself Python but executes no test suite). **Nothing runs `pytest`.**
+- **Consequence:** everything in `services/workers/tests/isolation/` — the Python half of the tenant-isolation guarantee — has never been executed by CI. The Go isolation tests gate every PR; their Python counterparts gate nothing.
+- **It is worse than untested, because it looks tested.** The isolation CI gate accepts a Python isolation test as coverage for a Python mutation endpoint. So a test that never runs can satisfy the ratchet that exists to force real coverage.
+- **Second-order:** the `services/workers/venv` did not have `testcontainers` installed even though `requirements.txt` declares `testcontainers[postgres]>=4.0.0`, and `tests/isolation/conftest.py` imports it at module scope. So the directory could not be collected locally either — no import error had ever been surfaced by anything.
+- **Same class as a failure already recorded in STATE.md:** `pkg/vectordb` stayed uncompilable from Phase 3 to Phase 19 because nothing in CI invoked a compiler. This is that, for Python.
+- **What was done:** added `workers-ci.yml` running `pytest` with a Redis service container and Docker available for testcontainers. The ISS-020 guard (`tests/isolation/test_semantic_cache_isolation.py`) needs only Redis and `REDIS_URL`, so it can gate immediately; the Postgres-backed tests need Docker-in-CI and may need work before they pass.
+- **The ISS-020 guard now enforces.** It was documentation until this landed.
+- **The guard is now written to fail rather than skip** when `REDIS_URL` is set and Redis is unreachable, so once a CI job exists it cannot report green while guarding nothing. With `REDIS_URL` unset it still skips, which is the courtesy for a developer machine with no Redis.
+
+
+### ISS-020: The semantic cache key is not tenant-scoped ✅
+
+- **Discovered:** 2026-09-10, by the reviewer session on PR #24. **Substantially corrected 2026-09-10** after the reviewer session on PR #26 checked the original entry — see the corrections note at the end, which matters more than the finding.
+- **Type:** Security / Tenant isolation
+- **Resolved:** 2026-09-10. Key is now `cache:query:{hash}:{organization_id}:{repository_id}`; all repo-scoped scan patterns carry the organization; `clear_cache`/`get_cache_stats` refuse a falsy organization and require `all_tenants=True` for a global flush; the stored `organization_id` is re-checked on read. Guarded by `services/workers/tests/isolation/test_semantic_cache_isolation.py` (8 tests, mutation-verified). That guard runs in CI as of 2026-09-10 (ISS-022).
+- **Priority when open:** MEDIUM (latent). **Not currently exploitable, because the cache never runs** — see ISS-021. It becomes live the moment that is repaired.
+- **The chain, each link verified:**
+  1. `semantic_cache.py:149` writes keys as `cache:query:{query_hash}:{repository_id}`; `:70` reads by scanning `cache:query:*:{repository_id}`. **No organization component in either.**
+  2. `answer_generator.py:104-130` consults the cache at the top of `generate()`. A hit returns at `:130` having touched only Redis — so the tenant-scoped re-read in the retrieval path never runs.
+  3. `pkg/api/handlers/chat.go:32` takes `repository_id` from the request body with a UUID **format** check and no ownership query.
+- **Reachable only via `POST /api/chat/stream`.** `/api/search` does **not** reach the cache — it calls `query_engine.query()` directly. (The original entry cited `search.go`; that was wrong. The same missing-ownership-check weakness exists there, but it is not part of this chain.)
+- **Matching is similarity, not equality.** `get_cached_response` scans every entry for the repository and returns the best above a 0.95 cosine threshold; the `query` argument is not used for matching. A *near*-identical question is enough — the original entry's "matching query hash" precondition was too narrow.
+- **What partially contains the retrieval path (and not this one):** `_enrich_results_with_metadata` (`query_engine.py:286-348`, called unconditionally at `:202`) re-reads chunk ids under `require_tenant` and drops rows RLS withholds. Genuinely partial — the metadata counts at `:216-223` bypass that filter, and the Qdrant leg at `:264-281` is org-unscoped. The cache sits in front of all of it.
+- **Exploit preconditions, stated honestly:** an authenticated tenant, plus the victim's `repository_id` (a v4 UUID, not disclosed cross-tenant), plus the victim having asked a near-identical question about that repository inside the 1-hour TTL, plus the cache being operational. An attacker cannot self-prime the cache: the no-chunks path returns before the write-back.
+- **Why file it anyway:** the only control is the unguessability of an identifier. That is the same reasoning rejected in 20-04 — `GetInstallation` proved an installation was *real*, not that the caller *controlled* it (`20-04-SUMMARY.md:25`). We decided that once.
+- **Fix as shipped:** `organization_id` was already in scope at `answer_generator.py:76`. Add it to the key, and to **all three** scan patterns (`semantic_cache.py:70,179,244`) — miss those and invalidation silently stops matching.
+- **Regression guard — placement matters.** `chat_isolation_test.go:126` already has a cross-tenant scenario and passes, because it stubs the Python side; adding to it would be vacuous. The guard belongs in `services/workers/tests/isolation/`.
+- **Why the CI gate will not catch it:** not because it ignores POSTs — `check-isolation-tests.py` does match `Post`. It is diff-scoped to newly-added route registrations, treats coverage as a textual path mention, and models *routes*, not *data paths*. A leak inside a cache layer behind an existing route is outside what it can see. (The original entry's reasoning here was wrong; the conclusion was right.)
+- **⚠ D2/R6 does not fix this.** That decision puts RLS over the retrieval path via pgvector. The cache is Redis and sits in front of Postgres.
+- **Related, separate disposition:** `pkg/vectordb`'s `DeleteByChunkID` (`vectordb/client.go:411-437`) filters on `chunk_id` only, with no tenant predicate. Verified latent — the package has zero importers. Note that D2 removes the Qdrant path entirely, so **deleting `pkg/vectordb`** may be the correct resolution rather than adding a predicate.
+- **Corrections to the original entry, recorded deliberately.** It was filed as HIGH and "live today". Both were wrong: the cache does not run, and the precondition chain is narrower in one way (needs an operational cache) and broader in another (near-match, not exact). It also cited the wrong endpoint and the wrong reason the CI gate misses it. The errors came from repeating a report without independent verification — the same habit that produced blocking reviews on PR #24 and PR #25. Kept visible here rather than quietly rewritten.
+
 
 ### ISS-008: Request-scoped tenant transaction for DB-hitting endpoints ✅
 

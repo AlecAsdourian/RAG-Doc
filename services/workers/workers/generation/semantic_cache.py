@@ -52,22 +52,29 @@ class SemanticCache:
         self,
         query: str,
         query_embedding: List[float],
+        organization_id: UUID,
         repository_id: UUID,
     ) -> Optional[Dict[str, Any]]:
         """
-        Get cached response if similar query exists.
+        Get cached response if a similar query exists FOR THIS TENANT.
 
         Args:
             query: Query text
             query_embedding: Embedding vector for query
+            organization_id: Owning organization. Part of the cache key --
+                see the note on key format in `cache_response`.
             repository_id: Repository UUID for cache scoping
 
         Returns:
             Cached response dict if found, None otherwise
         """
         try:
-            # Scan Redis for all cached queries for this repository
-            pattern = f"cache:query:*:{str(repository_id)}"
+            # Scan only this tenant's entries for this repository. The
+            # organization segment is what keeps a caller who holds someone
+            # else's repository_id from reading their cached answers -- this
+            # layer returns before Postgres is touched, so RLS is not a
+            # backstop here. See ISS-020.
+            pattern = f"cache:query:*:{str(organization_id)}:{str(repository_id)}"
             cached_keys = list(self.redis_client.scan_iter(match=pattern))
 
             if not cached_keys:
@@ -85,6 +92,17 @@ class SemanticCache:
                 cached_data = self.redis_client.hgetall(key)
 
                 if not cached_data or "embedding" not in cached_data:
+                    continue
+
+                # Belt and braces. The key pattern above should already have
+                # excluded other tenants; this re-checks the stored value so a
+                # future change to the key format cannot silently reopen
+                # ISS-020. Cheap, and we have gotten this wrong once.
+                if cached_data.get("organization_id") != str(organization_id):
+                    logger.warning(
+                        "Skipping cache entry whose organization does not match "
+                        "the requesting tenant; key format may have drifted"
+                    )
                     continue
 
                 # Parse cached embedding
@@ -131,28 +149,42 @@ class SemanticCache:
         self,
         query: str,
         query_embedding: List[float],
+        organization_id: UUID,
         repository_id: UUID,
         response: Dict[str, Any],
     ):
         """
-        Cache a response for future similar queries.
+        Cache a response for future similar queries, scoped to one tenant.
 
         Args:
             query: Query text
             query_embedding: Embedding vector for query
+            organization_id: Owning organization
             repository_id: Repository UUID for cache scoping
             response: Response dict to cache
         """
         try:
-            # Generate cache key using query hash
+            # KEY FORMAT: cache:query:{hash}:{organization_id}:{repository_id}
+            #
+            # The organization sits between the hash and the repository so the
+            # read path can keep scanning with the hash wildcarded while still
+            # pinning both tenant and repository as an exact suffix.
+            #
+            # Every scan pattern in this file must include the organization
+            # segment. Miss one and it silently stops matching, which breaks
+            # invalidation rather than raising -- see ISS-020.
             query_hash = self._hash_query(query)
-            cache_key = f"cache:query:{query_hash}:{str(repository_id)}"
+            cache_key = (
+                f"cache:query:{query_hash}:"
+                f"{str(organization_id)}:{str(repository_id)}"
+            )
 
             # Prepare cache entry
             cache_entry = {
                 "query": query,
                 "embedding": json.dumps(query_embedding),
                 "response": json.dumps(response),
+                "organization_id": str(organization_id),
                 "repository_id": str(repository_id),
                 "timestamp": str(int(time.time())),
             }
@@ -167,18 +199,58 @@ class SemanticCache:
             logger.error(f"Error caching response: {e}")
             # Don't fail on cache errors, just log
 
-    def clear_cache(self, repository_id: Optional[UUID] = None):
+    def clear_cache(
+        self,
+        organization_id: Optional[UUID] = None,
+        repository_id: Optional[UUID] = None,
+        all_tenants: bool = False,
+    ):
         """
         Clear cached entries.
 
         Args:
-            repository_id: Optional repository UUID to clear. If None, clears all.
+            organization_id: Organization to clear. Required whenever
+                `repository_id` is given -- a repository id alone no longer
+                identifies a key, and matching on it without the tenant would
+                reach across organizations.
+            repository_id: Optional repository UUID to clear within the org.
+            all_tenants: Flush EVERY tenant's entries. Must be passed
+                explicitly; there is no way to reach a global flush by omitting
+                arguments.
+
+        Raises:
+            ValueError: if no `organization_id` is given without
+                `all_tenants=True`, or if `all_tenants` is combined with a scope.
         """
+        # A GLOBAL FLUSH IS OPT-IN, NOT A FALLTHROUGH.
+        #
+        # The first version of this guard checked `organization_id is None`
+        # while the branches below tested truthiness. An empty string passed
+        # the guard, failed every branch, and fell through to `cache:query:*`
+        # -- deleting every tenant's entries. Found in review, reproduced.
+        #
+        # Now: anything falsy is refused, and the global pattern is only
+        # reachable by asking for it by name.
+        if all_tenants:
+            if organization_id or repository_id:
+                raise ValueError(
+                    "all_tenants=True cannot be combined with organization_id "
+                    "or repository_id"
+                )
+        elif not organization_id:
+            raise ValueError(
+                "clear_cache requires organization_id, or all_tenants=True for a "
+                "deliberate global flush (ISS-020)"
+            )
         try:
-            if repository_id:
-                pattern = f"cache:query:*:{str(repository_id)}"
-            else:
+            if all_tenants:
                 pattern = "cache:query:*"
+            elif repository_id:
+                pattern = (
+                    f"cache:query:*:{str(organization_id)}:{str(repository_id)}"
+                )
+            else:
+                pattern = f"cache:query:*:{str(organization_id)}:*"
 
             keys = list(self.redis_client.scan_iter(match=pattern))
 
@@ -229,21 +301,48 @@ class SemanticCache:
         """
         return hashlib.sha256(query.encode("utf-8")).hexdigest()[:16]
 
-    def get_cache_stats(self, repository_id: Optional[UUID] = None) -> Dict[str, int]:
+    def get_cache_stats(
+        self,
+        organization_id: Optional[UUID] = None,
+        repository_id: Optional[UUID] = None,
+        all_tenants: bool = False,
+    ) -> Dict[str, int]:
         """
         Get cache statistics.
 
         Args:
+            organization_id: Organization to filter by. Required whenever
+                `repository_id` is given.
             repository_id: Optional repository UUID to filter
 
         Returns:
             Dict with cache stats
+
+        Raises:
+            ValueError: if `repository_id` is given without `organization_id`.
         """
+        # Same guard as clear_cache, for the same reason -- a falsy
+        # organization_id must not fall through to the all-tenants pattern.
+        if all_tenants:
+            if organization_id or repository_id:
+                raise ValueError(
+                    "all_tenants=True cannot be combined with organization_id "
+                    "or repository_id"
+                )
+        elif not organization_id:
+            raise ValueError(
+                "get_cache_stats requires organization_id, or all_tenants=True "
+                "(ISS-020)"
+            )
         try:
-            if repository_id:
-                pattern = f"cache:query:*:{str(repository_id)}"
-            else:
+            if all_tenants:
                 pattern = "cache:query:*"
+            elif repository_id:
+                pattern = (
+                    f"cache:query:*:{str(organization_id)}:{str(repository_id)}"
+                )
+            else:
+                pattern = f"cache:query:*:{str(organization_id)}:*"
 
             keys = list(self.redis_client.scan_iter(match=pattern))
 
