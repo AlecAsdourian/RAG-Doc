@@ -176,6 +176,14 @@ class SemanticChunker:
         # Include docstring if present
         if "docstring" in func_info:
             metadata["docstring"] = func_info["docstring"]
+        elif language == "go":
+            # The parser extracts docstrings only for Python. A Go doc comment
+            # sits ABOVE `func`, outside this chunk's line range, so until this
+            # call it reached neither the chunk content nor the embedding text --
+            # the most informative English in the backend was never embedded.
+            doc = metadata_builder.extract_docstring(node, content_bytes)
+            if doc:
+                metadata["docstring"] = doc
 
         return Chunk(
             content=chunk_content,
@@ -237,6 +245,13 @@ class SemanticChunker:
         # Include docstring if present
         if "docstring" in class_info:
             metadata["docstring"] = class_info["docstring"]
+        elif language == "go":
+            # Same gap as functions: a type's doc comment sits above `type`. The
+            # node is the whole declaration, and a grouped `type ( ... )` holds
+            # several types, so the comment is looked up by this type's name.
+            doc = metadata_builder.extract_go_type_docstring(node, class_name, content_bytes)
+            if doc:
+                metadata["docstring"] = doc
 
         return Chunk(
             content=chunk_content,

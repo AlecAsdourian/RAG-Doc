@@ -92,4 +92,10 @@ jobs:
           # call fails loudly on an obviously fake key rather than reaching the
           # real API with whatever happens to be in the environment.
           OPENAI_API_KEY: test-key-not-used-by-any-test-in-ci
-        run: pytest tests/ -v --tb=short
+        # Unit tests beside the modules they cover (workers/**/test_*.py) run
+        # too. Until 2026-09-13 this line ran tests/ only, so the parser,
+        # chunker, fusion and booster unit tests never ran in CI -- the same
+        # failure ISS-022 recorded, one directory over. It hid a real break:
+        # test_pipeline.py had drifted from the pipeline it tests and failed
+        # on every run nobody was making.
+        run: pytest tests/ workers/ -v --tb=short

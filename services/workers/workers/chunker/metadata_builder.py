@@ -35,12 +35,29 @@ class MetadataBuilder:
             Example: ["UserService", "authenticate"] for a method
         """
         ancestors = []
+
+        # A Go method's syntactic parent is the file, so walking parents alone
+        # yields no ancestor and a bare breadcrumb like "Connect". Its owner is
+        # named in the receiver instead: `func (h *RepositoriesHandler) Connect`
+        # belongs to RepositoriesHandler, and the breadcrumb should say so.
+        if self.language == "go" and node.type == "method_declaration":
+            receiver_type = self._go_receiver_type(node, content)
+            if receiver_type:
+                ancestors.append(receiver_type)
+
         current = node.parent
 
         while current:
             ancestor_name = self._extract_node_name(current, content)
             if ancestor_name:
                 ancestors.insert(0, ancestor_name)  # Prepend to maintain order
+                # The same ownership rule applies when the walk passes THROUGH a
+                # Go method: a type declared inside `func (h *Handler) Serve()`
+                # belongs to Handler.Serve, not to a bare Serve.
+                if self.language == "go" and current.type == "method_declaration":
+                    receiver_type = self._go_receiver_type(current, content)
+                    if receiver_type:
+                        ancestors.insert(0, receiver_type)
             current = current.parent
 
         return ancestors
@@ -122,6 +139,38 @@ class MetadataBuilder:
 
         return None
 
+    def extract_go_type_docstring(
+        self, declaration: Node, type_name: str, content: bytes
+    ) -> Optional[str]:
+        """
+        Extract the doc comment for one type in a Go `type` declaration.
+
+        A grouped `type ( ... )` holds several types, each documented by the
+        comment directly above its own spec, while the comment above `type (`
+        documents the group. go/doc uses a type's own comment and falls back to
+        the group's only when the type has none, and so does this. Reading the
+        declaration alone gave every type in a group the group's comment and
+        dropped their own.
+
+        Args:
+            declaration: The `type_declaration` node
+            type_name: Name of the type being chunked
+            content: Source code as bytes
+
+        Returns:
+            Docstring text or None if not found
+        """
+        for spec in declaration.named_children:
+            if spec.type != "type_spec":
+                continue
+            name = spec.child_by_field_name("name")
+            if name is not None and self._get_node_text(name, content) == type_name:
+                own = self._extract_go_docstring(spec, content)
+                if own:
+                    return own
+                break
+        return self._extract_go_docstring(declaration, content)
+
     # Private helper methods
 
     def _extract_node_name(self, node: Node, content: bytes) -> Optional[str]:
@@ -129,7 +178,7 @@ class MetadataBuilder:
         # Language-specific node types that have names
         named_types = {
             "python": ["class_definition", "function_definition"],
-            "go": ["function_declaration", "type_declaration", "type_spec"],
+            "go": ["function_declaration", "method_declaration", "type_declaration", "type_spec"],
             "typescript": ["class_declaration", "function_declaration", "method_definition"],
             "javascript": ["class_declaration", "function_declaration", "method_definition"],
         }
@@ -138,6 +187,12 @@ class MetadataBuilder:
 
         if node.type not in lang_types:
             return None
+
+        # A Go method's name is a `field_identifier`, which the child scan below
+        # does not look for -- so use the grammar's `name` field directly.
+        if node.type == "method_declaration":
+            name_node = node.child_by_field_name("name")
+            return self._get_node_text(name_node, content) if name_node else None
 
         # Find the name child node
         for child in node.children:
@@ -154,13 +209,34 @@ class MetadataBuilder:
         """Check if node represents a meaningful scope (class, function)."""
         scope_types = {
             "python": ["class_definition", "function_definition"],
-            "go": ["function_declaration", "type_declaration"],
+            "go": ["function_declaration", "method_declaration", "type_declaration"],
             "typescript": ["class_declaration", "function_declaration", "method_definition"],
             "javascript": ["class_declaration", "function_declaration", "method_definition"],
         }
 
         lang_types = scope_types.get(self.language, [])
         return node.type in lang_types
+
+    def _go_receiver_type(self, node: Node, content: bytes) -> Optional[str]:
+        """Return the base type a Go method is declared on.
+
+        `(h *RepositoriesHandler)` -> "RepositoriesHandler"
+        `(c Client)`               -> "Client"
+        `(s *Stack[T])`            -> "Stack"
+
+        The first `type_identifier` in document order within the receiver is the
+        base type; any later ones are type arguments.
+        """
+        receiver = node.child_by_field_name("receiver")
+        if receiver is None:
+            return None
+        stack = [receiver]
+        while stack:
+            current = stack.pop()
+            if current.type == "type_identifier":
+                return self._get_node_text(current, content)
+            stack.extend(reversed(current.children))
+        return None
 
     def _extract_scope_signature(self, node: Node, content: bytes) -> str:
         """Extract the signature line of a scope node."""
@@ -193,21 +269,48 @@ class MetadataBuilder:
         return None
 
     def _extract_go_docstring(self, node: Node, content: bytes) -> Optional[str]:
-        """Extract comment block before Go function."""
-        # Go docstrings are comments immediately before the function
-        # Look for comment nodes that are previous siblings
-        if not node.prev_sibling:
-            return None
+        """Extract the doc comment directly above a Go declaration.
 
-        # Check if previous sibling is a comment
+        Tree-sitter makes each `//` line its own `comment` node, so a doc comment
+        is a run of comment siblings, each ending on the line directly above the
+        next. The earlier version read only the single previous sibling and so
+        kept the LAST line of a multi-line comment -- for AppJWT,
+        "installation tokens." instead of "AppJWT mints a short-lived RS256
+        token identifying the App itself."
+
+        Stops at a blank line, since Go does not treat a separated comment as
+        attached. Skips `//go:` directive lines, which are compiler instructions
+        rather than documentation. A comment trailing code on the same line is
+        not documentation either.
+        """
+        lines: List[str] = []
+        expected_end_row = node.start_point[0] - 1
         prev = node.prev_sibling
-        if prev.type == "comment":
-            comment_text = self._get_node_text(prev, content)
-            # Remove // or /* */ markers
-            comment_text = comment_text.strip("//").strip("/*").strip("*/")
-            return comment_text.strip()
+        while (
+            prev is not None
+            and prev.type == "comment"
+            and prev.end_point[0] == expected_end_row
+        ):
+            before = prev.prev_sibling
+            if before is not None and before.end_point[0] == prev.start_point[0]:
+                break  # trails a line of code; not a doc comment
+            lines[:0] = self._clean_go_comment(self._get_node_text(prev, content))
+            expected_end_row = prev.start_point[0] - 1
+            prev = before
 
-        return None
+        text = "\n".join(line for line in lines if not line.startswith("go:")).strip()
+        return text or None
+
+    @staticmethod
+    def _clean_go_comment(raw: str) -> List[str]:
+        """Strip comment markers from one `//` line or one `/* */` block."""
+        if raw.startswith("//"):
+            body = raw[2:]
+            return [body[1:] if body.startswith(" ") else body]
+        if raw.startswith("/*"):
+            inner = raw[2:-2] if raw.endswith("*/") else raw[2:]
+            return [ln.strip().lstrip("*").strip() for ln in inner.splitlines()]
+        return [raw]
 
     def _extract_js_docstring(self, node: Node, content: bytes) -> Optional[str]:
         """Extract JSDoc comment before TypeScript/JavaScript function."""
