@@ -12,6 +12,7 @@ from psycopg2.extras import RealDictCursor
 
 from workers.db import require_tenant
 
+from .errors import RETRIEVER_LABELS, RetrievalError
 from .fts_retriever import FTSRetriever
 from .metadata_booster import MetadataBooster
 from .query_parser import QueryParser
@@ -126,6 +127,11 @@ class QueryEngine:
                 - results: List of top-k chunks with metadata and scores
                 - metadata: Pipeline stats (counts, duration)
 
+        Raises:
+            RetrievalError: If keyword (FTS) or vector search raises. It names
+                the failed retriever(s) and chains the original exception. No
+                partial result is returned (ISS-030).
+
         Example:
             >>> engine = QueryEngine(postgres_conn, qdrant_url, openai_key)
             >>> result = engine.query(
@@ -150,34 +156,49 @@ class QueryEngine:
             f"{len(parsed_query['identifiers'])} identifiers"
         )
 
-        # Step 2: Run FTS and vector searches in parallel
-        fts_results = []
-        vector_results = []
-        fts_error = None
-        vector_error = None
+        # Step 2: Run FTS and vector searches in parallel, and wait for both.
+        #
+        # If either retriever fails, the whole query fails with RetrievalError
+        # (ISS-030). No partial result is returned, because a caller cannot tell
+        # one from a real result:
+        # - Without vector search the result is usually empty, since keyword
+        #   search returns nothing for most natural-language questions (ISS-029).
+        #   That reached users as an empty search, or as a chat answer of "I
+        #   don't have enough information", with HTTP 200.
+        # - Without keyword search, fusion and boosts run over the vector list
+        #   alone, which silently changes the ranking. Keyword search also shares
+        #   its Postgres with result enrichment (step 6), so the rest of the
+        #   query depends on what just failed.
+        # The failure used to survive only as response metadata, which nothing read.
+        retrieved: Dict[str, List[Dict]] = {}
+        failures: Dict[str, Exception] = {}
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            # Submit both searches
-            fts_future = executor.submit(
-                self._run_fts_search, query_text, organization_id, repository_id, run_id
-            )
-            vector_future = executor.submit(
-                self._run_vector_search, query_text, repository_id, run_id
-            )
+            futures = {
+                "fts": executor.submit(
+                    self._run_fts_search, query_text, organization_id, repository_id, run_id
+                ),
+                "vector": executor.submit(
+                    self._run_vector_search, query_text, repository_id, run_id
+                ),
+            }
+            for name, future in futures.items():
+                try:
+                    retrieved[name] = future.result()
+                except Exception as e:  # re-raised below as RetrievalError
+                    failures[name] = e
 
-            # Get FTS results with error handling
-            try:
-                fts_results = fts_future.result()
-            except Exception as e:
-                fts_error = e
-                logger.error(f"FTS search failed: {e}")
+        if failures:
+            for name, e in failures.items():
+                logger.error(
+                    f"{RETRIEVER_LABELS[name]} failed: organization_id={organization_id}, "
+                    f"repository_id={repository_id}: {type(e).__name__}: {e}",
+                    exc_info=e,
+                )
+            raise RetrievalError(failures) from next(iter(failures.values()))
 
-            # Get vector results with error handling
-            try:
-                vector_results = vector_future.result()
-            except Exception as e:
-                vector_error = e
-                logger.error(f"Vector search failed: {e}")
+        fts_results = retrieved["fts"]
+        vector_results = retrieved["vector"]
 
         logger.info(
             f"Parallel search complete: FTS={len(fts_results)} results, "
@@ -218,8 +239,6 @@ class QueryEngine:
                 "vector_results": len(vector_results),
                 "fused_results": len(fused_results),
                 "duration_ms": duration_ms,
-                "fts_error": str(fts_error) if fts_error else None,
-                "vector_error": str(vector_error) if vector_error else None,
             },
         }
 
@@ -238,7 +257,8 @@ class QueryEngine:
         run_id: Optional[UUID],
     ) -> List[Dict]:
         """
-        Run FTS search with error handling.
+        Run FTS search. An exception propagates to `query`, which logs it and
+        raises RetrievalError.
 
         Args:
             query_text: Search query.
@@ -249,23 +269,20 @@ class QueryEngine:
         Returns:
             List of FTS results.
         """
-        try:
-            return self.fts_retriever.search(
-                query=query_text,
-                organization_id=organization_id,
-                repository_id=repository_id,
-                limit=50,
-                run_id=run_id,
-            )
-        except Exception as e:
-            logger.error(f"FTS search error: {e}")
-            raise
+        return self.fts_retriever.search(
+            query=query_text,
+            organization_id=organization_id,
+            repository_id=repository_id,
+            limit=50,
+            run_id=run_id,
+        )
 
     def _run_vector_search(
         self, query_text: str, repository_id: UUID, run_id: Optional[UUID]
     ) -> List[Dict]:
         """
-        Run vector search with error handling.
+        Run vector search. An exception propagates to `query`, which logs it
+        and raises RetrievalError.
 
         Args:
             query_text: Search query
@@ -275,13 +292,9 @@ class QueryEngine:
         Returns:
             List of vector results
         """
-        try:
-            return self.vector_retriever.search(
-                query=query_text, repository_id=repository_id, limit=50, run_id=run_id
-            )
-        except Exception as e:
-            logger.error(f"Vector search error: {e}")
-            raise
+        return self.vector_retriever.search(
+            query=query_text, repository_id=repository_id, limit=50, run_id=run_id
+        )
 
     def _enrich_results_with_metadata(
         self,

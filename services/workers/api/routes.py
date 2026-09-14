@@ -9,6 +9,8 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from workers.retrieval import RetrievalError
+
 from .models import (
     ChatRequest,
     ChatResponse,
@@ -22,6 +24,27 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Client-facing error text is fixed. An exception's text never goes into a
+# response: an OpenAI authentication error, for one, contains a masked fragment
+# of the API key. The full error is logged server-side instead.
+SEARCH_FAILED_DETAIL = "Search failed due to an internal error"
+CHAT_FAILED_DETAIL = "Chat failed due to an internal error"
+
+
+def retrieval_unavailable_detail(error: RetrievalError) -> str:
+    """Retryable, client-safe message for a failed retriever.
+
+    It names the failed retriever(s) and nothing else; see RetrievalError.
+    """
+    return (
+        f"Search is temporarily unavailable ({error.failed_description} failed); "
+        "please retry"
+    )
+
+
+def _sse_error(message: str) -> str:
+    return f"data: {json.dumps({'type': 'error', 'error': message})}\n\n"
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -80,9 +103,16 @@ async def search(request: SearchRequest, req: Request) -> SearchResponse:
             metadata=result.get("metadata"),
         )
 
+    except RetrievalError as e:
+        # ISS-030: a failed retriever fails the request rather than returning
+        # 200 with partial or empty results. 503, because a dependency (OpenAI,
+        # Qdrant or Postgres) is failing and a retry may succeed.
+        logger.error(f"Search failed: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail=retrieval_unavailable_detail(e))
+
     except Exception as e:
-        logger.error(f"Search error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Search error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=SEARCH_FAILED_DETAIL)
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -135,9 +165,15 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
             chunks_retrieved=result.get("chunks_retrieved"),
         )
 
+    except RetrievalError as e:
+        # ISS-030: without retrieval there is nothing to ground an answer in,
+        # and "I don't have enough information" would be a false answer.
+        logger.error(f"Chat failed: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail=retrieval_unavailable_detail(e))
+
     except Exception as e:
-        logger.error(f"Chat error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Chat error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=CHAT_FAILED_DETAIL)
 
 
 @router.post("/chat/stream")
@@ -206,9 +242,15 @@ async def chat_stream(request: ChatRequest, req: Request):
             }
             yield f"data: {json.dumps(done_event)}\n\n"
 
+        except RetrievalError as e:
+            # ISS-030: same message as the 503 on /search and /chat. The stream
+            # has already answered 200, so the failure travels as an error frame.
+            logger.error(f"Chat stream failed: {e}", exc_info=True)
+            yield _sse_error(retrieval_unavailable_detail(e))
+
         except Exception as e:
-            logger.error(f"Chat stream error: {e}")
-            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+            logger.error(f"Chat stream error: {e}", exc_info=True)
+            yield _sse_error(CHAT_FAILED_DETAIL)
 
     return StreamingResponse(
         generate(),

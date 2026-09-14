@@ -97,6 +97,10 @@ class AnswerGenerator:
                 - cache_hit: Whether answer came from cache (if cache enabled)
                 - chunks_retrieved: Number of chunks retrieved
                 - sources: List of source chunks with citations
+
+        Raises:
+            RetrievalError: If keyword or vector search fails. It propagates
+                unchanged; it is never turned into an answer or cached.
         """
         logger.info(f"Generating answer for query: {query}")
 
@@ -130,7 +134,12 @@ class AnswerGenerator:
                     cached_response["total_cost"] = 0.0
                     return cached_response
 
-        # Cache miss - retrieve chunks
+        # Cache miss - retrieve chunks.
+        #
+        # A failed retriever raises RetrievalError here, and it is deliberately
+        # not caught (ISS-030). Answering "I don't have enough information" would
+        # present an outage as a fact about the code. It also returns before the
+        # cache write-back below, so a failure is never cached.
         retrieval_result = self.query_engine.query(
             query_text=query,
             organization_id=organization_id,
@@ -143,7 +152,7 @@ class AnswerGenerator:
         logger.info(f"Retrieved {len(chunks)} chunks")
 
         if not chunks:
-            # No chunks found - return "don't know" response
+            # Retrieval succeeded and matched nothing - return "don't know" response
             return {
                 "answer": "I don't have enough information to answer that question. The query didn't match any code in the repository.",
                 "model": self.model,
