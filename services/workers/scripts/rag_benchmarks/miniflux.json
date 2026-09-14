@@ -1,0 +1,384 @@
+{
+  "description": "miniflux, a self-hosted RSS reader written in Go.",
+  "repository": "https://github.com/miniflux/v2",
+  "commit": "76889f08b12c2577b37e524e645afa5dd46ff050",
+  "roots": [
+    {
+      "path": ".",
+      "extensions": [
+        ".go"
+      ],
+      "language": "go"
+    }
+  ],
+  "exclude": [
+    "_test\\.go$"
+  ],
+  "scope": "Every non-test .go file; the harness also skips testdata/ and vendor/.",
+  "questions_written": "2026-09-13",
+  "question_policy": "Written and verified against the code at the pinned commit before any retrieval result for this corpus was seen. Split fixed before measuring: odd-numbered ids are tuning, even-numbered ids are holdout.",
+  "questions": [
+    {
+      "id": "mf-01",
+      "set": "tuning",
+      "question": "Some websites put a 'checking your browser' wall in front of their feeds. What decides that a 403 response is one of those walls rather than an ordinary access-denied error?",
+      "path": "internal/reader/fetcher/response_handler.go",
+      "symbol": "ResponseHandler.isCloudflareChallenge",
+      "evidence": "internal/reader/fetcher/response_handler.go:235 — returns true only for a 403 whose cf-mitigated header equals \"challenge\" and whose Content-Type is text/html, which LocalizedError then reports as a challenge instead of a plain forbidden error."
+    },
+    {
+      "id": "mf-02",
+      "set": "holdout",
+      "question": "How does the app work out whether a downloaded document is RSS, Atom (and which Atom version), RDF or JSON Feed before it picks a parser?",
+      "path": "internal/reader/parser/format.go",
+      "symbol": "DetectFeedFormat",
+      "evidence": "internal/reader/parser/format.go:27 — first checks whether the first non-whitespace byte is '{' for JSON, then scans up to 50 XML tokens for an rss, feed (version 0.3 vs 1.0) or RDF root element, returning unknown otherwise."
+    },
+    {
+      "id": "mf-03",
+      "set": "tuning",
+      "question": "During a feed refresh, if fetching the full article from the original website is enabled and it succeeds, are the block and keep rules applied again to the fetched content?",
+      "path": "internal/reader/processor/processor.go",
+      "symbol": "ProcessFeedEntries",
+      "evidence": "internal/reader/processor/processor.go:27 — applies the filter rules once before scraping and, only when scraped content actually replaced the entry body, runs them a second time (the after_scrape stage) and drops the entry if it now matches."
+    },
+    {
+      "id": "mf-04",
+      "set": "holdout",
+      "question": "Where do article links get stripped of the marketing and click-tracking junk that newsletters and social networks append to the query string?",
+      "path": "internal/reader/urlcleaner/urlcleaner.go",
+      "symbol": "RemoveTrackingParameters",
+      "evidence": "internal/reader/urlcleaner/urlcleaner.go:129 — walks the URL's query parameters, deletes known tracker keys and utm_/mtm_ prefixed ones plus outbound ref values pointing at the feed or site host, and re-encodes the cleaned URL."
+    },
+    {
+      "id": "mf-05",
+      "set": "tuning",
+      "question": "How does feed discovery guess feed addresses for a website whose pages don't link to any feed, and how does it avoid suggesting addresses that just bounce back to the homepage?",
+      "path": "internal/reader/subscription/finder.go",
+      "symbol": "subscriptionFinder.findSubscriptionsFromWellKnownURLs",
+      "evidence": "internal/reader/subscription/finder.go:195 — probes a fixed list of paths (atom.xml, feed.xml, rss/, index.xml, ...) under the site root and current subdirectory with redirects disabled, skipping any response that is a redirect or an error."
+    },
+    {
+      "id": "mf-06",
+      "set": "holdout",
+      "question": "When the scheduler adapts to how often each RSS source publishes, how is the waiting time until that source gets polled again calculated?",
+      "path": "internal/model/feed.go",
+      "symbol": "Feed.ScheduleNextCheck",
+      "evidence": "internal/model/feed.go:123 — for the entry-frequency scheduler divides one week by weeklyCount times the configured factor, clamps it between the min and max intervals, takes the max with the TTL/Retry-After/cache delay, caps it, and sets NextCheckAt."
+    },
+    {
+      "id": "mf-07",
+      "set": "tuning",
+      "question": "What limits how many feeds hosted on the same website get put into a single background refresh batch?",
+      "path": "internal/storage/batch.go",
+      "symbol": "batchBuilder.FetchJobs",
+      "evidence": "internal/storage/batch.go:75 — when a per-host limit is set, it counts jobs per feed hostname while reading rows ordered by next_check_at and skips further feeds once that host's count reaches the limit."
+    },
+    {
+      "id": "mf-08",
+      "set": "holdout",
+      "question": "When old articles get purged automatically, which ones are spared, for example ones I bookmarked or shared publicly?",
+      "path": "internal/storage/entry.go",
+      "symbol": "Storage.ArchiveEntries",
+      "evidence": "internal/storage/entry.go:368 — its delete query only selects entries of the given status that are not starred, have an empty share_code and were created before the interval, and it records tombstones for what it deletes."
+    },
+    {
+      "id": "mf-09",
+      "set": "tuning",
+      "question": "Where is it worked out how often a feed tends to publish, using the spacing between its articles from the last seven days, so the adaptive refresh schedule has a number to use?",
+      "path": "internal/storage/feed.go",
+      "symbol": "Storage.WeeklyFeedEntryCount",
+      "evidence": "internal/storage/feed.go:177 — its SQL divides the length of a week by the average gap between published_at values of the feed's entries from the past week, returning 0 when there are fewer than two entries."
+    },
+    {
+      "id": "mf-10",
+      "set": "holdout",
+      "question": "What happens when a client calls the REST API with a username and password while local password login has been disabled in the configuration?",
+      "path": "internal/api/middleware.go",
+      "symbol": "middleware.validateBasicAuth",
+      "evidence": "internal/api/middleware.go:91 — once a Basic auth header is present it checks config.Opts.DisableLocalAuth() and responds 401 Unauthorized with a warning log before any password is checked."
+    },
+    {
+      "id": "mf-11",
+      "set": "tuning",
+      "question": "Where does the REST API let an external tool add a single article to one of the user's existing feeds, and what read status does the article get when the caller doesn't specify one?",
+      "path": "internal/api/entry_handlers.go",
+      "symbol": "handler.importFeedEntryHandler",
+      "evidence": "internal/api/entry_handlers.go:354 — serves POST /v1/feeds/{feedID}/entries/import, defaults the status to read, hashes the external ID or URL for de-duplication, sanitizes the content and stores it with InsertEntryForFeed."
+    },
+    {
+      "id": "mf-12",
+      "set": "holdout",
+      "question": "What happens when someone requests a picture through the built-in image proxy using a link whose signature doesn't match the encoded image address?",
+      "path": "internal/ui/proxy.go",
+      "symbol": "handler.mediaProxy",
+      "evidence": "internal/ui/proxy.go:27 — recomputes the HMAC-SHA256 of the decoded URL with the media proxy private key and returns 403 Forbidden when hmac.Equal fails, before fetching the remote resource."
+    },
+    {
+      "id": "mf-13",
+      "set": "tuning",
+      "question": "How does signing in through a reverse proxy that passes the username in an HTTP header work for the web UI, and what happens if that user doesn't have an account yet?",
+      "path": "internal/ui/auth_proxy_middleware.go",
+      "symbol": "authProxyMiddleware.handle",
+      "evidence": "internal/ui/auth_proxy_middleware.go:26 — only honours the configured header when the remote IP is in the trusted proxy networks, looks the user up by that value, creates the account if auth-proxy user creation is allowed (otherwise 403), then opens a web session and redirects."
+    },
+    {
+      "id": "mf-14",
+      "set": "holdout",
+      "question": "What happens when a form is submitted to the web interface without a valid anti-forgery token, and why does the login page get different treatment?",
+      "path": "internal/ui/csrf_middleware.go",
+      "symbol": "csrfMiddleware.validate",
+      "evidence": "internal/ui/csrf_middleware.go:41 — compares the session token with the csrf form field or X-Csrf-Token header in constant time; on mismatch it logs a warning and redirects to the base path for /login but returns 400 Bad Request everywhere else."
+    },
+    {
+      "id": "mf-15",
+      "set": "tuning",
+      "question": "Where are newly found articles sent out to chat and notification services such as Matrix, Discord, Slack or ntfy after a feed refresh?",
+      "path": "internal/integration/integration.go",
+      "symbol": "PushEntries",
+      "evidence": "internal/integration/integration.go:511 — receives the feed and its new entries after a refresh and, for each enabled service (Matrix, webhook, ntfy, Apprise, Discord, Slack, ...), builds that service's client and dispatches the entries."
+    },
+    {
+      "id": "mf-16",
+      "set": "holdout",
+      "question": "How can the server receiving outgoing webhook calls verify that a request really came from this app?",
+      "path": "internal/integration/webhook/webhook.go",
+      "symbol": "Client.makeRequest",
+      "evidence": "internal/integration/webhook/webhook.go:112 — signs the JSON request body with an HMAC-SHA256 of the user's webhook secret and sends it in the X-Miniflux-Signature header together with X-Miniflux-Event-Type."
+    },
+    {
+      "id": "mf-17",
+      "set": "tuning",
+      "question": "When the app is deployed behind nginx or another proxy, where is the visitor's own address extracted from the forwarded request headers, and which header is preferred?",
+      "path": "internal/http/request/client_ip.go",
+      "symbol": "FindClientIP",
+      "evidence": "internal/http/request/client_ip.go:38 — for a trusted proxy it checks X-Forwarded-For before X-Real-Ip, taking the first valid address in the list, and otherwise falls back to the TCP remote address."
+    },
+    {
+      "id": "mf-18",
+      "set": "holdout",
+      "question": "Who is allowed to read the Prometheus monitoring stats, and how do the optional username and password interact with the network allowlist?",
+      "path": "internal/http/server/metrics.go",
+      "symbol": "isAllowedToAccessMetricsEndpoint",
+      "evidence": "internal/http/server/metrics.go:33 — if metrics credentials are configured it requires matching Basic auth compared in constant time, and in every case the remote IP must also fall inside the allowed metrics networks."
+    },
+    {
+      "id": "mf-19",
+      "set": "tuning",
+      "question": "Which characters are allowed in a username when a new account is created with a password?",
+      "path": "internal/validator/user.go",
+      "symbol": "validateUsername",
+      "evidence": "internal/validator/user.go:181 — rejects the name with error.invalid_username if any rune is not a letter, a digit, '_', '-', '@' or '.'."
+    },
+    {
+      "id": "mf-20",
+      "set": "holdout",
+      "question": "Which offset and limit values cause the REST API's entry listing to reject the request as invalid?",
+      "path": "internal/validator/validator.go",
+      "symbol": "ValidateRange",
+      "evidence": "internal/validator/validator.go:18 — returns an error for a negative offset, a negative limit, or a limit above model.MaxEntryLimit, which the API's findEntries turns into a 400 response."
+    },
+    {
+      "id": "mf-21",
+      "set": "tuning",
+      "question": "Which conflicting or half-configured settings stop the app from starting, for example turning off local login without providing any other way to sign in?",
+      "path": "internal/config/parser.go",
+      "symbol": "configOptions.Validate",
+      "evidence": "internal/config/parser.go:54 — returns errors for OIDC without a discovery endpoint, DISABLE_LOCAL_AUTH without OAuth2 or an auth proxy header, an auth proxy without trusted networks, unpaired cert/key or metrics credentials, and inverted min/max limits; cli.Parse calls it at startup."
+    },
+    {
+      "id": "mf-22",
+      "set": "holdout",
+      "question": "Which spellings are accepted for on/off configuration options, and what happens when a value isn't one of them?",
+      "path": "internal/config/parser.go",
+      "symbol": "parseBoolValue",
+      "evidence": "internal/config/parser.go:249 — accepts 1/yes/true/on and 0/no/false/off case-insensitively, keeps the default for an empty value, and returns an \"invalid boolean value\" error for anything else."
+    },
+    {
+      "id": "mf-23",
+      "set": "tuning",
+      "question": "What happens to refresh jobs that are still waiting to be handed to the background workers once the application begins shutting down?",
+      "path": "internal/worker/pool.go",
+      "symbol": "Pool.Push",
+      "evidence": "internal/worker/pool.go:23 — sends each job on the queue channel inside a select that returns as soon as the shutdown channel is closed, so the jobs not yet handed over are dropped."
+    },
+    {
+      "id": "mf-24",
+      "set": "holdout",
+      "question": "Where is the periodic housekeeping that removes stale login sessions, old articles and unused feed icons carried out?",
+      "path": "internal/cli/cleanup_tasks.go",
+      "symbol": "runCleanupTasks",
+      "evidence": "internal/cli/cleanup_tasks.go:16 — calls CleanOldWebSessions, ArchiveEntries for read and for unread entries with their configured intervals, and CleanupOrphanIcons, logging results and recording metrics."
+    },
+    {
+      "id": "mf-25",
+      "set": "tuning",
+      "question": "How does the Google Reader-compatible API cope with client apps that send article IDs in different formats?",
+      "path": "internal/googlereader/item.go",
+      "symbol": "parseItemID",
+      "evidence": "internal/googlereader/item.go:29 — accepts the long 'tag:google.com,2005:reader/item/' hexadecimal form, a bare 16-character hex string, or a plain decimal integer, and returns an error for anything else."
+    },
+    {
+      "id": "mf-26",
+      "set": "holdout",
+      "question": "How does the Fever-compatible API check who is calling it?",
+      "path": "internal/fever/middleware.go",
+      "symbol": "Middleware",
+      "evidence": "internal/fever/middleware.go:17 — reads the api_key form value, looks the user up with UserByFeverToken, answers with the Fever auth-failure JSON when the key is missing or unknown, and otherwise puts the user into the request context."
+    },
+    {
+      "id": "mf-27",
+      "set": "tuning",
+      "question": "When someone signs in through a generic OpenID Connect provider, which piece of identity information from the provider ends up as the account name, and what happens if none of it is filled in?",
+      "path": "internal/oauth2/oidc.go",
+      "symbol": "oidcProvider.Profile",
+      "evidence": "internal/oauth2/oidc.go:64 — after exchanging the code and verifying the ID token and matching subject, it uses the first non-empty of preferred_username, email, name and profile, and returns ErrEmptyUsername if all are empty."
+    },
+    {
+      "id": "mf-28",
+      "set": "holdout",
+      "question": "Where does the translation code choose between the singular and the various plural wordings of a message for languages such as Russian, Polish or Arabic?",
+      "path": "internal/locale/plural.go",
+      "symbol": "getPluralForm",
+      "evidence": "internal/locale/plural.go:8 — switches on the language code and returns the index of the plural variant using per-language rules, e.g. n%10/n%100 checks for ru_RU and pl_PL and six forms for ar_SA."
+    },
+    {
+      "id": "mf-29",
+      "set": "tuning",
+      "question": "How are database schema upgrades applied, and what happens if one upgrade step fails partway through?",
+      "path": "internal/database/database.go",
+      "symbol": "Migrate",
+      "evidence": "internal/database/database.go:13 — reads schema_version and runs each pending migration in its own transaction, rolling back and returning an error on failure so the stored version never moves past the failed step."
+    },
+    {
+      "id": "mf-30",
+      "set": "holdout",
+      "question": "Where are human-friendly relative dates like 'yesterday' or '3 weeks ago' worked out for the web pages?",
+      "path": "internal/template/functions.go",
+      "symbol": "elapsedTime",
+      "evidence": "internal/template/functions.go:284 — converts the time into the user's timezone and buckets the difference into now, minutes, hours, yesterday, days, weeks, months or years translation strings."
+    },
+    {
+      "id": "mf-31",
+      "set": "confirm",
+      "question": "What happens to a website's favicon after it is downloaded if the image is very large, say thousands of pixels wide? Is it scaled down, kept as is, or thrown away?",
+      "path": "internal/reader/icon/finder.go",
+      "symbol": "resizeIcon",
+      "evidence": "internal/reader/icon/finder.go:186 — rejects raster icons larger than 4096px per side or 4096x4096 total pixels (returns nil), leaves icons of 32x32 or smaller untouched, minifies SVGs, and otherwise downscales to a 32x32 PNG."
+    },
+    {
+      "id": "mf-32",
+      "set": "confirm",
+      "question": "Which kinds of IP addresses count as internal and off-limits for outgoing requests? Does carrier-grade NAT address space count?",
+      "path": "internal/urllib/url.go",
+      "symbol": "IsNonPublicIP",
+      "evidence": "internal/urllib/url.go:191 — returns true for nil, the 100.64.0.0/10 shared address space, and private, loopback, link-local, multicast and unspecified addresses; both the feed fetcher and the integration HTTP client rely on it."
+    },
+    {
+      "id": "mf-33",
+      "set": "confirm",
+      "question": "Say a feed has its own proxy, the application also has a global proxy, and a list of rotating proxies is configured. Which proxy does the feed download actually go through?",
+      "path": "internal/reader/fetcher/request_builder.go",
+      "symbol": "RequestBuilder.ExecuteRequest",
+      "evidence": "internal/reader/fetcher/request_builder.go:152 — the switch at lines 155-166 uses the per-feed proxy URL first, then the application proxy only when the feed opts in, and only then the next proxy from the rotator."
+    },
+    {
+      "id": "mf-34",
+      "set": "confirm",
+      "question": "How does the web server pick a compression method from the client's Accept-Encoding header, and what happens if the client explicitly refuses uncompressed responses?",
+      "path": "internal/http/response/encoding.go",
+      "symbol": "acceptEncodingParser.Parse",
+      "evidence": "internal/http/response/encoding.go:35 — walks the comma-separated encodings, skipping q=0 and unsupported ones, and returns the first supported encoding; it defaults to identity but returns an empty string when identity or * has q=0."
+    },
+    {
+      "id": "mf-35",
+      "set": "confirm",
+      "question": "Before estimating how long an article takes to read, how does the app tell that the text is mostly written in an East Asian script such as Chinese, Japanese or Korean?",
+      "path": "internal/reader/readingtime/readingtime.go",
+      "symbol": "isCJK",
+      "evidence": "internal/reader/readingtime/readingtime.go:36 — looks at up to the first 100 letters, counts Han, Hangul, Hiragana, Katakana, Yi and Bopomofo runes, and reports CJK when they are more than half, which switches the estimate from words to characters."
+    },
+    {
+      "id": "mf-36",
+      "set": "confirm",
+      "question": "How are date-based entry filter rules evaluated, such as dropping posts dated in the future, before or after a given day, between two dates, or older than some number of days?",
+      "path": "internal/reader/filter/filter.go",
+      "symbol": "isDateMatchingPattern",
+      "evidence": "internal/reader/filter/filter.go:207 — handles the future, before:, after:, between: (YYYY-MM-DD) and max-age: patterns by comparing them with the entry's date."
+    },
+    {
+      "id": "mf-37",
+      "set": "confirm",
+      "question": "How does the article HTML cleanup spot the invisible web beacons that sites embed to find out when someone has opened a post?",
+      "path": "internal/reader/sanitizer/sanitizer.go",
+      "symbol": "isPixelTracker",
+      "evidence": "internal/reader/sanitizer/sanitizer.go:348 — flags an img element whose height and width attributes are both 0 or 1; shouldIgnoreTag then drops it from the sanitized output."
+    },
+    {
+      "id": "mf-38",
+      "set": "confirm",
+      "question": "When a user starts signing in through Google or an OpenID Connect provider, where are the anti-forgery state value and the PKCE challenge generated?",
+      "path": "internal/oauth2/authorization.go",
+      "symbol": "GenerateAuthorization",
+      "evidence": "internal/oauth2/authorization.go:39 — generates a random hex code verifier and state, SHA-256 hashes the verifier into an S256 code_challenge, and builds the provider's authorization URL."
+    },
+    {
+      "id": "mf-39",
+      "set": "confirm",
+      "question": "What happens when a Google Reader-compatible app sends one request that marks an article both read and kept unread, or both adds and removes its star?",
+      "path": "internal/googlereader/handler.go",
+      "symbol": "checkAndSimplifyTags",
+      "evidence": "internal/googlereader/handler.go:1248 — collapses the add and remove tag streams into read and starred flags, returning an error when read and kept-unread conflict or the same state is both added and removed; broadcast and like tags are ignored."
+    },
+    {
+      "id": "mf-40",
+      "set": "confirm",
+      "question": "When several listen addresses are configured, how does the server decide which ones serve plain HTTP, TLS from certificate files, automatic Let's Encrypt certificates, a Unix socket, or a systemd-activated socket?",
+      "path": "internal/http/server/server.go",
+      "symbol": "determineListenTargets",
+      "evidence": "internal/http/server/server.go:113 — for each address it picks systemd mode (first address only) when LISTEN_PID matches, a Unix socket (with or without TLS) for paths starting with /, autocert for :https or the first host:port when a cert domain is set, TLS when cert files exist, and plain HTTP otherwise."
+    },
+    {
+      "id": "mf-41",
+      "set": "confirm",
+      "question": "When a very long article is saved, how is its text shortened for the full-text search index without splitting a multi-byte UTF-8 character?",
+      "path": "internal/storage/entry.go",
+      "symbol": "truncateStringForTSVectorField",
+      "evidence": "internal/storage/entry.go:685 — cuts the string below the byte limit and walks backwards to the last complete UTF-8 character boundary; it is called with 200000 bytes for titles and 500000 for content."
+    },
+    {
+      "id": "mf-42",
+      "set": "confirm",
+      "question": "Some image hosts block pictures that are hotlinked from other websites. How does the app decide which site to pretend the request came from when it fetches those images through its proxy?",
+      "path": "internal/reader/rewrite/referer_override.go",
+      "symbol": "GetRefererForURL",
+      "evidence": "internal/reader/rewrite/referer_override.go:12 — maps known hostnames and host suffixes (i.pximg.net, *.sinaimg.cn, *.cdninstagram.com and others) to the Referer value that the media proxy then sends."
+    },
+    {
+      "id": "mf-43",
+      "set": "confirm",
+      "question": "I turned on marking articles as read when I open them, but podcast episodes stay unread after I open them. What decides that?",
+      "path": "internal/model/entry.go",
+      "symbol": "Entry.ShouldMarkAsReadOnView",
+      "evidence": "internal/model/entry.go:62 — returns false for entries that aren't unread, and also when the user marks media as read on player completion and the entry has an audio or video enclosure; otherwise it follows the user's mark-read-on-view setting."
+    },
+    {
+      "id": "mf-44",
+      "set": "confirm",
+      "question": "Which pages of the web interface can be opened without being logged in, instead of redirecting to the login screen?",
+      "path": "internal/ui/routes.go",
+      "symbol": "isPublicRoute",
+      "evidence": "internal/ui/routes.go:31 — treats static assets, /, /login, the manifest, healthcheck, offline, WebAuthn login, OAuth2 redirect and callback, /share/ and /proxy/ paths as public; the web session middleware redirects everything else to login."
+    },
+    {
+      "id": "mf-45",
+      "set": "confirm",
+      "question": "When I save an article to Pinboard and that link is already bookmarked there, does the app overwrite the existing bookmark?",
+      "path": "internal/integration/pinboard/pinboard.go",
+      "symbol": "Client.CreateBookmark",
+      "evidence": "internal/integration/pinboard/pinboard.go:31 — looks the URL up first, creates a new post only when none exists, stops on any other lookup error, and otherwise adds tags and the to-read flag to the existing post before calling posts/add."
+    }
+  ],
+  "confirm_questions_written": "2026-09-14",
+  "confirm_policy": "Written blind after a candidate change was chosen, to confirm it on questions nobody had looked at; the decision rule is fixed in rag_benchmarks/boost-defaults-protocol.md."
+}

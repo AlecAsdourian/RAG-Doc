@@ -4,6 +4,27 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 ## Open Enhancements
 
+### ISS-030: Search returns partial or empty results as a success when one retriever fails
+
+- **Discovered:** 2026-09-14, while re-verifying a benchmark measurement. Reproduced on purpose.
+- **Type:** Correctness / Reliability
+- **Priority:** HIGH before anything user-facing depends on search. It is silent today, and every caller misses it.
+- **What happens:** `QueryEngine.query` runs keyword and vector search in parallel and catches either one's exception (`query_engine.py:168-180`). It then fuses and returns whatever the other retriever found. The failure survives only as a string in `metadata.fts_error` or `metadata.vector_error` (`query_engine.py:221-222`).
+- **Nothing reads those fields.** No code outside `query_engine.py` refers to them:
+  - not the `/search` or `/chat` routes (`api/routes.py`)
+  - not `AnswerGenerator`
+  - not the Go `RAGClient`
+  A failed search therefore reaches users as an empty or thinner result with HTTP 200. A chat answer is generated from partial context as if that context were complete.
+- **Measured.** With a rejected OpenAI key, `QueryEngine.query` raised nothing. For a question whose answer normally ranks #4, it returned 0 results, with `vector_error` set to the 401.
+  - **Why a vector failure usually means no results at all:** keyword search returns nothing for most natural-language questions (ISS-029).
+  - **In a heavily loaded run:** 6 of 130 benchmark queries came back empty this way, with no error surfaced, and each ranks #1-#4 when re-run.
+  - **The cause wasn't captured.** Qdrant logged no failed searches, so a failed embedding call is the likely cause, but that's unconfirmed.
+- **Fix direction:** decide per caller.
+  - **Fail the request** (a 5xx naming the retriever) when vector search fails, since results without it are mostly empty.
+  - **Or return the partial result with an explicit `degraded` flag,** which the Go client and chat UI must surface.
+  - **Either way:** log the failure at error level, and add a test that a failing retriever cannot produce a silent 200. Consider one retry of the embedding call.
+- **Not the harness's problem any more.** Since PR #31 the benchmark harness treats these queries as errors, so measurements can't be silently wrong. The product behaviour is unchanged.
+
 ### ISS-029: Keyword search returns nothing for most natural-language questions, so hybrid search is effectively vector-only
 
 - **Discovered:** 2026-09-13, while measuring why the breadcrumb fix (PR #28) left every ranking unchanged. Measured on the quality harness.

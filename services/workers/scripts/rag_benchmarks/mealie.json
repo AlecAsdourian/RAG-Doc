@@ -1,0 +1,384 @@
+{
+  "description": "mealie, a self-hosted recipe manager with a FastAPI, SQLAlchemy and Pydantic backend.",
+  "repository": "https://github.com/mealie-recipes/mealie",
+  "commit": "84b2677f76069a6fb2bac6e2c633c9dbe7379ce4",
+  "roots": [
+    {
+      "path": "mealie",
+      "extensions": [
+        ".py"
+      ],
+      "language": "python"
+    }
+  ],
+  "exclude": [
+    "^mealie/alembic/versions/"
+  ],
+  "scope": "Python under mealie/, except alembic/versions/, which holds auto-generated schema migrations. services/migrations/ (imports from other recipe apps) is app code and stays.",
+  "questions_written": "2026-09-13",
+  "question_policy": "Written and verified against the code at the pinned commit before any retrieval result for this corpus was seen. Split fixed before measuring: odd-numbered ids are tuning, even-numbered ids are holdout.",
+  "questions": [
+    {
+      "id": "ml-01",
+      "set": "tuning",
+      "question": "When I paste a link to import a recipe from a website, in what order does the app try its different ways of pulling the recipe out of the page, and what happens if one of them throws an error?",
+      "path": "mealie/services/scraper/recipe_scraper.py",
+      "symbol": "RecipeScraper.scrape",
+      "evidence": "mealie/services/scraper/recipe_scraper.py:46 — scrape fetches the HTML if needed, loops over the strategy classes in their configured order, skips ones that can't run, logs and moves on when a parser raises or returns nothing, and returns the first result that cleans successfully."
+    },
+    {
+      "id": "ml-02",
+      "set": "holdout",
+      "question": "If I add the same thing to my grocery list twice, what decides whether the two entries get combined into a single line instead of staying separate?",
+      "path": "mealie/services/household_services/shopping_lists.py",
+      "symbol": "ShoppingListService.can_merge",
+      "evidence": "mealie/services/household_services/shopping_lists.py:45 — can_merge refuses checked items and different foods, allows different units only when both have convertible standard units, and requires matching notes when there is no food."
+    },
+    {
+      "id": "ml-03",
+      "set": "tuning",
+      "question": "How does the server work out how long to wait before kicking off its once-a-day housekeeping jobs?",
+      "path": "mealie/services/scheduler/scheduler_service.py",
+      "symbol": "schedule_daily",
+      "evidence": "mealie/services/scheduler/scheduler_service.py:30 — schedule_daily builds today's target from the configured daily time in UTC, pushes it to tomorrow if it has already passed, sleeps for the difference, and then starts the daily runner."
+    },
+    {
+      "id": "ml-04",
+      "set": "holdout",
+      "question": "When restoring a backup, what happens to rows whose references point at records that aren't present in the backup data?",
+      "path": "mealie/services/backups_v2/alchemy_exporter.py",
+      "symbol": "AlchemyExporter.clean_rows",
+      "evidence": "mealie/services/backups_v2/alchemy_exporter.py:133 — clean_rows checks every foreign key of each row against the dumped tables and drops, with a warning, any row whose referenced record is missing before the table is re-inserted."
+    },
+    {
+      "id": "ml-05",
+      "set": "tuning",
+      "question": "When moving my recipes over from Paprika, how do the photos stored inside the export file end up attached to the newly created recipes?",
+      "path": "mealie/services/migrations/paprika.py",
+      "symbol": "PaprikaMigrator._migrate",
+      "evidence": "mealie/services/migrations/paprika.py:70 — _migrate imports the recipes, then for each one that succeeded base64-decodes its photo_data field into a temporary .jpeg file and imports that file as the recipe image."
+    },
+    {
+      "id": "ml-06",
+      "set": "holdout",
+      "question": "What happens to an account after someone enters the wrong password too many times in a row — does it get frozen, and when does the counter reset?",
+      "path": "mealie/core/security/providers/credentials_provider.py",
+      "symbol": "CredentialsProvider.authenticate",
+      "evidence": "mealie/core/security/providers/credentials_provider.py:24 — authenticate raises a lockout when the failed-attempt count has reached the configured maximum or the user is locked, increments the count on each wrong password and locks the user at the limit, and resets the count to zero on success."
+    },
+    {
+      "id": "ml-07",
+      "set": "tuning",
+      "question": "What are the lower and upper limits on how long a person stays signed in before they have to log in again?",
+      "path": "mealie/core/settings/settings.py",
+      "symbol": "AppSettings.validate_token_time",
+      "evidence": "mealie/core/settings/settings.py:165 — validate_token_time rejects a TOKEN_TIME below 1 hour and caps it at 400 days because some browsers mishandle very long-lived cookies."
+    },
+    {
+      "id": "ml-08",
+      "set": "holdout",
+      "question": "When login is delegated to a corporate directory server, what stops someone from signing in as a known user by simply leaving the password blank?",
+      "path": "mealie/core/security/providers/ldap_provider.py",
+      "symbol": "LDAPProvider.get_user",
+      "evidence": "mealie/core/security/providers/ldap_provider.py:101 — get_user returns None before binding when the supplied password is empty, because many directories treat an empty-password bind as a successful anonymous bind."
+    },
+    {
+      "id": "ml-09",
+      "set": "tuning",
+      "question": "After a user changes their password, how does the API turn away requests that still carry a login token issued before the change?",
+      "path": "mealie/core/dependencies/dependencies.py",
+      "symbol": "get_current_user",
+      "evidence": "mealie/core/dependencies/dependencies.py:102 — get_current_user compares the token's iat claim with the user's tokens_valid_after timestamp and raises the 401 credentials error when the token is older or carries no issue time."
+    },
+    {
+      "id": "ml-10",
+      "set": "holdout",
+      "question": "Is it possible to trade a long-lived API key for a normal, renewable browser login session, and where is that prevented?",
+      "path": "mealie/routes/auth/auth.py",
+      "symbol": "refresh_token",
+      "evidence": "mealie/routes/auth/auth.py:301 — refresh_token decodes the presented token and responds 400 when it carries the long_token flag, so a revocable API token cannot be exchanged for a session token."
+    },
+    {
+      "id": "ml-11",
+      "set": "tuning",
+      "question": "Where does the admin backup API make sure a requested backup file name can't point to a file outside the backups directory?",
+      "path": "mealie/routes/admin/admin_backups.py",
+      "symbol": "AdminBackupController._backup_path",
+      "evidence": "mealie/routes/admin/admin_backups.py:21 — _backup_path resolves the name against the backup directory and raises 400 if the result is not inside it; the download, delete and restore endpoints all use it."
+    },
+    {
+      "id": "ml-12",
+      "set": "holdout",
+      "question": "When someone asks for a random recipe to fill a meal plan slot, how are the household's planning rules turned into the recipe search that picks it?",
+      "path": "mealie/routes/households/controller_mealplan.py",
+      "symbol": "GroupMealplanController._get_random_recipes_from_mealplan",
+      "evidence": "mealie/routes/households/controller_mealplan.py:50 — _get_random_recipes_from_mealplan loads the rules for that weekday and meal type, combines their query filter strings, and pages recipes across the group's households in random order with a fresh seed."
+    },
+    {
+      "id": "ml-13",
+      "set": "tuning",
+      "question": "What checks apply when a household manager tries to change another member's permissions, for example a member of a different household, or their own account?",
+      "path": "mealie/routes/households/controller_household_self_service.py",
+      "symbol": "HouseholdSelfServiceController.set_member_permissions",
+      "evidence": "mealie/routes/households/controller_household_self_service.py:62 — set_member_permissions requires the manage permission and rejects targets that don't exist, belong to another group or household, or are the caller, before updating the four permission flags."
+    },
+    {
+      "id": "ml-14",
+      "set": "holdout",
+      "question": "Can a meal plan entry be saved without linking a recipe, and what has to be filled in instead?",
+      "path": "mealie/schema/meal_plan/new_meal.py",
+      "symbol": "CreatePlanEntry.id_or_title",
+      "evidence": "mealie/schema/meal_plan/new_meal.py:43 — id_or_title raises a validation error unless either a recipe_id or a title is provided for the entry."
+    },
+    {
+      "id": "ml-15",
+      "set": "tuning",
+      "question": "What happens if a recipe is given a name made up only of emoji or punctuation, so no URL-friendly identifier can be built from it?",
+      "path": "mealie/schema/recipe/recipe.py",
+      "symbol": "create_recipe_slug",
+      "evidence": "mealie/schema/recipe/recipe.py:42 — create_recipe_slug slugifies the name, raises SlugError when the slug comes out empty, and truncates slugs longer than 250 characters."
+    },
+    {
+      "id": "ml-16",
+      "set": "holdout",
+      "question": "If a webhook's daily send time is submitted as a full timestamp with a time zone rather than a plain time of day, how is it interpreted?",
+      "path": "mealie/schema/household/webhook.py",
+      "symbol": "CreateWebhook.validate_scheduled_time",
+      "evidence": "mealie/schema/household/webhook.py:26 — validate_scheduled_time first parses the value as a datetime and converts it to a UTC time of day, falls back to parsing a bare time treated as UTC, and errors if neither works."
+    },
+    {
+      "id": "ml-17",
+      "set": "tuning",
+      "question": "Where is an ingredient amount like 2.75 turned into a mixed fraction such as 2 3/4 for display, and when is a decimal shown instead?",
+      "path": "mealie/schema/recipe/recipe_ingredient.py",
+      "symbol": "RecipeIngredientBase._format_quantity_for_display",
+      "evidence": "mealie/schema/recipe/recipe_ingredient.py:348 — _format_quantity_for_display rounds to a decimal when the unit has fractions turned off, otherwise limits the denominator to 32 and renders improper fractions as a whole number plus a superscript/subscript fraction."
+    },
+    {
+      "id": "ml-18",
+      "set": "holdout",
+      "question": "How does saving a new recipe deal with a name that clashes with an existing recipe in the same group?",
+      "path": "mealie/repos/repository_recipes.py",
+      "symbol": "RepositoryRecipes.create",
+      "evidence": "mealie/repos/repository_recipes.py:90 — create catches the IntegrityError from the slug/group unique constraint, rolls back, renames the recipe to 'name (1)', 'name (2)' and so on with a fresh slug, and retries up to 10 times."
+    },
+    {
+      "id": "ml-19",
+      "set": "tuning",
+      "question": "When list results are sorted randomly, how does the app keep that shuffled order consistent while the client pages through them?",
+      "path": "mealie/repos/repository_generic.py",
+      "symbol": "RepositoryGeneric.add_order_by_to_query",
+      "evidence": "mealie/repos/repository_generic.py:428 — add_order_by_to_query handles order_by=random by fetching the matching ids, shuffling their positions with random.seed(pagination_seed), and ordering by a CASE on id, so the same seed yields the same order on every page."
+    },
+    {
+      "id": "ml-20",
+      "set": "holdout",
+      "question": "Which meal planning rules count as applying to, say, a Tuesday dinner, including rules that don't name a specific day or meal type?",
+      "path": "mealie/repos/repository_meal_plan_rules.py",
+      "symbol": "RepositoryMealPlanRules.get_rules",
+      "evidence": "mealie/repos/repository_meal_plan_rules.py:10 — get_rules selects rules whose day matches or is null/unset and whose entry type matches or is null/unset, scoped to the current group and household."
+    },
+    {
+      "id": "ml-21",
+      "set": "tuning",
+      "question": "When a user sorts or filters recipes by rating, whose rating is used — their own, or the recipe's overall rating?",
+      "path": "mealie/repos/repository_recipes.py",
+      "symbol": "RepositoryRecipes._get_rating_col_alias",
+      "evidence": "mealie/repos/repository_recipes.py:67 — _get_rating_col_alias builds a computed column that uses the current user's own positive rating when one exists and otherwise falls back to the recipe's stored rating, treating 0 as no rating."
+    },
+    {
+      "id": "ml-22",
+      "set": "holdout",
+      "question": "When a user is marked as an administrator, what happens to their other permission flags like inviting, managing and organizing?",
+      "path": "mealie/db/models/users/users.py",
+      "symbol": "User._set_permissions",
+      "evidence": "mealie/db/models/users/users.py:221 — _set_permissions forces can_manage_household, can_manage, can_invite, can_organize and advanced to True for admins, and otherwise uses the values passed in."
+    },
+    {
+      "id": "ml-23",
+      "set": "tuning",
+      "question": "How is a recipe's overall rating value computed from the ratings individual users have given it, and are zero ratings counted?",
+      "path": "mealie/db/models/recipe/recipe.py",
+      "symbol": "calculate_rating",
+      "evidence": "mealie/db/models/recipe/recipe.py:289 — calculate_rating is a before_update listener that, whenever the recipe's rating column changes, overwrites it with the average of that recipe's user ratings greater than zero."
+    },
+    {
+      "id": "ml-24",
+      "set": "holdout",
+      "question": "What happens to an ingredient substitute that refers to a food which was deleted or belongs to a different group?",
+      "path": "mealie/db/models/recipe/ingredient.py",
+      "symbol": "resolve_substitutions",
+      "evidence": "mealie/db/models/recipe/ingredient.py:31 — resolve_substitutions looks up the requested substitute food ids within the group and silently drops any substitution whose food doesn't resolve or is the food itself, de-duplicating by food id."
+    },
+    {
+      "id": "ml-25",
+      "set": "tuning",
+      "question": "Where is the search-friendly copy of a saved recipe, food or unit name produced, with accents stripped, punctuation turned into spaces, everything lowercased and the length capped?",
+      "path": "mealie/db/models/_model_base.py",
+      "symbol": "SqlAlchemyBase.normalize",
+      "evidence": "mealie/db/models/_model_base.py:30 — normalize transliterates to ASCII, replaces punctuation other than quotes with spaces, lowercases, strips and truncates to 255 characters; the models use it to fill their *_normalized columns."
+    },
+    {
+      "id": "ml-26",
+      "set": "holdout",
+      "question": "Which kinds of network addresses are refused by default when the server fetches a user-supplied URL, such as a recipe link or a webhook target?",
+      "path": "mealie/pkgs/safehttp/transport.py",
+      "symbol": "is_blocked_ip",
+      "evidence": "mealie/pkgs/safehttp/transport.py:43 — is_blocked_ip unwraps IPv4-mapped IPv6 addresses and flags private, loopback, link-local, multicast, reserved, unspecified and carrier-grade NAT (100.64.0.0/10) addresses."
+    },
+    {
+      "id": "ml-27",
+      "set": "tuning",
+      "question": "What does the downloader do, step by step, when a recipe site keeps blocking it with bot-protection challenges?",
+      "path": "mealie/pkgs/safehttp/fetch.py",
+      "symbol": "resilient_fetch",
+      "evidence": "mealie/pkgs/safehttp/fetch.py:256 — resilient_fetch rotates browser impersonations, retries through the configured proxy in fallback mode if every direct attempt was blocked, and finally escalates HTML fetches to FlareSolverr, all within an overall time budget."
+    },
+    {
+      "id": "ml-28",
+      "set": "holdout",
+      "question": "Where are the smaller preview versions of a recipe photo generated when an image is saved, and what sizes are they?",
+      "path": "mealie/pkgs/img/minify.py",
+      "symbol": "PillowMinifier.minify",
+      "evidence": "mealie/pkgs/img/minify.py:170 — PillowMinifier.minify writes original.webp (at most 2048px), min-original.webp (at most 1024px) and a center-cropped tiny-original.webp, then purges the non-webp source files."
+    },
+    {
+      "id": "ml-29",
+      "set": "tuning",
+      "question": "Where is it decided which recurring background jobs run once a day, once an hour, and every few minutes?",
+      "path": "mealie/app.py",
+      "symbol": "start_scheduler",
+      "evidence": "mealie/app.py:124 — start_scheduler registers the token/registration/password-reset/export purges, meal plan timeline events and checked-item cleanup as daily jobs, webhook posting as the every-few-minutes job and locked-user reset as hourly, then starts the scheduler."
+    },
+    {
+      "id": "ml-30",
+      "set": "holdout",
+      "question": "What text-direction and plural-food display settings does the server fall back to when a request's language header isn't a locale it recognizes?",
+      "path": "mealie/lang/providers.py",
+      "symbol": "get_locale_config",
+      "evidence": "mealie/lang/providers.py:49 — get_locale_config returns the LocaleConfig for a known Accept-Language value and otherwise falls back to the en-US configuration."
+    },
+    {
+      "id": "ml-31",
+      "set": "confirm",
+      "question": "In a saved filter, how can I express a date relative to today, like thirty days ago, instead of a fixed date, and how does that get turned into a real timestamp?",
+      "path": "mealie/services/query_filter/keywords.py",
+      "symbol": "PlaceholderKeyword._parse_now",
+      "evidence": "mealie/services/query_filter/keywords.py:12 — parses a value starting with $NOW plus an optional +/- amount and unit (y, m, d, H, M, S), applies it with relativedelta and returns the ISO timestamp, raising ValueError on bad operators, amounts or units."
+    },
+    {
+      "id": "ml-32",
+      "set": "confirm",
+      "question": "How does the app tack details like the event type, the event's ID and a timestamp onto an outgoing Apprise notification address?",
+      "path": "mealie/services/event_bus_service/event_bus_listeners.py",
+      "symbol": "AppriseEventListener.update_urls_with_event_data",
+      "evidence": "mealie/services/event_bus_service/event_bus_listeners.py:92 — builds event_type, integration_id, document_data, event_id and timestamp params, prefixes each key with ':' and merges them into the query string of each URL, but only for form/json/xml style Apprise URLs."
+    },
+    {
+      "id": "ml-33",
+      "set": "confirm",
+      "question": "Is there a cap on how many ticked-off entries a shopping list keeps around, and which ones get thrown away once there are too many?",
+      "path": "mealie/services/scheduler/tasks/delete_old_checked_shopping_list_items.py",
+      "symbol": "_trim_list_items",
+      "evidence": "mealie/services/scheduler/tasks/delete_old_checked_shopping_list_items.py:37 — pages a list's checked items newest-first by updated_at and, if there are more than MAX_CHECKED_ITEMS (100), bulk-deletes everything past the first 100 and publishes the item events."
+    },
+    {
+      "id": "ml-34",
+      "set": "confirm",
+      "question": "When someone pastes a link to one of our recipes into a chat app or social network, where does the server put together the preview card's title, description and picture?",
+      "path": "mealie/routes/spa/__init__.py",
+      "symbol": "content_with_meta",
+      "evidence": "mealie/routes/spa/__init__.py:124 — builds the recipe URL and image URL, a schema.org Recipe JSON-LD blob and the og:/twitter: title, description, image and url MetaTags, then injects them into the SPA index.html."
+    },
+    {
+      "id": "ml-35",
+      "set": "confirm",
+      "question": "What stops a request for a file attached to a recipe from reaching files outside that recipe's folder, or from being opened in the browser as a live web page?",
+      "path": "mealie/routes/media/media_recipe.py",
+      "symbol": "get_recipe_asset",
+      "evidence": "mealie/routes/media/media_recipe.py:52 — resolves the requested name under the recipe's assets directory, returns 400 if it escapes that directory, and serves existing files with Content-Disposition attachment and X-Content-Type-Options: nosniff."
+    },
+    {
+      "id": "ml-36",
+      "set": "confirm",
+      "question": "Who is allowed to generate an invite code for joining a household, and in which situations is that request refused?",
+      "path": "mealie/routes/households/controller_invitations.py",
+      "symbol": "GroupInvitationsController.create_invite_token",
+      "evidence": "mealie/routes/households/controller_invitations.py:34 — refuses with 403 when password login is disabled, when the user lacks can_invite, or when a non-admin targets another group or household, then saves a token with the requested number of uses."
+    },
+    {
+      "id": "ml-37",
+      "set": "confirm",
+      "question": "If the AI model returns its JSON answer wrapped in a markdown code block or with stray null characters, where is that cleaned up before the answer is parsed?",
+      "path": "mealie/schema/openai/_base.py",
+      "symbol": "OpenAIBase._preprocess_response",
+      "evidence": "mealie/schema/openai/_base.py:23 — removes null characters with RE_NULLS, strips whitespace, and unwraps a ```/```json fenced block before the response is validated as JSON."
+    },
+    {
+      "id": "ml-38",
+      "set": "confirm",
+      "question": "Postgres sometimes gives back timestamps ending in an offset like +02 with no minutes. Where does the code patch those up so the API models don't reject them?",
+      "path": "mealie/schema/_mealie/mealie_model.py",
+      "symbol": "MealieModel.fix_hour_only_tz",
+      "evidence": "mealie/schema/_mealie/mealie_model.py:57 — a before-mode model validator that, for every datetime field whose raw string value matches [+-]HH at the end, appends ':00' so Pydantic can parse the offset."
+    },
+    {
+      "id": "ml-39",
+      "set": "confirm",
+      "question": "On SQLite, what format are record IDs actually written to the database in, and how does that differ from Postgres?",
+      "path": "mealie/db/models/_model_utils/guid.py",
+      "symbol": "GUID.convert_value_to_guid",
+      "evidence": "mealie/db/models/_model_utils/guid.py:23 — returns str(value) for the postgresql dialect, but for other dialects converts the UUID to a 32-character zero-padded hex string (no dashes)."
+    },
+    {
+      "id": "ml-40",
+      "set": "confirm",
+      "question": "After a database upgrade, what happens to meal plans, recipes or comments that still point at a user account that no longer exists?",
+      "path": "mealie/db/fixes/fix_migration_data.py",
+      "symbol": "fix_dangling_refs",
+      "evidence": "mealie/db/fixes/fix_migration_data.py:19 — reassigns rows in group_meal_plans, recipes and shopping_lists with invalid user ids to a group admin (or first user), and deletes rows with invalid user ids from tokens, password reset tokens, recipe comments and timeline events."
+    },
+    {
+      "id": "ml-41",
+      "set": "confirm",
+      "question": "When a unit like tablespoon or quart is added without any conversion details, how does the app work out how it compares to other measurements?",
+      "path": "mealie/repos/repository_units.py",
+      "symbol": "RepositoryUnit._add_standardized_unit",
+      "evidence": "mealie/repos/repository_units.py:44 — if no standard_quantity/standard_unit is given, matches the unit's name, plural or abbreviation against the seed translations and fills in a standard quantity and unit (e.g. tablespoon = 1/2 fluid ounce, quart = 4 cups)."
+    },
+    {
+      "id": "ml-42",
+      "set": "confirm",
+      "question": "If someone edits a saved AI provider and doesn't send its secret key again, does the stored key get wiped?",
+      "path": "mealie/repos/repository_ai_provider.py",
+      "symbol": "GroupRepositoryAIProvider.update",
+      "evidence": "mealie/repos/repository_ai_provider.py:28 — carries the excluded api_key over from the schema by hand and, when it is empty, copies the existing provider's api_key into the update data before saving."
+    },
+    {
+      "id": "ml-43",
+      "set": "confirm",
+      "question": "If I supply a full Postgres connection string as an override and the password contains characters like @ or /, how is the password handled so the URL still works?",
+      "path": "mealie/core/settings/db_providers.py",
+      "symbol": "PostgresProvider._parse_override_url",
+      "evidence": "mealie/core/settings/db_providers.py:46 — requires the postgresql:// scheme, splits credentials from host on the last '@', and percent-encodes the password with urllib quote(safe='') before rebuilding the URL."
+    },
+    {
+      "id": "ml-44",
+      "set": "confirm",
+      "question": "How do translated messages choose between singular and plural wording depending on a number?",
+      "path": "mealie/pkgs/i18n/json_provider.py",
+      "symbol": "JsonProvider._parse_plurals",
+      "evidence": "mealie/pkgs/i18n/json_provider.py:17 — splits a translation on '|' and picks the form by count: two forms mean singular for 1 and plural otherwise, three forms mean zero / one / many."
+    },
+    {
+      "id": "ml-45",
+      "set": "confirm",
+      "question": "For the command-line tool that regenerates recipe pictures, how does it decide which recipes actually need their images redone?",
+      "path": "mealie/scripts/reprocess_images.py",
+      "symbol": "check_needs_reprocess",
+      "evidence": "mealie/scripts/reprocess_images.py:29 — skips recipes with no original.webp, flags ones missing tiny-original.webp, and otherwise flags those whose tiny image is still the old 300x300 size."
+    }
+  ],
+  "confirm_questions_written": "2026-09-14",
+  "confirm_policy": "Written blind after a candidate change was chosen, to confirm it on questions nobody had looked at; the decision rule is fixed in rag_benchmarks/boost-defaults-protocol.md."
+}
