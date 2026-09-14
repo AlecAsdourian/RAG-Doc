@@ -257,6 +257,128 @@
       "path": "mealie/lang/providers.py",
       "symbol": "get_locale_config",
       "evidence": "mealie/lang/providers.py:49 — get_locale_config returns the LocaleConfig for a known Accept-Language value and otherwise falls back to the en-US configuration."
+    },
+    {
+      "id": "ml-31",
+      "set": "confirm",
+      "question": "In a saved filter, how can I express a date relative to today, like thirty days ago, instead of a fixed date, and how does that get turned into a real timestamp?",
+      "path": "mealie/services/query_filter/keywords.py",
+      "symbol": "PlaceholderKeyword._parse_now",
+      "evidence": "mealie/services/query_filter/keywords.py:12 — parses a value starting with $NOW plus an optional +/- amount and unit (y, m, d, H, M, S), applies it with relativedelta and returns the ISO timestamp, raising ValueError on bad operators, amounts or units."
+    },
+    {
+      "id": "ml-32",
+      "set": "confirm",
+      "question": "How does the app tack details like the event type, the event's ID and a timestamp onto an outgoing Apprise notification address?",
+      "path": "mealie/services/event_bus_service/event_bus_listeners.py",
+      "symbol": "AppriseEventListener.update_urls_with_event_data",
+      "evidence": "mealie/services/event_bus_service/event_bus_listeners.py:92 — builds event_type, integration_id, document_data, event_id and timestamp params, prefixes each key with ':' and merges them into the query string of each URL, but only for form/json/xml style Apprise URLs."
+    },
+    {
+      "id": "ml-33",
+      "set": "confirm",
+      "question": "Is there a cap on how many ticked-off entries a shopping list keeps around, and which ones get thrown away once there are too many?",
+      "path": "mealie/services/scheduler/tasks/delete_old_checked_shopping_list_items.py",
+      "symbol": "_trim_list_items",
+      "evidence": "mealie/services/scheduler/tasks/delete_old_checked_shopping_list_items.py:37 — pages a list's checked items newest-first by updated_at and, if there are more than MAX_CHECKED_ITEMS (100), bulk-deletes everything past the first 100 and publishes the item events."
+    },
+    {
+      "id": "ml-34",
+      "set": "confirm",
+      "question": "When someone pastes a link to one of our recipes into a chat app or social network, where does the server put together the preview card's title, description and picture?",
+      "path": "mealie/routes/spa/__init__.py",
+      "symbol": "content_with_meta",
+      "evidence": "mealie/routes/spa/__init__.py:124 — builds the recipe URL and image URL, a schema.org Recipe JSON-LD blob and the og:/twitter: title, description, image and url MetaTags, then injects them into the SPA index.html."
+    },
+    {
+      "id": "ml-35",
+      "set": "confirm",
+      "question": "What stops a request for a file attached to a recipe from reaching files outside that recipe's folder, or from being opened in the browser as a live web page?",
+      "path": "mealie/routes/media/media_recipe.py",
+      "symbol": "get_recipe_asset",
+      "evidence": "mealie/routes/media/media_recipe.py:52 — resolves the requested name under the recipe's assets directory, returns 400 if it escapes that directory, and serves existing files with Content-Disposition attachment and X-Content-Type-Options: nosniff."
+    },
+    {
+      "id": "ml-36",
+      "set": "confirm",
+      "question": "Who is allowed to generate an invite code for joining a household, and in which situations is that request refused?",
+      "path": "mealie/routes/households/controller_invitations.py",
+      "symbol": "GroupInvitationsController.create_invite_token",
+      "evidence": "mealie/routes/households/controller_invitations.py:34 — refuses with 403 when password login is disabled, when the user lacks can_invite, or when a non-admin targets another group or household, then saves a token with the requested number of uses."
+    },
+    {
+      "id": "ml-37",
+      "set": "confirm",
+      "question": "If the AI model returns its JSON answer wrapped in a markdown code block or with stray null characters, where is that cleaned up before the answer is parsed?",
+      "path": "mealie/schema/openai/_base.py",
+      "symbol": "OpenAIBase._preprocess_response",
+      "evidence": "mealie/schema/openai/_base.py:23 — removes null characters with RE_NULLS, strips whitespace, and unwraps a ```/```json fenced block before the response is validated as JSON."
+    },
+    {
+      "id": "ml-38",
+      "set": "confirm",
+      "question": "Postgres sometimes gives back timestamps ending in an offset like +02 with no minutes. Where does the code patch those up so the API models don't reject them?",
+      "path": "mealie/schema/_mealie/mealie_model.py",
+      "symbol": "MealieModel.fix_hour_only_tz",
+      "evidence": "mealie/schema/_mealie/mealie_model.py:57 — a before-mode model validator that, for every datetime field whose raw string value matches [+-]HH at the end, appends ':00' so Pydantic can parse the offset."
+    },
+    {
+      "id": "ml-39",
+      "set": "confirm",
+      "question": "On SQLite, what format are record IDs actually written to the database in, and how does that differ from Postgres?",
+      "path": "mealie/db/models/_model_utils/guid.py",
+      "symbol": "GUID.convert_value_to_guid",
+      "evidence": "mealie/db/models/_model_utils/guid.py:23 — returns str(value) for the postgresql dialect, but for other dialects converts the UUID to a 32-character zero-padded hex string (no dashes)."
+    },
+    {
+      "id": "ml-40",
+      "set": "confirm",
+      "question": "After a database upgrade, what happens to meal plans, recipes or comments that still point at a user account that no longer exists?",
+      "path": "mealie/db/fixes/fix_migration_data.py",
+      "symbol": "fix_dangling_refs",
+      "evidence": "mealie/db/fixes/fix_migration_data.py:19 — reassigns rows in group_meal_plans, recipes and shopping_lists with invalid user ids to a group admin (or first user), and deletes rows with invalid user ids from tokens, password reset tokens, recipe comments and timeline events."
+    },
+    {
+      "id": "ml-41",
+      "set": "confirm",
+      "question": "When a unit like tablespoon or quart is added without any conversion details, how does the app work out how it compares to other measurements?",
+      "path": "mealie/repos/repository_units.py",
+      "symbol": "RepositoryUnit._add_standardized_unit",
+      "evidence": "mealie/repos/repository_units.py:44 — if no standard_quantity/standard_unit is given, matches the unit's name, plural or abbreviation against the seed translations and fills in a standard quantity and unit (e.g. tablespoon = 1/2 fluid ounce, quart = 4 cups)."
+    },
+    {
+      "id": "ml-42",
+      "set": "confirm",
+      "question": "If someone edits a saved AI provider and doesn't send its secret key again, does the stored key get wiped?",
+      "path": "mealie/repos/repository_ai_provider.py",
+      "symbol": "GroupRepositoryAIProvider.update",
+      "evidence": "mealie/repos/repository_ai_provider.py:28 — carries the excluded api_key over from the schema by hand and, when it is empty, copies the existing provider's api_key into the update data before saving."
+    },
+    {
+      "id": "ml-43",
+      "set": "confirm",
+      "question": "If I supply a full Postgres connection string as an override and the password contains characters like @ or /, how is the password handled so the URL still works?",
+      "path": "mealie/core/settings/db_providers.py",
+      "symbol": "PostgresProvider._parse_override_url",
+      "evidence": "mealie/core/settings/db_providers.py:46 — requires the postgresql:// scheme, splits credentials from host on the last '@', and percent-encodes the password with urllib quote(safe='') before rebuilding the URL."
+    },
+    {
+      "id": "ml-44",
+      "set": "confirm",
+      "question": "How do translated messages choose between singular and plural wording depending on a number?",
+      "path": "mealie/pkgs/i18n/json_provider.py",
+      "symbol": "JsonProvider._parse_plurals",
+      "evidence": "mealie/pkgs/i18n/json_provider.py:17 — splits a translation on '|' and picks the form by count: two forms mean singular for 1 and plural otherwise, three forms mean zero / one / many."
+    },
+    {
+      "id": "ml-45",
+      "set": "confirm",
+      "question": "For the command-line tool that regenerates recipe pictures, how does it decide which recipes actually need their images redone?",
+      "path": "mealie/scripts/reprocess_images.py",
+      "symbol": "check_needs_reprocess",
+      "evidence": "mealie/scripts/reprocess_images.py:29 — skips recipes with no original.webp, flags ones missing tiny-original.webp, and otherwise flags those whose tiny image is still the old 300x300 size."
     }
-  ]
+  ],
+  "confirm_questions_written": "2026-09-14",
+  "confirm_policy": "Written blind after a candidate change was chosen, to confirm it on questions nobody had looked at; the decision rule is fixed in rag_benchmarks/boost-defaults-protocol.md."
 }
