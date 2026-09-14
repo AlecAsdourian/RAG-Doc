@@ -13,7 +13,7 @@ Milestone: v1.0 MVP (9 phases: 17-25)
 Phase: 20 COMPLETE — Repository Integration. All five plans merged. Phase 21 (Job Infrastructure) is researched and has locked context; plans not yet broken out.
 Plan: Phases 17, 19 and 20 closed. Phase 21 researched 2026-09-10 (`21-RESEARCH.md`, `21-CONTEXT.md`); eight decisions locked (L1-L8); ISS-016 settled in that context, closes when the phase ships.
 Status: Phase 17 closed 2026-09-06. Phase 18 deprioritized. Phase 19 closed 2026-09-08. The GitHub App is registered and its contract verified against the live API (20-02). Repositories now have a tenant-scoped CRUD API (20-03).
-Last activity: 2026-09-13 — retrieval quality measured for the first time: Go methods and doc comments indexed (PR #27), chunk breadcrumbs written to their column (PR #28), ranking tuning measured and shelved (`feat/ranking-tuning`, pushed, unmerged); ISS-024–029 filed
+Last activity: 2026-09-14 — retrieval measured on two open-source codebases with blind questions (PR #31); Qdrant uploads batched so larger repositories can be indexed (PR #30); search boosts made neutral by default, decided on fresh blind questions (PR #32); ISS-030 filed
 
 **Retrieval quality, 2026-09-13.** `services/workers/scripts/rag_quality_harness.py`
 measures retrieval on this repository's own code. It asks 25 tuning questions and
@@ -31,9 +31,23 @@ measures retrieval on this repository's own code. It asks 25 tuning questions an
   weights were measured under a pass rule fixed in advance. One configuration
   passed, then failed once the breadcrumb fix landed; none passes now. The
   branch is pushed but unmerged.
-- **Before the next ranking attempt:** fix ISS-024/025/026/028 first. Then write a
-  fresh blind question set, because the held-out set has been consulted too often
-  to decide on.
+- **Real-code benchmark (PR #31):** miniflux (Go) and mealie (Python), pinned
+  open-source applications, with 45 blind questions each, split into tuning,
+  holdout and confirm sets. Scoring is at file and symbol level. At baseline, the
+  right file reached the top 5 for 36 of the 60 original questions, and the
+  answering function for 20.
+- **Indexing larger repositories (PR #30):** every vector went to Qdrant in one
+  request, so anything over roughly 1,000–1,500 chunks failed to index. Uploads
+  are now batched.
+- **Boost defaults (PR #32):** neutral, except the vendor/generated-path penalty.
+  This was decided under `scripts/rag_benchmarks/boost-defaults-protocol.md`, with
+  the rule committed before the confirm questions were written. On those
+  questions, symbol-level MRR went 0.111 → 0.319 (miniflux) and 0.196 → 0.342
+  (mealie), and no file metric fell.
+- **The next ranking or chunking change:** measure it on the benchmark corpora. Use
+  the same protocol: explore on tuning, and decide under a rule fixed before the
+  deciding questions exist. ISS-025, ISS-026 and ISS-028 remain the known root
+  causes.
 
 **v2 substrate work, 2026-09-10.** `.planning/v2-substrate/` holds `DESIGN.md`
 (the RAG redesign and 21 fleet proposals), `RESEARCH.md` (R-A…R-G), `DECISIONS.md`
@@ -151,6 +165,7 @@ Recent decisions still affecting current work:
 - **ISS-012:** A revoked membership does not revoke the organization claim — **filed 2026-09-08** during 19-04. Not exploitable today; **whatever ships membership removal must rewrite the claim.** See ISSUES.md.
 - **ISS-027:** Re-indexing a repository leaves every earlier run's vectors searchable — **filed 2026-09-13.** Latent until something re-indexes; **HIGH before Phase 22 ships**, and "filter to the latest run" is the wrong fix for incremental indexing. See ISSUES.md.
 - **ISS-024, ISS-025, ISS-026, ISS-028, ISS-029:** retrieval-quality findings, **filed 2026-09-13** with measurements. They are boosts that never fire, stopword identifiers, duplicate oversized class chunks, breadcrumbs matching only whole names, and keyword search returning nothing. **Fix these root causes before any further ranking tuning.**
+- **ISS-030:** search returns partial or empty results as a success when a retriever fails — **filed 2026-09-14.** Nothing downstream reads the error: not `/search`, `/chat`, `AnswerGenerator` or the Go client. **HIGH before anything user-facing depends on search.**
 - **Frontend inline-style pollution** — ongoing rule, cleaned per component touched
 - **Mocked repos/orgs/graph in frontend** — **replaced in Phase 23**
 
