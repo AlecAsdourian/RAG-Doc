@@ -10,10 +10,10 @@ See: .planning/PROJECT.md (updated 2026-01-08; product-vision reframe recorded i
 ## Current Position
 
 Milestone: v1.0 MVP (9 phases: 17-25)
-Phase: 20 COMPLETE — Repository Integration. All five plans merged. Phase 21 (Job Infrastructure) is researched and has locked context; plans not yet broken out.
-Plan: Phases 17, 19 and 20 closed. Phase 21 researched 2026-09-10 (`21-RESEARCH.md`, `21-CONTEXT.md`); eight decisions locked (L1-L8); ISS-016 settled in that context, closes when the phase ships.
+Phase: 20 COMPLETE — Repository Integration. All five plans merged. Phase 21 (Job Infrastructure) is researched, has locked context, and is broken into seven plans (21-01 … 21-07), none executed yet.
+Plan: Phases 17, 19 and 20 closed. Phase 21 researched 2026-09-10 (`21-RESEARCH.md`, `21-CONTEXT.md`); eight decisions locked (L1-L8); planned 2026-09-14; ISS-016 settled in that context, closes when the phase ships (21-07).
 Status: Phase 17 closed 2026-09-06. Phase 18 deprioritized. Phase 19 closed 2026-09-08. The GitHub App is registered and its contract verified against the live API (20-02). Repositories now have a tenant-scoped CRUD API (20-03).
-Last activity: 2026-09-14 — retrieval measured on two open-source codebases with blind questions (PR #31); Qdrant uploads batched so larger repositories can be indexed (PR #30); search boosts made neutral by default, decided on fresh blind questions (PR #32); ISS-030 filed
+Last activity: 2026-09-14 — retrieval measured on two open-source codebases with blind questions (PR #31); Qdrant uploads batched so larger repositories can be indexed (PR #30); search boosts made neutral by default, decided on fresh blind questions (PR #32); ISS-030 filed; Phase 21 broken into seven plans
 
 **Retrieval quality, 2026-09-13.** `services/workers/scripts/rag_quality_harness.py`
 measures retrieval on this repository's own code. It asks 25 tuning questions and
@@ -91,7 +91,18 @@ pure-SQL install path. **L1 does not depend on D2's contested half**; chunks
 have been in Postgres since migration 000003, so #25 targets `main` rather than
 stacking on #24.
 
-Breaking 21 into plans is the next planning task.
+**Planned 2026-09-14 as seven plans.**
+- **Schema first:** 21-01 adds the tenant column on `repositories`; 21-02 adds the job table and tests every shared SQL statement on PostgreSQL 16.
+- **Producers:** 21-03 wires Connect; 21-04 wires the webhooks.
+- **Consumer:** 21-05 writes the state transitions; 21-06 adds the worker runtime.
+- **Close-out:** 21-07 adds the status endpoint and closes ISS-016.
+
+Three open questions from the context were settled in the plans:
+- **Worker identity:** `lease_owner` is a UUID generated when the worker starts.
+- **Backoff:** 60 s × 4^(attempts−1), capped at 60 minutes, with jitter.
+- **`sync_state`:** a projection of job state, with the table in 21-03 and 21-05.
+
+The user chose that the job-status endpoint is readable by any member of the job's organization. **`python -m workers` refuses to start until Phase 22 registers real handlers,** so queued jobs are not dead-lettered in the meantime.
 
 Progress: v1.0 MVP ██░░░░░░░ 2/9 phases complete, Phase 20 at 5/5 plans (Phase 18 Observability deferred — see project_phase18_deprioritized memory)
 
@@ -177,11 +188,11 @@ Recent decisions still affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-09
-Stopped at: Phase 20 complete. Nothing in flight.
+Last session: 2026-09-14
+Stopped at: Phase 21 planned (seven PLAN files), not yet executed.
 Resume file: None
 
-Next command suggested: plan Phase 21 (`/gsd:plan-phase 21`). It has no PLAN files yet.
+Next command suggested: execute 21-01 (`.planning/phases/21-ingestion-job-infrastructure/21-01-PLAN.md`). The plans run in order; each reads the previous plan's SUMMARY.
 
 **Settle ISS-016 as part of planning Phase 21, not after.** `sync_state` on
 `repositories` is a status column being used as a queue: no lease, no owner,

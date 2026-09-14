@@ -21,8 +21,21 @@ against PostgreSQL 17. Round 3 added the cases the earlier checks missed:
 W3 is the case that silently lost two of three repositories while reporting
 success, and W6 is an error that had been raised in two prior reviews without
 being addressed.
-**Relationship to `.planning/v2-substrate/` (PR #24, unmerged):** none that
-blocks. That directory does not exist on `main`, and every rule this phase needs
+**Plan mapping (added 2026-09-14, when the phase was broken into plans).** This
+document and `21-RESEARCH.md` were written against a three-plan sketch. The
+executed numbering is seven plans:
+- the admin endpoint, referred to below as 21-03's, is **21-07**
+- worker identity ("settle in 21-01") and the backoff cap ("pick in 21-02") are
+  settled in **21-05**
+- worker-pool sizing (RESEARCH: "open input for 21-01") is recorded in **21-06**
+  and measured in Phase 22
+
+The PLAN files were fact-checked against the code on 2026-09-14. Where a plan
+and this document disagree about existing code, the plan is the corrected one.
+
+**Relationship to `.planning/v2-substrate/` (PR #24 — unmerged when this was
+written, since merged as 7756620):** none that blocks. When this was written
+that directory did not exist on `main`, and every rule this phase needs
 is stated here in full — L5 carries the tenancy trigger rather than referencing
 D5. References to it below are *context for a reader who has both*, not
 dependencies. L1's argument stands on chunks having been in Postgres since
@@ -315,6 +328,13 @@ case this decision exists to fix. Worse in bulk: an
 `installation_repositories.added` event re-queues N repositories in one
 statement and would fail wholesale rather than per row.
 
+**⚠ Correction (2026-09-14, found while planning):** the 23505 above is what a
+*plain* `INSERT` does. Once L7's upsert is the only enqueue path, the reverse
+order raises nothing. The conflict flags `needs_rerun` on the old live job, the
+supersede then removes that job from the live set, and the repository ends with
+**no live job and no error**. The order is still mandatory; what it prevents is
+silent loss, which is worse. 21-02 pins both behaviours.
+
 Both statements belong in **one transaction**, so a crash between them cannot
 leave a repository with its old job superseded and no new one to replace it.
 
@@ -404,7 +424,7 @@ org-permanent, nothing more is needed; if they don't, the FK needs
 revisit this rather than inherit it silently.**
 
 **This rule is stated here in full rather than by reference.** It is the same
-rule as `DECISIONS.md` D5, but D5 lives on an unmerged PR — and the point of
+rule as `DECISIONS.md` D5, which lived on an unmerged PR when this was written (since merged) — and the point of
 retargeting this PR to `main` was that it should stand alone. Note the
 duplication so the two stay in step.
 
@@ -461,7 +481,10 @@ RETURNING id;   -- a row here means "there was a rerun to do"
 Then enqueue the follow-up **after** the current job leaves the live set — the
 completion write and the re-enqueue in that order, in one transaction. The
 reverse order raises `23505` against the partial unique index, which is the
-identical defect L4 was written to fix.
+identical defect L4 was written to fix. (**Correction 2026-09-14:** that is true
+of a plain `INSERT`. Through the upsert above, the reverse order raises nothing:
+it flags `needs_rerun` on the job being completed, and the rerun is silently
+lost. 21-02 and 21-05 pin this.)
 
 **A push for a repository whose job is `dead` is accepted loss.** `dead` is
 outside the live set, so the upsert above inserts a fresh job rather than

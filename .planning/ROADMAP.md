@@ -125,16 +125,20 @@ Locked decisions: GitHub only (GitLab handlers deleted); one installation serves
 
 ### Phase 21: Ingestion Job Infrastructure
 
-**Goal:** The bones — durable queue, job state machine, retries, worker registration. No actual repo cloning yet (that's Phase 22). Redis Streams is the tentative choice (already have Redis, at-least-once delivery, consumer groups) but validated in research.
+**Goal:** The bones — durable queue, job state machine, retries, worker registration. No actual repo cloning yet (that's Phase 22).
 **Depends on:** Phase 20 (repositories exist to enqueue for)
-**Research:** Likely (infra decision)
-**Research topics:** Job queue trade-offs (Redis Streams vs RQ vs Arq vs Celery vs Temporal vs custom), at-least-once vs exactly-once, dead-letter patterns, backpressure, observability of async jobs, orchestration for multi-step ingestion (clone → parse → embed → store)
-**Plans:** TBD (target 3 plans)
+**Research:** Complete — `21-RESEARCH.md`; decisions locked in `21-CONTEXT.md` (L1-L8)
+**Decided in research:** a Postgres `ingestion_jobs` table claimed with `FOR UPDATE SKIP LOCKED`, not Redis Streams. A worker can write its chunks and mark its job complete in one transaction, where a Redis queue would make that a dual write across two systems. The Go producer and Python consumer also share one SQL interface. A partial unique index allows one live job per repository, which closes ISS-016.
+**Plans:** 7 plans
 
 Plans:
-- [ ] 21-01: Queue infrastructure — chosen queue technology set up, producer library in Go backend, consumer library in Python worker, health-checked
-- [ ] 21-02: Job state + retry — `ingestion_jobs` table (or extend `ingestion_runs` — decided during planning), state machine `queued → running → completed | failed | dead`, retry policy with exponential backoff, dead-letter for permanent failures
-- [ ] 21-03: Job observability — every job emits structured logs + spans, admin endpoint `GET /api/admin/jobs/:id` for debugging; integration test covering enqueue → consume → status transitions → retry → dead-letter
+- [ ] 21-01: `repositories.organization_id` — stored, trigger-maintained tenant column plus `UNIQUE (id, organization_id)`, so the job table's composite foreign key can make a cross-tenant job unrepresentable
+- [ ] 21-02: `ingestion_jobs` schema — five states, lease fields, partial unique index, composite FK, tenant trigger, no RLS by decision; every shared SQL statement (W1-W6, L4, claim, sweeper) tested on PostgreSQL 16
+- [ ] 21-03: Go producer — `pkg/jobs` `Enqueue` (per-row upsert) and `SupersedeLive`; `POST /api/repositories` enqueues on connect and supersedes on relink; barrier race test
+- [ ] 21-04: Webhook producers — push, installation_repositories added/removed and installation deleted go through `pkg/jobs`; the bulk-add race is tested
+- [ ] 21-05: Python consumer transitions — claim, complete (rerun follow-up, in-transaction results), fail (capped jittered backoff, dead-letter), sweeper, run resolution, `sync_state` projection; every terminal write fenced on the lease
+- [ ] 21-06: Worker runtime — heartbeat with supersede abort, sweeper, graceful shutdown, `python -m workers` that refuses to start until Phase 22 registers handlers; claim-race and lease-expiry → dead-letter tests
+- [ ] 21-07: `GET /api/admin/jobs/{id}` — any member of the job's organization, explicit organization filter, deliberate isolation test; ISS-016 close-out and docs
 
 ### Phase 22: Repository Clone → Ingestion Orchestration
 
