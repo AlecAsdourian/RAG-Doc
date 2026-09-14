@@ -36,12 +36,15 @@ two together. Each level is reported three ways:
 MRR is the number to tune against: moving an answer from rank 5 to rank 2
 counts, which rank-1 and recall@k both ignore.
 
-TWO QUESTION SETS, AND WHY. Tuning weights against the same questions you score
+QUESTION SETS, AND WHY. Tuning weights against the same questions you score
 with fits the weights to the questions, not to retrieval. So every corpus splits
 its questions:
 
     tuning   look at these while changing ranking
     holdout  check these only after a change is made, never while making it
+    confirm  written after a candidate change was chosen, to decide it on
+             questions nobody had looked at: read once, under a rule fixed
+             before they were written (rag_benchmarks/*-protocol.md)
 
 A change that lifts `tuning` and not `holdout` has been overfitted. `self`'s
 holdout set has been consulted for many configurations and is no longer blind
@@ -135,6 +138,7 @@ CORPUS_ROOTS = [
 ]
 SELF_EXCLUDE = [r"(^|/)test_[^/]*$", r"_test\.go$"]
 SKIP_PARTS = {"venv", "node_modules", "__pycache__", ".git", "testdata", "vendor"}
+QUESTION_SETS = ("tuning", "holdout", "confirm")
 
 # ---------------------------------------------------------------------------
 # TUNING SET. Each answer established by reading the code; the expected path is
@@ -301,8 +305,8 @@ def validate_spec(spec: dict, name: str) -> None:
     if None in ids or len(set(ids)) != len(ids):
         problems.append("every question needs a unique id")
     for q in spec.get("questions", []):
-        if q.get("set") not in ("tuning", "holdout"):
-            problems.append(f"{q.get('id')}: set must be tuning or holdout")
+        if q.get("set") not in QUESTION_SETS:
+            problems.append(f"{q.get('id')}: set must be one of {', '.join(QUESTION_SETS)}")
         if not q.get("question") or not q.get("path"):
             problems.append(f"{q.get('id')}: needs a question and a path")
     if problems:
@@ -406,11 +410,10 @@ def do_check(corpus: Corpus) -> None:
             if len(part) > 3 and re.search(rf"\b{re.escape(part)}\b", q["question"], re.IGNORECASE):
                 print(f"  WARN {qid}: the question names {part!r}, which flatters keyword search")
                 warns += 1
-    per_set = {s: sum(q["set"] == s for q in corpus.questions) for s in ("tuning", "holdout")}
+    per_set = ", ".join(f"{sum(q['set'] == s for q in corpus.questions)} {s}" for s in QUESTION_SETS)
     with_symbol = sum(bool(q.get("symbol")) for q in corpus.questions)
-    print(f"[*] check {corpus.name}: {len(files)} files; {per_set['tuning']} tuning + "
-          f"{per_set['holdout']} holdout questions, {with_symbol} naming a symbol; "
-          f"{fails} failures, {warns} warnings")
+    print(f"[*] check {corpus.name}: {len(files)} files; questions: {per_set}; "
+          f"{with_symbol} naming a symbol; {fails} failures, {warns} warnings")
     if fails:
         sys.exit(1)
 
@@ -590,7 +593,7 @@ if __name__ == "__main__":
                     help="delete this corpus's Qdrant points and ingestion runs (ISS-027)")
     ap.add_argument("--ingest", action="store_true")
     ap.add_argument("--measure", action="store_true")
-    ap.add_argument("--set", choices=["all", "holdout", "tuning"], default="tuning")
+    ap.add_argument("--set", choices=["all", *QUESTION_SETS], default="tuning")
     ap.add_argument("--top-k", type=int, default=5)
     ap.add_argument("--boost-config", type=json.loads, default=None,
                     help='JSON merged over MetadataBooster defaults, e.g. '
