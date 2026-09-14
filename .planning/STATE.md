@@ -13,7 +13,27 @@ Milestone: v1.0 MVP (9 phases: 17-25)
 Phase: 20 COMPLETE — Repository Integration. All five plans merged. Phase 21 (Job Infrastructure) is researched and has locked context; plans not yet broken out.
 Plan: Phases 17, 19 and 20 closed. Phase 21 researched 2026-09-10 (`21-RESEARCH.md`, `21-CONTEXT.md`); eight decisions locked (L1-L8); ISS-016 settled in that context, closes when the phase ships.
 Status: Phase 17 closed 2026-09-06. Phase 18 deprioritized. Phase 19 closed 2026-09-08. The GitHub App is registered and its contract verified against the live API (20-02). Repositories now have a tenant-scoped CRUD API (20-03).
-Last activity: 2026-09-10 — v2 substrate design/research/decisions (PR #24) and Phase 21 research/context (PR #25) both reviewed, both came back blocking, both reworked; ISS-020 fixed and Python CI added (PR #26)
+Last activity: 2026-09-13 — retrieval quality measured for the first time: Go methods and doc comments indexed (PR #27), chunk breadcrumbs written to their column (PR #28), ranking tuning measured and shelved (`feat/ranking-tuning`, pushed, unmerged); ISS-024–029 filed
+
+**Retrieval quality, 2026-09-13.** `services/workers/scripts/rag_quality_harness.py`
+measures retrieval on this repository's own code. It asks 25 tuning questions and
+15 held-out questions, and scores each by the rank of the file holding the answer.
+
+- **Indexing (PR #27):** 85 of 186 Go functions, every method, had never been
+  indexed, and no Go doc comment had reached an embedding. Held-out MRR went
+  0.444 → 0.554; across all 40 questions, 34 → 35 answers in the top 5.
+- **Breadcrumbs (PR #28):** the `chunks.breadcrumb` column was empty for every
+  chunk, so results and citations carried no qualified names. Fixed; ranking
+  unchanged.
+- **Keyword search is effectively off (ISS-029).** AND semantics returns nothing
+  for 35 of the 40 questions, so hybrid search runs almost entirely on vectors.
+- **Ranking tuning is shelved.** OR keyword search, rank normalisation and fusion
+  weights were measured under a pass rule fixed in advance. One configuration
+  passed, then failed once the breadcrumb fix landed; none passes now. The
+  branch is pushed but unmerged.
+- **Before the next ranking attempt:** fix ISS-024/025/026/028 first. Then write a
+  fresh blind question set, because the held-out set has been consulted too often
+  to decide on.
 
 **v2 substrate work, 2026-09-10.** `.planning/v2-substrate/` holds `DESIGN.md`
 (the RAG redesign and 21 fleet proposals), `RESEARCH.md` (R-A…R-G), `DECISIONS.md`
@@ -129,6 +149,8 @@ Recent decisions still affecting current work:
 - **ISS-010:** Isolation harness parallel race — **✅ closed 2026-09-08.** Role setup now holds a `pg_advisory_xact_lock`; verified over 5 cold-container parallel runs.
 - **ISS-011:** OAuth callback routes — **✅ closed 2026-09-08** by unmounting them (not repairing). Repairing the 500 alone would have converted a loud failure into a silently claim-less account. Handlers kept as reference; deleting them is a planner/user call.
 - **ISS-012:** A revoked membership does not revoke the organization claim — **filed 2026-09-08** during 19-04. Not exploitable today; **whatever ships membership removal must rewrite the claim.** See ISSUES.md.
+- **ISS-027:** Re-indexing a repository leaves every earlier run's vectors searchable — **filed 2026-09-13.** Latent until something re-indexes; **HIGH before Phase 22 ships**, and "filter to the latest run" is the wrong fix for incremental indexing. See ISSUES.md.
+- **ISS-024, ISS-025, ISS-026, ISS-028, ISS-029:** retrieval-quality findings, **filed 2026-09-13** with measurements. They are boosts that never fire, stopword identifiers, duplicate oversized class chunks, breadcrumbs matching only whole names, and keyword search returning nothing. **Fix these root causes before any further ranking tuning.**
 - **Frontend inline-style pollution** — ongoing rule, cleaned per component touched
 - **Mocked repos/orgs/graph in frontend** — **replaced in Phase 23**
 

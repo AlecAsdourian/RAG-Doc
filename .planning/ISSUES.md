@@ -4,6 +4,28 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 ## Open Enhancements
 
+### ISS-029: Keyword search returns nothing for most natural-language questions, so hybrid search is effectively vector-only
+
+- **Discovered:** 2026-09-13, while measuring why the breadcrumb fix (PR #28) left every ranking unchanged. Measured on the quality harness.
+- **Type:** Retrieval quality
+- **Priority:** HIGH for retrieval quality. Nothing is broken, but half of hybrid search contributes almost nothing.
+- **What happens:** `FTSRetriever.search` builds its query with `plainto_tsquery`, which joins every word of the question with AND. A chunk matches only if it contains all of them.
+- **Measured on the 40 harness questions** (452-chunk index, `main`'s code):
+  - keyword search returns **no results for 35 of 40** questions; median 0, maximum 2
+  - only **6 of 200** top-5 results were found by both retrievers
+  - so ranking is effectively vector search plus boosts, and every keyword-side feature (breadcrumb matching, rank normalisation, fusion weights) has almost nothing to act on
+- **OR semantics was tried, and it isn't the fix on its own.** `feat/ranking-tuning` (pushed, unmerged, shelved 2026-09-13) switches keyword search to OR and adds rank normalisation and per-retriever fusion weights.
+  - With OR, keyword search returns its 50-result limit for every question, and 198 of 200 top-5 results are found by both retrievers.
+  - Ten configurations were measured against `main`'s ranking, under a decision rule fixed before any result was seen: adopt only if MRR rises on both the tuning and held-out sets and combined top-5 recall doesn't fall.
+  - Before the breadcrumb fix, one configuration passed: OR with keyword weight 0.5. It scored tuning MRR 0.737, held-out MRR 0.656, 35/40 in top 5 and 24 at #1, against `main`'s 0.643, 0.554, 35/40 and 19.
+  - The breadcrumb fix changed nothing under `main`'s ranking, yet it moved 15 of that configuration's 40 ranks. It then failed the rule (0.697, 0.536, 33/40, 21 at #1), and no configuration passed. Its earlier pass was fragile.
+- **The held-out set is no longer blind.** Every configuration was checked against it, on two indexes. Any future ranking decision needs a new question set, written and verified before its results are seen.
+- **Fix direction:** fix what OR exposes before tuning weights again, then re-measure OR against AND on a fresh blind question set:
+  - ISS-026: oversized duplicate class chunks, which keyword length bias rewards
+  - ISS-025: identifiers extracted from stopwords, which let the breadcrumb boost fire on words like "the"
+  - ISS-024: content boosts that never fire
+  - ISS-028: breadcrumbs that match only whole qualified names
+
 ### ISS-028: Keyword search on breadcrumbs matches only whole qualified names
 
 - **Discovered:** 2026-09-13, while fixing the empty `chunks.breadcrumb` column. Measured with `ts_debug`, not inferred.
@@ -34,6 +56,54 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Measured state when found:** one run, 368 Qdrant points against 368 chunks, so nothing was mixed yet. Confirmed by clearing the harness repository's points and runs before re-ingesting for the Go method fix.
 - **⚠ "Latest run" is the wrong fix for incremental indexing.** Phase 22's incremental re-index re-embeds only changed files, so unchanged files legitimately keep chunks from earlier runs. Filtering to the latest run would hide most of the repository. Currency has to be per file (or per symbol, per D1), not per run.
 - **Fix direction, decided with Phase 22:** when a file is re-indexed, delete that file's superseded points and chunks in the same transaction that writes the replacements. Record the run and file in the Qdrant payload so the stores can be reconciled. D2's move to pgvector would put vectors under the same transaction and the same filter, which removes the cross-store half of this problem.
+
+
+### ISS-026: Whole classes and large functions are stored as single oversized chunks
+
+- **Discovered:** 2026-09-13, while diagnosing keyword-search length bias.
+- **Type:** Retrieval quality / Chunking
+- **Priority:** MEDIUM — affects both keyword and vector ranking.
+- **Measured on this repository's index:** median chunk 360 characters, p90 2,476, max **14,566**. 48 chunks exceed 2,000 characters and 16 exceed 5,000. The largest are entire Python classes stored as one `class` chunk — `AnswerGenerator` 12,826, `QueryEngine` 12,792, `SemanticChunker` 11,369, `TreeSitterParser` 9,664 — plus `router.go`'s router constructor at 14,566.
+- **Why it matters:** unnormalised `ts_rank_cd` rewards a long chunk for containing many term hits, so the 14,566-character chunk ranked first for unrelated questions. And a 12K-character embedding averages a whole class into one vector, which blurs what any single method does.
+- **Answered 2026-09-13 — the class chunks are duplicates, not just oversized.** For all 13 class chunks over 5,000 characters, the file also contains `function` chunks inside the class's line range covering nearly the same text:
+
+  | class | class chunk | method chunks inside it | chars in those methods |
+  |---|---|---|---|
+  | `AnswerGenerator` | 12,826 | 8 | 12,141 |
+  | `QueryEngine` | 12,792 | 6 | 12,382 |
+  | `SemanticChunker` | 11,369 | 8 | 11,756 |
+  | `TreeSitterParser` | 9,664 | 7 | 9,569 |
+  | `MetadataBuilder` | 8,546 | 12 | 8,396 |
+
+  So the same code is indexed twice: once precisely, method by method, and once as a single blurred block — and the blurred copy is the one length bias rewards.
+- **Fix direction:** stop emitting a full class body when its methods are already chunked. Keep a short class chunk carrying the signature, docstring and method list. Re-splitting the body would only add a third copy. Re-measure on the quality harness before and after, and expect keyword-search length bias to fall sharply, since most of the >5,000-character chunks disappear.
+
+### ISS-025: Whether the breadcrumb boost fires depends on which retriever found the chunk
+
+- **Discovered:** 2026-09-13, same investigation. Measured.
+- **Type:** Correctness / Retrieval quality
+- **Priority:** MEDIUM
+- **Status, 2026-09-13:** defect 1 is fixed (PR #28). Defects 2 and 3 remain open.
+- **Three compounding defects, as found:**
+  1. **The stores disagreed. Fixed in PR #28, and wider than first measured.** As found, for `file_summary` chunks Qdrant stored `breadcrumb` as the filename (`'jwt.go'`, `'errors.go'`), while Postgres stored `NULL` for all 50 of them. In fact the chunk insert never wrote the `breadcrumb` column, so it was NULL for every chunk. Since PR #28 the column matches `metadata` on 452 of 452 harness chunks, and so matches Qdrant's payload.
+  2. **Fusion keeps the first system's metadata.** `RRFFusion.fuse` stores metadata from a chunk's first occurrence, and `QueryEngine` passes `{"fts": ..., "vector": ...}` in that order. While the column was NULL, a chunk found by both retrievers inherited Postgres's `NULL` breadcrumb, and a chunk found only by vector search inherited Qdrant's filename. Now that the stores agree, the breadcrumb comes out the same either way, but the rule itself is unchanged.
+  3. **The "identifiers" matched against it are mostly stopwords.** `QueryParser`'s snake_case pattern `[a-z_][a-z0-9_]{2,}` matches every lowercase word of three or more letters, so *"where is the GitHub App JWT signed"* yields `['GitHub', 'JWT', 'where', 'the', 'signed']`, and `_matches_identifiers` is a case-insensitive substring test.
+- **Net effect, from the trace before PR #28:** `auth/jwt.go`'s summary, found only by vector search, received `breadcrumb_match_boost` because `'jwt.go'` contains "jwt". Every chunk found by both retrievers had `breadcrumb=None` and could not. A 1.3x boost was decided by retrieval order and filename substrings.
+- **Measured after PR #28:**
+  - **`main`'s AND keyword search:** no harness ranking changed, because keyword search rarely returns anything (ISS-029).
+  - **OR keyword search:** the boost now also reaches chunks found by both retrievers. For OR with keyword weight 0.5, 15 of 40 ranks moved.
+  - **Defect 3 now reaches more chunks:** its stopword matching can fire on more chunks than before.
+- **Fix direction:** restrict identifier extraction to genuinely code-shaped tokens: ones containing `_` or internal capitals, or quoted. Make fusion merge metadata rather than keep the first occurrence.
+
+### ISS-024: The content-based ranking boosts have never fired in production
+
+- **Discovered:** 2026-09-13, while diagnosing retrieval ranking on the quality harness. Measured, not inferred.
+- **Type:** Correctness / Retrieval quality
+- **Priority:** MEDIUM — nothing breaks, but two documented ranking features have no effect.
+- **What is wrong:** `MetadataBooster._calculate_multiplier` applies `identifier_match_boost` and `quoted_match_boost` by reading `chunk["content"]`. No chunk carries that key when the booster runs. The Qdrant payload stores `chunk_id, repository_id, file_path, language, chunk_type, breadcrumb` — no content (`storage/qdrant_writer.py:81-88`). `FTSRetriever` returns a 200-character `content_preview`, not `content`. Full content is only attached by `QueryEngine._enrich_results_with_metadata`, which runs **after** boosting.
+- **Measured:** an instrumented query traced the booster at call time — **0 of 70** chunks carried `content`. A search for `"login error"` in quotes receives no quoted-term boost at all.
+- **Why the unit tests did not catch it:** `test_metadata_booster.py` builds chunks that include `content`, so it tests a path the pipeline never takes. Same shape as ISS-021, where the semantic cache passed its tests and never ran.
+- **Options, not yet decided:** boost the top-N *after* enrichment; have both retrievers return content; or delete the two boosts. Re-measure on the harness before choosing, since the identifier boost as written also matches stopwords (see ISS-025) and may be net harmful once it can fire.
 
 
 ### ISS-021: The semantic cache has never run, so a documented cost control has been absent since Phase 12
