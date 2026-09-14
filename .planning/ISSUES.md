@@ -127,6 +127,10 @@ Enhancements discovered during execution. Not critical - address in future phase
   - `AnswerGenerator` embeds the query for the cache lookup before retrieval. With the cache running, an OpenAI outage would have made `/chat` a 500 instead of the 503 that ISS-030 defines.
   - PR #34 makes a failed lookup or write fall through with a warning.
   - Covered only with a mocked cache, in `workers/generation/test_answer_generator.py` and `tests/api/test_routes_retrieval_failure.py`. Nothing has exercised it against a running cache.
+- **Two latent effects to fix in the same change** (from the PR #34 re-review, 2026-09-14). Neither can happen while the cache is off.
+  - **The key fragment would be logged twice per failed request.** `workers/embeddings/embedding_generator.py:176-179` logs the raw exception (`{e}`) when an embedding call fails. According to the review, the cache lookup's embedding call reaches that line, and retrieval then logs the same failure again. PR #34 brought retrieval failures down to one log line; switching the cache on would undo that. Drop `{e}` from that log line.
+  - **An OpenAI outage would run the embedding retries twice before the 503:** once for the cache lookup, then again for retrieval.
+  - **Why no test caught either:** the route test replaces the embedding generator with a mock. Test the repaired wiring with the real `EmbeddingGenerator` and a failing client.
 
 ### ISS-001: Implement shared type definitions for cross-phase data contracts
 
