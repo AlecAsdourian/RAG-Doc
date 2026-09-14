@@ -257,6 +257,128 @@
       "path": "internal/template/functions.go",
       "symbol": "elapsedTime",
       "evidence": "internal/template/functions.go:284 — converts the time into the user's timezone and buckets the difference into now, minutes, hours, yesterday, days, weeks, months or years translation strings."
+    },
+    {
+      "id": "mf-31",
+      "set": "confirm",
+      "question": "What happens to a website's favicon after it is downloaded if the image is very large, say thousands of pixels wide? Is it scaled down, kept as is, or thrown away?",
+      "path": "internal/reader/icon/finder.go",
+      "symbol": "resizeIcon",
+      "evidence": "internal/reader/icon/finder.go:186 — rejects raster icons larger than 4096px per side or 4096x4096 total pixels (returns nil), leaves icons of 32x32 or smaller untouched, minifies SVGs, and otherwise downscales to a 32x32 PNG."
+    },
+    {
+      "id": "mf-32",
+      "set": "confirm",
+      "question": "Which kinds of IP addresses count as internal and off-limits for outgoing requests? Does carrier-grade NAT address space count?",
+      "path": "internal/urllib/url.go",
+      "symbol": "IsNonPublicIP",
+      "evidence": "internal/urllib/url.go:191 — returns true for nil, the 100.64.0.0/10 shared address space, and private, loopback, link-local, multicast and unspecified addresses; both the feed fetcher and the integration HTTP client rely on it."
+    },
+    {
+      "id": "mf-33",
+      "set": "confirm",
+      "question": "Say a feed has its own proxy, the application also has a global proxy, and a list of rotating proxies is configured. Which proxy does the feed download actually go through?",
+      "path": "internal/reader/fetcher/request_builder.go",
+      "symbol": "RequestBuilder.ExecuteRequest",
+      "evidence": "internal/reader/fetcher/request_builder.go:152 — the switch at lines 155-166 uses the per-feed proxy URL first, then the application proxy only when the feed opts in, and only then the next proxy from the rotator."
+    },
+    {
+      "id": "mf-34",
+      "set": "confirm",
+      "question": "How does the web server pick a compression method from the client's Accept-Encoding header, and what happens if the client explicitly refuses uncompressed responses?",
+      "path": "internal/http/response/encoding.go",
+      "symbol": "acceptEncodingParser.Parse",
+      "evidence": "internal/http/response/encoding.go:35 — walks the comma-separated encodings, skipping q=0 and unsupported ones, and returns the first supported encoding; it defaults to identity but returns an empty string when identity or * has q=0."
+    },
+    {
+      "id": "mf-35",
+      "set": "confirm",
+      "question": "Before estimating how long an article takes to read, how does the app tell that the text is mostly written in an East Asian script such as Chinese, Japanese or Korean?",
+      "path": "internal/reader/readingtime/readingtime.go",
+      "symbol": "isCJK",
+      "evidence": "internal/reader/readingtime/readingtime.go:36 — looks at up to the first 100 letters, counts Han, Hangul, Hiragana, Katakana, Yi and Bopomofo runes, and reports CJK when they are more than half, which switches the estimate from words to characters."
+    },
+    {
+      "id": "mf-36",
+      "set": "confirm",
+      "question": "How are date-based entry filter rules evaluated, such as dropping posts dated in the future, before or after a given day, between two dates, or older than some number of days?",
+      "path": "internal/reader/filter/filter.go",
+      "symbol": "isDateMatchingPattern",
+      "evidence": "internal/reader/filter/filter.go:207 — handles the future, before:, after:, between: (YYYY-MM-DD) and max-age: patterns by comparing them with the entry's date."
+    },
+    {
+      "id": "mf-37",
+      "set": "confirm",
+      "question": "How does the article HTML cleanup spot the invisible web beacons that sites embed to find out when someone has opened a post?",
+      "path": "internal/reader/sanitizer/sanitizer.go",
+      "symbol": "isPixelTracker",
+      "evidence": "internal/reader/sanitizer/sanitizer.go:348 — flags an img element whose height and width attributes are both 0 or 1; shouldIgnoreTag then drops it from the sanitized output."
+    },
+    {
+      "id": "mf-38",
+      "set": "confirm",
+      "question": "When a user starts signing in through Google or an OpenID Connect provider, where are the anti-forgery state value and the PKCE challenge generated?",
+      "path": "internal/oauth2/authorization.go",
+      "symbol": "GenerateAuthorization",
+      "evidence": "internal/oauth2/authorization.go:39 — generates a random hex code verifier and state, SHA-256 hashes the verifier into an S256 code_challenge, and builds the provider's authorization URL."
+    },
+    {
+      "id": "mf-39",
+      "set": "confirm",
+      "question": "What happens when a Google Reader-compatible app sends one request that marks an article both read and kept unread, or both adds and removes its star?",
+      "path": "internal/googlereader/handler.go",
+      "symbol": "checkAndSimplifyTags",
+      "evidence": "internal/googlereader/handler.go:1248 — collapses the add and remove tag streams into read and starred flags, returning an error when read and kept-unread conflict or the same state is both added and removed; broadcast and like tags are ignored."
+    },
+    {
+      "id": "mf-40",
+      "set": "confirm",
+      "question": "When several listen addresses are configured, how does the server decide which ones serve plain HTTP, TLS from certificate files, automatic Let's Encrypt certificates, a Unix socket, or a systemd-activated socket?",
+      "path": "internal/http/server/server.go",
+      "symbol": "determineListenTargets",
+      "evidence": "internal/http/server/server.go:113 — for each address it picks systemd mode (first address only) when LISTEN_PID matches, a Unix socket (with or without TLS) for paths starting with /, autocert for :https or the first host:port when a cert domain is set, TLS when cert files exist, and plain HTTP otherwise."
+    },
+    {
+      "id": "mf-41",
+      "set": "confirm",
+      "question": "When a very long article is saved, how is its text shortened for the full-text search index without splitting a multi-byte UTF-8 character?",
+      "path": "internal/storage/entry.go",
+      "symbol": "truncateStringForTSVectorField",
+      "evidence": "internal/storage/entry.go:685 — cuts the string below the byte limit and walks backwards to the last complete UTF-8 character boundary; it is called with 200000 bytes for titles and 500000 for content."
+    },
+    {
+      "id": "mf-42",
+      "set": "confirm",
+      "question": "Some image hosts block pictures that are hotlinked from other websites. How does the app decide which site to pretend the request came from when it fetches those images through its proxy?",
+      "path": "internal/reader/rewrite/referer_override.go",
+      "symbol": "GetRefererForURL",
+      "evidence": "internal/reader/rewrite/referer_override.go:12 — maps known hostnames and host suffixes (i.pximg.net, *.sinaimg.cn, *.cdninstagram.com and others) to the Referer value that the media proxy then sends."
+    },
+    {
+      "id": "mf-43",
+      "set": "confirm",
+      "question": "I turned on marking articles as read when I open them, but podcast episodes stay unread after I open them. What decides that?",
+      "path": "internal/model/entry.go",
+      "symbol": "Entry.ShouldMarkAsReadOnView",
+      "evidence": "internal/model/entry.go:62 — returns false for entries that aren't unread, and also when the user marks media as read on player completion and the entry has an audio or video enclosure; otherwise it follows the user's mark-read-on-view setting."
+    },
+    {
+      "id": "mf-44",
+      "set": "confirm",
+      "question": "Which pages of the web interface can be opened without being logged in, instead of redirecting to the login screen?",
+      "path": "internal/ui/routes.go",
+      "symbol": "isPublicRoute",
+      "evidence": "internal/ui/routes.go:31 — treats static assets, /, /login, the manifest, healthcheck, offline, WebAuthn login, OAuth2 redirect and callback, /share/ and /proxy/ paths as public; the web session middleware redirects everything else to login."
+    },
+    {
+      "id": "mf-45",
+      "set": "confirm",
+      "question": "When I save an article to Pinboard and that link is already bookmarked there, does the app overwrite the existing bookmark?",
+      "path": "internal/integration/pinboard/pinboard.go",
+      "symbol": "Client.CreateBookmark",
+      "evidence": "internal/integration/pinboard/pinboard.go:31 — looks the URL up first, creates a new post only when none exists, stops on any other lookup error, and otherwise adds tags and the to-read flag to the existing post before calling posts/add."
     }
-  ]
+  ],
+  "confirm_questions_written": "2026-09-14",
+  "confirm_policy": "Written blind after a candidate change was chosen, to confirm it on questions nobody had looked at; the decision rule is fixed in rag_benchmarks/boost-defaults-protocol.md."
 }
