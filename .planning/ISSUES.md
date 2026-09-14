@@ -4,6 +4,23 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 ## Open Enhancements
 
+### ISS-027: Re-indexing a repository leaves every earlier run's vectors searchable
+
+- **Discovered:** 2026-09-13, while preparing to re-ingest after the Go method fix. Measured, not inferred.
+- **Type:** Correctness / Ingestion
+- **Priority:** HIGH before Phase 22 ships; latent today, because nothing re-indexes yet.
+- **The mechanism, each link checked:**
+  1. Qdrant point ids are chunk ids (`storage/qdrant_writer.py:78-79`), and chunk ids are fresh for every ingestion run. A re-ingest therefore adds a complete new set of points instead of replacing the old ones.
+  2. Nothing deletes anything. `storage/` and `pipeline/` contain no delete of points, chunks or runs.
+  3. The vector retriever ignores `run_id` — `retrieval/vector_retriever.py:81-83` is a placeholder comment saying so — and the Qdrant payload carries no run id to filter on.
+  4. Old `ingestion_runs` and `chunks` rows stay in Postgres, so enrichment re-reads stale chunks under RLS rather than dropping them.
+- **Net effect:** every re-index adds a searchable copy of the repository while earlier copies remain. Search would keep returning code that no longer exists, including deleted functions and superseded versions.
+- **The two retrievers already disagree about which run is current.** Keyword search filters to `ingestion_run_id = latest completed run` (`FTSRetriever._get_latest_run_id`); vector search sees every run. So a chunk can be invisible to one retriever and live in the other.
+- **Measured state when found:** one run, 368 Qdrant points against 368 chunks, so nothing was mixed yet. Confirmed by clearing the harness repository's points and runs before re-ingesting for the Go method fix.
+- **⚠ "Latest run" is the wrong fix for incremental indexing.** Phase 22's incremental re-index re-embeds only changed files, so unchanged files legitimately keep chunks from earlier runs. Filtering to the latest run would hide most of the repository. Currency has to be per file (or per symbol, per D1), not per run.
+- **Fix direction, decided with Phase 22:** when a file is re-indexed, delete that file's superseded points and chunks in the same transaction that writes the replacements. Record the run and file in the Qdrant payload so the stores can be reconciled. D2's move to pgvector would put vectors under the same transaction and the same filter, which removes the cross-store half of this problem.
+
+
 ### ISS-021: The semantic cache has never run, so a documented cost control has been absent since Phase 12
 
 - **Discovered:** 2026-09-10, by the reviewer session on PR #26 while checking the severity of ISS-020. Independently verified.
