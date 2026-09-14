@@ -18,6 +18,7 @@ load_dotenv()
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from workers.retrieval import QueryEngine
+from workers.retrieval.metadata_booster import MetadataBooster
 
 
 def print_separator(title=""):
@@ -87,10 +88,17 @@ def validate_results(query_text, response):
     if overlap_count == 0 and len(results) > 0:
         issues.append("No results show overlap between FTS and vector (expected some)")
 
-    # Check: Metadata boosts applied (some results should have multiplier != 1.0)
-    varied_boosts = sum(1 for r in results if abs(r['boost_multiplier'] - 1.0) > 0.01)
-    if varied_boosts == 0 and len(results) > 0:
-        issues.append("No results have boost_multiplier != 1.0 (expected some variation)")
+    # Check: default boosts are neutral (since 2026-09-14; decided in
+    # scripts/rag_benchmarks/boost-defaults-protocol.md). Every result should get
+    # 1.0, except vendored or generated paths, which keep the noise penalty. The
+    # old check expected some multiplier other than 1.0 and would now flag correct
+    # output. Assumes no BOOST_* or PENALTY_* environment overrides.
+    defaults = MetadataBooster()
+    for i, r in enumerate(results, 1):
+        expected = defaults.config['noise_penalty'] if defaults._is_noise_path(r['file_path']) else 1.0
+        if abs(r['boost_multiplier'] - expected) > 1e-9:
+            issues.append(f"Result {i} has boost_multiplier {r['boost_multiplier']:.2f}, "
+                          f"expected {expected} with default boosts")
 
     return issues
 
@@ -218,12 +226,12 @@ def main():
         {
             "query": '"OpenAI"',
             "hint": None,
-            "description": "Quoted exact match - should boost exact 'OpenAI' occurrences"
+            "description": "Quoted exact match - exact 'OpenAI' occurrences"
         },
         {
             "query": "PostgresWriter",
             "hint": None,
-            "description": "Identifier match - PascalCase identifier boosting"
+            "description": "Identifier match - PascalCase identifier"
         },
     ]
 
@@ -256,7 +264,7 @@ def main():
         print("  [+] VectorRetriever - Qdrant semantic search")
         print("  [+] Parallel execution - Both searches run concurrently")
         print("  [+] RRFFusion - Reciprocal rank fusion with overlap boost")
-        print("  [+] MetadataBooster - Intelligent ranking adjustments")
+        print("  [+] MetadataBooster - Neutral by default; penalises vendored and generated paths")
         print("  [+] Provenance - Full audit trail for every result")
         print("\nPhase 11 RAG query engine is fully functional!")
     else:
