@@ -60,6 +60,12 @@ class QueryEngine:
         )
         self.query_parser = QueryParser()
         self.rrf_fusion = RRFFusion()
+        # Per-system fusion weights. Default 1.0 each = plain RRF, unchanged.
+        # See RRFFusion.fuse for why keyword search may need less weight.
+        self.rrf_weights = {
+            "fts": float(os.getenv("RRF_FTS_WEIGHT", "1.0")),
+            "vector": float(os.getenv("RRF_VECTOR_WEIGHT", "1.0")),
+        }
 
         # Initialize metadata booster with custom config or defaults
         if boost_config is None:
@@ -186,7 +192,8 @@ class QueryEngine:
 
         # Step 3: Fuse results with RRF
         fused_results = self.rrf_fusion.fuse(
-            {"fts": fts_results, "vector": vector_results}
+            {"fts": fts_results, "vector": vector_results},
+            weights=self.rrf_weights,
         )
         logger.info(f"RRF fusion produced {len(fused_results)} unique results")
 

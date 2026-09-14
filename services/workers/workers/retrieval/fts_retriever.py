@@ -8,6 +8,7 @@ programming error, not a silent empty-list bug.
 """
 
 import logging
+import os
 from typing import Dict, List, Optional
 from uuid import UUID
 
@@ -22,15 +23,32 @@ logger = logging.getLogger(__name__)
 class FTSRetriever:
     """Full-text search retriever using PostgreSQL to_tsvector and ts_rank."""
 
-    def __init__(self, connection_string: str):
+    def __init__(self, connection_string: str, rank_normalization: Optional[int] = None):
         """
         Initialize FTS retriever.
 
         Args:
             connection_string: Postgres connection string (postgresql://...)
+            rank_normalization: `ts_rank_cd` normalization bitmask. Defaults to
+                the FTS_RANK_NORMALIZATION env var, else 0 (none).
+
+        WHY THIS IS TUNABLE. Unnormalised `ts_rank_cd` rewards a long chunk for
+        containing many term hits. Measured on the retrieval harness: a single
+        14,566-character chunk (40x the 360-character median) ranked first for
+        unrelated questions. Postgres offers 1 = divide by 1+log(length) and
+        2 = divide by length, and the two behave very differently here -- 1
+        barely moves the giants, 2 removes them but promotes tiny stubs. The
+        harness, not a guess, picks the value.
         """
         self.connection_string = connection_string
         self.conn = None
+        if rank_normalization is None:
+            rank_normalization = int(os.getenv("FTS_RANK_NORMALIZATION", "0"))
+        if not 0 <= rank_normalization <= 63:
+            raise ValueError(
+                f"rank_normalization must be a ts_rank_cd bitmask in 0..63, got {rank_normalization}"
+            )
+        self.rank_normalization = rank_normalization
 
     def connect(self):
         """Establish database connection."""
@@ -110,7 +128,24 @@ class FTSRetriever:
                 )
                 return []
 
+        # OR SEMANTICS, NOT AND.
+        #
+        # `plainto_tsquery` joins every lexeme with `&`, so a natural-language
+        # question only matches a chunk containing ALL of its words. Measured on
+        # the retrieval harness: 36 of 40 questions returned zero keyword results,
+        # so "hybrid" search was running vector-only and RRF was fusing one list.
+        #
+        # Rewriting `&` to `|` keeps plainto's normalisation (stemming, stopword
+        # removal, punctuation stripping -- it never emits `!` or `<->`, so the
+        # replace cannot corrupt an operator) while letting a chunk match on any
+        # term. `ts_rank_cd` then orders by how many terms match and how close
+        # together they sit, which is the ranking signal we actually wanted.
+        #
+        # Built once in a CTE rather than repeated four times as before.
         query_sql = """
+            WITH q AS (
+                SELECT replace(plainto_tsquery('english', %s)::text, '&', '|')::tsquery AS tsq
+            )
             SELECT
                 id::text as chunk_id,
                 file_path,
@@ -120,15 +155,15 @@ class FTSRetriever:
                 chunk_type,
                 LEFT(content, 200) as content_preview,
                 GREATEST(
-                    ts_rank_cd(to_tsvector('english', content), plainto_tsquery('english', %s)),
-                    ts_rank_cd(to_tsvector('english', COALESCE(breadcrumb, '')), plainto_tsquery('english', %s))
+                    ts_rank_cd(to_tsvector('english', content), q.tsq, %s),
+                    ts_rank_cd(to_tsvector('english', COALESCE(breadcrumb, '')), q.tsq, %s)
                 ) as fts_score
-            FROM chunks
+            FROM chunks, q
             WHERE
                 ingestion_run_id = %s
                 AND (
-                    to_tsvector('english', content) @@ plainto_tsquery('english', %s)
-                    OR to_tsvector('english', COALESCE(breadcrumb, '')) @@ plainto_tsquery('english', %s)
+                    to_tsvector('english', content) @@ q.tsq
+                    OR to_tsvector('english', COALESCE(breadcrumb, '')) @@ q.tsq
                 )
             ORDER BY fts_score DESC
             LIMIT %s
@@ -140,7 +175,8 @@ class FTSRetriever:
             ) as cur:
                 cur.execute(
                     query_sql,
-                    (query, query, str(run_id), query, query, limit),
+                    (query, self.rank_normalization, self.rank_normalization,
+                     str(run_id), limit),
                 )
                 results = [dict(row) for row in cur.fetchall()]
 

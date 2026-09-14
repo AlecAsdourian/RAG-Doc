@@ -2,7 +2,7 @@
 
 import logging
 from collections import defaultdict
-from typing import Dict, List, Set
+from typing import Optional, Dict, List, Set
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,12 @@ class RRFFusion:
         'B'
     """
 
-    def fuse(self, results: Dict[str, List[Dict]], k: int = 60) -> List[Dict]:
+    def fuse(
+        self,
+        results: Dict[str, List[Dict]],
+        k: int = 60,
+        weights: Optional[Dict[str, float]] = None,
+    ) -> List[Dict]:
         """
         Fuse multiple ranked result lists using RRF algorithm.
 
@@ -42,6 +47,16 @@ class RRFFusion:
                     Each result list contains dicts with at least a "chunk_id" field.
                     Example: {"fts": [{chunk_id: "A", ...}], "vector": [{...}]}
             k: RRF constant (default: 60). Higher values give more weight to lower ranks.
+            weights: Optional per-system multiplier on each contribution, e.g.
+                    {"fts": 0.5}. Systems not named default to 1.0, so omitting
+                    this reproduces plain RRF exactly.
+
+                    WHY. Plain RRF scores a chunk ranked #1 by keyword search
+                    identically to one ranked #1 by vector search. Measured on
+                    the retrieval harness, once keyword search started returning
+                    results its weak lexical matches competed on equal terms with
+                    strong semantic ones and pushed correct answers out of the
+                    top five: tuning recall@5 fell from 92% to 68-80%.
 
         Returns:
             List of result dicts sorted by rrf_score (descending).
@@ -58,6 +73,13 @@ class RRFFusion:
         """
         if not results:
             return []
+
+        weights = weights or {}
+        for system_name, weight in weights.items():
+            if weight < 0:
+                raise ValueError(
+                    f"RRF weight for system '{system_name}' must be >= 0, got {weight}"
+                )
 
         # Accumulators
         scores: Dict[str, float] = defaultdict(float)  # chunk_id -> total RRF score
@@ -78,7 +100,7 @@ class RRFFusion:
                     continue
 
                 # Compute RRF score contribution: 1 / (k + rank)
-                rrf_contribution = 1.0 / (k + position)
+                rrf_contribution = weights.get(system_name, 1.0) / (k + position)
                 scores[chunk_id] += rrf_contribution
 
                 # Store metadata from first occurrence

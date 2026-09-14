@@ -156,3 +156,67 @@ def test_fts_without_tenant_scope_returns_empty(dsn, with_two_orgs):
         "RLS must silently filter chunks to zero rows when app.current_tenant is unset; "
         f"got {count_without_tenant} — potential leak surface for any caller that skips require_tenant"
     )
+
+
+def test_fts_matches_any_query_word_not_all(dsn, with_two_orgs):
+    """A multi-word query matches a chunk containing ANY of its words.
+
+    Regression guard for the OR-semantics fix. `plainto_tsquery` joins every
+    lexeme with AND, so "marmalade toast" matched nothing unless one chunk held
+    both words -- which is why 36 of 40 natural-language questions on the
+    retrieval harness returned zero keyword results. The single-word queries
+    above cannot tell AND from OR, so they never caught it.
+    """
+    org_a, org_b = with_two_orgs
+    _seed_chunk(dsn, org_a, "orange marmalade recipe")
+    _seed_chunk(dsn, org_b, "purple velvet cake recipe")
+
+    retriever = _fresh_retriever(dsn)
+    try:
+        results = retriever.search(
+            query="marmalade toast",
+            organization_id=org_a.id,
+            repository_id=org_a.repo_id,
+            limit=10,
+        )
+    finally:
+        retriever.close()
+
+    assert len(results) == 1, (
+        "a chunk matching one of the query's two words must be returned"
+    )
+    assert "marmalade" in results[0]["content_preview"]
+
+
+def test_broader_matching_does_not_reach_across_tenants(dsn, with_two_orgs):
+    """OR semantics widens what matches; tenant scoping must still bound it.
+
+    "marmalade velvet" matches org A's chunk on one word and org B's chunk on
+    the other. Under AND neither matched, so a leak through this query could
+    never have been observed. Under OR both match lexically, and org A must
+    still see only its own.
+
+    Scope, stated precisely: the retriever filters by the requesting
+    repository's latest ingestion run AND runs under the tenant's RLS scope.
+    This asserts the combined retriever-level guarantee, not RLS alone.
+    """
+    org_a, org_b = with_two_orgs
+    _seed_chunk(dsn, org_a, "orange marmalade recipe")
+    _seed_chunk(dsn, org_b, "purple velvet cake recipe")
+
+    retriever = _fresh_retriever(dsn)
+    try:
+        results = retriever.search(
+            query="marmalade velvet",
+            organization_id=org_a.id,
+            repository_id=org_a.repo_id,
+            limit=10,
+        )
+    finally:
+        retriever.close()
+
+    assert len(results) == 1, "org A must see exactly its own chunk"
+    assert "marmalade" in results[0]["content_preview"]
+    assert all("velvet" not in r["content_preview"] for r in results), (
+        "org B's chunk matched lexically and must still not be returned"
+    )

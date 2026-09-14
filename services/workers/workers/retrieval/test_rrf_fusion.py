@@ -307,3 +307,34 @@ class TestRRFFusion:
 
         for chunk_id, expected_score in expected_scores.items():
             assert abs(scores_by_id[chunk_id] - expected_score) < 1e-6
+
+
+def test_weights_scale_contributions():
+    """A system weight multiplies that system's contribution only."""
+    from workers.retrieval.rrf_fusion import RRFFusion
+    out = RRFFusion().fuse(
+        {"fts": [{"chunk_id": "A"}], "vector": [{"chunk_id": "B"}]},
+        weights={"fts": 0.5},
+    )
+    scores = {c["chunk_id"]: c["rrf_score"] for c in out}
+    assert scores["A"] == pytest.approx(0.5 / 61)
+    assert scores["B"] == pytest.approx(1.0 / 61)
+    assert [c["chunk_id"] for c in out] == ["B", "A"], (
+        "down-weighting keyword search must let an equal-rank vector hit win"
+    )
+
+
+def test_omitted_weights_reproduce_plain_rrf():
+    """No weights, or weights of 1.0, must be byte-for-byte plain RRF."""
+    from workers.retrieval.rrf_fusion import RRFFusion
+    lists = {"fts": [{"chunk_id": "A"}, {"chunk_id": "B"}],
+             "vector": [{"chunk_id": "B"}, {"chunk_id": "C"}]}
+    plain = RRFFusion().fuse(lists)
+    explicit = RRFFusion().fuse(lists, weights={"fts": 1.0, "vector": 1.0})
+    assert [(c["chunk_id"], c["rrf_score"]) for c in plain] ==            [(c["chunk_id"], c["rrf_score"]) for c in explicit]
+
+
+def test_negative_weight_is_rejected():
+    from workers.retrieval.rrf_fusion import RRFFusion
+    with pytest.raises(ValueError, match="must be >= 0"):
+        RRFFusion().fuse({"fts": [{"chunk_id": "A"}]}, weights={"fts": -0.1})

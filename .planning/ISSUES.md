@@ -4,6 +4,49 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 ## Open Enhancements
 
+### ISS-024: The content-based ranking boosts have never fired in production
+
+- **Discovered:** 2026-09-13, while diagnosing retrieval ranking on the quality harness. Measured, not inferred.
+- **Type:** Correctness / Retrieval quality
+- **Priority:** MEDIUM — nothing breaks, but two documented ranking features have no effect.
+- **What is wrong:** `MetadataBooster._calculate_multiplier` applies `identifier_match_boost` and `quoted_match_boost` by reading `chunk["content"]`. No chunk carries that key when the booster runs. The Qdrant payload stores `chunk_id, repository_id, file_path, language, chunk_type, breadcrumb` — no content (`storage/qdrant_writer.py:81-88`). `FTSRetriever` returns a 200-character `content_preview`, not `content`. Full content is only attached by `QueryEngine._enrich_results_with_metadata`, which runs **after** boosting.
+- **Measured:** an instrumented query traced the booster at call time — **0 of 70** chunks carried `content`. A search for `"login error"` in quotes receives no quoted-term boost at all.
+- **Why the unit tests did not catch it:** `test_metadata_booster.py` builds chunks that include `content`, so it tests a path the pipeline never takes. Same shape as ISS-021, where the semantic cache passed its tests and never ran.
+- **Options, not yet decided:** boost the top-N *after* enrichment; have both retrievers return content; or delete the two boosts. Re-measure on the harness before choosing, since the identifier boost as written also matches stopwords (see ISS-025) and may be net harmful once it can fire.
+
+### ISS-025: Whether the breadcrumb boost fires depends on which retriever found the chunk
+
+- **Discovered:** 2026-09-13, same investigation. Measured.
+- **Type:** Correctness / Retrieval quality
+- **Priority:** MEDIUM
+- **Three compounding defects:**
+  1. **The stores disagree.** For `file_summary` chunks Qdrant stores `breadcrumb` as the filename (`'jwt.go'`, `'errors.go'`); Postgres stores `NULL` for all 50 of them.
+  2. **Fusion keeps the first system's metadata.** `RRFFusion.fuse` stores metadata from a chunk's first occurrence, and `QueryEngine` passes `{"fts": ..., "vector": ...}` in that order. A chunk found by both retrievers inherits Postgres's `NULL` breadcrumb; a chunk found only by vector search inherits Qdrant's filename.
+  3. **The "identifiers" matched against it are mostly stopwords.** `QueryParser`'s snake_case pattern `[a-z_][a-z0-9_]{2,}` matches every lowercase word of three or more letters, so *"where is the GitHub App JWT signed"* yields `['GitHub', 'JWT', 'where', 'the', 'signed']`, and `_matches_identifiers` is a case-insensitive substring test.
+- **Net effect, from the trace:** `auth/jwt.go`'s summary, found only by vector search, received `breadcrumb_match_boost` because `'jwt.go'` contains "jwt"; every chunk found by both retrievers had `breadcrumb=None` and could not. A 1.3x boost decided by retrieval order and filename substrings.
+- **Fix direction:** make fusion merge metadata rather than keep the first occurrence, align what the two stores record as a summary's breadcrumb, and restrict identifier extraction to genuinely code-shaped tokens (containing `_`, internal capitals, or quoted).
+
+### ISS-026: Whole classes and large functions are stored as single oversized chunks
+
+- **Discovered:** 2026-09-13, while diagnosing keyword-search length bias.
+- **Type:** Retrieval quality / Chunking
+- **Priority:** MEDIUM — affects both keyword and vector ranking.
+- **Measured on this repository's index:** median chunk 360 characters, p90 2,476, max **14,566**. 48 chunks exceed 2,000 characters and 16 exceed 5,000. The largest are entire Python classes stored as one `class` chunk — `AnswerGenerator` 12,826, `QueryEngine` 12,792, `SemanticChunker` 11,369, `TreeSitterParser` 9,664 — plus `router.go`'s router constructor at 14,566.
+- **Why it matters:** unnormalised `ts_rank_cd` rewards a long chunk for containing many term hits, so the 14,566-character chunk ranked first for unrelated questions. And a 12K-character embedding averages a whole class into one vector, which blurs what any single method does.
+- **Answered 2026-09-13 — the class chunks are duplicates, not just oversized.** For all 13 class chunks over 5,000 characters, the file also contains `function` chunks inside the class's line range covering nearly the same text:
+
+  | class | class chunk | method chunks inside it | chars in those methods |
+  |---|---|---|---|
+  | `AnswerGenerator` | 12,826 | 8 | 12,141 |
+  | `QueryEngine` | 12,792 | 6 | 12,382 |
+  | `SemanticChunker` | 11,369 | 8 | 11,756 |
+  | `TreeSitterParser` | 9,664 | 7 | 9,569 |
+  | `MetadataBuilder` | 8,546 | 12 | 8,396 |
+
+  So the same code is indexed twice: once precisely, method by method, and once as a single blurred block — and the blurred copy is the one length bias rewards.
+- **Fix direction:** stop emitting a full class body when its methods are already chunked. Keep a short class chunk carrying the signature, docstring and method list. Re-splitting the body would only add a third copy. Re-measure on the quality harness before and after, and expect keyword-search length bias to fall sharply, since most of the >5,000-character chunks disappear.
+
+
 ### ISS-021: The semantic cache has never run, so a documented cost control has been absent since Phase 12
 
 - **Discovered:** 2026-09-10, by the reviewer session on PR #26 while checking the severity of ISS-020. Independently verified.
