@@ -33,10 +33,13 @@ configurations is a real ranking change. But on 15 questions one answer moving
 from #1 to #2 shifts MRR by 0.033, so a one- or two-question gap is weak
 evidence that a change generalises.
 
-KNOWN SOFTNESS in `tuning`, left in deliberately: two questions accept a whole
-directory (`pkg/db/`, `pkg/auth/`) rather than a file, which flatters recall.
-They are unchanged so the recorded baseline stays comparable; `holdout` uses
-file-level expectations throughout.
+KNOWN SOFTNESS in `tuning`, left in deliberately. An expectation matches any
+file whose path contains it, and as of 2026-09-13 five tuning questions accept
+more than one file: `pkg/auth/` (11 files), `workers/chunker/` (6),
+`workers/embeddings/` (3), and both `handlers/github_webhook` questions, which
+also match `github_webhook_events.go`. That flatters recall. They are unchanged
+so the recorded baseline stays comparable. Every `holdout` expectation matches
+exactly one file.
 
 USAGE
     cd services/workers
