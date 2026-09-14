@@ -139,6 +139,38 @@ class MetadataBuilder:
 
         return None
 
+    def extract_go_type_docstring(
+        self, declaration: Node, type_name: str, content: bytes
+    ) -> Optional[str]:
+        """
+        Extract the doc comment for one type in a Go `type` declaration.
+
+        A grouped `type ( ... )` holds several types, each documented by the
+        comment directly above its own spec, while the comment above `type (`
+        documents the group. go/doc uses a type's own comment and falls back to
+        the group's only when the type has none, and so does this. Reading the
+        declaration alone gave every type in a group the group's comment and
+        dropped their own.
+
+        Args:
+            declaration: The `type_declaration` node
+            type_name: Name of the type being chunked
+            content: Source code as bytes
+
+        Returns:
+            Docstring text or None if not found
+        """
+        for spec in declaration.named_children:
+            if spec.type != "type_spec":
+                continue
+            name = spec.child_by_field_name("name")
+            if name is not None and self._get_node_text(name, content) == type_name:
+                own = self._extract_go_docstring(spec, content)
+                if own:
+                    return own
+                break
+        return self._extract_go_docstring(declaration, content)
+
     # Private helper methods
 
     def _extract_node_name(self, node: Node, content: bytes) -> Optional[str]:

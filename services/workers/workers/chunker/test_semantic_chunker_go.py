@@ -168,3 +168,53 @@ def test_doc_comment_reaches_the_embedding_text():
     text = generator._prepare_text_for_embedding(_chunks_by_name()["AppJWT"])
     assert "Client.AppJWT" in text
     assert "AppJWT mints a short-lived RS256 token identifying the App itself." in text
+
+
+# ---------------------------------------------------------------------------
+# Grouped type declarations. The chunker's node for a type is the whole
+# `type ( ... )` declaration, so reading that node's comment alone gave every
+# type in a group the group's comment and dropped each type's own.
+# ---------------------------------------------------------------------------
+GROUPED_SOURCE = '''package p
+
+// Group doc.
+type (
+	// A doc.
+	A struct{}
+
+	B struct{}
+	// C doc.
+	C struct{ x int }
+)
+
+type (
+	// D doc.
+	D struct{}
+	E struct{}
+)
+'''
+
+
+def _class_docs(source=GROUPED_SOURCE):
+    chunks = SemanticChunker().chunk_file("p/types.go", source, "go")
+    return {
+        c.metadata["class_name"]: c.metadata.get("docstring")
+        for c in chunks
+        if c.chunk_type == "class"
+    }
+
+
+def test_grouped_types_each_keep_their_own_doc_comment():
+    docs = _class_docs()
+    assert docs["A"] == "A doc."
+    assert docs["C"] == "C doc."
+    assert docs["D"] == "D doc."
+
+
+def test_grouped_type_without_a_comment_falls_back_to_the_group_comment():
+    """go/doc does the same: a spec with no comment uses the declaration's."""
+    assert _class_docs()["B"] == "Group doc."
+
+
+def test_grouped_type_with_no_comment_anywhere_has_no_docstring():
+    assert _class_docs()["E"] is None
