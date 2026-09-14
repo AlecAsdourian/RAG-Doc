@@ -232,21 +232,30 @@ def test_fts_finds_a_chunk_by_its_qualified_name(dsn, with_two_orgs):
 
 
 def test_query_results_carry_the_breadcrumb(dsn, with_two_orgs):
-    """Results are rebuilt from Postgres after ranking, breadcrumb included.
+    """Results are rebuilt from Postgres after ranking, breadcrumb included,
+    and only under the tenant that owns the chunk.
 
     With the column empty, every result -- and so every cited source in a
     generated answer -- came back with breadcrumb "" whatever the chunk's
     metadata held.
     """
-    org_a, _ = with_two_orgs
+    org_a, org_b = with_two_orgs
     chunk_id = _seed_named_chunk(dsn, org_a, "return nil", "MarmaladeHandler.Connect")
 
-    # The method reads only `postgres_conn`; constructing a real QueryEngine
-    # needs Qdrant and OpenAI (see the module docstring).
-    engine = SimpleNamespace(postgres_conn=dsn)
+    # The method opens its own connection from `postgres_conn` and reads nothing
+    # else from `self`; constructing a real QueryEngine needs Qdrant and OpenAI
+    # (see the module docstring). The role goes in the connection string
+    # because the container user is a superuser, and superusers bypass RLS: on
+    # that connection org B could read org A's chunk and this test would pass.
+    engine = SimpleNamespace(postgres_conn=f"{dsn}?options=-c%20role%3Drag_doc_app")
+
     results = QueryEngine._enrich_results_with_metadata(
         engine, [{"chunk_id": chunk_id}], org_a.id, org_a.repo_id
     )
-
     assert len(results) == 1
     assert results[0]["breadcrumb"] == "MarmaladeHandler.Connect"
+
+    leaked = QueryEngine._enrich_results_with_metadata(
+        engine, [{"chunk_id": chunk_id}], org_b.id, org_a.repo_id
+    )
+    assert leaked == [], "org B must not read org A's chunk through result enrichment"
