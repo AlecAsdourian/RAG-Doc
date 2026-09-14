@@ -1,9 +1,9 @@
 """QdrantWriter.upsert_embeddings, with the Qdrant client mocked.
 
 Sending every point in one request failed for any ingestion of more than
-somewhere between 1,000 and 1,500 chunks, because Qdrant drops a request body
+somewhere between 1,000 and 1,500 chunks, because Qdrant rejects a request body
 over its 32 MB limit. These pin the batching, and the clean-up that keeps a
-failed upsert from leaving partial vectors searchable.
+failed upsert from leaving vectors searchable.
 """
 
 from unittest.mock import patch
@@ -42,6 +42,7 @@ def test_upsert_splits_points_into_bounded_requests():
     batches = _sent_batches(client)
     assert [len(batch) for batch in batches] == [256, 256, 88]
     assert sorted(point_id for batch in batches for point_id in batch) == sorted(str(i) for i in embeddings)
+    client.delete.assert_not_called()
 
 
 def test_default_batch_stays_well_under_qdrant_request_limit():
@@ -49,7 +50,8 @@ def test_default_batch_stays_well_under_qdrant_request_limit():
     assert UPSERT_BATCH_SIZE * 34_258 < 16 * 2**20
 
 
-def test_failed_batch_removes_the_vectors_this_call_already_wrote():
+def test_failed_batch_deletes_every_point_this_call_sent():
+    """Including the batch that raised, which Qdrant may have applied anyway."""
     writer, client = _writer()
     embeddings, metadata = _embeddings(400)
     client.upsert.side_effect = [None, RuntimeError("connection aborted")]
@@ -57,20 +59,37 @@ def test_failed_batch_removes_the_vectors_this_call_already_wrote():
     with pytest.raises(RuntimeError, match="connection aborted"):
         writer.upsert_embeddings(embeddings, metadata, batch_size=256)
 
-    first_batch = _sent_batches(client)[0]
+    first, second = _sent_batches(client)
+    assert (len(first), len(second)) == (256, 144)
     client.delete.assert_called_once()
-    assert client.delete.call_args.kwargs["points_selector"].points == first_batch
+    assert client.delete.call_args.kwargs["points_selector"].points == first + second
 
 
-def test_failure_in_the_first_batch_deletes_nothing():
+def test_a_batch_that_times_out_is_still_deleted():
+    """A client-side timeout can arrive after Qdrant has stored the batch.
+
+    Found in review of PR #30: with a delayed reply, Qdrant kept the batch while
+    the writer raised "timed out", and the first version of this clean-up only
+    deleted batches that had returned successfully.
+    """
+    writer, client = _writer()
+    embeddings, metadata = _embeddings(10)
+    client.upsert.side_effect = TimeoutError("timed out")
+
+    with pytest.raises(TimeoutError):
+        writer.upsert_embeddings(embeddings, metadata)
+
+    assert client.delete.call_args.kwargs["points_selector"].points == _sent_batches(client)[0]
+
+
+def test_a_failed_clean_up_does_not_hide_the_original_error():
     writer, client = _writer()
     embeddings, metadata = _embeddings(10)
     client.upsert.side_effect = RuntimeError("connection aborted")
+    client.delete.side_effect = RuntimeError("delete failed too")
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="connection aborted"):
         writer.upsert_embeddings(embeddings, metadata)
-
-    client.delete.assert_not_called()
 
 
 def test_no_embeddings_make_no_requests():
@@ -78,6 +97,7 @@ def test_no_embeddings_make_no_requests():
 
     assert writer.upsert_embeddings({}, {}) == 0
     client.upsert.assert_not_called()
+    client.delete.assert_not_called()
 
 
 def test_batch_size_must_be_positive():
