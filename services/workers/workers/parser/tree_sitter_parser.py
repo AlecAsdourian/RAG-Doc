@@ -51,12 +51,24 @@ class TreeSitterParser:
                 ),
             },
             "go": {
+                # METHODS ARE A SEPARATE NODE TYPE IN GO, and this query used to
+                # match only `function_declaration`. A method --
+                # `func (h *RepositoriesHandler) Connect(...)` -- is a
+                # `method_declaration`, whose name is a `field_identifier`, not an
+                # `identifier`. Measured on this repository's backend: 85 of 186
+                # Go callables were methods and none were indexed, including
+                # every HTTP handler and every method on the GitHub client.
                 "functions": Query(
                     self.languages["go"],
                     """
-                    (function_declaration
-                        name: (identifier) @name
-                        body: (block)? @body) @function
+                    [
+                        (function_declaration
+                            name: (identifier) @name
+                            body: (block)? @body) @function
+                        (method_declaration
+                            name: (field_identifier) @name
+                            body: (block)? @body) @function
+                    ]
                     """
                 ),
                 "classes": Query(

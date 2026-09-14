@@ -35,12 +35,29 @@ class MetadataBuilder:
             Example: ["UserService", "authenticate"] for a method
         """
         ancestors = []
+
+        # A Go method's syntactic parent is the file, so walking parents alone
+        # yields no ancestor and a bare breadcrumb like "Connect". Its owner is
+        # named in the receiver instead: `func (h *RepositoriesHandler) Connect`
+        # belongs to RepositoriesHandler, and the breadcrumb should say so.
+        if self.language == "go" and node.type == "method_declaration":
+            receiver_type = self._go_receiver_type(node, content)
+            if receiver_type:
+                ancestors.append(receiver_type)
+
         current = node.parent
 
         while current:
             ancestor_name = self._extract_node_name(current, content)
             if ancestor_name:
                 ancestors.insert(0, ancestor_name)  # Prepend to maintain order
+                # The same ownership rule applies when the walk passes THROUGH a
+                # Go method: a type declared inside `func (h *Handler) Serve()`
+                # belongs to Handler.Serve, not to a bare Serve.
+                if self.language == "go" and current.type == "method_declaration":
+                    receiver_type = self._go_receiver_type(current, content)
+                    if receiver_type:
+                        ancestors.insert(0, receiver_type)
             current = current.parent
 
         return ancestors
@@ -129,7 +146,7 @@ class MetadataBuilder:
         # Language-specific node types that have names
         named_types = {
             "python": ["class_definition", "function_definition"],
-            "go": ["function_declaration", "type_declaration", "type_spec"],
+            "go": ["function_declaration", "method_declaration", "type_declaration", "type_spec"],
             "typescript": ["class_declaration", "function_declaration", "method_definition"],
             "javascript": ["class_declaration", "function_declaration", "method_definition"],
         }
@@ -138,6 +155,12 @@ class MetadataBuilder:
 
         if node.type not in lang_types:
             return None
+
+        # A Go method's name is a `field_identifier`, which the child scan below
+        # does not look for -- so use the grammar's `name` field directly.
+        if node.type == "method_declaration":
+            name_node = node.child_by_field_name("name")
+            return self._get_node_text(name_node, content) if name_node else None
 
         # Find the name child node
         for child in node.children:
@@ -154,13 +177,34 @@ class MetadataBuilder:
         """Check if node represents a meaningful scope (class, function)."""
         scope_types = {
             "python": ["class_definition", "function_definition"],
-            "go": ["function_declaration", "type_declaration"],
+            "go": ["function_declaration", "method_declaration", "type_declaration"],
             "typescript": ["class_declaration", "function_declaration", "method_definition"],
             "javascript": ["class_declaration", "function_declaration", "method_definition"],
         }
 
         lang_types = scope_types.get(self.language, [])
         return node.type in lang_types
+
+    def _go_receiver_type(self, node: Node, content: bytes) -> Optional[str]:
+        """Return the base type a Go method is declared on.
+
+        `(h *RepositoriesHandler)` -> "RepositoriesHandler"
+        `(c Client)`               -> "Client"
+        `(s *Stack[T])`            -> "Stack"
+
+        The first `type_identifier` in document order within the receiver is the
+        base type; any later ones are type arguments.
+        """
+        receiver = node.child_by_field_name("receiver")
+        if receiver is None:
+            return None
+        stack = [receiver]
+        while stack:
+            current = stack.pop()
+            if current.type == "type_identifier":
+                return self._get_node_text(current, content)
+            stack.extend(reversed(current.children))
+        return None
 
     def _extract_scope_signature(self, node: Node, content: bytes) -> str:
         """Extract the signature line of a scope node."""

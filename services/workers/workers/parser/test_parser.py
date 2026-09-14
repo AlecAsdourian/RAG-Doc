@@ -140,6 +140,38 @@ func Subtract(a, b int) int {
         assert functions[1]["name"] == "Subtract"
 
 
+    def test_extract_go_methods(self):
+        """Methods are extracted alongside plain functions, in file order.
+
+        Regression guard: the Go query matched only `function_declaration`, so
+        every method -- every HTTP handler, every GitHub client call -- was
+        absent from the index. Measured on this repository's backend: 85 of
+        186 Go callables.
+        """
+        parser = TreeSitterParser()
+        code = '''package main
+
+type Client struct{}
+
+func (c *Client) AppJWT() (string, error) {
+    return "", nil
+}
+
+func (c Client) Name() string {
+    return "c"
+}
+
+func NewClient() *Client {
+    return &Client{}
+}
+'''
+        tree = parser.parse_file(code, "go")
+        functions = parser.extract_functions(tree, code, "go")
+
+        assert [f["name"] for f in functions] == ["AppJWT", "Name", "NewClient"]
+        assert functions[0]["start_line"] == 5
+        assert functions[0]["end_line"] == 7
+
 class TestTypeScriptParsing:
     """Test TypeScript/JavaScript code parsing."""
 
