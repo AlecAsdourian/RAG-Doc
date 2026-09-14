@@ -10,8 +10,9 @@ from qdrant_client.models import Distance, PointIdsList, PointStruct, VectorPara
 logger = logging.getLogger(__name__)
 
 # Points per upsert request. A 1536-dimension point serialises to roughly 34 KB of
-# JSON, and Qdrant drops the connection on a request body over its
-# `max_request_size_mb` (32 MB by default) without logging anything. Until
+# JSON, and Qdrant rejects a request body over its `max_request_size_mb` (32 MB
+# by default) with a 400 the client never receives: the client reports only an
+# aborted connection, and the 400 appears only in Qdrant's access log. Until
 # 2026-09-13 every point went in one request, so an ingestion of more than
 # somewhere between 1,000 and 1,500 chunks failed outright: a 335-file Go
 # repository (2,122 vectors) could not be indexed at all. 256 points is ~9 MB.
@@ -75,7 +76,7 @@ class QdrantWriter:
         Raises:
             ValueError: If batch_size is less than 1.
             Exception: Whatever the client raised for a failed batch, re-raised
-                after the points this call had already written are deleted.
+                after every point this call sent is deleted again.
         """
         if not chunk_embeddings:
             logger.info("No embeddings to upsert")
@@ -106,26 +107,28 @@ class QdrantWriter:
             )
             points.append(point)
 
-        # Upsert in bounded requests. If one fails, delete what this call already
-        # wrote before re-raising: vector search ignores run status (ISS-027), so a
-        # failed run's partial vectors would otherwise stay searchable.
-        written: List[str] = []
+        # Upsert in bounded requests. If one fails, delete every point this call
+        # sent -- including the batch that raised, which Qdrant may still have
+        # applied (a client-side timeout, for example) -- before re-raising.
+        # Vector search ignores run status (ISS-027), so a failed run's vectors
+        # would otherwise stay searchable. Point ids are this run's fresh chunk
+        # ids, so the delete cannot reach an earlier run's vectors.
+        sent: List[str] = []
         try:
             for start in range(0, len(points), batch_size):
                 batch = points[start : start + batch_size]
+                sent.extend(point.id for point in batch)
                 self.client.upsert(collection_name=self.collection_name, points=batch)
-                written.extend(point.id for point in batch)
         except Exception:
-            if written:
-                try:
-                    self.client.delete(
-                        collection_name=self.collection_name,
-                        points_selector=PointIdsList(points=written),
-                    )
-                except Exception as cleanup_error:
-                    logger.error(
-                        f"Could not delete {len(written)} vectors after a failed upsert: {cleanup_error}"
-                    )
+            try:
+                self.client.delete(
+                    collection_name=self.collection_name,
+                    points_selector=PointIdsList(points=sent),
+                )
+            except Exception as cleanup_error:
+                logger.error(
+                    f"Could not delete {len(sent)} vectors after a failed upsert: {cleanup_error}"
+                )
             raise
 
         requests = (len(points) + batch_size - 1) // batch_size
