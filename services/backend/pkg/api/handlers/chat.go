@@ -35,6 +35,9 @@ type ChatRequestBody struct {
 
 // Bind implements render.Binder for ChatRequestBody
 func (cr *ChatRequestBody) Bind(r *http.Request) error {
+	if err := validateQueryText(cr.Query); err != nil {
+		return err
+	}
 	// Set default TopK if not provided
 	if cr.TopK == 0 {
 		cr.TopK = 5
