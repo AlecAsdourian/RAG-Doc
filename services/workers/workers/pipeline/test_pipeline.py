@@ -1,5 +1,6 @@
 """Tests for ingestion pipeline."""
 
+import hashlib
 from unittest.mock import Mock, patch
 from uuid import uuid4
 import pytest
@@ -37,12 +38,19 @@ class TestIngestionPipeline:
         self, mock_chunker_class, mock_embedgen_class, mock_qdrant_class, mock_postgres_class
     ):
         """Test successful file processing."""
+        # The pipeline hashes chunk content itself, so the mocked stores must be
+        # keyed by the real hashes of the mock chunks' real content.
+        content1 = "def func(): pass"
+        content2 = "def func2(): pass"
+        hash1 = hashlib.sha256(content1.encode("utf-8")).hexdigest()
+        hash2 = hashlib.sha256(content2.encode("utf-8")).hexdigest()
+
         # Setup mocks
         mock_postgres = Mock()
         mock_postgres.create_ingestion_run.return_value = uuid4()
         mock_postgres.insert_chunks.return_value = {
-            "hash1": uuid4(),
-            "hash2": uuid4(),
+            hash1: uuid4(),
+            hash2: uuid4(),
         }
         mock_postgres_class.return_value = mock_postgres
 
@@ -52,11 +60,10 @@ class TestIngestionPipeline:
 
         mock_embedgen = Mock()
         mock_embedgen.generate_embeddings_for_chunks.return_value = {
-            "hash1": [0.1] * 1536,
-            "hash2": [0.2] * 1536,
+            hash1: [0.1] * 1536,
+            hash2: [0.2] * 1536,
         }
         mock_embedgen._prepare_text_for_embedding.return_value = "test"
-        mock_embedgen._compute_content_hash.side_effect = ["hash1", "hash2"]
         mock_embedgen_class.return_value = mock_embedgen
 
         # Mock chunks
@@ -65,12 +72,14 @@ class TestIngestionPipeline:
         mock_chunk1.language = "python"
         mock_chunk1.chunk_type = "function"
         mock_chunk1.metadata = {"breadcrumb": "test.func"}
+        mock_chunk1.content = content1
 
         mock_chunk2 = Mock()
         mock_chunk2.file_path = "test.py"
         mock_chunk2.language = "python"
         mock_chunk2.chunk_type = "function"
         mock_chunk2.metadata = {"breadcrumb": "test.func2"}
+        mock_chunk2.content = content2
 
         mock_chunker = Mock()
         mock_chunker.chunk_file.return_value = [mock_chunk1, mock_chunk2]
