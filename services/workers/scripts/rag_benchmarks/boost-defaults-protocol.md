@@ -48,3 +48,34 @@ This rule weighs MRR rather than top-5 counts. On 15 questions, one answer cross
 - **Command:** `rag_quality_harness.py --corpus <name> --measure --set confirm`, run once with no `--boost-config` and once with the candidate.
 - **Index:** as it stands, with 2,122 miniflux vectors and 2,736 mealie vectors.
 - **Runs:** each configuration is run once, and the results are reported whichever way they fall.
+
+## Result
+
+Recorded 2026-09-14, after the measurement above was run once.
+
+| corpus | configuration | file top-5 | file #1 | file MRR | symbol top-5 | symbol #1 | symbol MRR |
+|---|---|---|---|---|---|---|---|
+| miniflux | current defaults | 10/15 | 5 | 0.447 | 5/15 | 0 | 0.111 |
+| miniflux | candidate | 10/15 | 6 | 0.494 | 8/15 | 3 | 0.319 |
+| mealie | current defaults | 12/15 | 5 | 0.473 | 6/15 | 2 | 0.196 |
+| mealie | candidate | 14/15 | 6 | 0.596 | 10/15 | 3 | 0.342 |
+
+Against the rule:
+
+- **miniflux:** symbol MRR 0.111 -> 0.319, higher; file MRR 0.447 -> 0.494, not lower.
+- **mealie:** symbol MRR 0.196 -> 0.342, higher; file MRR 0.473 -> 0.596, not lower.
+
+No metric fell on either corpus.
+
+**Verdict: adopt neutral boosts as the default.**
+
+Order of record, all times PDT on 2026-09-13:
+
+| commit | time | what |
+|---|---|---|
+| `64c51b4` | 23:47 | this protocol |
+| `0ff72f9` | 23:50 | confirm-set support in the harness |
+| `6705cd6` | 23:55 | miniflux confirm questions |
+| `d038e59` | 23:57 | mealie confirm questions |
+
+The measurement ran after all four.
