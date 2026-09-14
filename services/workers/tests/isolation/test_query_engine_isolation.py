@@ -23,11 +23,14 @@ Three scenarios per the plan:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import psycopg2
 import pytest
 
 from workers.chunker.models import Chunk
 from workers.retrieval.fts_retriever import FTSRetriever
+from workers.retrieval.query_engine import QueryEngine
 from workers.storage.postgres_writer import PostgresWriter
 
 
@@ -156,3 +159,94 @@ def test_fts_without_tenant_scope_returns_empty(dsn, with_two_orgs):
         "RLS must silently filter chunks to zero rows when app.current_tenant is unset; "
         f"got {count_without_tenant} — potential leak surface for any caller that skips require_tenant"
     )
+
+
+# ---------------------------------------------------------------------------
+# The breadcrumb column. Keyword search matches `chunks.breadcrumb` and query
+# results are rebuilt from it, but until 2026-09-13 PostgresWriter never wrote
+# it -- so it was NULL for every chunk ever indexed.
+# ---------------------------------------------------------------------------
+
+
+def _seed_named_chunk(dsn: str, org, content: str, breadcrumb: str) -> str:
+    """Write one chunk carrying a breadcrumb through PostgresWriter; return its id."""
+    chunk = Chunk(
+        content=content,
+        file_path="pkg/api/handlers/marmalade.go",
+        start_line=1,
+        end_line=3,
+        language="go",
+        chunk_type="function",
+        metadata={"breadcrumb": breadcrumb},
+    )
+    writer = PostgresWriter(dsn)
+    writer.connect()
+    with writer.conn.cursor() as cur:
+        cur.execute("SET ROLE rag_doc_app")
+    writer.conn.commit()
+    try:
+        run_id = writer.create_ingestion_run(
+            organization_id=org.id,
+            repository_id=org.repo_id,
+            commit_sha="c" * 40,
+            branch="main",
+        )
+        ids = writer.insert_chunks(
+            organization_id=org.id,
+            chunks=[chunk],
+            ingestion_run_id=run_id,
+            repository_id=org.repo_id,
+        )
+        writer.complete_ingestion_run(
+            organization_id=org.id,
+            ingestion_run_id=run_id,
+            chunks_count=1,
+        )
+    finally:
+        writer.close()
+    return str(next(iter(ids.values())))
+
+
+def test_fts_finds_a_chunk_by_its_qualified_name(dsn, with_two_orgs):
+    """A qualified name that appears only in the breadcrumb must be findable.
+
+    Postgres's parser reads `MarmaladeHandler.Connect` as a single token, so
+    this matches the whole qualified name, not its parts (ISS-028).
+    """
+    org_a, _ = with_two_orgs
+    _seed_named_chunk(dsn, org_a, "return nil", "MarmaladeHandler.Connect")
+
+    retriever = _fresh_retriever(dsn)
+    try:
+        results = retriever.search(
+            query="MarmaladeHandler.Connect",
+            organization_id=org_a.id,
+            repository_id=org_a.repo_id,
+            limit=10,
+        )
+    finally:
+        retriever.close()
+
+    assert len(results) == 1, "the qualified name is only in the breadcrumb column"
+    assert results[0]["breadcrumb"] == "MarmaladeHandler.Connect"
+
+
+def test_query_results_carry_the_breadcrumb(dsn, with_two_orgs):
+    """Results are rebuilt from Postgres after ranking, breadcrumb included.
+
+    With the column empty, every result -- and so every cited source in a
+    generated answer -- came back with breadcrumb "" whatever the chunk's
+    metadata held.
+    """
+    org_a, _ = with_two_orgs
+    chunk_id = _seed_named_chunk(dsn, org_a, "return nil", "MarmaladeHandler.Connect")
+
+    # The method reads only `postgres_conn`; constructing a real QueryEngine
+    # needs Qdrant and OpenAI (see the module docstring).
+    engine = SimpleNamespace(postgres_conn=dsn)
+    results = QueryEngine._enrich_results_with_metadata(
+        engine, [{"chunk_id": chunk_id}], org_a.id, org_a.repo_id
+    )
+
+    assert len(results) == 1
+    assert results[0]["breadcrumb"] == "MarmaladeHandler.Connect"

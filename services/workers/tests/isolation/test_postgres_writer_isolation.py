@@ -192,3 +192,63 @@ def test_writer_with_repo_id_from_other_org_writes_nothing_visible(
             assert cur.fetchone()[0] == 0, (
                 f"cross-tenant payload must be unwritable, but tenant {org.id} sees it"
             )
+
+
+def test_writer_stores_the_chunk_breadcrumb_in_its_own_column(
+    test_db_container, db_conn, with_two_orgs
+):
+    """The breadcrumb must reach `chunks.breadcrumb`, not only `metadata`.
+
+    Keyword search matches that column and query results are rebuilt from it.
+    Until 2026-09-13 the insert never wrote it, so it was NULL for every chunk
+    ever indexed. A chunk without a breadcrumb stores NULL, not an empty string.
+    """
+    org_a, _ = with_two_orgs
+
+    dsn = (
+        test_db_container.get_connection_url().replace(
+            "postgresql+psycopg2://", "postgresql://"
+        )
+    )
+    named = Chunk(
+        content="breadcrumb probe with a name",
+        file_path="pkg/api/handlers/repositories.go",
+        start_line=1,
+        end_line=3,
+        language="go",
+        chunk_type="function",
+        metadata={"breadcrumb": "RepositoriesHandler.Connect"},
+    )
+    unnamed = _make_chunk("breadcrumb probe without a name")
+
+    writer = PostgresWriter(dsn)
+    writer.connect()
+    with writer.conn.cursor() as cur:
+        cur.execute("SET ROLE rag_doc_app")
+    writer.conn.commit()
+
+    try:
+        run_id = writer.create_ingestion_run(
+            organization_id=org_a.id,
+            repository_id=org_a.repo_id,
+            commit_sha="b" * 40,
+            branch="main",
+        )
+        writer.insert_chunks(
+            organization_id=org_a.id,
+            chunks=[named, unnamed],
+            ingestion_run_id=run_id,
+            repository_id=org_a.repo_id,
+        )
+    finally:
+        writer.close()
+
+    with require_tenant(db_conn, org_a.id) as cur:
+        cur.execute(
+            "SELECT content, breadcrumb FROM chunks WHERE content LIKE %s",
+            ("breadcrumb probe%",),
+        )
+        stored = dict(cur.fetchall())
+
+    assert stored["breadcrumb probe with a name"] == "RepositoriesHandler.Connect"
+    assert stored["breadcrumb probe without a name"] is None
