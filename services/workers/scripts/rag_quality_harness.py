@@ -50,11 +50,18 @@ A change that lifts `tuning` and not `holdout` has been overfitted. `self`'s
 holdout set has been consulted for many configurations and is no longer blind
 (ISS-029); decide on a benchmark corpus's holdout set instead.
 
-READ SMALL DIFFERENCES WITH CARE. The measurement is deterministic -- re-running
-a configuration reproduces every rank exactly -- so a difference between two
-configurations is a real ranking change. But on 15 questions one answer moving
-from #1 to #2 shifts MRR by 0.033, so a one- or two-question gap is weak
-evidence that a change generalises.
+READ SMALL DIFFERENCES WITH CARE. When no query fails, the measurement is
+deterministic -- re-running a configuration reproduces every rank exactly, one
+run at a time or several at once -- so a difference between two configurations
+is a real ranking change. But on 15 questions one answer moving from #1 to #2
+shifts MRR by 0.033, so a one- or two-question gap is weak evidence that a
+change generalises.
+
+A FAILED QUERY IS AN ERROR, NOT A MISS. QueryEngine does not raise when keyword
+or vector search fails: it records the error in the response metadata and ranks
+whatever the other retriever returned, often nothing. The harness reports any
+such query as an error, prints MEASUREMENT INVALID and exits 2, so a broken run
+cannot pass as a score (ISS-030).
 
 KNOWN SOFTNESS in `self`'s tuning set, left in deliberately. An expectation
 matches any file whose path contains it, and as of 2026-09-13 five tuning
@@ -294,8 +301,16 @@ def validate_spec(spec: dict, name: str) -> None:
     if not re.fullmatch(r"[0-9a-f]{40}", str(spec.get("commit", ""))):
         problems.append("commit must be a full 40-character sha")
     for root in spec.get("roots", []):
-        if not {"path", "extensions", "language"} <= set(root):
+        if not isinstance(root, dict) or not {"path", "extensions", "language"} <= set(root):
             problems.append(f"a root needs path, extensions and language: {root}")
+            continue
+        # A bare string such as ".py" would pass a membership test character by
+        # character and quietly index every extension-less file (LICENSE,
+        # Makefile) as that language.
+        extensions = root["extensions"]
+        if not (isinstance(extensions, list) and extensions
+                and all(isinstance(e, str) and len(e) > 1 and e.startswith(".") for e in extensions)):
+            problems.append(f"a root's extensions must be a non-empty list such as ['.py']: {root}")
     for pattern in spec.get("exclude", []):
         try:
             re.compile(pattern)
@@ -309,6 +324,8 @@ def validate_spec(spec: dict, name: str) -> None:
             problems.append(f"{q.get('id')}: set must be one of {', '.join(QUESTION_SETS)}")
         if not q.get("question") or not q.get("path"):
             problems.append(f"{q.get('id')}: needs a question and a path")
+        if "symbol" in q and not (isinstance(q["symbol"], str) and q["symbol"].strip()):
+            problems.append(f"{q.get('id')}: a symbol, when given, must be a non-empty name")
     if problems:
         sys.exit(f"invalid spec rag_benchmarks/{name}.json:\n  " + "\n  ".join(problems))
 
@@ -530,6 +547,16 @@ def do_measure(corpus: Corpus, set_name: str, top_k: int, boost_config=None,
             row["error"] = str(exc)[:120]
             rows.append(row)
             continue
+        # QueryEngine does not raise when one retriever fails; it records the
+        # error in the metadata and returns what the other found, often nothing.
+        # Scoring that as an ordinary miss let a broken run pass as a result: a
+        # rejected OpenAI key measured 0/15 with no error reported.
+        metadata = res.get("metadata") or {}
+        failures = [f"{key}: {metadata[key]}" for key in ("fts_error", "vector_error") if metadata.get(key)]
+        if failures:
+            row["error"] = "; ".join(failures)[:120]
+            rows.append(row)
+            continue
         results = res.get("results", [])
         row["top_hit"] = results[0].get("file_path", "") if results else "(no results)"
         in_file = [path_matches(corpus, q["path"], r.get("file_path", "")) for r in results]
@@ -571,6 +598,7 @@ def do_measure(corpus: Corpus, set_name: str, top_k: int, boost_config=None,
               f"rank-1 {s['rank1']}/{s['questions']}, MRR {s['mrr']:.3f}")
     if summary["errors"]:
         print(f"errors    : {summary['errors']} (counted as misses)")
+        print(f"MEASUREMENT INVALID: {summary['errors']} of {len(rows)} queries failed; do not use these numbers")
 
     if json_out:
         json_out.write_text(json.dumps({
@@ -578,6 +606,7 @@ def do_measure(corpus: Corpus, set_name: str, top_k: int, boost_config=None,
             "boost_config": boost_config, "summary": summary, "rows": rows,
         }, indent=1), encoding="utf-8")
         print(f"wrote {json_out}")
+    return summary
 
 
 if __name__ == "__main__":
@@ -618,6 +647,7 @@ if __name__ == "__main__":
                      "without --clear would mix two indexes (ISS-027)")
         do_ingest(corpus)
     if a.measure:
-        do_measure(corpus, a.set, a.top_k, a.boost_config, a.json_out)
+        if do_measure(corpus, a.set, a.top_k, a.boost_config, a.json_out)["errors"]:
+            sys.exit(2)
     if not (a.fetch or a.check or a.clear or a.ingest or a.measure):
         ap.print_help()
