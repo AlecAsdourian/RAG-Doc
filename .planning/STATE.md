@@ -13,7 +13,7 @@ Milestone: v1.0 MVP (9 phases: 17-25)
 Phase: 20 COMPLETE — Repository Integration. All five plans merged. Phase 21 (Job Infrastructure) is researched, has locked context, and is broken into seven plans (21-01 … 21-07), none executed yet.
 Plan: Phases 17, 19 and 20 closed. Phase 21 researched 2026-09-10 (`21-RESEARCH.md`, `21-CONTEXT.md`); eight decisions locked (L1-L8); planned 2026-09-14; ISS-016 settled in that context, closes when the phase ships (21-07).
 Status: Phase 17 closed 2026-09-06. Phase 18 deprioritized. Phase 19 closed 2026-09-08. The GitHub App is registered and its contract verified against the live API (20-02). Repositories now have a tenant-scoped CRUD API (20-03).
-Last activity: 2026-09-14 — retrieval measured on two open-source codebases with blind questions (PR #31); Qdrant uploads batched so larger repositories can be indexed (PR #30); search boosts made neutral by default, decided on fresh blind questions (PR #32); ISS-030 filed; Phase 21 broken into seven plans
+Last activity: 2026-09-14 — retrieval measured on two open-source codebases with blind questions (PR #31); Qdrant uploads batched so larger repositories can be indexed (PR #30); search boosts made neutral by default, decided on fresh blind questions (PR #32); ISS-030 filed and closed by PR #34 (a failed retriever now fails the request); Phase 21 broken into seven plans
 
 **Retrieval quality, 2026-09-13.** `services/workers/scripts/rag_quality_harness.py`
 measures retrieval on this repository's own code. It asks 25 tuning questions and
@@ -176,7 +176,7 @@ Recent decisions still affecting current work:
 - **ISS-012:** A revoked membership does not revoke the organization claim — **filed 2026-09-08** during 19-04. Not exploitable today; **whatever ships membership removal must rewrite the claim.** See ISSUES.md.
 - **ISS-027:** Re-indexing a repository leaves every earlier run's vectors searchable — **filed 2026-09-13.** Latent until something re-indexes; **HIGH before Phase 22 ships**, and "filter to the latest run" is the wrong fix for incremental indexing. See ISSUES.md.
 - **ISS-024, ISS-025, ISS-026, ISS-028, ISS-029:** retrieval-quality findings, **filed 2026-09-13** with measurements. They are boosts that never fire, stopword identifiers, duplicate oversized class chunks, breadcrumbs matching only whole names, and keyword search returning nothing. **Fix these root causes before any further ranking tuning.**
-- **ISS-030:** search returns partial or empty results as a success when a retriever fails — **filed 2026-09-14.** Nothing downstream reads the error: not `/search`, `/chat`, `AnswerGenerator` or the Go client. **HIGH before anything user-facing depends on search.**
+- **ISS-030:** search returns partial or empty results as a success when a retriever fails — **✅ closed 2026-09-14** by PR #34. A failed retriever now fails the request: 503 on `/search` and `/chat`, an error frame on `/chat/stream`, with no exception text in any response. A query containing control characters is rejected at the boundary (400 in Go, 422 in Python). See ISSUES.md.
 - **Frontend inline-style pollution** — ongoing rule, cleaned per component touched
 - **Mocked repos/orgs/graph in frontend** — **replaced in Phase 23**
 
