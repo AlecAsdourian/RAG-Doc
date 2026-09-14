@@ -27,7 +27,11 @@ router = APIRouter()
 
 # Client-facing error text is fixed. An exception's text never goes into a
 # response: an OpenAI authentication error, for one, contains a masked fragment
-# of the API key. The full error is logged server-side instead.
+# of the API key.
+#
+# Each failure's text is logged once. QueryEngine logs a retriever failure with
+# its traceback, so these routes log only the outcome, with no exception text.
+# An unexpected error is logged here, once, by logger.exception.
 SEARCH_FAILED_DETAIL = "Search failed due to an internal error"
 CHAT_FAILED_DETAIL = "Chat failed due to an internal error"
 
@@ -107,11 +111,14 @@ async def search(request: SearchRequest, req: Request) -> SearchResponse:
         # ISS-030: a failed retriever fails the request rather than returning
         # 200 with partial or empty results. 503, because a dependency (OpenAI,
         # Qdrant or Postgres) is failing and a retry may succeed.
-        logger.error(f"Search failed: {e}", exc_info=True)
+        logger.warning(
+            f"/search answered 503: {e.failed_description} failed "
+            f"(organization_id={request.organization_id})"
+        )
         raise HTTPException(status_code=503, detail=retrieval_unavailable_detail(e))
 
-    except Exception as e:
-        logger.error(f"Search error: {e}", exc_info=True)
+    except Exception:
+        logger.exception("/search answered 500 after an unexpected error")
         raise HTTPException(status_code=500, detail=SEARCH_FAILED_DETAIL)
 
 
@@ -168,11 +175,14 @@ async def chat(request: ChatRequest, req: Request) -> ChatResponse:
     except RetrievalError as e:
         # ISS-030: without retrieval there is nothing to ground an answer in,
         # and "I don't have enough information" would be a false answer.
-        logger.error(f"Chat failed: {e}", exc_info=True)
+        logger.warning(
+            f"/chat answered 503: {e.failed_description} failed "
+            f"(organization_id={request.organization_id})"
+        )
         raise HTTPException(status_code=503, detail=retrieval_unavailable_detail(e))
 
-    except Exception as e:
-        logger.error(f"Chat error: {e}", exc_info=True)
+    except Exception:
+        logger.exception("/chat answered 500 after an unexpected error")
         raise HTTPException(status_code=500, detail=CHAT_FAILED_DETAIL)
 
 
@@ -245,11 +255,14 @@ async def chat_stream(request: ChatRequest, req: Request):
         except RetrievalError as e:
             # ISS-030: same message as the 503 on /search and /chat. The stream
             # has already answered 200, so the failure travels as an error frame.
-            logger.error(f"Chat stream failed: {e}", exc_info=True)
+            logger.warning(
+                f"/chat/stream sent an error frame: {e.failed_description} failed "
+                f"(organization_id={request.organization_id})"
+            )
             yield _sse_error(retrieval_unavailable_detail(e))
 
-        except Exception as e:
-            logger.error(f"Chat stream error: {e}", exc_info=True)
+        except Exception:
+            logger.exception("/chat/stream sent an error frame after an unexpected error")
             yield _sse_error(CHAT_FAILED_DETAIL)
 
     return StreamingResponse(

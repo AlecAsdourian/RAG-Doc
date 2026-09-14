@@ -104,35 +104,50 @@ class AnswerGenerator:
         """
         logger.info(f"Generating answer for query: {query}")
 
-        # Check semantic cache if enabled
+        # Check semantic cache if enabled.
+        #
+        # The cache is an optimisation, so a failed lookup falls through to
+        # retrieval. Embedding the query needs OpenAI; if OpenAI is down, the
+        # retrieval below fails too and raises RetrievalError, which is a 503
+        # the client can retry rather than a 500 from here (ISS-030). The
+        # warning leaves out the exception text, which for an OpenAI auth
+        # error holds a key fragment.
+        embedding_vector = None
         if self.semantic_cache:
-            # Generate embedding for query
-            from workers.embeddings import EmbeddingGenerator
+            cached_response = None
+            try:
+                # Generate embedding for query
+                from workers.embeddings import EmbeddingGenerator
 
-            embedding_gen = EmbeddingGenerator(
-                api_key=self.client.api_key
-            )
-            query_embedding = embedding_gen.generate_embeddings_for_chunks(
-                [type('Chunk', (), {'content': query, 'metadata': {}})()]
-            )
-
-            # Extract the embedding vector
-            if query_embedding:
-                embedding_vector = list(query_embedding.values())[0]
-
-                # Check cache
-                cached_response = self.semantic_cache.get_cached_response(
-                    query=query,
-                    query_embedding=embedding_vector,
-                    organization_id=organization_id,
-                    repository_id=repository_id,
+                embedding_gen = EmbeddingGenerator(
+                    api_key=self.client.api_key
+                )
+                query_embedding = embedding_gen.generate_embeddings_for_chunks(
+                    [type('Chunk', (), {'content': query, 'metadata': {}})()]
                 )
 
-                if cached_response:
-                    logger.info("Cache hit! Returning cached response")
-                    cached_response["cache_hit"] = True
-                    cached_response["total_cost"] = 0.0
-                    return cached_response
+                # Extract the embedding vector and check the cache
+                if query_embedding:
+                    embedding_vector = list(query_embedding.values())[0]
+                    cached_response = self.semantic_cache.get_cached_response(
+                        query=query,
+                        query_embedding=embedding_vector,
+                        organization_id=organization_id,
+                        repository_id=repository_id,
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"Semantic cache lookup failed ({type(e).__name__}); "
+                    "continuing to retrieval without the cache"
+                )
+                cached_response = None
+                embedding_vector = None
+
+            if cached_response:
+                logger.info("Cache hit! Returning cached response")
+                cached_response["cache_hit"] = True
+                cached_response["total_cost"] = 0.0
+                return cached_response
 
         # Cache miss - retrieve chunks.
         #
@@ -207,16 +222,23 @@ class AnswerGenerator:
             "sources": sources,
         }
 
-        # Cache the response if cache enabled
-        if self.semantic_cache and 'embedding_vector' in locals():
-            self.semantic_cache.cache_response(
-                query=query,
-                query_embedding=embedding_vector,
-                organization_id=organization_id,
-                repository_id=repository_id,
-                response=result,
-            )
-            logger.info("Response cached for future queries")
+        # Cache the response if cache enabled. A failed write loses only the
+        # saving; the answer is still returned.
+        if self.semantic_cache and embedding_vector is not None:
+            try:
+                self.semantic_cache.cache_response(
+                    query=query,
+                    query_embedding=embedding_vector,
+                    organization_id=organization_id,
+                    repository_id=repository_id,
+                    response=result,
+                )
+                logger.info("Response cached for future queries")
+            except Exception as e:
+                logger.warning(
+                    f"Semantic cache write failed ({type(e).__name__}); "
+                    "returning the answer uncached"
+                )
 
         logger.info(
             f"Answer generated: {completion_tokens} tokens, "

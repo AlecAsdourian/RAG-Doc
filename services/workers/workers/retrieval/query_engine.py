@@ -190,9 +190,13 @@ class QueryEngine:
 
         if failures:
             for name, e in failures.items():
+                # The only place a retriever failure is logged in full. The
+                # traceback carries the exception text, so the message leaves it
+                # out: an OpenAI auth error holds a key fragment, and it should
+                # be written once per request. Callers log only the outcome.
                 logger.error(
                     f"{RETRIEVER_LABELS[name]} failed: organization_id={organization_id}, "
-                    f"repository_id={repository_id}: {type(e).__name__}: {e}",
+                    f"repository_id={repository_id}",
                     exc_info=e,
                 )
             raise RetrievalError(failures) from next(iter(failures.values()))

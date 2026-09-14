@@ -129,15 +129,19 @@ class TestRetrievalFailureIsServiceUnavailable:
         tc, query_engine, _ = client_with_mock_engines
         query_engine.query.side_effect = _retrieval_error("vector")
 
-        with caplog.at_level(logging.ERROR):
+        with caplog.at_level(logging.INFO):
             resp = tc.post("/search", json=_body())
 
         assert resp.status_code == 503, resp.text
         assert resp.json() == {"detail": VECTOR_UNAVAILABLE}
         assert SENTINEL not in resp.text
-        assert any(SENTINEL in record.getMessage() for record in caplog.records), (
-            "the full error must still be logged server-side"
+        assert any("vector search" in record.getMessage() for record in caplog.records), (
+            "the route must log which retriever failed"
         )
+        # QueryEngine logs the cause with its traceback; the route logs only the
+        # outcome. (The engine is mocked here, so any sentinel came from the route.)
+        assert SENTINEL not in _formatted(caplog.records)
+        assert not any(record.exc_info for record in caplog.records)
 
     def test_search_names_keyword_search_when_it_fails(self, client_with_mock_engines):
         tc, query_engine, _ = client_with_mock_engines
@@ -263,3 +267,75 @@ def test_iss030_a_failing_retriever_cannot_produce_a_silent_200(
 
     assert SENTINEL not in text
     assert "I don't have enough information" not in text
+
+
+def _formatted(records) -> str:
+    """Every record as a log handler would write it, tracebacks included."""
+    formatter = logging.Formatter("%(name)s %(levelname)s %(message)s")
+    return "\n".join(formatter.format(record) for record in records)
+
+
+@pytest.mark.parametrize("route", ["/search", "/chat", "/chat/stream"])
+def test_a_retriever_failure_is_logged_in_full_exactly_once(client_with_real_pipeline, route, caplog):
+    """The cause's text is written to the logs once per failed request.
+
+    An OpenAI 401 carries a masked key fragment. QueryEngine logs it with its
+    traceback; the route adds a one-line outcome naming the retriever. Before
+    the PR #34 review the routes also logged `{e}` with a traceback, so the
+    fragment was written about three times per request.
+    """
+    tc, query_engine = client_with_real_pipeline
+    query_engine.fts_retriever.search.return_value = []
+    query_engine.vector_retriever.search.side_effect = RuntimeError(f"Error code: 401 - {SENTINEL}")
+
+    with caplog.at_level(logging.INFO):
+        if route == "/chat/stream":
+            _stream(tc, _body())
+        else:
+            assert tc.post(route, json=_body()).status_code == 503
+
+    logged = _formatted(caplog.records)
+    assert logged.count(SENTINEL) == 1, logged
+    assert sum(1 for record in caplog.records if record.exc_info) == 1, logged
+    assert any(
+        record.name == "api.routes" and "vector search failed" in record.getMessage()
+        for record in caplog.records
+    ), logged
+
+
+@pytest.mark.parametrize("failing", ["embedding", "lookup"])
+@pytest.mark.parametrize("route", ["/chat", "/chat/stream"])
+def test_a_failed_cache_lookup_does_not_hide_the_outage(client_with_real_pipeline, route, failing):
+    """With the semantic cache on, an outage is still a 503, not a 500.
+
+    AnswerGenerator embeds the query for the cache lookup before retrieval. If
+    that embedding call (OpenAI) or the lookup itself raised, /chat used to
+    answer 500 "internal error". Now a cache failure falls through to retrieval,
+    which reports the outage as the retryable 503.
+    """
+    tc, query_engine = client_with_real_pipeline
+    query_engine.fts_retriever.search.return_value = []
+    query_engine.vector_retriever.search.side_effect = RuntimeError(f"Error code: 401 - {SENTINEL}")
+    semantic_cache = MagicMock()
+    app.state.answer_generator.semantic_cache = semantic_cache
+
+    with patch("workers.embeddings.EmbeddingGenerator") as embedding_generator:
+        embed = embedding_generator.return_value.generate_embeddings_for_chunks
+        if failing == "embedding":
+            embed.side_effect = RuntimeError(f"Error code: 401 - {SENTINEL}")
+        else:
+            embed.return_value = {"query": [0.1, 0.2, 0.3]}
+            semantic_cache.get_cached_response.side_effect = RuntimeError(f"redis down {SENTINEL}")
+
+        if route == "/chat/stream":
+            text = _stream(tc, _body())
+            assert _frames(text) == [{"type": "error", "error": VECTOR_UNAVAILABLE}], text[:400]
+        else:
+            resp = tc.post(route, json=_body())
+            text = resp.text
+            assert resp.status_code == 503, f"{route} answered {resp.status_code}: {text[:400]}"
+            assert resp.json() == {"detail": VECTOR_UNAVAILABLE}
+
+    assert SENTINEL not in text
+    query_engine.vector_retriever.search.assert_called_once()
+    semantic_cache.cache_response.assert_not_called()
