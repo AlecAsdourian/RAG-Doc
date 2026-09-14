@@ -23,20 +23,32 @@ class MetadataBooster:
         r'(^|.*/)\.git/.*',
     ]
 
-    # Default boost weights
+    # Default boost weights: neutral, except the noise penalty.
+    #
+    # Until 2026-09-14 the defaults multiplied docs by 1.5, file summaries by
+    # 1.4, class summaries by 1.3, breadcrumb and identifier matches by 1.3,
+    # quoted matches by 1.4 and tests by 0.8. Measured on two open-source
+    # benchmark corpora (scripts/rag_benchmarks/), the summary boosts let short
+    # name-list chunks take 36-44% of the top-5 slots on tuning questions. On
+    # fresh blind questions, setting every multiplier to 1.0 raised symbol-level
+    # MRR from 0.111 to 0.319 (miniflux) and from 0.196 to 0.342 (mealie)
+    # without lowering file-level MRR, under a rule fixed before those questions
+    # were written (scripts/rag_benchmarks/boost-defaults-protocol.md). The
+    # weights stay configurable; change a default only with a measurement that
+    # beats this one.
     DEFAULT_CONFIG = {
         "chunk_type_boosts": {
-            "docs": 1.5,
-            "file_summary": 1.4,
-            "class_summary": 1.3,
+            "docs": 1.0,
+            "file_summary": 1.0,
+            "class_summary": 1.0,
             "function": 1.0,
             "class": 1.0,
-            "test": 0.8,
+            "test": 1.0,
         },
-        "path_boost": 1.2,
-        "breadcrumb_match_boost": 1.3,
-        "quoted_match_boost": 1.4,
-        "identifier_match_boost": 1.3,
+        "path_boost": 1.0,
+        "breadcrumb_match_boost": 1.0,
+        "quoted_match_boost": 1.0,
+        "identifier_match_boost": 1.0,
         "noise_penalty": 0.3,
     }
 

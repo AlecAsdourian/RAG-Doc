@@ -3,14 +3,73 @@
 import pytest
 from workers.retrieval.metadata_booster import MetadataBooster
 
+# The multipliers that were the defaults until 2026-09-14. The mechanics tests
+# below pass them explicitly, so they keep exercising type boosts, identifier and
+# quoted matching, and noise penalties now that the defaults are neutral.
+WEIGHTED_CONFIG = {
+    "chunk_type_boosts": {
+        "docs": 1.5,
+        "file_summary": 1.4,
+        "class_summary": 1.3,
+        "function": 1.0,
+        "class": 1.0,
+        "test": 0.8,
+    },
+    "path_boost": 1.2,
+    "breadcrumb_match_boost": 1.3,
+    "quoted_match_boost": 1.4,
+    "identifier_match_boost": 1.3,
+    "noise_penalty": 0.3,
+}
+
+
+def test_defaults_are_neutral_except_the_noise_penalty():
+    """Adopted on blind benchmark questions (scripts/rag_benchmarks/boost-defaults-protocol.md)."""
+    config = MetadataBooster().config
+    assert set(config["chunk_type_boosts"].values()) == {1.0}
+    for key in ("path_boost", "breadcrumb_match_boost", "quoted_match_boost", "identifier_match_boost"):
+        assert config[key] == 1.0, key
+    assert config["noise_penalty"] == 0.3
+
+
+def test_default_booster_does_not_favour_summaries_or_matches():
+    """The summary boosts let name-list chunks crowd out the code that answers."""
+    parsed_query = {
+        "raw_query": 'AuthService "login error"',
+        "quoted_terms": ["login error"],
+        "identifiers": ["AuthService"],
+        "clean_query": "",
+    }
+    chunks = [
+        {"chunk_id": "file-summary", "rrf_score": 0.5, "chunk_type": "file_summary",
+         "file_path": "src/auth.py", "breadcrumb": "auth.py", "content": "AuthService login error"},
+        {"chunk_id": "class-summary", "rrf_score": 0.5, "chunk_type": "class_summary",
+         "file_path": "src/auth.py", "breadcrumb": "AuthService", "content": "AuthService"},
+        {"chunk_id": "function", "rrf_score": 0.5, "chunk_type": "function",
+         "file_path": "src/auth.py", "breadcrumb": "AuthService.login",
+         "content": "raise Exception('login error')"},
+    ]
+
+    for chunk in MetadataBooster().boost(chunks, parsed_query):
+        assert chunk["boost_multiplier"] == 1.0, chunk["chunk_id"]
+
+
+def test_default_booster_still_penalises_vendored_code():
+    chunk = {"chunk_id": "1", "rrf_score": 0.6, "chunk_type": "function",
+             "file_path": "node_modules/express/lib/router.js", "content": "function route() {}"}
+
+    result = MetadataBooster().boost([chunk], {"quoted_terms": [], "identifiers": []})
+
+    assert result[0]["boost_multiplier"] == 0.3
+
 
 class TestMetadataBooster:
-    """Test suite for MetadataBooster class."""
+    """Boost mechanics, exercised with explicit weights."""
 
     @pytest.fixture
     def booster(self):
-        """Create a MetadataBooster instance with default config."""
-        return MetadataBooster()
+        """A MetadataBooster with the former, weighted defaults."""
+        return MetadataBooster(WEIGHTED_CONFIG)
 
     @pytest.fixture
     def custom_booster(self):
