@@ -4,6 +4,21 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 ## Open Enhancements
 
+### ISS-028: Keyword search on breadcrumbs matches only whole qualified names
+
+- **Discovered:** 2026-09-13, while fixing the empty `chunks.breadcrumb` column. Measured with `ts_debug`, not inferred.
+- **Type:** Retrieval quality
+- **Priority:** MEDIUM. Decide with the ranking work, by measurement.
+- **What happens:** Postgres's `english` text-search parser reads a dotted name as a single token:
+  - `RepositoriesHandler.Connect` → `host` → `{repositorieshandler.connect}`
+  - `QueryEngine._enrich_results_with_metadata` → `file` → `{queryengine._enrich_results_with_metadata}`
+  - `types.go` → `host` → `{types.go}`
+
+  So the breadcrumb branch of keyword search (`FTSRetriever.search`, backed by migration 000006's GIN index) matches only a query containing the whole qualified name. `to_tsvector('english','RepositoriesHandler.Connect') @@ plainto_tsquery('english','connect')` is false.
+- **Why it matters:** migration 000006 says the index "enables searches like auth.middleware.validateToken", and that exact form does work. But a question that names a symbol only in part, such as "the Connect handler", never matches. For natural-language questions, the words in a breadcrumb add nothing to keyword search.
+- **Fix direction:** index a word-split form alongside the display value. Split on `.` and `_` and at lower-to-upper case boundaries, so `RepositoriesHandler.Connect` becomes `repositories handler connect`. Change the query expression and the GIN index expression together, so the index is still used. This changes ranking, so measure it against the harness's tuning and held-out sets rather than shipping it as a fix.
+- **Not the empty-column bug.** That one, fixed in the same change that filed this, left the column NULL for every chunk. This one is about how a populated column is tokenized.
+
 ### ISS-027: Re-indexing a repository leaves every earlier run's vectors searchable
 
 - **Discovered:** 2026-09-13, while preparing to re-ingest after the Go method fix. Measured, not inferred.
