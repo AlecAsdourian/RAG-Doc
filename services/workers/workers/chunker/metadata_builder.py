@@ -237,21 +237,48 @@ class MetadataBuilder:
         return None
 
     def _extract_go_docstring(self, node: Node, content: bytes) -> Optional[str]:
-        """Extract comment block before Go function."""
-        # Go docstrings are comments immediately before the function
-        # Look for comment nodes that are previous siblings
-        if not node.prev_sibling:
-            return None
+        """Extract the doc comment directly above a Go declaration.
 
-        # Check if previous sibling is a comment
+        Tree-sitter makes each `//` line its own `comment` node, so a doc comment
+        is a run of comment siblings, each ending on the line directly above the
+        next. The earlier version read only the single previous sibling and so
+        kept the LAST line of a multi-line comment -- for AppJWT,
+        "installation tokens." instead of "AppJWT mints a short-lived RS256
+        token identifying the App itself."
+
+        Stops at a blank line, since Go does not treat a separated comment as
+        attached. Skips `//go:` directive lines, which are compiler instructions
+        rather than documentation. A comment trailing code on the same line is
+        not documentation either.
+        """
+        lines: List[str] = []
+        expected_end_row = node.start_point[0] - 1
         prev = node.prev_sibling
-        if prev.type == "comment":
-            comment_text = self._get_node_text(prev, content)
-            # Remove // or /* */ markers
-            comment_text = comment_text.strip("//").strip("/*").strip("*/")
-            return comment_text.strip()
+        while (
+            prev is not None
+            and prev.type == "comment"
+            and prev.end_point[0] == expected_end_row
+        ):
+            before = prev.prev_sibling
+            if before is not None and before.end_point[0] == prev.start_point[0]:
+                break  # trails a line of code; not a doc comment
+            lines[:0] = self._clean_go_comment(self._get_node_text(prev, content))
+            expected_end_row = prev.start_point[0] - 1
+            prev = before
 
-        return None
+        text = "\n".join(line for line in lines if not line.startswith("go:")).strip()
+        return text or None
+
+    @staticmethod
+    def _clean_go_comment(raw: str) -> List[str]:
+        """Strip comment markers from one `//` line or one `/* */` block."""
+        if raw.startswith("//"):
+            body = raw[2:]
+            return [body[1:] if body.startswith(" ") else body]
+        if raw.startswith("/*"):
+            inner = raw[2:-2] if raw.endswith("*/") else raw[2:]
+            return [ln.strip().lstrip("*").strip() for ln in inner.splitlines()]
+        return [raw]
 
     def _extract_js_docstring(self, node: Node, content: bytes) -> Optional[str]:
         """Extract JSDoc comment before TypeScript/JavaScript function."""
