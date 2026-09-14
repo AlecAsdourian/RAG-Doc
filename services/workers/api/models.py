@@ -1,9 +1,27 @@
 """Pydantic models for RAG API request/response validation."""
 
-from typing import Any, Dict, List, Optional
+import re
+from typing import Annotated, Any, Dict, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
+
+# C0 control characters other than tab, newline and carriage return, which
+# pasted code legitimately contains. U+0000 is the one that matters: Postgres
+# text cannot hold it, so keyword search raised on it and the request came back
+# as a 503 "please retry" that no retry could fix. The rest of the range has no
+# place in a query either. The Go backend applies the same rule and answers 400
+# (services/backend/pkg/api/handlers/query_text.go).
+_DISALLOWED_QUERY_CHARACTERS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _reject_control_characters(query: str) -> str:
+    if _DISALLOWED_QUERY_CHARACTERS.search(query):
+        raise ValueError("query contains invalid characters")
+    return query
+
+
+QueryText = Annotated[str, AfterValidator(_reject_control_characters)]
 
 
 class SearchRequest(BaseModel):
@@ -16,7 +34,7 @@ class SearchRequest(BaseModel):
     intended defense.
     """
 
-    query: str = Field(..., min_length=1, max_length=1000)
+    query: QueryText = Field(..., min_length=1, max_length=1000)
     organization_id: UUID
     repository_id: UUID
     top_k: int = Field(default=10, ge=1, le=50)
@@ -54,7 +72,7 @@ class ChatRequest(BaseModel):
     SearchRequest for rationale.
     """
 
-    query: str = Field(..., min_length=1, max_length=2000)
+    query: QueryText = Field(..., min_length=1, max_length=2000)
     organization_id: UUID
     repository_id: UUID
     top_k: int = Field(default=5, ge=1, le=20)

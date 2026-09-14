@@ -544,17 +544,12 @@ def do_measure(corpus: Corpus, set_name: str, top_k: int, boost_config=None,
             res = engine.query(query_text=q["question"], organization_id=ORG,
                                repository_id=corpus.repository_id, top_k=top_k)
         except Exception as exc:                     # noqa: BLE001
+            # A failed retriever raises RetrievalError (ISS-030) and lands here,
+            # as an error rather than a miss. Before that fix QueryEngine returned
+            # what the other retriever found, often nothing, and scoring that as
+            # a miss let a broken run pass as a result: a rejected OpenAI key
+            # measured 0/15 with no error reported.
             row["error"] = str(exc)[:120]
-            rows.append(row)
-            continue
-        # QueryEngine does not raise when one retriever fails; it records the
-        # error in the metadata and returns what the other found, often nothing.
-        # Scoring that as an ordinary miss let a broken run pass as a result: a
-        # rejected OpenAI key measured 0/15 with no error reported.
-        metadata = res.get("metadata") or {}
-        failures = [f"{key}: {metadata[key]}" for key in ("fts_error", "vector_error") if metadata.get(key)]
-        if failures:
-            row["error"] = "; ".join(failures)[:120]
             rows.append(row)
             continue
         results = res.get("results", [])

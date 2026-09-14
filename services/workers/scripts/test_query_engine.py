@@ -128,11 +128,6 @@ def run_test_query(engine, query_text, repository_id, expected_file_hint=None):
     print(f"  - Fused results: {metadata['fused_results']}")
     print(f"  - Duration: {metadata['duration_ms']}ms")
 
-    if metadata['fts_error']:
-        print(f"  - FTS error: {metadata['fts_error']}")
-    if metadata['vector_error']:
-        print(f"  - Vector error: {metadata['vector_error']}")
-
     # Show top results
     if results:
         print(f"\nTop {len(results)} results:")

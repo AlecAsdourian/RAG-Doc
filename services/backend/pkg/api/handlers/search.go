@@ -34,6 +34,9 @@ type SearchRequestBody struct {
 
 // Bind implements render.Binder for SearchRequestBody
 func (sr *SearchRequestBody) Bind(r *http.Request) error {
+	if err := validateQueryText(sr.Query); err != nil {
+		return err
+	}
 	// Set default TopK if not provided
 	if sr.TopK == 0 {
 		sr.TopK = 10

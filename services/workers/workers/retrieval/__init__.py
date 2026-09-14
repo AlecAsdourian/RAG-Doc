@@ -1,5 +1,6 @@
 """Retrieval modules for RAG query engine."""
 
+from .errors import RetrievalError
 from .fts_retriever import FTSRetriever
 from .metadata_booster import MetadataBooster
 from .query_engine import QueryEngine
@@ -13,5 +14,6 @@ __all__ = [
     "QueryEngine",
     "QueryParser",
     "RRFFusion",
+    "RetrievalError",
     "VectorRetriever",
 ]

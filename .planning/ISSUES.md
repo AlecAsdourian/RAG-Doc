@@ -4,27 +4,6 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 ## Open Enhancements
 
-### ISS-030: Search returns partial or empty results as a success when one retriever fails
-
-- **Discovered:** 2026-09-14, while re-verifying a benchmark measurement. Reproduced on purpose.
-- **Type:** Correctness / Reliability
-- **Priority:** HIGH before anything user-facing depends on search. It is silent today, and every caller misses it.
-- **What happens:** `QueryEngine.query` runs keyword and vector search in parallel and catches either one's exception (`query_engine.py:168-180`). It then fuses and returns whatever the other retriever found. The failure survives only as a string in `metadata.fts_error` or `metadata.vector_error` (`query_engine.py:221-222`).
-- **Nothing reads those fields.** No code outside `query_engine.py` refers to them:
-  - not the `/search` or `/chat` routes (`api/routes.py`)
-  - not `AnswerGenerator`
-  - not the Go `RAGClient`
-  A failed search therefore reaches users as an empty or thinner result with HTTP 200. A chat answer is generated from partial context as if that context were complete.
-- **Measured.** With a rejected OpenAI key, `QueryEngine.query` raised nothing. For a question whose answer normally ranks #4, it returned 0 results, with `vector_error` set to the 401.
-  - **Why a vector failure usually means no results at all:** keyword search returns nothing for most natural-language questions (ISS-029).
-  - **In a heavily loaded run:** 6 of 130 benchmark queries came back empty this way, with no error surfaced, and each ranks #1-#4 when re-run.
-  - **The cause wasn't captured.** Qdrant logged no failed searches, so a failed embedding call is the likely cause, but that's unconfirmed.
-- **Fix direction:** decide per caller.
-  - **Fail the request** (a 5xx naming the retriever) when vector search fails, since results without it are mostly empty.
-  - **Or return the partial result with an explicit `degraded` flag,** which the Go client and chat UI must surface.
-  - **Either way:** log the failure at error level, and add a test that a failing retriever cannot produce a silent 200. Consider one retry of the embedding call.
-- **Not the harness's problem any more.** Since PR #31 the benchmark harness treats these queries as errors, so measurements can't be silently wrong. The product behaviour is unchanged.
-
 ### ISS-029: Keyword search returns nothing for most natural-language questions, so hybrid search is effectively vector-only
 
 - **Discovered:** 2026-09-13, while measuring why the breadcrumb fix (PR #28) left every ranking unchanged. Measured on the quality harness.
@@ -139,6 +118,15 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **The ordering gate is now fully discharged, as of 2026-09-10.** It had two parts and both are done: ISS-020 org-scoped the key, and ISS-022 put the guard in CI. Repairing the constructor is therefore safe to do now — the cache will come up tenant-scoped, with 8 isolation tests gating every PR against regression.
 - **When it is repaired, expect it to be the first time this code has ever executed.** It has been dead since Phase 12, so treat a green test suite as necessary rather than sufficient; the read path in particular has never run against a populated cache outside the new tests.
 - **Class problem worth a separate look:** a bare `except Exception` + `logger.warning` around service initialization turns any wiring bug into silent feature loss. Worth auditing the other optional-dependency initializations in `main.py` on the same pass.
+- **Re-confirmed 2026-09-14 by the PR #34 review, and still open.**
+  - The reviewer found the same wiring bug independently. `api/main.py:64-68` still passes `qdrant_url` and `openai_api_key` to a constructor that takes `embedding_generator`, and `main.py:70-71` swallows the `TypeError`.
+  - Reproduced offline on `fix/search-fails-loudly`: constructing `SemanticCache` with `main.py`'s arguments raises `TypeError: SemanticCache.__init__() got an unexpected keyword argument 'qdrant_url'`.
+  - The call dates from `c3e146d` (Phase 05-02).
+  - No second issue was filed, because this entry already records the bug.
+- **Repairing it turns on a path that PR #34 hardened first.**
+  - `AnswerGenerator` embeds the query for the cache lookup before retrieval. With the cache running, an OpenAI outage would have made `/chat` a 500 instead of the 503 that ISS-030 defines.
+  - PR #34 makes a failed lookup or write fall through with a warning.
+  - Covered only with a mocked cache, in `workers/generation/test_answer_generator.py` and `tests/api/test_routes_retrieval_failure.py`. Nothing has exercised it against a running cache.
 
 ### ISS-001: Implement shared type definitions for cross-phase data contracts
 
@@ -339,6 +327,60 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Recommendation:** the `AfterConnect` sentinel, giving deterministically **loud**. With `TenantScoper` in place an unscoped query is by definition a bug, and a bug that always throws is cheaper than one that sometimes returns `[]`. Still an operational-risk judgement — a 500 is worse than an empty list for a user who trips it — so it belongs to whoever owns that call, but it is now a pool-constructor line rather than a schema change.
 
 ## Closed Enhancements
+
+### ISS-030: Search returns partial or empty results as a success when one retriever fails ✅
+
+- **Discovered:** 2026-09-14, while re-verifying a benchmark measurement. Reproduced on purpose.
+- **Type:** Correctness / Reliability
+- **Resolved:** 2026-09-14. The decision was to fail loudly rather than return a result flagged as degraded.
+  - **Retrieval:** `QueryEngine.query` raises `RetrievalError` (`workers/retrieval/errors.py`, exported from `workers.retrieval`) when keyword or vector search fails. It names the failed retriever(s), chains the original exception and logs at error level. No partial result is returned, and the `fts_error` / `vector_error` metadata fields are gone.
+  - **Routes:** `/search` and `/chat` map it to 503 with a fixed, retryable detail, such as "Search is temporarily unavailable (vector search failed); please retry". `/chat/stream` sends the same message as an SSE error frame. Any other exception now gets a fixed 500 detail or error frame instead of `str(e)`, and the full error is logged server-side.
+  - **Chat:** `AnswerGenerator` lets the error propagate. An outage can no longer come back as "I don't have enough information", and a failure never reaches the cache write-back.
+  - **Go backend:** no change needed. `search.go` already maps any RAG client error to a generic 503, and `chat.go` relays error frames as they arrive.
+- **Guarded by:**
+  - `workers/retrieval/test_query_engine.py` (7 tests): a failure in either retriever raises `RetrievalError` naming it, and both succeeding returns results.
+  - `workers/generation/test_answer_generator.py` (7 tests): the error propagates and is not cached, and a failed semantic cache lookup or write never decides the response.
+  - `tests/api/test_routes_retrieval_failure.py` (23 tests): 503 or an error frame on each route with no error text, and a generic 500.
+    - `test_iss030_a_failing_retriever_cannot_produce_a_silent_200` runs the real `QueryEngine` and `AnswerGenerator` behind the routes.
+    - Further tests check that the cause's text is logged exactly once per request, and that a failed cache lookup still yields the 503.
+  - `tests/api/test_routes_query_validation.py` (36 tests): control characters are a 422 on each route, before the engine is called. Tab, newline and carriage return are accepted.
+  - `pkg/api/handlers/rag_errors_test.go` and `query_text_test.go` (5 Go tests): the backend's 503 mapping, its error-frame relay, and the 400 for control characters.
+  - **Mutation-verified**, each on a copy of `services/workers`. The final run used the 77 tests in `tests/api` and the two unit-test files:
+    - restoring partial results fails 16 tests
+    - mapping `RetrievalError` to 500 fails 11
+    - putting `str(e)` back into the 503 detail fails 9, and into the stream's error frame, 5
+    - catching it inside `AnswerGenerator` fails 14
+    - removing the query validator fails 27; rejecting only NUL fails 15; also rejecting tab, newline and carriage return fails 9
+    - a route logging the cause again fails 1 to 2 tests; repeating it in the engine's log message fails 3
+    - removing the cache lookup guard fails 7, and the write guard, 1
+    - in Go, removing the check from both handlers fails both rejection tests, in all 16 subtests
+- **Measured against the local stack with a rejected OpenAI key:**
+  - **Before:** `QueryEngine.query` raised nothing and returned 0 results. `/search` answered 200 with no results; `/chat` and `/chat/stream` answered "I don't have enough information".
+  - **After:** `QueryEngine.query` raises `RetrievalError` naming vector search, with the 401 as its cause. `/search` and `/chat` answer 503, and `/chat/stream` sends a single error frame. None of them carries error text.
+  - **The harness's self holdout scores are unchanged** with the real key: 12/15 in top 5, 7 at #1, MRR 0.622, and the same rank for every question.
+- **A leak this entry had missed.** On the old code, `/search`'s 200 response carried `metadata.vector_error`, and with it the OpenAI error text: "Incorrect API key provided", `sk-` and the key's last four characters. The Go backend passes `metadata` through to its own clients. Removing the field closed it. Measured with a deliberately invalid key, so no real key was exposed.
+- **Follow-ups from the PR #34 review, fixed in the same PR:**
+  - **A NUL in the query became a permanent 503.**
+    - psycopg2 cannot bind U+0000, so keyword search raised `ValueError`, and `QueryEngine` reported it as an outage: "please retry" forever, with an ERROR traceback on every request. On the old code the same query returned vector-only results.
+    - Now `SearchRequest` and `ChatRequest` reject U+0000, and every other C0 control character except tab, newline and carriage return, with a 422.
+    - The Go backend applies the same rule on `/api/search` and `/api/chat/stream` with a 400. Without it, Go would turn the Python 422 into a 503.
+  - **The cause's text was logged about three times per request.** `QueryEngine` now logs each retriever failure once, with its traceback. The routes log a one-line outcome naming the retriever, with no exception text.
+  - **A failed semantic cache lookup would have made `/chat` a 500.**
+    - The lookup embeds the query through OpenAI before retrieval, so an OpenAI outage escaped as an internal error.
+    - A failed lookup or write now logs a warning without exception text and continues.
+    - This was latent, because the cache never runs (ISS-021).
+  - **Not changed:**
+    - `QueryEngine` still wraps any retriever exception as `RetrievalError`, including input-shaped ones such as `ValueError`. Boundary validation makes the known case unreachable through the API.
+    - The 503 detail still names the failed retriever. That was intended, and the reviewer did not object.
+    - `api/routes.py` still imports `RetrievalError` at module load.
+- **Priority when open:** HIGH before anything user-facing depends on search.
+- **What happened:** `QueryEngine.query` caught either retriever's exception and fused whatever the other found. The failure survived only as `metadata.fts_error` or `metadata.vector_error`, which nothing read: not the routes, not `AnswerGenerator`, not the Go `RAGClient`.
+  - With a rejected OpenAI key it returned 0 results for a question whose answer normally ranks #4. Keyword search returns nothing for most natural-language questions (ISS-029), so a vector failure usually meant no results at all.
+  - In a heavily loaded run, 6 of 130 benchmark queries came back empty this way, and each ranks #1-#4 when re-run.
+- **Not done:**
+  - No retry of the embedding call.
+  - The cause of the loaded-run failures was never captured. Qdrant logged no failed searches, so a failed embedding call is likely, but unconfirmed.
+
 
 ### ISS-022: No CI job runs the Python worker tests ✅
 

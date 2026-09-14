@@ -97,40 +97,64 @@ class AnswerGenerator:
                 - cache_hit: Whether answer came from cache (if cache enabled)
                 - chunks_retrieved: Number of chunks retrieved
                 - sources: List of source chunks with citations
+
+        Raises:
+            RetrievalError: If keyword or vector search fails. It propagates
+                unchanged; it is never turned into an answer or cached.
         """
         logger.info(f"Generating answer for query: {query}")
 
-        # Check semantic cache if enabled
+        # Check semantic cache if enabled.
+        #
+        # The cache is an optimisation, so a failed lookup falls through to
+        # retrieval. Embedding the query needs OpenAI; if OpenAI is down, the
+        # retrieval below fails too and raises RetrievalError, which is a 503
+        # the client can retry rather than a 500 from here (ISS-030). The
+        # warning leaves out the exception text, which for an OpenAI auth
+        # error holds a key fragment.
+        embedding_vector = None
         if self.semantic_cache:
-            # Generate embedding for query
-            from workers.embeddings import EmbeddingGenerator
+            cached_response = None
+            try:
+                # Generate embedding for query
+                from workers.embeddings import EmbeddingGenerator
 
-            embedding_gen = EmbeddingGenerator(
-                api_key=self.client.api_key
-            )
-            query_embedding = embedding_gen.generate_embeddings_for_chunks(
-                [type('Chunk', (), {'content': query, 'metadata': {}})()]
-            )
-
-            # Extract the embedding vector
-            if query_embedding:
-                embedding_vector = list(query_embedding.values())[0]
-
-                # Check cache
-                cached_response = self.semantic_cache.get_cached_response(
-                    query=query,
-                    query_embedding=embedding_vector,
-                    organization_id=organization_id,
-                    repository_id=repository_id,
+                embedding_gen = EmbeddingGenerator(
+                    api_key=self.client.api_key
+                )
+                query_embedding = embedding_gen.generate_embeddings_for_chunks(
+                    [type('Chunk', (), {'content': query, 'metadata': {}})()]
                 )
 
-                if cached_response:
-                    logger.info("Cache hit! Returning cached response")
-                    cached_response["cache_hit"] = True
-                    cached_response["total_cost"] = 0.0
-                    return cached_response
+                # Extract the embedding vector and check the cache
+                if query_embedding:
+                    embedding_vector = list(query_embedding.values())[0]
+                    cached_response = self.semantic_cache.get_cached_response(
+                        query=query,
+                        query_embedding=embedding_vector,
+                        organization_id=organization_id,
+                        repository_id=repository_id,
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"Semantic cache lookup failed ({type(e).__name__}); "
+                    "continuing to retrieval without the cache"
+                )
+                cached_response = None
+                embedding_vector = None
 
-        # Cache miss - retrieve chunks
+            if cached_response:
+                logger.info("Cache hit! Returning cached response")
+                cached_response["cache_hit"] = True
+                cached_response["total_cost"] = 0.0
+                return cached_response
+
+        # Cache miss - retrieve chunks.
+        #
+        # A failed retriever raises RetrievalError here, and it is deliberately
+        # not caught (ISS-030). Answering "I don't have enough information" would
+        # present an outage as a fact about the code. It also returns before the
+        # cache write-back below, so a failure is never cached.
         retrieval_result = self.query_engine.query(
             query_text=query,
             organization_id=organization_id,
@@ -143,7 +167,7 @@ class AnswerGenerator:
         logger.info(f"Retrieved {len(chunks)} chunks")
 
         if not chunks:
-            # No chunks found - return "don't know" response
+            # Retrieval succeeded and matched nothing - return "don't know" response
             return {
                 "answer": "I don't have enough information to answer that question. The query didn't match any code in the repository.",
                 "model": self.model,
@@ -198,16 +222,23 @@ class AnswerGenerator:
             "sources": sources,
         }
 
-        # Cache the response if cache enabled
-        if self.semantic_cache and 'embedding_vector' in locals():
-            self.semantic_cache.cache_response(
-                query=query,
-                query_embedding=embedding_vector,
-                organization_id=organization_id,
-                repository_id=repository_id,
-                response=result,
-            )
-            logger.info("Response cached for future queries")
+        # Cache the response if cache enabled. A failed write loses only the
+        # saving; the answer is still returned.
+        if self.semantic_cache and embedding_vector is not None:
+            try:
+                self.semantic_cache.cache_response(
+                    query=query,
+                    query_embedding=embedding_vector,
+                    organization_id=organization_id,
+                    repository_id=repository_id,
+                    response=result,
+                )
+                logger.info("Response cached for future queries")
+            except Exception as e:
+                logger.warning(
+                    f"Semantic cache write failed ({type(e).__name__}); "
+                    "returning the answer uncached"
+                )
 
         logger.info(
             f"Answer generated: {completion_tokens} tokens, "
