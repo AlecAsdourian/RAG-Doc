@@ -124,12 +124,18 @@ class PostgresWriter:
 
         self.connect()
 
+        # `breadcrumb` has its own column (migration 000006): keyword search
+        # matches against it, and query results are rebuilt from it after
+        # ranking. Until 2026-09-13 this insert never wrote it, so the column
+        # was NULL for every chunk -- the breadcrumb branch of keyword search
+        # matched nothing, and every query result came back with an empty
+        # breadcrumb even though the chunk's metadata carried one.
         query = """
             INSERT INTO chunks (
                 id, ingestion_run_id, repository_id, file_path,
                 start_line, end_line, content, content_hash,
-                language, chunk_type, metadata
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                language, chunk_type, metadata, breadcrumb
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
 
         batch_data = []
@@ -154,6 +160,7 @@ class PostgresWriter:
                     chunk.language,
                     chunk.chunk_type,
                     Json(chunk.metadata),
+                    (chunk.metadata or {}).get("breadcrumb") or None,
                 )
             )
 
