@@ -50,15 +50,17 @@ key-decisions:
   - "`installation_repositories.added` enqueues EVERY matched repository and supersedes only the CHANGED ones. Re-offering a link we already hold does not invalidate the credentials the running ingest is using; withholding the enqueue would make an `added` for an unchanged installation do nothing at all."
   - "`markUninstalled`'s stand-down is driven by the ids `SupersedeLive` returned, kept in disjunction with the old `('pending','syncing')` filter. The states catch rows stranded before this phase; the ids catch the retrying case, which projects as `failed` and which the state filter walks past."
   - "Migration 000015 asserts `app.current_tenant` per organization. Added after measuring that a lost `set_config` raises 42501 as a superuser and does NOTHING AT ALL as the RLS-subject owner we deploy as — the backfill has no `SET NOT NULL` to prove itself with, unlike 000013."
-  - "The backfill deliberately leaves an unsyncable repository (`installation_id IS NULL`, or an uninstalled installation) `pending` with no job. A job for one would clone nothing and dead-letter; standing it down to `never_synced` is a handler's work, not a migration's."
+  - "The backfill gives an unsyncable repository (`installation_id IS NULL`, or an uninstalled installation) no job AND stands it down to `never_synced`. The first cut left it `pending` on the argument that a handler would correct it later; PR #40's review showed that is false — both writers of `never_synced` key on `installation_id = $1`, which never matches NULL — so the row would have rendered as 'queued, syncing soon' forever."
+  - "The stand-down covers `pending` and `syncing` only. `synced` and `failed` rows under a dead installation keep their state: a repository that finished keeps the one signal saying it was ingested. A mutation that widened the predicate escaped the suite, which is what added the two fixtures that now pin it."
   - "The backfill's `down` is a no-op. Deleting jobs on rollback would discard work, and a backfilled job is deliberately indistinguishable from an enqueued one — which is what makes the backfill correct in the first place."
   - "The backfill test builds a scratch DATABASE in the harness container rather than a second container. What it needs is a different migration version, which costs a CREATE DATABASE."
 
-issues-created: []
-review: pending
+issues-created:
+  - "ISS-033 — the webhook producers do not check `uninstalled_at`, so a push racing an uninstall queues a job under a dead installation. Filed rather than fixed; 21-06's claim-time check makes it a wasted round trip rather than a wrong terminal state."
+review: "PR #40 — APPROVE WITH NITS, no critical findings. The reviewer reproduced the guard's motivating measurement and mutation 18 independently, and could not construct a cross-tenant delivery. Six findings applied; see 'Applied from PR #40's review' below."
 issues-closed: []
 
-duration: ~5h
+duration: ~5h, plus ~2h applying PR #40's review
 completed: 2026-09-16
 ---
 
@@ -122,7 +124,7 @@ carries a single repository and cannot see the difference.
 
 | Test | Shape | Rounds |
 |---|---|---|
-| `TestGitHubWebhook_BulkAddedRacingARelinkQueuesEveryRepository` | bulk `added` (3 repositories, one with a `running` job) vs. a relink of one of them through the real router, released together, on a shared pool with `MaxConns = 12` | **5 per run**; run 3× under `-race` → **15 rounds**, no failures, no data races |
+| `TestGitHubWebhook_BulkAddedRacingARelinkQueuesEveryRepository` | bulk `added` (3 repositories, one with a `running` job) vs. a relink of one of them through the real router; **both requests are built and signed first**, and the barrier releases only the two `Do` calls. Shared pool with `MaxConns = 12`. | **5 per run**; run 4× under `-race` after the barrier fix → **20 rounds**, no failures, no data races |
 | `TestGitHubWebhook_DeliveriesNeverTouchAnotherOrgsJobs` | two organizations holding the same `github_repo_id`, both with a live job; only orgA's installations deliver | run 3× under `-race` |
 
 ## Redelivery: the comment was wrong, and it mattered
@@ -195,25 +197,31 @@ to **000014**, seeds it across two organizations, then applies **000015**.
 | Fixture | Before | Live jobs after | `sync_state` after |
 |---|---|---|---|
 | `a-pending` | `pending`, live installation | **1 (new)** | `pending` |
-| `a-no-installation` | `pending`, `installation_id IS NULL` | **0** | `pending` |
-| `a-uninstalled` | `pending`, installation uninstalled | **0** | `pending` |
+| `a-no-installation` | `pending`, `installation_id IS NULL` | **0** | **`never_synced`** |
+| `a-uninstalled` | `pending`, installation uninstalled | **0** | **`never_synced`** |
+| `a-syncing-uninstalled` | `syncing`, installation uninstalled | **0** | **`never_synced`** |
 | `a-already-queued` | `pending`, already has a `queued` job | **1 — the same job id**, `needs_rerun = false` | `pending` |
 | `a-syncing` | `syncing`, live installation | **1 (new)** | **`pending`** |
-| `a-synced` | `synced` | **0** | `synced` |
+| `a-synced` | `synced`, live installation | **0** | `synced` |
+| `a-synced-uninstalled` | `synced`, installation uninstalled | **0** | `synced` — untouched |
+| `a-failed-uninstalled` | `failed`, installation uninstalled | **0** | `failed` — untouched |
 | `b-pending` | `pending`, live installation | **1 (new)** | `pending` |
 | `b-never-synced` | `never_synced` | **0** | `never_synced` |
 
-**8 repositories seeded, 4 eligible, 4 live jobs after one application and
+**11 repositories seeded, 4 eligible, 4 live jobs after one application and
 4 after two.** Idempotency is exercised by `Steps(-1)` then `Steps(1)` —
 the only way golang-migrate will run an up migration twice, and the shape a
 production re-run takes. The map of repository → live job id is compared
 for equality across the two applications, so a replaced job would fail even
 if the count matched.
 
-Three properties are also asserted over the whole table each time: no job
+Five properties are also asserted over the whole table each time: no job
 carries an organization that disagrees with its repository's; every
-backfilled job is `full_ingest`, `attempts = 0`, `needs_rerun = false`; and
-**no syncable repository is left `pending` with no live job.**
+backfilled job is `full_ingest`, `attempts = 0`, `needs_rerun = false`; no
+syncable repository is left `pending` with no live job; no repository
+nothing can ingest is left showing as queued; and — the two together,
+phrased without mentioning installations at all — **`pending` means a live
+job exists.**
 
 ### Deployment shape, measured separately
 
@@ -230,6 +238,14 @@ with the same eight fixtures:
 - **The `set_config` mutation:** silent no-op before the guard, `ERROR:
   backfill is not scoped to organization …` (psql exit 3) after it.
 
+**Re-run after the review**, on a fresh container with all eleven fixtures
+and the stand-down in place: the same four jobs;
+`a-no-installation`, `a-uninstalled` and `a-syncing-uninstalled` →
+`never_synced`; `a-synced`, `a-synced-uninstalled` → `synced` and
+`a-failed-uninstalled` → `failed`, all untouched. Applied twice, the job
+**ids** are identical (compared as a sorted list, not counted) and nothing
+is flagged.
+
 One thing this shape demonstrates in passing, which is 21-01's lesson
 again: reading `repositories` from an unscoped session returned **0 rows**,
 so a `SELECT`-based check of a backfill proves nothing.
@@ -237,13 +253,113 @@ so a `SELECT`-based check of a backfill proves nothing.
 ## What ISS-019 did NOT gain
 
 **No payload field was widened.** `githubWebhookEnvelope` is byte-identical
-to 20-05's — `git diff` on `github_webhook.go` touches only two comments —
-and the handlers read exactly the fields they read before: `Ref`,
-`Repository.ID`, `Repository.DefaultBranch`, `Installation.ID`,
-`RepositoriesAdded[].ID` and `RepositoriesRemoved[].ID`. Every new `push`
-and `installation_repositories` test keeps the `UNVERIFIED_*` prefix, and
+to 20-05's — the reviewer diffed `github_webhook.go` and every changed line
+is a comment — and the handlers read exactly the fields they read before:
+`Ref`, `Repository.ID`, `Repository.DefaultBranch`, `Installation.ID`,
+`RepositoriesAdded[].ID` and `RepositoriesRemoved[].ID`.
 `docs/api-github-webhooks.md` now carries the warning in the section that
 describes the handlers, not only in the one about redelivery.
+
+**The labelling claim was corrected, not the tests.** The first version of
+this summary said every new `push` / `installation_repositories` test keeps
+the `UNVERIFIED_*` prefix. Three do not, and two on `main` already did not.
+The convention is now stated exactly, in the test file's header and in
+ISS-019: a **per-event subtest** driving an unverified payload carries the
+prefix; the five that do not are each about a property spanning events —
+tenancy, redelivery, the queue — and carry the caveat in their own comment
+instead. Renaming them was considered and rejected, because the prefix
+earns its place by marking the cases a reader would take as evidence about
+the payload SHAPE, and spreading it across every test that happens to send
+a `push` body would drain it of meaning.
+
+## Applied from PR #40's review
+
+**APPROVE WITH NITS, no critical findings.** The reviewer rebuilt the
+deployment shape from scratch and independently reproduced the two claims
+this plan leans hardest on: the unguarded backfill mutation recording
+itself as applied while writing nothing (`OK version=15 dirty=false`, zero
+rows), and mutation 18 being caught by the barrier test and nothing else.
+Tenancy was attacked and held — no delivery reaches another tenant's job.
+
+### The one that changed behaviour: the residue was permanent
+
+Deviation 4 said an unsyncable repository keeps `pending` and "the handlers
+write `never_synced` when the events that cause it arrive". **That is false
+for exactly the rows the migration skips**, and the review traced why: the
+only two production writers of `never_synced` are
+`github_webhook_events.go`'s uninstall stand-down and
+`standDownRepositories`, and **both key on `installation_id = $1`**, which
+can never match `installation_id IS NULL`. For the uninstalled-installation
+case the event has already been processed — that is how `uninstalled_at`
+came to be set.
+
+So the row sat at `pending`, the frontend rendered "queued, syncing soon",
+no job existed to claim it, no handler could reach it, and 21-05's worker
+only writes states for jobs that exist. **The only exit was a user manually
+reconnecting a repository that was telling them work was already under
+way.** The reasoning in the file was not merely incomplete; it told the next
+reader the problem was already solved.
+
+**Migration 000015 now has a third statement**, inside the same `DO` block
+so ISS-031 stays satisfied by structure:
+
+```sql
+UPDATE public.repositories r
+SET sync_state = 'never_synced', updated_at = NOW()
+WHERE r.organization_id = org.id
+  AND r.sync_state IN ('pending','syncing')
+  AND NOT EXISTS (
+    SELECT 1 FROM public.github_installations gi
+    WHERE gi.id = r.installation_id AND gi.uninstalled_at IS NULL);
+```
+
+**What it covers:** a repository at `pending` or `syncing` with no
+installation at all, or whose installation carries `uninstalled_at`.
+`NOT EXISTS` rather than a join, because the NULL case has no row on the
+other side to join to. **What it does not touch:** `synced` and `failed`
+rows under the same dead installation, and anything under a live one.
+
+The invariant is now one sentence, asserted over the whole table rather than
+fixture by fixture: **after this migration, `pending` means a live job
+exists.**
+
+### The mutation that found a gap in my own fixtures
+
+Widening the stand-down to `sync_state <> 'never_synced'` — which would
+relabel a **`synced`** repository under a dead installation, throwing away
+the one signal saying it was ingested — **passed the entire suite**, because
+every other unsyncable fixture was already `pending`. Two fixtures were
+added (`a-synced-uninstalled`, `a-failed-uninstalled`) and the mutation now
+fails on the first of them. Recorded here because it is a finding about the
+tests, not about the code: the fixtures did not cover the boundary they
+were assumed to.
+
+### The barrier released the goroutine, not the send
+
+`start.Wait()` was released *before* each goroutine built and signed its
+request, so HMAC signing, dialling, routing, `claimDelivery`,
+`resolveInstallation` and JWT validation all happened after the barrier and
+the two actors reached their transactions at genuinely different times.
+Each request is now **fully built first**; a `ready` group says so, and a
+`release` channel then lets only the two `Do` calls go together
+(`buildWebhookRequest` / `buildConnectRequest` / `send` are `deliver` and
+`doRepoRequest` split in half).
+
+The review's framing is kept in the test's own comment, because it is the
+honest one: **what kills the regression is the bulk shape, not the race.**
+Mutation 18 proves that. The race makes the fixture realistic and is the
+weaker of the two things this test buys.
+
+### The rest
+
+| Finding | Applied |
+|---|---|
+| Docs state 21-05/21-06 worker behaviour in the present tense | A standing "⚠ Nothing consumes the queue yet" note, plus "*from 21-05*" on the suspend-deferral and `needs_rerun` sentences and on the `suspend` table row. |
+| `push queued` logged even when `jobs_queued = 0` | The message is now `push joined the live job` in that case; the fields were already right. `standDownRepositories`' "1 live jobs" fixed with a `plural` helper. |
+| The ISS-019 claim was stronger than the diff | Corrected rather than papered over. The convention is stated exactly in the test file's header and in ISS-019: a **per-event subtest** carries the prefix. Five tests drive an unverified payload without it — two inherited from 20-05, three new — all of them about a property spanning events (tenancy, redelivery, the queue), each now carrying the caveat in its own comment. **Renaming them was considered and rejected:** the prefix earns its place by marking the cases a reader would take as evidence about the payload SHAPE, and spreading it over every test that sends a `push` body would drain it of meaning. |
+| Dangling `TestGitHubWebhook_UnverifiedShapes` reference | Dropped, with a line saying it never existed. |
+| The tenant guard proves nothing if the loop body never runs | Recorded in the migration: `organizations` and `projects` carry no row-level security, so the `FOR org IN SELECT id FROM organizations` cannot be filtered to zero — and if either ever gains it, the assertion becomes vacuous. Also noted that the message carries organization UUIDs and no secrets. |
+| The producers do not check `uninstalled_at` | **Filed as ISS-033**, not fixed here. The review's stated ending (five attempts, dead-letter to `failed`) does not survive the phase: 21-06's worker resolves the installation at claim time and **abandons** such a job — superseded, `never_synced`, no attempt consumed — which is the same reason `payload` carries no installation id. So the cost is one claim's round trip, not a wrong terminal state, *as long as 21-06 implements that check*; the issue says so, and says a producer-side check is defence in depth that narrows the window rather than closing it. |
 
 ## Mutation results
 
@@ -284,6 +400,11 @@ mask anything here.
 | 15 | Remove the `ON CONFLICT` clause | **Killed** — `23505 duplicate key value violates unique constraint "idx_ingestion_jobs_one_live_per_repo"` |
 | 16 | Drop the `syncing` → `pending` UPDATE | **Killed** — `a-syncing: sync_state`, expected `pending` |
 | 17 | Drop `AND r.installation_id IS NOT NULL` | **Survived** — redundant with the inner join; now documented as such |
+| 19 | Remove the stand-down (statement 3) entirely | **Killed** — `a-no-installation: sync_state` |
+| 20 | Narrow the stand-down to `installation_id IS NULL`, missing the uninstalled case | **Killed** — `a-uninstalled: sync_state` |
+| 21 | Widen the stand-down to `sync_state <> 'never_synced'`, so it also relabels `synced` | **Survived at first** — every other unsyncable fixture was already `pending`. Killed after adding `a-synced-uninstalled`: `a-synced-uninstalled: sync_state`. |
+| 12 | Drop `set_config`, re-run with three statements present | **Still killed**, same message — the guard runs before any statement, so the third one does not change it |
+| 18 | `added` enqueues only the first matched repository, re-run against the **tightened** barrier, `-count=3` | **Still killed 3/3**, and still only that test |
 
 ### Two deliberate survivors, both recorded rather than papered over
 
@@ -311,9 +432,9 @@ not. Saying which test holds which half is the point of recording this.
 |---|---|---|
 | Backend, whole module | `DATABASE_TEST_URL=<scratch CI-shaped PG16> REDIS_URL=redis://localhost:63792/14 go test ./... -count=1 -p 1 -v` | **189 top-level pass (492 with subtests), 3 skip, 1 fail** — the known `TestSignatureComparisonIsConstantTime`, see below |
 | Race detector, CI's step | `go test -race ./pkg/jobs/... ./pkg/api/... -count=1 -p 1` in `golang:1.25` with the Docker socket mounted and `TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal` | `pkg/jobs` ok; `pkg/api/handlers` fails only on the CRLF test. **No data races.** |
-| Barrier tests, repeated | `-race -count=3` on both new top-level tests, same container | **15 rounds** of the bulk race and 3 of the tenant test; all pass, no races |
-| Migration, harness | `go test ./pkg/jobs/ -run Backfill` | ok — 8 seeded, 4 eligible, 4 after one application and 4 after two |
-| Migration, deployment shape | scratch PG16, `rag_doc_owner NOSUPERUSER NOBYPASSRLS` owner, `psql` | same four jobs, idempotent, guard fires on the mutation |
+| Barrier tests, repeated | `-race -count=4` on the bulk race after the barrier fix, `-count=3` on the tenant test | **20 rounds** of the bulk race and 3 of the tenant test; all pass, no races |
+| Migration, harness | `go test ./pkg/jobs/ -run Backfill` | ok — 11 seeded, 4 eligible, 4 after one application and 4 after two |
+| Migration, deployment shape | scratch PG16, `rag_doc_owner NOSUPERUSER NOBYPASSRLS` owner, `psql` | same four jobs with identical ids across two applications; three rows stood down, `synced` and `failed` untouched; guard fires on the mutation |
 | Migration, harness container | `docker rm -f rag-doc-isolation-tests`, then the suite | rebuilt from the committed migrations; `schema_migrations = 15, dirty = f` |
 | The plan's grep gate | `grep -rnE "sync_state *= *'pending'" services/backend/pkg --include=*.go \| grep -v _test.go` | one hit: `pkg/jobs/producer.go:188`, the projection. The other three are comments. |
 | Nothing else writes the queue | `grep -rn "ingestion_jobs" services/backend/pkg --include=*.go` outside `pkg/jobs` and tests | comments only |
@@ -357,13 +478,15 @@ holding the real schema at version 15. **The docker-compose Postgres (port
    eligibility predicate,** not just `sync_state = 'syncing' AND
    installation_id IS NOT NULL`. Moving a row to `pending` without giving
    it a job is the exact stranding this migration exists to end.
-4. **The migration skips unsyncable repositories and leaves them
-   `pending`.** The plan's success criterion says "no repository is
-   stranded `pending` without a job"; the same plan says repositories with
-   `installation_id IS NULL` get no job. The criterion is read as "no
-   SYNCABLE repository", stated in the migration and asserted in the test,
-   and standing the rest down to `never_synced` was left to the handlers
-   rather than added as a third piece of DML.
+4. **The migration gives unsyncable repositories no job, and stands them
+   down to `never_synced`** — a third statement the plan's sketch does not
+   have. **This deviation was rewritten after PR #40's review, and the
+   original version of it was wrong**: it left those rows `pending` on the
+   argument that a handler would correct them later, which is false for
+   exactly those rows (both writers key on `installation_id = $1`). The
+   plan's criterion — "no repository is stranded `pending` without a job" —
+   is now met literally rather than by reading it as "no *syncable*
+   repository".
 5. **`recordAddedRepositories` updates `installation_id` for every matched
    row but supersedes only the changed ones,** which the plan's step 3 says
    and its step 4 implies; spelled out here because "matched" and "changed"
@@ -394,4 +517,16 @@ holding the real schema at version 15. **The docker-compose Postgres (port
   path has to drain — completion first, then the re-enqueue, in that order.
 - **A suspended installation must be deferred at claim time without
   consuming an attempt.** Nothing in this plan cancels a job on `suspend`,
-  and `docs/api-github-webhooks.md` now promises that behaviour.
+  and `docs/api-github-webhooks.md` now promises that behaviour — marked
+  "*from 21-05*", because it is not true yet.
+- **⚠ AN UNINSTALLED INSTALLATION MUST BE ABANDONED AT CLAIM TIME, and
+  ISS-033 is filed on that premise.** The producers do not check
+  `uninstalled_at`, so a `push` racing an `installation.deleted` can leave a
+  live job under a dead installation. That is a wasted round trip *if* the
+  worker resolves the installation when it claims and abandons the job —
+  superseded, `never_synced`, no attempt consumed — which is the same
+  claim-time read that makes L8's dedup safe and the reason `payload`
+  carries no installation id. **If 21-06 instead lets such a job fail its
+  way to `dead`, the repository ends at `failed`** — the retry-looking
+  terminal state `markUninstalled`'s comment exists to forbid — and
+  ISS-033's priority rises with it.
