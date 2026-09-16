@@ -18,6 +18,19 @@ package isolation_test
 // new migration and (b) add the table to `protectedTables` below. If the
 // migration is added without the test entry, the trigger might miss the
 // table and no one would notice. This test is the ratchet.
+//
+// ⚠ ONE TABLE IS DELIBERATELY ABSENT, and it is not an oversight to fix.
+// `ingestion_jobs` (migration 000014, Phase 21-02) has NO row-level
+// security and NO `trg_assert_tenant`, by decision — 21-CONTEXT L5: a
+// worker claims a job BEFORE it knows the tenant, because organization_id
+// is on the row it is trying to claim, so scoping the claim by the answer
+// is circular. Adding it here would fail, and adding the trigger to make it
+// pass would break the queue. What guards that table instead is a composite
+// foreign key onto `repositories (id, organization_id)`, plus the rule —
+// stated in its own `COMMENT ON TABLE` and in `pkg/jobs/doc.go` — that
+// every request handler reading it filters by organization_id explicitly.
+// `github_webhook_deliveries` and `github_installation_tenants` (000012)
+// are out for the same reason.
 
 import (
 	"context"
