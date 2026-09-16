@@ -1,14 +1,29 @@
 // Package jobs is the Go side of the ingestion queue: enqueue, and
 // supersede-on-relink.
 //
-// It is empty at 21-02. This plan ships migration 000014 — the
-// `ingestion_jobs` table, its two partial indexes, the composite foreign
-// key onto `repositories (id, organization_id)` and the tenant trigger —
-// together with schema_test.go, which runs every SQL statement the rest of
-// the phase is built on against the PostgreSQL version we deploy. 21-03
-// fills this file with Enqueue and SupersedeLive; 21-05 is the Python
-// consumer, which lifts the claim, completion, failure, sweeper and
-// run-resolution statements from the same test file.
+// THE PUBLIC SURFACE IS TWO FUNCTIONS, both in producer.go and both taking
+// the CALLER'S transaction, because the caller owns atomicity and tenant
+// scope:
+//
+//   - Enqueue puts one job on the queue per repository, in one statement,
+//     and writes the `sync_state` projection for the repositories that got
+//     a new job.
+//   - SupersedeLive takes each repository's live job out of the live set,
+//     and runs BEFORE the Enqueue that replaces it.
+//
+// Nothing else in `services/backend` may write `ingestion_jobs`, and
+// nothing may write `repositories.sync_state` as a way of asking for work:
+// that is what ISS-016 was.
+//
+// 21-02 shipped migration 000014 — the `ingestion_jobs` table, its two
+// partial indexes, the composite foreign key onto `repositories (id,
+// organization_id)` and the tenant trigger — together with schema_test.go,
+// which runs every SQL statement the rest of the phase is built on against
+// the PostgreSQL version we deploy. 21-03 added the producer above and
+// moved the three statements it uses out of the test file and into
+// producer.go, verbatim. 21-05 is the Python consumer, which lifts the
+// claim, completion, failure, sweeper and run-resolution statements from
+// the test file.
 //
 // The rules a caller has to know, all of them measured rather than
 // asserted (see .planning/phases/21-ingestion-job-infrastructure/21-CONTEXT.md):
@@ -51,6 +66,12 @@
 //   - `ingestion_jobs` HAS NO ROW-LEVEL SECURITY, so organization_id on it
 //     is an authorization input that nothing in the database will apply for
 //     you. Any handler reading this table filters by it explicitly (21-07).
+//     THE SAME APPLIES TO SupersedeLive: its statement touches neither
+//     organization_id nor repository_id, so the tenant trigger does not
+//     fire and a repository id from another organization would be
+//     superseded just as readily. Pass only ids the same transaction has
+//     already read out of `repositories`, which IS scoped. Enqueue is safe
+//     by contrast, because inserting a row DOES fire the trigger.
 //
 //   - ⚠ `claimSQL` AND `sweepSQL` ARE QUEUE-WIDE AND CROSS-TENANT BY
 //     CONSTRUCTION. They carry no organization filter and, because the table
