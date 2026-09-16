@@ -46,7 +46,8 @@ key-decisions:
   - "`supersedeLiveSQL`, `completeSQL` and `clearRerunNaiveSQL` were added to the plan's list of named constants: L4, W5 and W4 cannot be written without them, and 21-03/21-05 will lift the first two."
   - "No update trigger on `updated_at`. Every statement writes it explicitly, as the context's statements already do; a trigger would be a second writer of a column those statements already set."
 
-issues-created: []
+issues-created:
+  - "ISS-032 — TestRepositoriesOrganizationID_DriftCheckDetectsDrift (21-01) deadlocks under CI's package-parallelism step, because its ALTER TABLE takes ACCESS EXCLUSIVE on repositories AND projects while other packages write both in the other order. 000014 does not create the cycle; it adds ingestion_jobs to every repository delete's lock set, which widens the window."
 
 duration: ~2h
 completed: 2026-09-16
@@ -258,6 +259,37 @@ Test-file constants only, so no migration change and no container rebuild.
 | Delete `updated_at = NOW()` from `claimSQL`, `sweepSQL` and `completeSQL` (the reviewer's exact mutation) | **Killed: 3 subtests.** `EveryStatementAdvancesUpdatedAt/{claimSQL,sweepSQL,completeSQL}`; the other four subtests correctly still pass |
 | Delete `AND state = 'running'` from **both** `completeSQL` and `failSQL` | **Killed: 2 top-level.** All three `TerminalWritesAreFencedOnTheRunningState` subtests, plus `ClearingARerunIsFencedOnTheRunningState` (whose closing assertion is a fenced `completeSQL`) |
 | Delete `AND state = 'running'` from `clearRerunSQL` — **the defect exactly as it shipped in the first cut** | **Killed: 1.** `ClearingARerunIsFencedOnTheRunningState`: "Expected error with 'no rows in result set' in chain but got nil" — the clear succeeds, reproducing the reviewer's `UPDATE 1` |
+
+### One thing the re-verification turned up: ISS-032
+
+The first CI run after these changes failed — **not** in anything this plan
+wrote. `TestRepositoriesOrganizationID_DriftCheckDetectsDrift`, 21-01's drift
+self-test, hit `40P01 deadlock detected` in the
+`Harness under package parallelism` step. The identical commit passed on
+re-run, and it is the first occurrence in fifteen Backend CI runs.
+
+**Measured rather than guessed, on PostgreSQL 16.15 via `pg_locks`:**
+
+| Statement | What it locks |
+|---|---|
+| `ALTER TABLE repositories DROP CONSTRAINT repositories_project_org_fkey` (the drift self-test's first statement) | `AccessExclusiveLock` on **`repositories` and `projects`** — the referenced table too, whose RI triggers it must remove. **No lock on `ingestion_jobs`.** |
+| `DELETE FROM repositories` (every fixture cleanup, every package) | `RowExclusiveLock` on `repositories`, `chunks`, `ingestion_runs` **and now `ingestion_jobs`** |
+
+So **000014 did not create the cycle** — the drift test's lock set is
+unchanged by it, and the cycle is that test's `ALTER TABLE` taking
+`repositories` then `projects` while other packages' fixtures take them in
+the other order. **It does widen the window:** one more table in the lock set
+of every repository delete, and a slightly longer cleanup transaction, on the
+other side of the cycle.
+
+Not reproducible here: 16 runs of the same command on a fresh container, six
+at default parallelism and ten at `GOMAXPROCS=2`, produced zero deadlocks.
+CI's two-core runner is where it shows.
+
+**Filed as ISS-032 rather than fixed here.** It is 21-01's test, in the one
+step `backend-ci.yml` explicitly says not to rely on, and the fix — a bounded
+retry on `40P01` around a transaction that legitimately can be chosen as the
+deadlock victim — belongs with that test rather than inside a 21-02 PR.
 
 ### The minor items
 

@@ -236,6 +236,8 @@ The full gate is: `go mod download`/`verify`/`tidy -diff`, migrations applied, `
 
 **On ISS-010's regression guard:** the real one is `TestEnsureAppRoleIsConcurrencySafe` in `pkg/testing/isolation`, which releases 16 concurrent callers through a barrier and detected the missing advisory lock 8 times out of 8. The CI step that runs the harness packages at default parallelism is defense in depth only — measured at roughly one detection in eight, so a green result there proves little on its own. Do not replace the test with the step.
 
+**That step now has a known flake — ISS-032, filed 2026-09-16.** 21-01's `TestRepositoriesOrganizationID_DriftCheckDetectsDrift` takes `ACCESS EXCLUSIVE` on `repositories` **and** `projects` (measured from `pg_locks`: dropping a foreign key locks the referenced table too), while other packages' fixtures write both in the other order. One deadlock in fifteen runs; the identical commit passed on re-run, and 16 local runs produced none. A red result there is worth re-running once before treating it as a real failure.
+
 **Fleet handoff notes for the worker session:**
 - Read the phase `-CONTEXT.md` first for vision context
 - Plans lock design decisions inline — don't re-litigate them without cause
