@@ -1039,6 +1039,11 @@ def test_the_unscoped_statements_do_not_depend_on_connection_history(
     assert sweep(db_conn) >= 0
 
 
+# =====================================================================
+# The claim's own guards (21-RESEARCH's two corrections, ported)
+# =====================================================================
+
+
 def test_a_job_at_max_attempts_is_not_claimed(db_conn, with_two_orgs, worker_id):
     """⚠ `attempts < max_attempts`, which applies to BOTH claim branches.
 
