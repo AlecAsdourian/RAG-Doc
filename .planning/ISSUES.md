@@ -4,6 +4,20 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 ## Open Enhancements
 
+### ISS-031: A migration that sets a tenant leaves the migrating session unable to read RLS tables, and CI cannot catch it
+
+- **Discovered:** 2026-09-16, by the reviewer session on PR #37 (21-01). Independently reproduced there.
+- **Type:** Correctness / Operability
+- **Priority:** MEDIUM — latent. 21-02's migration is DDL only, so nothing is broken today; the phase adds five more migrations.
+- **What is wrong:** `000013`'s backfill sets `app.current_tenant` per organization with `set_config(..., true)`. That is the right call — it satisfies `trg_assert_tenant` and `FORCE ROW LEVEL SECURITY` without lifting either, and 000012's lift-FORCE pattern was measured raising 42501 here. But it leaves the migrating session with the **last organization's id** for the rest of that file, and `''` after it commits. This is ISS-013's hazard, now reachable from the migration path.
+- **The failure it sets up:** a later migration, applied **in the same run**, that does any DML against a table with row-level security. It sees one organization's rows and reports success, or raises `22P02 invalid input syntax for type uuid: ""` and leaves `schema_migrations` dirty. **It passes on CI's empty database and fails on a database with rows,** which is the direction that trains people badly.
+- **Why a comment is not enough:** the guard is four lines of comment in `000013`. Nothing fails if the next author doesn't read them, and nothing in CI applies migrations to a database that has rows.
+- **Two candidate fixes, both measured in the review:**
+  1. **A CI check that applies every migration to a seeded database.** Catches this whole class, not just this instance — including the 000012-pattern bug that CI's empty database would also have passed. The larger change, and the one with value beyond this phase.
+  2. **Make the backfill GUC-free:** lift `FORCE` and `DISABLE TRIGGER trg_assert_tenant` for one statement under the `ACCESS EXCLUSIVE` lock the migration already holds. The reviewer ran this: it backfilled every row and left `app.current_tenant` NULL. It trades the trap for a briefly disabled guard, which is what 21-01 deliberately avoided.
+- **Recommendation:** fix 1, before a later plan in this phase adds a migration with DML. Fix 2 only if fix 1 proves expensive.
+- **Related:** ISS-013 (the same GUC behaviour, from the pooled-connection side).
+
 ### ISS-029: Keyword search returns nothing for most natural-language questions, so hybrid search is effectively vector-only
 
 - **Discovered:** 2026-09-13, while measuring why the breadcrumb fix (PR #28) left every ranking unchanged. Measured on the quality harness.
