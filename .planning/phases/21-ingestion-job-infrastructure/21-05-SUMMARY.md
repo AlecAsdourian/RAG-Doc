@@ -17,7 +17,7 @@ provides:
   - "workers.jobs — claim, mark_started, complete, fail, defer, abandon, sweep, resolve_ingestion_run, attach_ingestion_run, new_worker_id, next_run_after_delay, sanitize_error, and the LeaseLost exception"
   - "workers/jobs/transitions.py — 21-02's statements ported verbatim ($n -> %s), with the reasons kept beside them"
   - "workers/jobs/backoff.py — min(60s * 4**(n-1), 60 min) * U[0.5,1.0), settling 21-CONTEXT's backoff-ceiling open question"
-  - "73 tests: 50 integration against a real PostgreSQL 16 and 23 pure-function unit tests"
+  - "73 tests: 45 integration against a real PostgreSQL 16 and 28 pure-function unit tests"
   - "the sync_state projection for every state after `pending`"
 affects: [21-06 (builds the loop, the heartbeat and the sweeper's schedule on these functions), 21-07 (reads the rows and the last_error this writes), 22 (passes write_results, and owns wiring the pipeline to runs)]
 
@@ -647,7 +647,7 @@ Also for Phase 22, smaller:
 | Check | Command | Result |
 |---|---|---|
 | Workers, CI's environment | from `services/workers`: `REDIS_URL=redis://localhost:63793/15 OPENAI_API_KEY=sk-test-dummy pytest tests/ workers/ -q`, **no `DATABASE_URL`**, no reachable `.env` (only `.env.example`), **a fresh venv built from `requirements.txt` for the round-2 run** | **254 passed**, 0 failed, 0 skipped (19 pre-existing `utcnow` deprecation warnings). `main` is 181, so this plan adds **73** — 51 in round 1, 22 more applying PR #41's review |
-| This plan's tests alone | `pytest tests/isolation/test_job_transitions.py workers/jobs -q` | **73 passed** — 50 integration, 23 unit |
+| This plan's tests alone | `pytest tests/isolation/test_job_transitions.py workers/jobs -q` | **73 passed** — 45 integration, 28 unit (round 1 was 34 + 17) |
 | Repeated | the same command, **5 consecutive runs** on the fresh venv | 73 passed every time, 10.8-11.8s; no flakes |
 | Mutations, round 1 | 25, on a copy, each proven present in the file before the run | 24 killed, 1 deliberate survivor (X) |
 | Mutations, round 2 | 16 more (S1-S16), same discipline, fresh copy | **16 killed, none surviving** |
