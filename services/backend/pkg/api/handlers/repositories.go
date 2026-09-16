@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/db"
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/github"
+	"github.com/yourusername/smart-docs-platform/services/backend/pkg/jobs"
 )
 
 // MaxRepositoryBodyBytes bounds the connect-repository request body. A
@@ -377,6 +379,71 @@ func (h *RepositoriesHandler) Delete(w http.ResponseWriter, r *http.Request) {
 var errNoDefaultProject = errors.New(
 	"organization has no default project; it predates the provisioning that creates one")
 
+// connectDecision is what a connect turned out to be. Three outcomes, one
+// value, decided in Go — see the comment at STEP 3 for why it is no longer
+// two SQL `CASE` expressions.
+type connectDecision string
+
+const (
+	// connectNew: no row for this repository anywhere in the organization.
+	connectNew connectDecision = "new"
+	// connectRelink: the installation changed, or the row has never
+	// carried a `github_repo_id`. Either way it has to be fetched again,
+	// and any job already in flight is superseded first.
+	connectRelink connectDecision = "relink"
+	// connectUnchanged: a metadata refresh. It must NOT queue work — a
+	// re-connect is not a retry, and re-queueing here is what ISS-016 was.
+	connectUnchanged connectDecision = "unchanged"
+)
+
+// existingRepositoryLookupSQL finds the row a connect should adopt, from
+// ANYWHERE in the caller's organization, and locks it.
+//
+// Two rows are adoptable, and both were shipping as duplicates:
+//
+//  1. The same `github_repo_id` in a NON-DEFAULT project. Migration
+//     000011's index is per-project, and an organization may hold several
+//     projects, so the schema cannot express "once per organization".
+//     Without this, a repository already connected under an older project
+//     got a second row and would be ingested twice.
+//
+//  2. A row with NO `github_repo_id` whose `git_url` matches — anything
+//     connected before this API existed. It is the same repository;
+//     leaving it alone produced a permanent duplicate that could never be
+//     synced, because nothing else ever sets `github_repo_id`.
+//
+// ⚠ `FOR UPDATE OF r`, NOT A BARE `FOR UPDATE`. A bare one locks every
+// table in the FROM clause, and this one joins `projects` — so it would
+// take a row lock on the organization's default project and SERIALISE
+// EVERY CONNECT IN THE ORGANIZATION behind whichever one is in flight.
+// Nothing would fail; connects would just queue up one at a time, for as
+// long as the slowest transaction takes. Pinned by
+// TestRepositoriesConnect_ConcurrentConnectsOfDifferentRepositoriesDoNotBlock,
+// which runs this same statement in a second transaction.
+//
+// SCOPING. `repositories` carries RLS, so this SELECT is already
+// tenant-scoped before the join is considered — measured: with another
+// tenant holding a row of identical `github_repo_id` AND `git_url`, RLS
+// alone reduces the match set to ours. The join to `organization_id` is a
+// SECOND layer, and it is what keeps adoption safe if the policy ever
+// regresses. (An earlier comment here called the join "what scopes this",
+// which overstated it.)
+//
+// ORDER BY is load-bearing, not cosmetic. A real GitHub-id match must beat
+// a URL match: adopting the legacy row while an id-match exists in the same
+// project makes the adopt UPDATE collide with
+// idx_repositories_project_github_repo — a reachable 500.
+const existingRepositoryLookupSQL = `
+SELECT r.id::text, r.installation_id::text, r.github_repo_id
+FROM repositories r
+JOIN projects p ON p.id = r.project_id
+WHERE p.organization_id = $1
+  AND (r.github_repo_id = $2
+       OR (r.github_repo_id IS NULL AND r.git_url = $3))
+ORDER BY (r.github_repo_id IS NULL), r.created_at
+LIMIT 1
+FOR UPDATE OF r`
+
 // Connect handles POST /api/repositories.
 func (h *RepositoriesHandler) Connect(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -404,6 +471,24 @@ func (h *RepositoriesHandler) Connect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// CANONICALISE THE INSTALLATION ID BEFORE COMPARING IT TO ANYTHING.
+	//
+	// The `uuid` validator tag accepts uppercase hex, and Postgres accepts
+	// an uppercase UUID literal, so every query below works either way.
+	// What does NOT work either way is the Go string comparison that
+	// classifies a relink: `installation_id::text` comes back lowercase,
+	// so an uppercase request would look like a changed installation and
+	// re-queue an ingest on every call. The SQL `CASE` this replaced used
+	// `IS DISTINCT FROM $2::uuid`, which compared UUIDs rather than text
+	// and had no such edge.
+	parsedInstallation, perr := uuid.Parse(req.InstallationID)
+	if perr != nil {
+		render.Render(w, r, ErrInvalidRequest(errors.New(
+			"installation_id must be a valid UUID")))
+		return
+	}
+	installationID := parsedInstallation.String()
+
 	// STEP 1 — resolve the installation INSIDE a tenant transaction.
 	//
 	// This is the application-layer half of the guard migration 000010
@@ -415,7 +500,7 @@ func (h *RepositoriesHandler) Connect(w http.ResponseWriter, r *http.Request) {
 	err := h.scoper.InTenantTx(ctx, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx,
 			`SELECT github_installation_id FROM github_installations WHERE id = $1`,
-			req.InstallationID).Scan(&ghInstallationID)
+			installationID).Scan(&ghInstallationID)
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		render.Render(w, r, ErrNotFound())
@@ -470,8 +555,25 @@ func (h *RepositoriesHandler) Connect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// STEP 3 — persist.
-	var created Repository
+	// STEP 3 — persist, and decide whether this call created work.
+	//
+	// ISS-016 lived here. `sync_state` was the queue: a status column with
+	// no owner, no lease and no attempt counter, stamped 'pending' by two
+	// SQL `CASE` expressions. A relink re-queued a repository whose run was
+	// still in flight, and whichever writer finished last won.
+	//
+	// Since 21-02 the work item is a row in `ingestion_jobs` and
+	// `sync_state` is a projection of it. A relink SUPERSEDES the live job
+	// and enqueues its replacement, in that order and in this transaction
+	// (21-CONTEXT L4), and `idx_ingestion_jobs_one_live_per_repo` makes two
+	// live jobs for one repository unrepresentable.
+	var (
+		created    Repository
+		orgID      string
+		decision   connectDecision
+		superseded []string
+		enqueued   []jobs.EnqueueResult
+	)
 	err = h.scoper.InTenantTx(ctx, func(tx pgx.Tx) error {
 		// Re-read the installation inside THIS transaction rather than
 		// trusting step 1: the GitHub round-trip happened in between, and
@@ -479,10 +581,9 @@ func (h *RepositoriesHandler) Connect(w http.ResponseWriter, r *http.Request) {
 		// than the project lookup's, so "your installation went away"
 		// and "your organization has no default project" stop sharing one
 		// opaque 500.
-		var orgID string
 		if ierr := tx.QueryRow(ctx,
 			`SELECT organization_id::text FROM github_installations WHERE id = $1`,
-			req.InstallationID).Scan(&orgID); ierr != nil {
+			installationID).Scan(&orgID); ierr != nil {
 			return fmt.Errorf("re-resolve installation: %w", ierr)
 		}
 
@@ -502,54 +603,47 @@ func (h *RepositoriesHandler) Connect(w http.ResponseWriter, r *http.Request) {
 			return fmt.Errorf("resolve default project: %w", perr)
 		}
 
-		// Adopt an existing row from ANYWHERE in this organization before
-		// inserting into the default project.
-		//
-		// Two rows are adoptable, and both were shipping as duplicates:
-		//
-		//   1. The same `github_repo_id` in a NON-DEFAULT project.
-		//      Migration 000011's index is per-project, and an
-		//      organization may hold several projects, so the schema
-		//      cannot express "once per organization" — `repositories`
-		//      reaches its organization only through a join. Without this,
-		//      a repository already connected under an older project got a
-		//      second row, and Phase 21 would ingest it twice.
-		//
-		//   2. A row with NO `github_repo_id` whose `git_url` matches —
-		//      anything connected before this API existed. It is the same
-		//      repository; leaving it alone produced a permanent duplicate
-		//      that could never be synced, because nothing else ever sets
-		//      `github_repo_id`.
-		//
-		// SCOPING. `repositories` carries RLS, so this SELECT is already
-		// tenant-scoped before the join is considered — measured: with
-		// another tenant holding a row of identical `github_repo_id` AND
-		// `git_url`, RLS alone reduces the match set to ours. The join to
-		// `organization_id` is a SECOND layer, and it is what keeps
-		// adoption safe if the policy ever regresses. (An earlier comment
-		// here called the join "what scopes this", which overstated it.)
-		//
-		// ORDER BY is load-bearing, not cosmetic. A real GitHub-id match
-		// must beat a URL match: adopting the legacy row while an id-match
-		// exists in the same project makes the UPDATE below collide with
-		// idx_repositories_project_github_repo — a reachable 500.
-		var existingID string
-		aerr := tx.QueryRow(ctx, `
-			SELECT r.id::text
-			FROM repositories r
-			JOIN projects p ON p.id = r.project_id
-			WHERE p.organization_id = $1
-			  AND (r.github_repo_id = $2
-			       OR (r.github_repo_id IS NULL AND r.git_url = $3))
-			ORDER BY (r.github_repo_id IS NULL), r.created_at
-			LIMIT 1
-		`, orgID, match.ID, match.CloneURL).Scan(&existingID)
+		// Lock the existing row, if any, and read what the decision below
+		// turns on.
+		var (
+			existingID           string
+			existingInstallation *string
+			existingGitHubRepoID *int64
+		)
+		aerr := tx.QueryRow(ctx, existingRepositoryLookupSQL, orgID, match.ID, match.CloneURL).
+			Scan(&existingID, &existingInstallation, &existingGitHubRepoID)
 		if aerr != nil && !errors.Is(aerr, pgx.ErrNoRows) {
 			return fmt.Errorf("resolve existing repository: %w", aerr)
 		}
 
+		// CLASSIFY IN GO, NOT IN SQL.
+		//
+		// This used to be two `CASE` expressions buried in the writes
+		// below — one in the adopt UPDATE, one in the INSERT's DO UPDATE —
+		// each deciding whether to stamp the projection to `pending`. They
+		// could disagree, neither reported what it had decided, and
+		// "already pending" and "just re-queued" came back identical
+		// because `RETURNING sync_state` says only what the column now
+		// holds. The decision is a value here, it is logged, and the tests
+		// can assert on it.
+		switch {
+		case errors.Is(aerr, pgx.ErrNoRows):
+			decision = connectNew
+		case existingInstallation == nil || *existingInstallation != installationID,
+			existingGitHubRepoID == nil:
+			// Either the App this repository is reached through changed,
+			// or the row has never carried a GitHub id — a row connected
+			// before this API existed, which has never been fetched AS
+			// this repository. Both need a fresh full ingest.
+			decision = connectRelink
+		default:
+			decision = connectUnchanged
+		}
+
 		if aerr == nil {
-			return tx.QueryRow(ctx, `
+			// Adopt. `sync_state` is deliberately absent: it is a
+			// projection of the job, written by pkg/jobs below.
+			if uerr := tx.QueryRow(ctx, `
 				UPDATE repositories SET
 				  installation_id = $2,
 				  github_repo_id = $3,
@@ -559,81 +653,111 @@ func (h *RepositoriesHandler) Connect(w http.ResponseWriter, r *http.Request) {
 				  visibility = $7,
 				  size_kb = $8,
 				  archived = $9,
-				  sync_state = CASE
-				    WHEN installation_id IS DISTINCT FROM $2::uuid
-				      OR github_repo_id IS NULL
-				    THEN 'pending' ELSE sync_state END,
 				  updated_at = NOW()
 				WHERE id = $1
 				RETURNING id::text, name, git_url, default_branch, github_repo_id,
 				          installation_id::text, visibility, size_kb, archived,
-				          sync_state, last_synced_at, created_at
+				          last_synced_at, created_at
 			`,
-				existingID, req.InstallationID, match.ID, match.Name, match.CloneURL,
+				existingID, installationID, match.ID, match.Name, match.CloneURL,
 				match.DefaultBranch, match.Visibility, match.SizeKB, match.Archived,
 			).Scan(
 				&created.ID, &created.Name, &created.GitURL, &created.DefaultBranch,
 				&created.GitHubRepoID, &created.InstallationID, &created.Visibility,
-				&created.SizeKB, &created.Archived, &created.SyncState,
+				&created.SizeKB, &created.Archived,
 				&created.LastSyncedAt, &created.CreatedAt,
-			)
+			); uerr != nil {
+				return fmt.Errorf("adopt repository: %w", uerr)
+			}
+		} else {
+			// Upsert on (project_id, github_repo_id) — migration 000011.
+			//
+			// NOT on the installation: that is a credential, and it is
+			// exactly what changes when the App is uninstalled and
+			// reinstalled. Keying on it meant the documented recovery path
+			// raised 23505 against `UNIQUE (project_id, git_url)` and
+			// surfaced as a 500. Keying on GitHub's stable repository id
+			// makes the same call RELINK the orphaned row instead.
+			//
+			// Still an upsert, not a plain insert, even though the lookup
+			// above has just run: two concurrent connects can both miss
+			// and both insert, and ON CONFLICT is what keeps that at one
+			// row and two 201s rather than a 23505. The loser's Enqueue
+			// then flags the winner's job instead of creating a second
+			// one, so the pair still ends with exactly one live job.
+			//
+			// `sync_state` is absent from both halves and takes its column
+			// default ('never_synced', migration 000010) on insert. The
+			// enqueue below is what moves it to 'pending', in this same
+			// transaction.
+			if ierr := tx.QueryRow(ctx, `
+				INSERT INTO repositories
+				  (project_id, installation_id, github_repo_id, name, git_url,
+				   default_branch, visibility, size_kb, archived)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+				ON CONFLICT (project_id, github_repo_id)
+				  WHERE github_repo_id IS NOT NULL
+				DO UPDATE SET
+				  installation_id = EXCLUDED.installation_id,
+				  name = EXCLUDED.name,
+				  git_url = EXCLUDED.git_url,
+				  default_branch = EXCLUDED.default_branch,
+				  visibility = EXCLUDED.visibility,
+				  size_kb = EXCLUDED.size_kb,
+				  archived = EXCLUDED.archived,
+				  updated_at = NOW()
+				RETURNING id::text, name, git_url, default_branch, github_repo_id,
+				          installation_id::text, visibility, size_kb, archived,
+				          last_synced_at, created_at
+			`,
+				projectID, installationID, match.ID, match.Name, match.CloneURL,
+				match.DefaultBranch, match.Visibility, match.SizeKB, match.Archived,
+			).Scan(
+				&created.ID, &created.Name, &created.GitURL, &created.DefaultBranch,
+				&created.GitHubRepoID, &created.InstallationID, &created.Visibility,
+				&created.SizeKB, &created.Archived,
+				&created.LastSyncedAt, &created.CreatedAt,
+			); ierr != nil {
+				return fmt.Errorf("insert repository: %w", ierr)
+			}
 		}
 
-		// Upsert on (project_id, github_repo_id) — migration 000011.
+		// ⚠ SUPERSEDE, THEN ENQUEUE. In that order, in this transaction
+		// (21-CONTEXT L4). Backwards raises NOTHING: the enqueue upsert
+		// flags `needs_rerun` on the job that is about to leave the live
+		// set, the supersede then removes it, and the repository ends with
+		// no live job at all. `idx_ingestion_jobs_one_live_per_repo` —
+		// `UNIQUE (repository_id) WHERE state IN ('queued','running')` —
+		// is what makes two live jobs unrepresentable; it is not what
+		// enforces the order, because through the upsert there is no
+		// collision to raise.
 		//
-		// NOT on the installation: that is a credential, and it is exactly
-		// what changes when the App is uninstalled and reinstalled. Keying
-		// on it meant the documented recovery path raised 23505 against
-		// `UNIQUE (project_id, git_url)` and surfaced as a 500. Keying on
-		// GitHub's stable repository id makes the same call RELINK the
-		// orphaned row instead.
-		//
-		// Still an upsert, not a plain insert, even though the lookup
-		// above has just run: two concurrent connects can both miss and
-		// both insert, and ON CONFLICT is what keeps that at one row and
-		// two 201s rather than a 23505.
-		return tx.QueryRow(ctx, `
-			INSERT INTO repositories
-			  (project_id, installation_id, github_repo_id, name, git_url,
-			   default_branch, visibility, size_kb, archived, sync_state)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')
-			ON CONFLICT (project_id, github_repo_id)
-			  WHERE github_repo_id IS NOT NULL
-			DO UPDATE SET
-			  installation_id = EXCLUDED.installation_id,
-			  name = EXCLUDED.name,
-			  git_url = EXCLUDED.git_url,
-			  default_branch = EXCLUDED.default_branch,
-			  visibility = EXCLUDED.visibility,
-			  size_kb = EXCLUDED.size_kb,
-			  archived = EXCLUDED.archived,
-			  -- Re-queue only when the installation actually changed: a
-			  -- plain re-connect is a metadata refresh and must not
-			  -- restart a run, while a relinked repository has to be
-			  -- fetched again through the new credential.
-			  --
-			  -- This DOES stomp a 'syncing' row when the installation
-			  -- changed, and an earlier version of this comment claimed
-			  -- otherwise. There is no better answer available here: the
-			  -- in-flight run holds a token for an installation that no
-			  -- longer exists, so it is going to fail anyway, and there is
-			  -- no lease column to hand it off with. ISS-016.
-			  sync_state = CASE
-			    WHEN repositories.installation_id IS DISTINCT FROM EXCLUDED.installation_id
-			    THEN 'pending' ELSE repositories.sync_state END,
-			  updated_at = NOW()
-			RETURNING id::text, name, git_url, default_branch, github_repo_id,
-			          installation_id::text, visibility, size_kb, archived,
-			          sync_state, last_synced_at, created_at
-		`,
-			projectID, req.InstallationID, match.ID, match.Name, match.CloneURL,
-			match.DefaultBranch, match.Visibility, match.SizeKB, match.Archived,
-		).Scan(
-			&created.ID, &created.Name, &created.GitURL, &created.DefaultBranch,
-			&created.GitHubRepoID, &created.InstallationID, &created.Visibility,
-			&created.SizeKB, &created.Archived, &created.SyncState,
-			&created.LastSyncedAt, &created.CreatedAt,
-		)
+		// SupersedeLive is not tenant-scoped by the database. It is safe
+		// here because created.ID came out of `repositories` — which is —
+		// in this same transaction. See its doc comment.
+		if decision == connectRelink {
+			var serr error
+			if superseded, serr = jobs.SupersedeLive(ctx, tx, []string{created.ID}); serr != nil {
+				return fmt.Errorf("supersede live ingestion job: %w", serr)
+			}
+		}
+		if decision == connectNew || decision == connectRelink {
+			var eerr error
+			if enqueued, eerr = jobs.Enqueue(ctx, tx, []jobs.EnqueueRequest{{
+				OrganizationID: orgID,
+				RepositoryID:   created.ID,
+				JobType:        jobs.JobTypeFullIngest,
+			}}); eerr != nil {
+				return fmt.Errorf("enqueue ingestion job: %w", eerr)
+			}
+		}
+
+		// `sync_state` is read LAST, so the response carries the value
+		// this transaction is about to commit rather than the one the row
+		// write returned. The producer's projection runs between the two.
+		return tx.QueryRow(ctx,
+			`SELECT sync_state FROM repositories WHERE id = $1`, created.ID).
+			Scan(&created.SyncState)
 	})
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -649,8 +773,46 @@ func (h *RepositoriesHandler) Connect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// AFTER the commit, so nothing claims a job that was rolled back. Ids
+	// only — never a token, an installation secret or a clone URL that
+	// might carry one.
+	logConnectOutcome(orgID, created.ID, decision, superseded, enqueued)
+
 	render.Status(r, http.StatusCreated)
 	render.Render(w, r, &created)
+}
+
+// logConnectOutcome records what a connect did to the queue.
+//
+// "already pending" and "just re-queued" used to be indistinguishable from
+// outside this handler, because `RETURNING sync_state` reports only what
+// the column holds. The decision and the producer's `was_existing` say
+// which happened, and a superseded job is the one event here worth being
+// able to find afterwards: it interrupted a run someone was waiting on.
+func logConnectOutcome(
+	orgID, repoID string,
+	decision connectDecision,
+	superseded []string,
+	enqueued []jobs.EnqueueResult,
+) {
+	attrs := []any{
+		slog.String("organization_id", orgID),
+		slog.String("repository_id", repoID),
+		slog.String("decision", string(decision)),
+	}
+	if len(superseded) > 0 {
+		attrs = append(attrs, slog.Bool("superseded_live_job", true))
+	}
+	if len(enqueued) == 0 {
+		slog.Info("connect repository: no ingestion job needed", attrs...)
+		return
+	}
+	attrs = append(attrs,
+		slog.String("job_id", enqueued[0].JobID),
+		// true means a job was already live and has been flagged
+		// needs_rerun instead — the L7 push-against-a-live-job case.
+		slog.Bool("flagged_existing_job", enqueued[0].WasExisting))
+	slog.Info("connect repository: ingestion job enqueued", attrs...)
 }
 
 // --- pagination helpers -------------------------------------------------
