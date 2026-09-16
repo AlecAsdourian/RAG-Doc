@@ -91,6 +91,56 @@ func TestRepositoriesOrganizationID_InsertNamingAnotherOrganizationIsRejected(t 
 	})
 }
 
+// 2b. The trigger is not an existence oracle. Naming a project in ANOTHER
+// organization must fail exactly like naming one that does not exist —
+// same SQLSTATE, same message, and no word about who owns what.
+//
+// Why this test exists: `repositories_organization_id_guard` reads
+// `projects`, which carries no row-level security, so it can see every
+// project in the database. PR #37's review measured the first version of
+// the mismatch branch answering "does this project exist, and which
+// organization owns it?" from inside another tenant.
+func TestRepositoriesOrganizationID_TheTriggerIsNotAnExistenceOracle(t *testing.T) {
+	pool := isolation.SetupTestDB(t)
+	ctx := context.Background()
+
+	// A project id that exists in no organization at all.
+	const absentProjectID = "00000000-0000-0000-0000-0000000000ff"
+
+	isolation.WithTwoOrgs(t, pool, func(orgA, orgB *isolation.TestOrg) {
+		// Each insert gets its own transaction: the first failure aborts it.
+		insertAs := func(projectID, organizationID string) *pgconn.PgError {
+			tx, err := isolation.TenantScope(ctx, pool, orgA.ID)
+			require.NoError(t, err)
+			defer func() { _ = tx.Rollback(ctx) }()
+
+			_, err = tx.Exec(ctx,
+				`INSERT INTO repositories (project_id, organization_id, name, git_url)
+				 VALUES ($1, $2, $3, $4)`,
+				projectID, organizationID, "probe", "https://example.test/probe-"+shortHex()+".git",
+			)
+			return requirePgError(t, err)
+		}
+
+		// A project that exists, in org B, named from inside org A.
+		otherOrg := insertAs(orgB.ProjectID, orgB.ID)
+		// A project that exists nowhere.
+		absent := insertAs(absentProjectID, orgA.ID)
+
+		require.Equal(t, "42501", otherOrg.Code, "message: %s", otherOrg.Message)
+		require.Equal(t, absent.Code, otherOrg.Code,
+			"a project in another organization must fail with the same SQLSTATE as one that does not exist")
+		require.Equal(t, absent.Message, otherOrg.Message,
+			"the two must be indistinguishable, or the trigger is a project-existence probe")
+		require.NotContains(t, otherOrg.Message, "does not match",
+			"the mismatch branch must stay silent about a project outside the caller's tenant")
+		require.NotContains(t, otherOrg.Message, orgB.ID,
+			"the error must not name the owning organization")
+
+		isolation.AssertNoRepositoryTenantDrift(t, pool)
+	})
+}
+
 // 3. The guarantee is the foreign key, not the trigger. With the trigger off
 // and row-level security bypassed, the mismatched row is still refused.
 func TestRepositoriesOrganizationID_CompositeForeignKeyHoldsWithoutTheTrigger(t *testing.T) {

@@ -166,9 +166,13 @@ BEGIN
     -- row then depends on the writer (measured on PostgreSQL 16):
     --
     --   - a role row-level security applies to: RLS's WITH CHECK, 42501,
-    --     exactly as before this migration. A project that exists in
-    --     ANOTHER organization gets the identical error, so there is no
-    --     existence oracle here.
+    --     exactly as before this migration.
+    --
+    --     A project in ANOTHER organization is refused identically — but
+    --     only because the mismatch branch below stays silent about it.
+    --     Measured in PR #37's review: before that, naming the column
+    --     turned this trigger into a project-existence probe and a
+    --     project -> organization map, readable from another tenant.
     --   - a role that bypasses RLS: NOT NULL on this column, 23502. Before
     --     this migration it was the `project_id` foreign key, 23503; NOT
     --     NULL is checked as the row is written, foreign keys at the end of
@@ -187,11 +191,26 @@ BEGIN
     -- not correcting. Without this the composite foreign key still refuses
     -- the row, but its error names a constraint rather than the problem.
     IF NEW.organization_id IS DISTINCT FROM project_org THEN
-      RAISE EXCEPTION
-        'organization_id % does not match project %, which belongs to organization %',
-        NEW.organization_id, NEW.project_id, project_org
-        USING ERRCODE = '42501',
-              HINT = 'Omit organization_id; the database fills it from the project.';
+      -- Say nothing about a project OUTSIDE the caller's tenant. This
+      -- function reads `projects` directly, and `projects` carries no
+      -- row-level security, so without the guard below this branch answers
+      -- "does project X exist, and which organization owns it?" for any id
+      -- a caller names — from inside another tenant. Outside the tenant we
+      -- fall through instead, and RLS's WITH CHECK refuses the row with the
+      -- same error a non-existent project gets. Both the message and the
+      -- guard are load-bearing; tests 2 and 2b pin them.
+      --
+      -- An unset or empty tenant means a superuser or a migration, which
+      -- can already read every project: keep the readable error there.
+      IF current_setting('app.current_tenant', true) IS NULL
+         OR current_setting('app.current_tenant', true) = ''
+         OR project_org::text = current_setting('app.current_tenant', true) THEN
+        RAISE EXCEPTION
+          'organization_id % does not match project %',
+          NEW.organization_id, NEW.project_id
+          USING ERRCODE = '42501',
+                HINT = 'Omit organization_id; the database fills it from the project.';
+      END IF;
     END IF;
 
     RETURN NEW;
