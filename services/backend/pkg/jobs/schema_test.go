@@ -1,4 +1,4 @@
-package jobs_test
+package jobs
 
 // Migration 000014 (21-02): `ingestion_jobs`, and every SQL statement the
 // rest of Phase 21 is built on, executed against the PostgreSQL version we
@@ -6,10 +6,18 @@ package jobs_test
 // and run on PostgreSQL 17; this file re-runs them on 16, so 21-03 through
 // 21-06 build on SQL that has run rather than SQL that reads well.
 //
-// The shared statements are named constants at the top. 21-03 (Go producer)
-// and 21-05 (Python consumer) lift them verbatim; they are constants rather
-// than inline strings so that a change to one of them fails a test here
-// before it reaches a producer.
+// The shared statements are named constants. 21-05 (the Python consumer)
+// lifts the ones below verbatim; they are constants rather than inline
+// strings so that a change to one of them fails a test here before it
+// reaches a producer.
+//
+// ⚠ THE THREE STATEMENTS 21-03 USES NOW LIVE IN producer.go, NOT HERE:
+// `enqueueConflictClause` (plus `enqueueReturning`), `enqueueUpsertSQL` and
+// `supersedeLiveSQL`. They moved verbatim, and this file references the
+// production constants rather than copies — which is why it is an INTERNAL
+// test package (`package jobs`) rather than `package jobs_test`. A copy
+// that drifts from production is worse than no test at all, and that was
+// the only way to have both.
 //
 // ONE BEHAVIOUR PER TEST. Writes run as the app role inside a tenant
 // transaction, as production does, except where the test is ABOUT the
@@ -44,51 +52,6 @@ import (
 // =====================================================================
 // The shared statements
 // =====================================================================
-
-// enqueueConflictClause is the half of the enqueue upsert that every
-// producer shares, split out so the bulk form below is structurally the
-// same statement rather than a copy that has to be kept in step.
-//
-// ⚠ THE INFERENCE CLAUSE IS NOT OPTIONAL and two shorter forms both fail.
-// Arbiter inference will not select a PARTIAL index unless the predicate is
-// repeated, so `ON CONFLICT (repository_id)` raises 42P10, and
-// `ON CONFLICT DO UPDATE` with no target at all raises 42601. Both measured
-// on PostgreSQL 16 by TestIngestionJobs_EnqueueUpsertParsesAndReports.
-//
-// `xmax <> 0` distinguishes an insert from an update: on a freshly inserted
-// tuple xmax is 0, on one the upsert updated it is the locking transaction.
-const enqueueConflictClause = `
-ON CONFLICT (repository_id) WHERE state IN ('queued','running')
-DO UPDATE SET needs_rerun = TRUE, updated_at = NOW()
-RETURNING id, (xmax <> 0) AS was_existing`
-
-// enqueueUpsertSQL is 21-CONTEXT L7's single enqueue statement, used by
-// every producer — push, relink and bulk `installation_repositories.added`
-// alike. $1 organization_id, $2 repository_id, $3 job_type.
-//
-// It never raises 23505: each row either enqueues or flags `needs_rerun` on
-// the live job, and `was_existing` tells the caller which. That is what
-// makes a bulk enqueue racing a relink safe (L8) — the earlier
-// catch-23505-and-return-success design lost two repositories of three
-// while reporting success.
-const enqueueUpsertSQL = `
-INSERT INTO ingestion_jobs (organization_id, repository_id, job_type, state)
-VALUES ($1, $2, $3, 'queued')` + enqueueConflictClause
-
-// supersedeLiveSQL takes a repository's live job out of the live set (L4).
-// It runs BEFORE the enqueue of its replacement, in the same transaction.
-//
-// ⚠ IT DELIBERATELY LEAVES `lease_owner` AND `lease_expires_at` ATTACHED.
-// A supersede is written by a different actor from the worker that holds the
-// lease, and the pair is the only record of which worker was running the job
-// when it was taken away — which 21-07's admin endpoint wants. The
-// consequence is that a lease-fenced statement CANNOT rely on the lease
-// alone to mean "still mine": every one of them also carries
-// `AND state = 'running'`. See clearRerunSQL, where that predicate was
-// missing.
-const supersedeLiveSQL = `
-UPDATE ingestion_jobs SET state = 'superseded', updated_at = NOW()
-WHERE repository_id = $1 AND state IN ('queued','running')`
 
 // completeSQL is the terminal success write, FENCED ON THE LEASE (L3).
 // $1 id, $2 lease_owner. A reclaimed or superseded worker matches zero rows
@@ -837,6 +800,14 @@ func TestIngestionJobs_Claim(t *testing.T) {
 	past := func(d time.Duration) *time.Time { t := time.Now().Add(-d); return &t }
 	future := func(d time.Duration) *time.Time { t := time.Now().Add(d); return &t }
 
+	// EVERY case that can be claimed at all backdates `run_after` to
+	// claimTestEpoch, including the ones that must NOT be claimed. That is
+	// what carries the negative assertion now that the queue is no longer
+	// emptied first: the job is the oldest claimable row in the table, so
+	// if the clause under test stopped excluding it, `ORDER BY run_after
+	// LIMIT 1` would pick it ahead of anything a producer in another
+	// package enqueued. "Some other row was claimed" is therefore still
+	// "mine was not claimable".
 	cases := []struct {
 		name    string
 		state   string
@@ -847,13 +818,14 @@ func TestIngestionJobs_Claim(t *testing.T) {
 		{
 			name:    "a queued job whose run_after has passed",
 			state:   "queued",
-			opts:    jobOpts{RunAfter: past(time.Hour)},
+			opts:    jobOpts{RunAfter: backdated(claimTestEpoch)},
 			claimed: true,
 		},
 		{
-			name:    "a running job whose lease has expired is reclaimed",
-			state:   "running",
-			opts:    jobOpts{Attempts: 1, LeaseOwner: "dead-worker", LeaseExpires: past(time.Hour)},
+			name:  "a running job whose lease has expired is reclaimed",
+			state: "running",
+			opts: jobOpts{Attempts: 1, LeaseOwner: "dead-worker", LeaseExpires: past(time.Hour),
+				RunAfter: backdated(claimTestEpoch)},
 			claimed: true,
 		},
 		{
@@ -863,13 +835,13 @@ func TestIngestionJobs_Claim(t *testing.T) {
 			// the partial unique index.
 			name:    "a running job with a null lease is reclaimed",
 			state:   "running",
-			opts:    jobOpts{Attempts: 1, LeaseOwner: "dead-worker"},
+			opts:    jobOpts{Attempts: 1, LeaseOwner: "dead-worker", RunAfter: backdated(claimTestEpoch)},
 			claimed: true,
 		},
 		{
 			name:    "a job at max_attempts is not claimed",
 			state:   "queued",
-			opts:    jobOpts{Attempts: 5, MaxAttempts: 5, RunAfter: past(time.Hour)},
+			opts:    jobOpts{Attempts: 5, MaxAttempts: 5, RunAfter: backdated(claimTestEpoch)},
 			claimed: false,
 			why:     "without `attempts < max_attempts` a poison job loops forever and never reaches dead",
 		},
@@ -880,9 +852,10 @@ func TestIngestionJobs_Claim(t *testing.T) {
 			claimed: false,
 		},
 		{
-			name:    "a running job with a live lease is not claimed",
-			state:   "running",
-			opts:    jobOpts{Attempts: 1, LeaseOwner: "worker-1", LeaseExpires: future(time.Hour)},
+			name:  "a running job with a live lease is not claimed",
+			state: "running",
+			opts: jobOpts{Attempts: 1, LeaseOwner: "worker-1", LeaseExpires: future(time.Hour),
+				RunAfter: backdated(claimTestEpoch)},
 			claimed: false,
 			why:     "its owner is alive and heartbeating",
 		},
@@ -893,19 +866,31 @@ func TestIngestionJobs_Claim(t *testing.T) {
 			isolation.WithTwoOrgs(t, pool, func(orgA, _ *isolation.TestOrg) {
 				before := tc.opts
 				id := seedJob(t, pool, orgA, orgA.RepoID, tc.state, before)
+				if before.RunAfter != nil && before.RunAfter.Before(time.Now()) {
+					requireNoOlderJobs(t, pool, []string{id}, *before.RunAfter)
+				}
 
 				// The claim runs with NO tenant set, as a worker's does:
 				// it touches neither organization_id nor repository_id, so
 				// the tenant trigger never fires. That is what having no
 				// row-level security on this table buys.
-				withQueue(t, pool, []string{orgA.RepoID}, func(tx pgx.Tx) {
+				asWorker(t, pool, func(tx pgx.Tx) {
 					rows, err := tx.Query(ctx, claimSQL, "claimer", leaseInterval)
 					require.NoError(t, err)
 					claimed, err := pgx.CollectRows(rows, pgx.RowToMap)
 					require.NoError(t, err)
 
 					if !tc.claimed {
-						require.Empty(t, claimed, "must not be claimed: %s", tc.why)
+						// Not `require.Empty`: another package may hold a
+						// claimable job in this shared container, and it is
+						// allowed to be claimed. What must not happen is
+						// THIS job being claimed — and it is the oldest
+						// claimable row in the table if it is claimable at
+						// all, so it would be the one picked.
+						for _, row := range claimed {
+							require.NotEqual(t, id, uuidString(t, row["id"]),
+								"must not be claimed: %s", tc.why)
+						}
 						return
 					}
 					require.Len(t, claimed, 1, "must be claimed")
@@ -975,7 +960,11 @@ func TestIngestionJobs_Sweeper(t *testing.T) {
 			isolation.WithTwoOrgs(t, pool, func(orgA, _ *isolation.TestOrg) {
 				id := seedJob(t, pool, orgA, orgA.RepoID, tc.state, tc.opts)
 
-				withQueue(t, pool, []string{orgA.RepoID}, func(tx pgx.Tx) {
+				// `sweepSQL` is a blanket UPDATE with no repository filter,
+				// which is what production runs. The assertion reads this
+				// test's row only, so foreign rows change nothing, and the
+				// transaction is rolled back.
+				asWorker(t, pool, func(tx pgx.Tx) {
 					_, err := tx.Exec(ctx, sweepSQL)
 					require.NoError(t, err)
 
@@ -1138,33 +1127,31 @@ func TestIngestionJobs_ClaimSkipsRowsLockedByAnotherWorker(t *testing.T) {
 
 	isolation.WithTwoOrgs(t, pool, func(orgA, _ *isolation.TestOrg) {
 		// Two claimable jobs, backdated far enough that they sort ahead of
-		// anything any other test in this package creates (the next oldest
-		// is one hour). `claimSQL` has no repository filter, so ordering is
-		// how this test names the rows it means.
-		oldest := time.Now().Add(-365 * 24 * time.Hour)
-		nextOldest := time.Now().Add(-364 * 24 * time.Hour)
+		// everything else in the shared container — this package's own
+		// claim tests included, which use claimTestEpoch. `claimSQL` has no
+		// repository filter, so ordering is how this test names the rows it
+		// means.
+		//
+		// ⚠ 21-02 preceded this with `DELETE FROM ingestion_jobs WHERE id
+		// <> ALL(...)` inside tx1. That deleted other packages' rows and
+		// held row locks on them for the length of the test; see asWorker
+		// for why it had to go once producers landed in pkg/api/handlers.
+		// Ordering does the same job without writing a row this test did
+		// not create.
+		oldest := time.Now().Add(-claimTestEpoch - 48*time.Hour)
+		nextOldest := time.Now().Add(-claimTestEpoch - 24*time.Hour)
 		jobA := seedJob(t, pool, orgA, orgA.RepoID, "queued", jobOpts{RunAfter: &oldest})
 		jobB := seedJob(t, pool, orgA, insertRepository(t, pool, orgA, "skiplocked"), "queued",
 			jobOpts{RunAfter: &nextOldest})
 
 		// Self-diagnosis rather than a confusing failure: if a crashed run
 		// ever leaves a job older than these, say so plainly.
-		var older int
-		require.NoError(t, pool.QueryRow(ctx,
-			`SELECT count(*) FROM ingestion_jobs
-			 WHERE id <> ALL($1::uuid[]) AND run_after < $2`,
-			[]string{jobA, jobB}, nextOldest,
-		).Scan(&older))
-		require.Zero(t, older, "a leaked job older than this test's fixtures would break its ordering")
+		requireNoOlderJobs(t, pool, []string{jobA, jobB}, nextOldest)
 
 		// tx1 claims the oldest and holds the row lock open.
 		tx1, err := pool.Begin(ctx)
 		require.NoError(t, err)
 		defer func() { _ = tx1.Rollback(ctx) }()
-
-		_, err = tx1.Exec(ctx,
-			`DELETE FROM ingestion_jobs WHERE id <> ALL($1::uuid[])`, []string{jobA, jobB})
-		require.NoError(t, err)
 
 		rows, err := tx1.Query(ctx, claimSQL, "worker-1", leaseInterval)
 		require.NoError(t, err)
@@ -1220,7 +1207,6 @@ func TestIngestionJobs_EveryStatementAdvancesUpdatedAt(t *testing.T) {
 	ctx := context.Background()
 
 	const owner = "worker-1"
-	past := func(d time.Duration) *time.Time { at := time.Now().Add(-d); return &at }
 
 	cases := []struct {
 		name  string
@@ -1229,14 +1215,17 @@ func TestIngestionJobs_EveryStatementAdvancesUpdatedAt(t *testing.T) {
 		run   func(t *testing.T, org *isolation.TestOrg, id string)
 	}{
 		{
-			name: "claimSQL", state: "queued", opts: jobOpts{RunAfter: past(time.Hour)},
+			name: "claimSQL", state: "queued", opts: jobOpts{RunAfter: backdated(claimTestEpoch)},
 			run: func(t *testing.T, org *isolation.TestOrg, id string) {
-				withQueue(t, pool, []string{org.RepoID}, func(tx pgx.Tx) {
+				requireNoOlderJobs(t, pool, []string{id}, time.Now().Add(-claimTestEpoch))
+				asWorker(t, pool, func(tx pgx.Tx) {
 					rows, err := tx.Query(ctx, claimSQL, owner, leaseInterval)
 					require.NoError(t, err)
 					claimed, err := pgx.CollectRows(rows, pgx.RowToMap)
 					require.NoError(t, err)
 					require.Len(t, claimed, 1)
+					require.Equal(t, id, uuidString(t, claimed[0]["id"]),
+						"the backdated job must be the one claimed")
 					requireAdvanced(t, tx, id)
 				})
 			},
@@ -1244,7 +1233,7 @@ func TestIngestionJobs_EveryStatementAdvancesUpdatedAt(t *testing.T) {
 		{
 			name: "sweepSQL", state: "queued", opts: jobOpts{Attempts: 5, MaxAttempts: 5},
 			run: func(t *testing.T, org *isolation.TestOrg, id string) {
-				withQueue(t, pool, []string{org.RepoID}, func(tx pgx.Tx) {
+				asWorker(t, pool, func(tx pgx.Tx) {
 					_, err := tx.Exec(ctx, sweepSQL)
 					require.NoError(t, err)
 					requireAdvanced(t, tx, id)
@@ -1496,15 +1485,19 @@ func enqueue(t *testing.T, ctx context.Context, q querier, orgID, repoID, jobTyp
 }
 
 // bulkEnqueueSQL is the same statement with n rows in its VALUES list —
-// what an `installation_repositories.added` event for n repositories sends.
-// The ON CONFLICT clause is the shared constant, not a copy.
+// the form W3 measured in 21-02, kept because it is the one the context
+// wrote. The ON CONFLICT clause and the RETURNING list are the production
+// constants, not copies.
+//
+// Production sends the `unnest` form instead (`enqueueSetSQL`), which
+// TestEnqueue_BulkRacingALiveJob runs through the same scenario.
 func bulkEnqueueSQL(n int) string {
 	values := make([]string, n)
 	for i := range values {
 		values[i] = fmt.Sprintf("($%d, $%d, 'full_ingest', 'queued')", i*2+1, i*2+2)
 	}
 	return `INSERT INTO ingestion_jobs (organization_id, repository_id, job_type, state)
-VALUES ` + strings.Join(values, ", ") + enqueueConflictClause
+VALUES ` + strings.Join(values, ", ") + enqueueConflictClause + enqueueReturning
 }
 
 // jobOpts arranges the state a statement under test acts on. Production
@@ -1559,27 +1552,41 @@ func seedJob(t *testing.T, pool *pgxpool.Pool, org *isolation.TestOrg, repoID, s
 	return id
 }
 
-// withQueue runs fn in an UNSCOPED transaction — no app.current_tenant, as
-// a worker has none when it claims — over a queue holding only the given
-// repositories' jobs, and rolls back.
+// asWorker runs fn in an UNSCOPED transaction — no app.current_tenant, as
+// a worker has none when it claims — and rolls back.
 //
-// The delete is what makes the verbatim statements testable. `claimSQL` and
-// `sweepSQL` deliberately have no repository filter: production has one
-// queue. In a container shared across packages and reused across runs, a
-// stray row from anywhere would make "nothing was claimed" untestable. The
-// transaction is never committed, so nothing is actually removed.
+// ⚠ IT NO LONGER DELETES ANYTHING, and that change is the point (21-03).
+// The 21-02 version was `withQueue(t, pool, repoIDs, fn)`, which began by
+// running `DELETE FROM ingestion_jobs WHERE repository_id <> ALL($1)` so
+// that the queue held only the test's own rows. `claimSQL` and `sweepSQL`
+// have no repository filter — production has one queue — so an empty queue
+// was how "nothing was claimed" became observable. The transaction was
+// rolled back, so nothing was really removed.
 //
-// ⚠ THIS IS ONLY SAFE WHILE `pkg/jobs` IS THE SOLE WRITER of the table, and
-// today it is — nothing else in `services/backend` mentions
-// `ingestion_jobs`, and CI's default-parallelism step ("Harness under
-// package parallelism" in backend-ci.yml) does not include `./pkg/jobs/...`.
-// 21-03 and 21-04 put producers in `pkg/api/handlers`, which IS in that
-// step. From then on this blanket delete holds row locks on every other
-// package's `ingestion_jobs` rows for the length of the test. Not a deadlock
-// — it takes no `repositories` locks, so there is no lock-order cycle — but
-// a source of confusing waits under `go test ./...`. Narrow it to this
-// test's rows, or serialise the package, before that lands.
-func withQueue(t *testing.T, pool *pgxpool.Pool, repoIDs []string, fn func(tx pgx.Tx)) {
+// That was safe only while `pkg/jobs` was the SOLE writer of the table.
+// 21-03 puts producers in `pkg/api/handlers`, which IS in CI's
+// default-parallelism step, and a developer's plain `go test ./...` runs
+// the two packages at once. From that moment the blanket delete both held
+// row locks on every other package's rows for the length of the test AND
+// stopped working: a concurrently enqueued job whose `run_after` ties with
+// this test's would make the claim non-deterministic, which no amount of
+// rolling back fixes.
+//
+// ORDERING REPLACED THE DELETE. The claim tests backdate their jobs by a
+// decade (claimTestEpoch below) so they sort ahead of anything a producer
+// creates, and assert on identity rather than on emptiness. What remains is
+// bounded and rolled back:
+//
+//   - `claimSQL` locks the ONE row it picks. When the test's own job is
+//     deliberately unclaimable, that may be a foreign row, for the few
+//     statements until this transaction ends.
+//   - `sweepSQL` is a blanket UPDATE, so it locks every row at
+//     `attempts >= max_attempts`. No producer creates one — they insert
+//     with `attempts = 0` — so in practice that set is this package's own.
+//
+// Neither deletes a row this package did not create, which is the property
+// that had to hold.
+func asWorker(t *testing.T, pool *pgxpool.Pool, fn func(tx pgx.Tx)) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -1587,11 +1594,38 @@ func withQueue(t *testing.T, pool *pgxpool.Pool, repoIDs []string, fn func(tx pg
 	require.NoError(t, err)
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	_, err = tx.Exec(ctx,
-		`DELETE FROM ingestion_jobs WHERE repository_id <> ALL($1::uuid[])`, repoIDs)
-	require.NoError(t, err)
-
 	fn(tx)
+}
+
+// claimTestEpoch is how far back a test backdates `run_after` when it needs
+// `claimSQL`'s `ORDER BY run_after LIMIT 1` to name its own row.
+//
+// A decade, not an hour: producers in other packages enqueue at NOW(), and
+// ties are resolved by nothing. requireNoOlderJobs turns the one way this
+// can go wrong — a leaked row from a crashed run, backdated further — into
+// a plain sentence instead of a confusing failure somewhere else.
+const claimTestEpoch = 3650 * 24 * time.Hour
+
+func backdated(d time.Duration) *time.Time {
+	at := time.Now().Add(-d)
+	return &at
+}
+
+// requireNoOlderJobs fails if any job outside ids has a `run_after` at or
+// before threshold — the only thing that can break a claim test's ordering
+// argument now that the queue is no longer emptied first.
+func requireNoOlderJobs(t *testing.T, q querier, ids []string, threshold time.Time) {
+	t.Helper()
+	var older int
+	require.NoError(t, q.QueryRow(context.Background(),
+		`SELECT count(*) FROM ingestion_jobs
+		 WHERE id <> ALL($1::uuid[]) AND run_after <= $2`,
+		ids, threshold,
+	).Scan(&older))
+	require.Zero(t, older,
+		"a job older than this test's fixtures would break its ordering; "+
+			"a crashed run may have leaked one — `DELETE FROM ingestion_jobs "+
+			"WHERE run_after < NOW() - INTERVAL '1 year'` on the harness container clears it")
 }
 
 // liveJobIDs returns the repository's jobs in the live set — the set the

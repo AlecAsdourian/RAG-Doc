@@ -304,37 +304,90 @@ func TestRepositoriesOrganizationID_MovingAProjectWithRepositoriesIsRejected(t *
 
 // 8. The drift check itself. Every test above ends with it; these two prove it
 // can fail. A check that has never been seen to fail proves nothing.
+//
+// ⚠ RETRIED, AND ON A SHORT `lock_timeout` — ISS-032. The `ALTER TABLE ...
+// DROP CONSTRAINT` below takes AccessExclusiveLock on `repositories` AND on
+// `projects` (the referenced table, whose RI triggers it removes), while
+// other packages hold AccessShare on `projects` and then take RowExclusive
+// on `repositories` — which is what every connect does, since it reads the
+// organization's default project before writing the repository. That is a
+// lock cycle in which this transaction can be picked as the victim through
+// no fault of its own. It fired once in CI's package-parallelism step, and
+// 21-03 reproduced it locally by adding `./pkg/jobs/...` to that set.
+//
+// THE RETRY ALONE WAS NOT ENOUGH, MEASURED: three attempts on a 100ms
+// backoff still failed with "still deadlocking after 3 attempts". The
+// `lock_timeout` below is what actually fixes it — see
+// isolation.LockWaitTimeout — and the retry is what turns a lost race into
+// a slower pass instead of a failure.
+//
+// Nothing about what this test proves is weakened: each attempt rebuilds
+// its own transaction from scratch, the assertions run on the attempt that
+// completed, and six failures still fail, naming the SQLSTATE.
 func TestRepositoriesOrganizationID_DriftCheckDetectsDrift(t *testing.T) {
 	pool := isolation.SetupTestDB(t)
 	ctx := context.Background()
 
 	isolation.WithTwoOrgs(t, pool, func(orgA, orgB *isolation.TestOrg) {
-		isolation.WithSuperuserConn(t, pool, func(conn *pgx.Conn) {
-			tx, err := conn.Begin(ctx)
-			require.NoError(t, err)
-			defer func() { _ = tx.Rollback(ctx) }()
+		var ids []string
+		require.NoError(t, isolation.RetryOnLockContention(ctx, func() error {
+			var attemptErr error
+			isolation.WithSuperuserConn(t, pool, func(conn *pgx.Conn) {
+				ids, attemptErr = manufactureDriftAndCheck(ctx, conn, orgA, orgB)
+			})
+			return attemptErr
+		}), "manufacturing drift")
 
-			// Manufacture the drift the schema forbids. It takes removing BOTH
-			// guards, inside a transaction that is never committed.
-			_, err = tx.Exec(ctx, `ALTER TABLE repositories DROP CONSTRAINT `+compositeTenantFK)
-			require.NoError(t, err)
-			_, err = tx.Exec(ctx, `ALTER TABLE repositories DISABLE TRIGGER trg_repositories_organization_id`)
-			require.NoError(t, err)
-			_, err = tx.Exec(ctx, fmt.Sprintf("SET LOCAL app.current_tenant = '%s'", orgA.ID))
-			require.NoError(t, err)
-			_, err = tx.Exec(ctx,
-				`UPDATE repositories SET organization_id = $1 WHERE id = $2`,
-				orgB.ID, orgA.RepoID,
-			)
-			require.NoError(t, err)
-
-			ids, err := isolation.CheckRepositoryTenantDrift(ctx, tx)
-			require.NoError(t, err)
-			require.Equal(t, []string{orgA.RepoID}, ids)
-		})
+		require.Equal(t, []string{orgA.RepoID}, ids)
 
 		isolation.AssertNoRepositoryTenantDrift(t, pool)
 	})
+}
+
+// manufactureDriftAndCheck removes BOTH guards and writes a drifted row,
+// inside a transaction that is never committed, then runs the check over
+// it.
+//
+// It returns an error rather than calling t.Fatal so that the caller can
+// retry it: losing a lock race here says nothing about the code under test.
+// Every statement's error is returned unwrapped, so RetryOnLockContention
+// can see the SQLSTATE.
+func manufactureDriftAndCheck(
+	ctx context.Context, conn *pgx.Conn, orgA, orgB *isolation.TestOrg,
+) ([]string, error) {
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Never committed: the deferred rollback puts both guards back, and the
+	// server aborts the transaction if this process dies first.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// ISS-032. Give up on a contended table rather than queue behind it:
+	// below `deadlock_timeout`, so this transaction is normally out of the
+	// way before any detector looks for a cycle. The retry above brings it
+	// back when the other packages are quieter.
+	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL lock_timeout = '%dms'",
+		isolation.LockWaitTimeout.Milliseconds())); err != nil {
+		return nil, err
+	}
+
+	if _, err := tx.Exec(ctx, `ALTER TABLE repositories DROP CONSTRAINT `+compositeTenantFK); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `ALTER TABLE repositories DISABLE TRIGGER trg_repositories_organization_id`); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL app.current_tenant = '%s'", orgA.ID)); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE repositories SET organization_id = $1 WHERE id = $2`,
+		orgB.ID, orgA.RepoID,
+	); err != nil {
+		return nil, err
+	}
+	return isolation.CheckRepositoryTenantDrift(ctx, tx)
 }
 
 func TestRepositoriesOrganizationID_DriftCheckRefusesToRunUnderRowLevelSecurity(t *testing.T) {
