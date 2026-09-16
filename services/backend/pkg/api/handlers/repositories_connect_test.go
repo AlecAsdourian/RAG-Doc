@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -41,7 +42,11 @@ import (
 // `beforeReturn` runs while the handler is between its two transactions,
 // which is the only way to reach the window where the installation can
 // disappear underneath a connect.
+//
+// It is mutex-guarded because 21-03's concurrency tests fire several
+// connects at one server, and `pkg/api/...` runs under `-race` in CI.
 type stubLister struct {
+	mu           sync.Mutex
 	repos        []github.Repository
 	err          error
 	calls        int
@@ -51,11 +56,23 @@ type stubLister struct {
 func (s *stubLister) ListInstallationRepositories(
 	_ context.Context, _ int64,
 ) ([]github.Repository, error) {
+	s.mu.Lock()
 	s.calls++
-	if s.beforeReturn != nil {
-		s.beforeReturn()
+	repos, err, before := s.repos, s.err, s.beforeReturn
+	s.mu.Unlock()
+
+	if before != nil {
+		before()
 	}
-	return s.repos, s.err
+	return repos, err
+}
+
+// setRepos replaces what the stub reports, safely for a test that has
+// already started a server.
+func (s *stubLister) setRepos(repos []github.Repository) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.repos = repos
 }
 
 const stubRepoID = int64(4242000)
@@ -226,9 +243,9 @@ func TestRepositoriesConnect(t *testing.T) {
 				return err
 			}))
 
-			lister.repos = []github.Repository{
+			lister.setRepos([]github.Repository{
 				stubRepo("steady-repo-renamed", "https://github.com/someone/steady-repo.git"),
-			}
+			})
 			status, body := doRepoRequest(t, url, http.MethodPost,
 				"/api/repositories", tokenA, connectBody(instA))
 			require.Equal(t, http.StatusCreated, status, "body=%s", body)
@@ -508,6 +525,503 @@ func TestRepositoriesConnect(t *testing.T) {
 			}
 		})
 	})
+}
+
+// =====================================================================
+// 21-03: connecting creates a real work item
+// =====================================================================
+//
+// What `sync_state` used to be asked to mean is now a row in
+// `ingestion_jobs`. These tests read that table DIRECTLY, filtered by
+// `organization_id` where tenancy is the point: it has no row-level
+// security by design (21-CONTEXT L5), so a query against it says nothing
+// about tenancy unless the filter is written out.
+
+func TestRepositoriesConnect_ANewRepositoryGetsOneQueuedFullIngest(t *testing.T) {
+	pool := isolation.SetupTestDB(t)
+
+	isolation.WithTwoOrgs(t, pool, func(orgA, _ *isolation.TestOrg) {
+		tokenA := testjwt.Sign(orgA.OwnerSupabaseID, orgA.ID, "owner")
+		instA := seedInstallation(t, pool, orgA.ID, 557000)
+		url := newConnectServer(t, pool, &stubLister{repos: []github.Repository{
+			stubRepo("fresh-connect", "https://github.com/someone/fresh-connect.git"),
+		}})
+
+		status, body := doRepoRequest(t, url, http.MethodPost,
+			"/api/repositories", tokenA, connectBody(instA))
+		require.Equal(t, http.StatusCreated, status, "body=%s", body)
+
+		var got handlers.Repository
+		require.NoError(t, json.Unmarshal([]byte(body), &got))
+		require.Equal(t, "pending", got.SyncState,
+			"the response must carry the projection this transaction committed")
+
+		queue := jobsFor(t, pool, got.ID)
+		require.Len(t, queue, 1, "connecting must create exactly one work item")
+		require.Equal(t, "queued", queue[0].State)
+		require.Equal(t, "full_ingest", queue[0].JobType)
+		require.False(t, queue[0].NeedsRerun)
+		require.Equal(t, orgA.ID, queue[0].OrganizationID)
+		require.Equal(t, 0, queue[0].Attempts)
+		require.Nil(t, queue[0].LeaseOwner, "a queued job has no owner yet")
+		require.Equal(t, "pending", syncStateOfRepo(t, pool, orgA.ID, got.ID))
+
+		isolation.AssertNoRepositoryTenantDrift(t, pool)
+	})
+}
+
+// A plain re-connect is a metadata refresh, not a retry. It must not touch
+// the job that is already there — the ISS-016 scenario read from the other
+// side.
+func TestRepositoriesConnect_ReconnectingToTheSameInstallationCreatesNoJob(t *testing.T) {
+	pool := isolation.SetupTestDB(t)
+
+	isolation.WithTwoOrgs(t, pool, func(orgA, _ *isolation.TestOrg) {
+		tokenA := testjwt.Sign(orgA.OwnerSupabaseID, orgA.ID, "owner")
+		instA := seedInstallation(t, pool, orgA.ID, 558000)
+		lister := &stubLister{repos: []github.Repository{
+			stubRepo("steady", "https://github.com/someone/steady.git"),
+		}}
+		url := newConnectServer(t, pool, lister)
+
+		_, body := doRepoRequest(t, url, http.MethodPost,
+			"/api/repositories", tokenA, connectBody(instA))
+		var first handlers.Repository
+		require.NoError(t, json.Unmarshal([]byte(body), &first))
+		before := jobsFor(t, pool, first.ID)
+		require.Len(t, before, 1)
+
+		// A worker has picked it up in the meantime.
+		claimJob(t, pool, before[0].ID, "worker-1")
+
+		lister.setRepos([]github.Repository{
+			stubRepo("steady-renamed", "https://github.com/someone/steady.git"),
+		})
+		status, body := doRepoRequest(t, url, http.MethodPost,
+			"/api/repositories", tokenA, connectBody(instA))
+		require.Equal(t, http.StatusCreated, status, "body=%s", body)
+
+		after := jobsFor(t, pool, first.ID)
+		require.Len(t, after, 1, "an unchanged installation must not enqueue anything")
+		require.Equal(t, before[0].ID, after[0].ID)
+		require.Equal(t, "running", after[0].State, "the in-flight job is untouched")
+		require.False(t, after[0].NeedsRerun,
+			"and it is not even flagged: nothing new was asked for")
+		require.Equal(t, "syncing", syncStateOfRepo(t, pool, orgA.ID, first.ID),
+			"the projection belongs to the running job")
+
+		_, _, name := repoStateOf(t, pool, orgA.ID, first.ID)
+		require.Equal(t, "steady-renamed", name, "metadata is still refreshed")
+
+		isolation.AssertNoRepositoryTenantDrift(t, pool)
+	})
+}
+
+// The ISS-016 scenario itself: relinking a repository whose run is IN
+// FLIGHT. It used to stamp `sync_state = 'pending'` over a `syncing` row
+// and let two writers race for the outcome. Now the running job is
+// superseded — it leaves the live set, keeping the lease that says which
+// worker was interrupted — and its replacement is enqueued behind it.
+func TestRepositoriesConnect_RelinkSupersedesARunningJob(t *testing.T) {
+	pool := isolation.SetupTestDB(t)
+
+	isolation.WithTwoOrgs(t, pool, func(orgA, _ *isolation.TestOrg) {
+		tokenA := testjwt.Sign(orgA.OwnerSupabaseID, orgA.ID, "owner")
+		instA := seedInstallation(t, pool, orgA.ID, 559000)
+		reinstalled := seedInstallation(t, pool, orgA.ID, 559001)
+		url := newConnectServer(t, pool, &stubLister{repos: []github.Repository{
+			stubRepo("relinked", "https://github.com/someone/relinked.git"),
+		}})
+
+		_, body := doRepoRequest(t, url, http.MethodPost,
+			"/api/repositories", tokenA, connectBody(instA))
+		var first handlers.Repository
+		require.NoError(t, json.Unmarshal([]byte(body), &first))
+		original := jobsFor(t, pool, first.ID)[0].ID
+		claimJob(t, pool, original, "worker-1")
+
+		status, body := doRepoRequest(t, url, http.MethodPost,
+			"/api/repositories", tokenA, connectBody(reinstalled))
+		require.Equal(t, http.StatusCreated, status, "body=%s", body)
+
+		var second handlers.Repository
+		require.NoError(t, json.Unmarshal([]byte(body), &second))
+		require.Equal(t, first.ID, second.ID, "a relink adopts the row")
+		require.Equal(t, "pending", second.SyncState)
+
+		queue := jobsFor(t, pool, first.ID)
+		require.Len(t, queue, 2, "the old job is kept as the record of what was interrupted")
+
+		byID := map[string]queuedJob{}
+		for _, job := range queue {
+			byID[job.ID] = job
+		}
+		require.Equal(t, "superseded", byID[original].State)
+		require.NotNil(t, byID[original].LeaseOwner,
+			"the supersede leaves the lease attached: it is the only record of which "+
+				"worker was running when the job was taken away")
+		require.Equal(t, "worker-1", *byID[original].LeaseOwner)
+
+		live := liveJobsFor(t, pool, first.ID)
+		require.Len(t, live, 1, "exactly one live job, which is the ISS-016 guarantee")
+		require.NotEqual(t, original, live[0].ID)
+		require.Equal(t, "queued", live[0].State)
+		require.Equal(t, "full_ingest", live[0].JobType)
+		require.Equal(t, orgA.ID, live[0].OrganizationID)
+
+		isolation.AssertNoRepositoryTenantDrift(t, pool)
+	})
+}
+
+// L8: two reconnects landing together both want the same outcome, so one
+// job satisfies both — and neither caller may be told it failed.
+//
+// Through the real handler, through the real router, over five rounds on a
+// warm server. The enqueue upsert is what makes this safe: the loser flags
+// the winner's job instead of colliding with it. The withdrawn
+// catch-23505 design would have to turn one of these into a 500.
+func TestRepositoriesConnect_ConcurrentRelinksLeaveOneLiveJob(t *testing.T) {
+	pool := isolation.SetupTestDB(t)
+	ctx := context.Background()
+
+	const rounds = 5
+
+	isolation.WithTwoOrgs(t, pool, func(orgA, _ *isolation.TestOrg) {
+		tokenA := testjwt.Sign(orgA.OwnerSupabaseID, orgA.ID, "owner")
+		instA := seedInstallation(t, pool, orgA.ID, 560000)
+		reinstalled := seedInstallation(t, pool, orgA.ID, 560001)
+		url := newConnectServer(t, pool, &stubLister{repos: []github.Repository{
+			stubRepo("raced", "https://github.com/someone/raced.git"),
+		}})
+
+		_, body := doRepoRequest(t, url, http.MethodPost,
+			"/api/repositories", tokenA, connectBody(instA))
+		var repo handlers.Repository
+		require.NoError(t, json.Unmarshal([]byte(body), &repo))
+
+		for round := 1; round <= rounds; round++ {
+			// Back to the original installation, with one live job, so
+			// every round is a genuine relink. Only this repository's rows
+			// are touched.
+			setInstallation(t, pool, orgA.ID, repo.ID, instA)
+			clearJobsFor(t, pool, repo.ID)
+			seedRunningJob(t, pool, orgA.ID, repo.ID, "worker-1")
+
+			var (
+				start    sync.WaitGroup
+				done     sync.WaitGroup
+				mu       sync.Mutex
+				statuses []int
+				bodies   []string
+			)
+			start.Add(1)
+			done.Add(2)
+
+			for i := 0; i < 2; i++ {
+				go func() {
+					defer done.Done()
+					start.Wait() // release them together
+
+					status, body := doRepoRequest(t, url, http.MethodPost,
+						"/api/repositories", tokenA, connectBody(reinstalled))
+
+					mu.Lock()
+					defer mu.Unlock()
+					statuses = append(statuses, status)
+					bodies = append(bodies, body)
+				}()
+			}
+			start.Done()
+			done.Wait()
+
+			for i, status := range statuses {
+				require.Equalf(t, http.StatusCreated, status,
+					"round %d: both concurrent relinks must succeed; body=%s", round, bodies[i])
+			}
+			live := liveJobsFor(t, pool, repo.ID)
+			require.Lenf(t, live, 1,
+				"round %d: two concurrent relinks must leave exactly one live job", round)
+			require.Equalf(t, "pending", syncStateOfRepo(t, pool, orgA.ID, repo.ID),
+				"round %d", round)
+		}
+
+		// The rounds above leave one live job and several superseded ones;
+		// nothing else in the container is touched.
+		_, err := pool.Exec(ctx, `DELETE FROM ingestion_jobs WHERE repository_id = $1`, repo.ID)
+		require.NoError(t, err)
+
+		isolation.AssertNoRepositoryTenantDrift(t, pool)
+	})
+}
+
+// ⚠ THIS IS WHAT PINS `FOR UPDATE OF r`.
+//
+// Connect's adopt lookup joins `projects`, and a bare `FOR UPDATE` locks
+// every table in the FROM clause — so it would take a row lock on the
+// organization's DEFAULT PROJECT, which every repository in the
+// organization shares. Nothing would error; connects would simply queue up
+// behind each other one at a time, and the only symptom would be latency
+// under load.
+//
+// The first transaction here runs handlers.ExistingRepositoryLookupSQL
+// ITSELF — the production statement, not a copy — for one repository, and
+// holds it. A connect for a DIFFERENT repository in the same organization
+// then has to finish. Widen the production statement to a bare
+// `FOR UPDATE` and this deadlocks on the shared `projects` row until the
+// deadline fires.
+func TestRepositoriesConnect_ConcurrentConnectsOfDifferentRepositoriesDoNotBlock(t *testing.T) {
+	pool := isolation.SetupTestDB(t)
+	ctx := context.Background()
+
+	isolation.WithTwoOrgs(t, pool, func(orgA, _ *isolation.TestOrg) {
+		tokenA := testjwt.Sign(orgA.OwnerSupabaseID, orgA.ID, "owner")
+		instA := seedInstallation(t, pool, orgA.ID, 561000)
+		reinstalled := seedInstallation(t, pool, orgA.ID, 561001)
+
+		const (
+			firstGitHubID  = int64(4247000)
+			secondGitHubID = int64(4248000)
+			firstURL       = "https://github.com/someone/lock-a.git"
+			secondURL      = "https://github.com/someone/lock-b.git"
+		)
+		lister := &stubLister{repos: []github.Repository{
+			{ID: firstGitHubID, Name: "lock-a", Visibility: "private",
+				DefaultBranch: "main", CloneURL: firstURL, SizeKB: 4},
+			{ID: secondGitHubID, Name: "lock-b", Visibility: "private",
+				DefaultBranch: "main", CloneURL: secondURL, SizeKB: 4},
+		}}
+		url := newConnectServer(t, pool, lister)
+
+		// Both repositories exist and sit in the same default project, so
+		// the join below resolves to the same `projects` row for each.
+		connect := func(ghID int64, installation string) handlers.Repository {
+			t.Helper()
+			status, body := doRepoRequest(t, url, http.MethodPost, "/api/repositories", tokenA,
+				fmt.Sprintf(`{"github_repo_id":%d,"installation_id":%q}`, ghID, installation))
+			require.Equal(t, http.StatusCreated, status, "body=%s", body)
+			var repo handlers.Repository
+			require.NoError(t, json.Unmarshal([]byte(body), &repo))
+			return repo
+		}
+		first := connect(firstGitHubID, instA)
+		second := connect(secondGitHubID, instA)
+		require.NotEqual(t, first.ID, second.ID)
+
+		// Hold the FIRST repository's row the way an in-flight connect
+		// does, using the handler's own statement.
+		holder, err := isolation.TenantScope(ctx, pool, orgA.ID)
+		require.NoError(t, err)
+		defer func() { _ = holder.Rollback(ctx) }()
+
+		var lockedID string
+		var lockedInstallation *string
+		var lockedGitHubID *int64
+		require.NoError(t, holder.QueryRow(ctx, handlers.ExistingRepositoryLookupSQL,
+			orgA.ID, firstGitHubID, firstURL,
+		).Scan(&lockedID, &lockedInstallation, &lockedGitHubID))
+		require.Equal(t, first.ID, lockedID, "the holder must have locked the row it meant to")
+
+		// Now relink the OTHER repository. It must not wait on the row, or
+		// on the project both of them hang off.
+		finished := make(chan int, 1)
+		go func() {
+			status, _ := doRepoRequest(t, url, http.MethodPost, "/api/repositories", tokenA,
+				fmt.Sprintf(`{"github_repo_id":%d,"installation_id":%q}`, secondGitHubID, reinstalled))
+			finished <- status
+		}()
+
+		select {
+		case status := <-finished:
+			require.Equal(t, http.StatusCreated, status)
+		case <-time.After(15 * time.Second):
+			t.Fatal("a connect blocked on another repository's connect: a bare FOR UPDATE " +
+				"locks the joined projects row and serialises every connect in the " +
+				"organization; `FOR UPDATE OF r` is what keeps them independent")
+		}
+
+		require.NoError(t, holder.Rollback(ctx))
+		require.Len(t, liveJobsFor(t, pool, second.ID), 1)
+
+		isolation.AssertNoRepositoryTenantDrift(t, pool)
+	})
+}
+
+// `ingestion_jobs` has NO row-level security, deliberately, so a job
+// carrying the wrong tenant is not something the database will hide from a
+// reader — it is something the schema refuses to store. This asserts the
+// result with explicit `organization_id` filters, because a query on this
+// table that omits one proves nothing about tenancy.
+func TestRepositoriesConnect_JobsCarryTheConnectingOrganizationOnly(t *testing.T) {
+	pool := isolation.SetupTestDB(t)
+	ctx := context.Background()
+
+	isolation.WithTwoOrgs(t, pool, func(orgA, orgB *isolation.TestOrg) {
+		tokenA := testjwt.Sign(orgA.OwnerSupabaseID, orgA.ID, "owner")
+		instA := seedInstallation(t, pool, orgA.ID, 562000)
+		instB := seedInstallation(t, pool, orgB.ID, 562001)
+		url := newConnectServer(t, pool, &stubLister{repos: []github.Repository{
+			stubRepo("tenanted", "https://github.com/someone/tenanted.git"),
+		}})
+
+		status, body := doRepoRequest(t, url, http.MethodPost,
+			"/api/repositories", tokenA, connectBody(instA))
+		require.Equal(t, http.StatusCreated, status, "body=%s", body)
+		var got handlers.Repository
+		require.NoError(t, json.Unmarshal([]byte(body), &got))
+
+		require.Equal(t, 1, countJobs(t, pool, `organization_id = $1 AND repository_id = $2`,
+			orgA.ID, got.ID))
+		require.Zero(t, countJobs(t, pool, `organization_id = $1 AND repository_id = $2`,
+			orgB.ID, got.ID), "no job may carry org B's id for org A's repository")
+		require.Zero(t, countJobs(t, pool, `organization_id = $1`, orgB.ID),
+			"and org B, which did nothing here, must end with no jobs at all")
+
+		// Org A naming org B's installation: 404, and no new work for
+		// either tenant. Counted per organization rather than over the
+		// whole table: the harness container is shared, and this must not
+		// depend on what another package is doing to it.
+		beforeA := countJobs(t, pool, `organization_id = $1`, orgA.ID)
+		status, body = doRepoRequest(t, url, http.MethodPost,
+			"/api/repositories", tokenA, connectBody(instB))
+		require.Equal(t, http.StatusNotFound, status,
+			"another tenant's installation must be invisible; body=%s", body)
+		require.Equal(t, beforeA, countJobs(t, pool, `organization_id = $1`, orgA.ID),
+			"a refused connect must create no work")
+		require.Zero(t, countJobs(t, pool, `organization_id = $1`, orgB.ID),
+			"least of all for the organization whose installation was named")
+
+		_, err := pool.Exec(ctx, `DELETE FROM ingestion_jobs WHERE repository_id = $1`, got.ID)
+		require.NoError(t, err)
+
+		isolation.AssertNoRepositoryTenantDrift(t, pool)
+	})
+}
+
+// --- queue helpers ------------------------------------------------------
+//
+// `ingestion_jobs` has no RLS and the tenant trigger only fires on writes
+// that touch organization_id or repository_id, so these read and write
+// through the pool directly, as a worker does.
+
+type queuedJob struct {
+	ID             string
+	OrganizationID string
+	RepositoryID   string
+	JobType        string
+	State          string
+	Attempts       int
+	NeedsRerun     bool
+	LeaseOwner     *string
+}
+
+const queuedJobColumns = `id::text, organization_id::text, repository_id::text,
+	job_type, state, attempts, needs_rerun, lease_owner`
+
+func scanJobs(t *testing.T, pool *pgxpool.Pool, where string, args ...any) []queuedJob {
+	t.Helper()
+	rows, err := pool.Query(context.Background(),
+		`SELECT `+queuedJobColumns+` FROM ingestion_jobs WHERE `+where+` ORDER BY created_at, id`,
+		args...)
+	require.NoError(t, err)
+	jobs, err := pgx.CollectRows(rows, pgx.RowToStructByPos[queuedJob])
+	require.NoError(t, err)
+	return jobs
+}
+
+func jobsFor(t *testing.T, pool *pgxpool.Pool, repoID string) []queuedJob {
+	t.Helper()
+	return scanJobs(t, pool, `repository_id = $1`, repoID)
+}
+
+// liveJobsFor returns the set the partial unique index allows at most one
+// of. "Exactly one live job" is the ISS-016 guarantee, in the schema.
+func liveJobsFor(t *testing.T, pool *pgxpool.Pool, repoID string) []queuedJob {
+	t.Helper()
+	return scanJobs(t, pool, `repository_id = $1 AND state IN ('queued','running')`, repoID)
+}
+
+// countJobs reads `ingestion_jobs` ONLY. It must not join or sub-select
+// `repositories`: that table has row-level security, and an unscoped read
+// of it through the pool is silently empty on a fresh connection and
+// SQLSTATE 22P02 on one that has committed a `SET LOCAL` (ISS-013). The
+// first version of the tenant test above did exactly that and got the
+// 22P02.
+func countJobs(t *testing.T, pool *pgxpool.Pool, where string, args ...any) int {
+	t.Helper()
+	var n int
+	require.NoError(t, pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM ingestion_jobs WHERE `+where, args...).Scan(&n))
+	return n
+}
+
+// claimJob is what a worker does when it picks the job up: it makes the row
+// `running` with a lease, which is the state a relink has to supersede.
+func claimJob(t *testing.T, pool *pgxpool.Pool, jobID, owner string) {
+	t.Helper()
+	ctx := context.Background()
+	tag, err := pool.Exec(ctx, `
+		UPDATE ingestion_jobs
+		SET state = 'running', lease_owner = $2,
+		    lease_expires_at = NOW() + INTERVAL '5 minutes',
+		    attempts = attempts + 1, updated_at = NOW()
+		WHERE id = $1`, jobID, owner)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, tag.RowsAffected())
+
+	// The projection a worker writes on claim (21-05). Written here so the
+	// relink tests face the state ISS-016 was about: a `syncing` row.
+	scoper := db.NewTenantScoper(pool)
+	var orgID, repoID string
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT organization_id::text, repository_id::text FROM ingestion_jobs WHERE id = $1`,
+		jobID).Scan(&orgID, &repoID))
+	require.NoError(t, scoper.InTenantTx(auth.ContextWithOrgID(ctx, orgID), func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`UPDATE repositories SET sync_state = 'syncing' WHERE id = $1`, repoID)
+		return err
+	}))
+}
+
+func seedRunningJob(t *testing.T, pool *pgxpool.Pool, orgID, repoID, owner string) {
+	t.Helper()
+	ctx := context.Background()
+	scoper := db.NewTenantScoper(pool)
+	require.NoError(t, scoper.InTenantTx(auth.ContextWithOrgID(ctx, orgID), func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO ingestion_jobs
+			  (organization_id, repository_id, job_type, state, attempts,
+			   lease_owner, lease_expires_at)
+			VALUES ($1, $2, 'full_ingest', 'running', 1, $3, NOW() + INTERVAL '5 minutes')`,
+			orgID, repoID, owner)
+		return err
+	}))
+}
+
+// clearJobsFor removes ONE repository's jobs. Scoped on purpose: nothing in
+// this package may delete a row another package created — the harness
+// container is shared, and `go test ./...` runs packages in parallel.
+func clearJobsFor(t *testing.T, pool *pgxpool.Pool, repoID string) {
+	t.Helper()
+	_, err := pool.Exec(context.Background(),
+		`DELETE FROM ingestion_jobs WHERE repository_id = $1`, repoID)
+	require.NoError(t, err)
+}
+
+func setInstallation(t *testing.T, pool *pgxpool.Pool, orgID, repoID, installationID string) {
+	t.Helper()
+	ctx := context.Background()
+	scoper := db.NewTenantScoper(pool)
+	require.NoError(t, scoper.InTenantTx(auth.ContextWithOrgID(ctx, orgID), func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`UPDATE repositories SET installation_id = $2 WHERE id = $1`, repoID, installationID)
+		return err
+	}))
+}
+
+func syncStateOfRepo(t *testing.T, pool *pgxpool.Pool, orgID, repoID string) string {
+	t.Helper()
+	_, state, _ := repoStateOf(t, pool, orgID, repoID)
+	return state
 }
 
 // TestDeleteReportsTheWholeCascade pins what DELETE actually destroys.
