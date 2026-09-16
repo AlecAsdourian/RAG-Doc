@@ -1,0 +1,19 @@
+-- Phase 21-04: the down of a backfill is a DELIBERATE NO-OP.
+--
+-- The up migration creates work items for repositories the pre-21-04
+-- webhook path left `pending` with nothing to run them. There is no
+-- "undo" that is safe:
+--
+--   - Deleting the jobs it created would discard work. By the time anyone
+--     rolls back, a worker may have claimed one, be running it, or have
+--     finished it — and the rows are indistinguishable from the ones a
+--     producer created in the same window, because a backfilled job is
+--     deliberately identical to an enqueued one (that is what makes the
+--     backfill correct).
+--   - Reverting `sync_state` would reintroduce exactly the stranded rows
+--     the up migration exists to end.
+--
+-- So down succeeds and changes nothing, which keeps `migrate down` usable
+-- for the schema migrations on either side of this one. Rolling this back
+-- and re-applying it is safe: the up is idempotent.
+SELECT 1;
