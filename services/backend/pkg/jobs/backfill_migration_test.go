@@ -91,11 +91,25 @@ func TestBackfillIngestionJobs_GivesAJobToEveryStrandedRepository(t *testing.T) 
 	all := []*seededRepo{
 		{orgID: orgA, name: "a-pending", syncState: "pending", installed: true,
 			wantJob: true, wantSyncState: "pending"},
+		// ⚠ THE TWO ROWS NOTHING CAN EVER INGEST. They get no job — a job
+		// for one would clone nothing and dead-letter — and they must NOT
+		// be left `pending`, because `sync_state` is what the frontend
+		// renders and no handler can reach them: both production writers of
+		// `never_synced` key on `installation_id = $1`, which never matches
+		// `installation_id IS NULL`, and for the uninstalled case the event
+		// that would have fixed it has already been processed. Found by
+		// PR #40's review; before it, these two ended `pending` forever.
 		{orgID: orgA, name: "a-no-installation", syncState: "pending",
-			wantJob: false, wantSyncState: "pending"},
+			wantJob: false, wantSyncState: "never_synced"},
 		{orgID: orgA, name: "a-uninstalled", syncState: "pending",
 			installed: true, uninstalled: true,
-			wantJob: false, wantSyncState: "pending"},
+			wantJob: false, wantSyncState: "never_synced"},
+		// The same condition reached from `syncing` rather than `pending`:
+		// statement 2 skips it (no live installation), so statement 3 is
+		// the only thing that can move it.
+		{orgID: orgA, name: "a-syncing-uninstalled", syncState: "syncing",
+			installed: true, uninstalled: true,
+			wantJob: false, wantSyncState: "never_synced"},
 		{orgID: orgA, name: "a-already-queued", syncState: "pending",
 			installed: true, liveJob: true,
 			wantJob: true, wantSyncState: "pending"},
@@ -190,9 +204,15 @@ func assertBackfill(t *testing.T, conn *pgx.Conn, all []*seededRepo) {
 		WHERE job_type <> 'full_ingest' OR attempts <> 0 OR needs_rerun`),
 		"a backfilled job is an ordinary unstarted full ingest")
 
-	// The invariant the migration exists to establish, stated over the
-	// whole table rather than fixture by fixture: no SYNCABLE repository is
-	// left asking for work with nothing to run it.
+	// ⚠ THE INVARIANT, STATED OVER THE WHOLE TABLE rather than fixture by
+	// fixture, so a row shape nobody thought of still fails this. It is one
+	// sentence: NO REPOSITORY IS LEFT ASKING FOR WORK THAT NOTHING WILL DO.
+	//
+	// Both halves matter and they fail in opposite directions. A syncable
+	// row without a job waits forever with nothing to claim it; an
+	// UNSYNCABLE row left `pending` renders as "queued, syncing soon"
+	// forever, and no handler can correct it (PR #40's review). The second
+	// half is why statement 3 exists.
 	require.Zero(t, countRows(t, conn, `
 		SELECT count(*) FROM repositories r
 		JOIN github_installations gi ON gi.id = r.installation_id
@@ -202,6 +222,25 @@ func assertBackfill(t *testing.T, conn *pgx.Conn, all []*seededRepo) {
 			SELECT 1 FROM ingestion_jobs j
 			WHERE j.repository_id = r.id AND j.state IN ('queued','running'))`),
 		"a syncable repository is still stranded `pending` with no job")
+
+	require.Zero(t, countRows(t, conn, `
+		SELECT count(*) FROM repositories r
+		WHERE r.sync_state IN ('pending','syncing')
+		  AND NOT EXISTS (
+			SELECT 1 FROM github_installations gi
+			WHERE gi.id = r.installation_id AND gi.uninstalled_at IS NULL)`),
+		"a repository nothing can ingest is still showing as queued, and no "+
+			"handler can reach it to say otherwise")
+
+	// And the two together, phrased without reference to installations at
+	// all: after this migration, `pending` means "a job exists for it".
+	require.Zero(t, countRows(t, conn, `
+		SELECT count(*) FROM repositories r
+		WHERE r.sync_state IN ('pending','syncing')
+		  AND NOT EXISTS (
+			SELECT 1 FROM ingestion_jobs j
+			WHERE j.repository_id = r.id AND j.state IN ('queued','running'))`),
+		"`pending` must mean a live job exists")
 }
 
 func countEligible(all []*seededRepo) int {

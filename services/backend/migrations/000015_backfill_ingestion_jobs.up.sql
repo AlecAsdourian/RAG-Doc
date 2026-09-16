@@ -46,8 +46,15 @@
 -- statements after it are comments (DDL), which are not subject to it.
 
 -- =====================================================================
--- 1. A job for every stranded repository, one tenant at a time
+-- 1. Three statements per tenant: queue, normalise, stand down
 -- =====================================================================
+--
+--   1. a job for every repository we can still ingest
+--   2. `syncing` -> `pending` for those same rows
+--   3. `never_synced` for the ones nothing can ever ingest
+--
+-- The third was added after PR #40's review; see the comment on it for why
+-- "a handler will fix those later" was false.
 DO $$
 DECLARE org RECORD;
 BEGIN
@@ -74,6 +81,19 @@ BEGIN
     -- would catch, so the assertion is explicit. It costs one
     -- `current_setting` per organization. 21-01 measured the same
     -- asymmetry for 000013's backfill; this is that lesson, applied.
+    --
+    -- ⚠ IT PROVES NOTHING IF THE LOOP BODY NEVER RUNS, and what makes that
+    -- safe is invisible from here: `organizations` and `projects` carry NO
+    -- row-level security (000008 covers six tables and leaves both out, for
+    -- the signup bootstrap reason 000009's header records), so the
+    -- `FOR org IN SELECT id FROM public.organizations` above cannot itself
+    -- be filtered to zero rows by a missing tenant. If either table ever
+    -- gains row-level security, this assertion becomes vacuous and the
+    -- backfill becomes silent again. Raised by PR #40's review, which
+    -- confirmed `relrowsecurity = f` on both.
+    --
+    -- The message carries organization UUIDs and nothing else: no token,
+    -- no secret, and it is safe in a deploy log.
     IF current_setting('app.current_tenant', true) IS DISTINCT FROM org.id::text THEN
       RAISE EXCEPTION
         'backfill is not scoped to organization %: app.current_tenant is %',
@@ -128,19 +148,58 @@ BEGIN
       AND r.sync_state = 'syncing'
       AND r.installation_id IS NOT NULL
       AND gi.uninstalled_at IS NULL;
+
+    -- ⚠ AND THE COMPLEMENT: THE ROWS NOTHING CAN EVER INGEST.
+    --
+    -- A `pending` or `syncing` repository whose installation is gone or
+    -- uninstalled gets no job above, correctly — a job for one would clone
+    -- nothing, burn five attempts and dead-letter. But leaving it
+    -- `pending` is not neutral: `sync_state` is what the frontend renders,
+    -- so the row says "queued, syncing soon" forever.
+    --
+    -- AN EARLIER VERSION OF THIS FILE LEFT THEM, on the reasoning that the
+    -- handlers write `never_synced` when the relevant event arrives. THAT
+    -- IS FALSE FOR EXACTLY THESE ROWS, and PR #40's review traced why:
+    -- both production writers of `never_synced` key on
+    -- `installation_id = $1` (`github_webhook_events.go`, the uninstall
+    -- stand-down and `standDownRepositories`), and `installation_id = $1`
+    -- can never match `installation_id IS NULL`. For the uninstalled case
+    -- the event has already been processed — that is how `uninstalled_at`
+    -- came to be set. No handler can reach these rows, no job exists for
+    -- them, and 21-05's worker only writes states for jobs that exist. The
+    -- only exit was a user reconnecting a repository that was telling them
+    -- work was already under way.
+    --
+    -- `never_synced` is the documented meaning of "we have this row and
+    -- cannot sync it" (docs/api-repositories.md), and it is what both
+    -- handlers write for the same condition when they CAN reach the row.
+    -- `NOT EXISTS` rather than a join, because the NULL case has no row on
+    -- the other side to join to.
+    --
+    -- It does not touch `synced`: a repository that finished keeps its
+    -- content and its state, and it is not re-synced or re-labelled
+    -- because the App went away.
+    UPDATE public.repositories r
+    SET sync_state = 'never_synced', updated_at = NOW()
+    WHERE r.organization_id = org.id
+      AND r.sync_state IN ('pending','syncing')
+      AND NOT EXISTS (
+        SELECT 1 FROM public.github_installations gi
+        WHERE gi.id = r.installation_id AND gi.uninstalled_at IS NULL);
   END LOOP;
 END $$;
 
 -- =====================================================================
--- 2. What this migration deliberately does NOT do
+-- 2. The invariant this file establishes
 -- =====================================================================
 --
--- A repository left `pending` whose `installation_id` is NULL, or whose
--- installation is uninstalled, keeps that state and gets no job. Its
--- correct projection is `never_synced`, and the handlers write that when
--- the events that cause it arrive (`installation_repositories.removed`,
--- `installation.deleted`). Rewriting them here would be a third piece of
--- DML doing a handler's job on rows nobody can ingest either way, so the
--- residue is recorded rather than swept: the invariant this file
--- establishes is that no SYNCABLE repository is left `pending` without a
--- job.
+-- After it, no repository is left asking for work that nothing will do:
+--
+--   - a SYNCABLE repository at `pending` or `syncing` has exactly one live
+--     job (statements 1 and 2)
+--   - an UNSYNCABLE one — no installation, or an uninstalled one — is
+--     `never_synced` and has no job (statement 3)
+--
+-- Both halves are asserted over the whole table by
+-- pkg/jobs/backfill_migration_test.go, not fixture by fixture, so a row
+-- shape nobody thought of still fails the test.
