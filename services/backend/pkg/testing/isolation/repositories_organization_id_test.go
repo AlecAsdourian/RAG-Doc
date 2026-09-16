@@ -122,9 +122,15 @@ func TestRepositoriesOrganizationID_TheTriggerIsNotAnExistenceOracle(t *testing.
 			return requirePgError(t, err)
 		}
 
-		// A project that exists, in org B, named from inside org A.
-		otherOrg := insertAs(orgB.ProjectID, orgB.ID)
-		// A project that exists nowhere.
+		// The probe: org A's own id, with a project id that turns out to
+		// belong to org B. The two differ, so this is the branch that used to
+		// answer "that project belongs to organization <org B>".
+		//
+		// Naming org B's id alongside org B's project would prove nothing:
+		// the two agree, the mismatch branch never runs, and row-level
+		// security refuses the row whatever this trigger does. Measured.
+		otherOrg := insertAs(orgB.ProjectID, orgA.ID)
+		// The same probe against a project that exists nowhere.
 		absent := insertAs(absentProjectID, orgA.ID)
 
 		require.Equal(t, "42501", otherOrg.Code, "message: %s", otherOrg.Message)
