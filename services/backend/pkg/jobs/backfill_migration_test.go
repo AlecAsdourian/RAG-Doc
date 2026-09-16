@@ -120,6 +120,24 @@ func TestBackfillIngestionJobs_GivesAJobToEveryStrandedRepository(t *testing.T) 
 			wantJob: true, wantSyncState: "pending"},
 		{orgID: orgA, name: "a-synced", syncState: "synced", installed: true,
 			wantJob: false, wantSyncState: "synced"},
+		// ⚠ THE ROW THAT KEEPS THE STAND-DOWN NARROW, and it was added
+		// because a mutation escaped without it: widening statement 3 from
+		// `sync_state IN ('pending','syncing')` to `<> 'never_synced'`
+		// passed the whole suite, because every other unsyncable fixture is
+		// already `pending`. A repository that FINISHED keeps its content
+		// and its state; relabelling it `never_synced` because the App went
+		// away would throw away the one signal that says it was ingested,
+		// and `docs/api-repositories.md` tells clients to expect the
+		// opposite.
+		{orgID: orgA, name: "a-synced-uninstalled", syncState: "synced",
+			installed: true, uninstalled: true,
+			wantJob: false, wantSyncState: "synced"},
+		// The same boundary from the other side: `failed` is not a request
+		// for work, so the stand-down must not touch it either. Its job, if
+		// it had one, was dead-lettered or superseded long before this ran.
+		{orgID: orgA, name: "a-failed-uninstalled", syncState: "failed",
+			installed: true, uninstalled: true,
+			wantJob: false, wantSyncState: "failed"},
 		{orgID: orgB, name: "b-pending", syncState: "pending", installed: true,
 			wantJob: true, wantSyncState: "pending"},
 		{orgID: orgB, name: "b-never-synced", syncState: "never_synced", installed: true,
