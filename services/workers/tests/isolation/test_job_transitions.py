@@ -26,6 +26,22 @@ one.
     oldest claimable row in the table, and `assert_no_older_claimable`
     turns the one way that argument can fail -- a leaked row from a crashed
     run, backdated further -- into a plain sentence.
+
+⚠ WHAT THIS FILE DOES *NOT* PIN, so nobody assumes it does.
+
+  - **`FOR UPDATE SKIP LOCKED`.** Deleting it from `CLAIM_SQL` leaves this
+    suite green, and that is expected: nothing here runs two claims
+    concurrently, so there is no lock for a second claimer to skip. It is
+    covered in Go by `TestIngestionJobs_ClaimSkipsRowsLockedByAnotherWorker`
+    (21-02), which holds one row in an open transaction and gives the other
+    claimer a 3s `statement_timeout` so a block fails rather than hangs.
+    **21-06's barrier test is what covers it from Python** -- eight threads,
+    own connections, one claimable job, five warm rounds.
+  - **The claim's `assert_no_older_claimable` premise helper carries its own
+    copy of the claimable predicate.** It therefore evaluates the
+    UNMUTATED rule and cannot catch a mutation to `CLAIM_SQL`'s. Every
+    claim guard needs its own test; PR #41's review found the live-lease
+    exclusion had none.
 """
 
 from __future__ import annotations
@@ -496,6 +512,62 @@ def test_a_reclaimed_workers_mark_started_writes_nothing(db_conn, with_two_orgs)
     )
 
 
+@pytest.mark.parametrize("transition", ["fail", "defer", "abandon"])
+def test_a_reclaimed_workers_terminal_writes_are_all_refused(
+    db_conn, with_two_orgs, transition
+):
+    """⚠ The `lease_owner` HALF of the fence, for the three statements that
+    only ever saw the `state` half.
+
+    The superseded test below cannot reach it: a superseded row keeps A's
+    lease, so `lease_owner = %s` matches by construction there and only
+    `state = 'running'` does any work. Here the row is `running` again —
+    under B — so the state predicate matches and the owner is the only
+    thing refusing the write.
+
+    PR #41's review measured all three neutered (`AND lease_owner = %s` ->
+    `AND %s IS NOT NULL`, which keeps the parameter count) surviving the
+    whole suite. `complete` was the only transition with a reclaimed-worker
+    test.
+    """
+    org_a, _ = with_two_orgs
+    worker_a, worker_b = new_worker_id(), new_worker_id()
+
+    job_id = seed_job(db_conn, org_a)
+    backdate(db_conn, job_id)
+    job_a = claimed_job(db_conn, worker_a, job_id)
+
+    expire_lease(db_conn, job_id)
+    claimed_job(db_conn, worker_b, job_id)
+    before = job_row(db_conn, job_id)
+    assert before["state"] == "running", (
+        "the job is not `running`, so `state = 'running'` would refuse "
+        "these writes on its own and the owner half stays untested"
+    )
+    assert before["lease_owner"] == worker_b
+
+    calls = {
+        "fail": lambda: fail(db_conn, job_a, worker_a, RuntimeError("boom")),
+        "defer": lambda: defer(db_conn, job_a, worker_a, timedelta(hours=1), "suspended"),
+        "abandon": lambda: abandon(db_conn, job_a, worker_a, "uninstalled"),
+    }
+    with pytest.raises(LeaseLost):
+        calls[transition]()
+
+    after = job_row(db_conn, job_id)
+    assert after["state"] == "running", (
+        f"{transition} from a reclaimed worker moved B's job to {after['state']}"
+    )
+    assert after["lease_owner"] == worker_b
+    assert after["attempts"] == before["attempts"], (
+        f"{transition} from a reclaimed worker changed B's attempt counter"
+    )
+    assert after["last_error"] is None
+    # `defer` and `abandon` would each write a state B's job must not have,
+    # and `fail` would push B's `run_after` out from under it.
+    assert repo_row(db_conn, org_a.id, org_a.repo_id)["sync_state"] == "pending"
+
+
 def test_the_new_owner_is_unaffected_by_the_stale_worker(db_conn, with_two_orgs):
     """B finishes normally after A's fenced writes all bounced off."""
     org_a, _ = with_two_orgs
@@ -568,7 +640,40 @@ def test_a_superseded_workers_writes_all_raise_lease_lost(
     assert repo_row(db_conn, org_a.id, org_a.repo_id)["sync_state"] == "pending"
 
 
-def test_clear_rerun_sql_is_fenced_on_the_running_state(db_conn, with_two_orgs, worker_id):
+def test_a_superseded_workers_mark_started_writes_nothing(db_conn, with_two_orgs, worker_id):
+    """⚠ The `state = 'running'` half of `PROJECT_SYNCING_SQL`'s EXISTS.
+
+    `mark_started` is deliberately absent from the parametrized superseded
+    test above, because it raises nothing — so it needs its own. The
+    reclaimed test covers the `lease_owner` half of the same sub-select;
+    this covers the other, which PR #41's review measured surviving.
+
+    A superseded row KEEPS its lease, so without the state predicate a
+    worker whose job was cancelled by a relink would tell the UI `syncing`
+    for a run it no longer owns — while the replacement job's own
+    `pending` is the state that should be showing.
+    """
+    org_a, _ = with_two_orgs
+    job_id = seed_job(db_conn, org_a)
+    backdate(db_conn, job_id)
+    job = claimed_job(db_conn, worker_id, job_id)
+
+    supersede(db_conn, org_a.repo_id)
+    assert job_row(db_conn, job_id)["lease_owner"] == worker_id, (
+        "the supersede nulled the lease, so the `lease_owner` half would "
+        "refuse this on its own and the state half stays untested"
+    )
+
+    mark_started(db_conn, job, worker_id)
+
+    assert repo_row(db_conn, org_a.id, org_a.repo_id)["sync_state"] == "pending", (
+        "a superseded worker told the UI that a run it no longer owns is "
+        "under way"
+    )
+
+
+@pytest.mark.parametrize("half", ["state", "lease_owner"])
+def test_clear_rerun_sql_is_fenced_on_both_halves(db_conn, with_two_orgs, half):
     """The one guard `complete` cannot show you, pinned at the statement.
 
     PR #38's review measured `clearRerunSQL` without `AND state = 'running'`
@@ -580,40 +685,80 @@ def test_clear_rerun_sql_is_fenced_on_the_running_state(db_conn, with_two_orgs, 
     ⚠ IT IS UNOBSERVABLE THROUGH `complete` IN PYTHON, because the two
     statements share a transaction and the `LeaseLost` rolls the bad clear
     back. Testing the statement directly is the only way this port keeps
-    the predicate 21-02 added; without this test the mutation survives.
+    either half of the fence; without this test both mutations survive.
+
+    The two parameters isolate the two halves:
+      - `state`: the job is SUPERSEDED and still carries A's lease, so
+        `lease_owner` alone still matches and only the state predicate
+        refuses.
+      - `lease_owner`: the job is RUNNING again under B, so the state
+        predicate matches and only the owner refuses.
     """
     org_a, _ = with_two_orgs
+    worker_a, worker_b = new_worker_id(), new_worker_id()
+
     job_id = seed_job(db_conn, org_a)
     backdate(db_conn, job_id)
-    claimed_job(db_conn, worker_id, job_id)
+    claimed_job(db_conn, worker_a, job_id)
     flag_rerun(db_conn, org_a)
-    supersede(db_conn, org_a.repo_id)
+
+    if half == "state":
+        supersede(db_conn, org_a.repo_id)
+        before = job_row(db_conn, job_id)
+        assert before["state"] == "superseded"
+        assert before["lease_owner"] == worker_a, (
+            "the supersede nulled the lease, so the `lease_owner` half "
+            "would refuse this on its own and the state half is untested"
+        )
+    else:
+        expire_lease(db_conn, job_id)
+        claimed_job(db_conn, worker_b, job_id)
+        before = job_row(db_conn, job_id)
+        assert before["state"] == "running", (
+            "the job is not `running`, so the state half would refuse this "
+            "on its own and the owner half is untested"
+        )
+        assert before["lease_owner"] == worker_b
 
     with db_conn.cursor() as cur:
-        cur.execute(CLEAR_RERUN_SQL, (job_id, worker_id))
+        cur.execute(CLEAR_RERUN_SQL, (job_id, worker_a))
         matched = cur.rowcount
         cur.fetchall()
     db_conn.commit()
 
     assert matched == 0, (
-        "the rerun clear fired on a superseded row; `lease_owner` alone "
-        "does not mean 'still mine'"
+        f"the rerun clear fired with only the `{half}` half refusing it"
     )
     assert job_row(db_conn, job_id)["needs_rerun"] is True
 
 
-def test_attaching_a_run_is_fenced(db_conn, with_two_orgs, worker_id):
-    """A reclaimed worker cannot repoint the new attempt's job at its run."""
+@pytest.mark.parametrize("theft", ["superseded", "reclaimed"])
+def test_attaching_a_run_is_fenced(db_conn, with_two_orgs, theft):
+    """A stale worker cannot repoint the new attempt's job at its run.
+
+    Both halves of the fence, for the same reason the rerun clear needs
+    both: a superseded row keeps its lease, so `lease_owner` alone does not
+    mean "still mine"; and a reclaimed row is `running` again, so the state
+    predicate alone does not either.
+    """
     org_a, _ = with_two_orgs
+    worker_a, worker_b = new_worker_id(), new_worker_id()
+
     job_id = seed_job(db_conn, org_a)
     backdate(db_conn, job_id)
-    job = claimed_job(db_conn, worker_id, job_id)
-    supersede(db_conn, org_a.repo_id)
+    job = claimed_job(db_conn, worker_a, job_id)
+
+    if theft == "superseded":
+        supersede(db_conn, org_a.repo_id)
+    else:
+        expire_lease(db_conn, job_id)
+        claimed_job(db_conn, worker_b, job_id)
+        assert job_row(db_conn, job_id)["state"] == "running"
 
     with pytest.raises(LeaseLost):
         with require_tenant(db_conn, org_a.id) as cur:
             run_id = resolve_ingestion_run(cur, org_a.repo_id, "d" * 40, "main")
-            attach_ingestion_run(cur, job, worker_id, run_id)
+            attach_ingestion_run(cur, job, worker_a, run_id)
 
     assert job_row(db_conn, job_id)["ingestion_run_id"] is None
     assert runs_for(db_conn, org_a.id, "d" * 40) == [], (
@@ -668,6 +813,52 @@ def test_fail_below_max_attempts_requeues_with_a_jittered_backoff(
         f"attempt 1's delay must be 60s jittered into [30, 60); got {delay}s"
     )
 
+    assert repo_row(db_conn, org_a.id, org_a.repo_id)["sync_state"] == "failed"
+
+
+def test_a_nul_byte_in_an_error_still_records_the_failure(
+    db_conn, with_two_orgs, worker_id
+):
+    """⚠ A NUL used to lose the whole failure write and strand the job.
+
+    psycopg2 refuses a NUL in a text parameter CLIENT-SIDE, with a
+    `ValueError` raised while building the statement. Before the fix that
+    fired inside `require_tenant`, the transaction rolled back, and `fail`
+    propagated something that is not `LeaseLost` — leaving the job
+    `running` at `attempts = 1` with `last_error` NULL, holding the partial
+    unique index until the lease expired. Deterministic input, so it
+    repeated every attempt: five wasted worker slots and a repository that
+    dead-letters with no reason recorded.
+
+    REACHABLE FROM A HOSTILE REPOSITORY: binary file content echoed back
+    through a parser error or a `git` stderr dump. Found by PR #41's
+    review and reproduced on the real container.
+    """
+    org_a, _ = with_two_orgs
+    job_id = seed_job(db_conn, org_a)
+    backdate(db_conn, job_id)
+    job = claimed_job(db_conn, worker_id, job_id)
+
+    outcome = fail(
+        db_conn,
+        job,
+        worker_id,
+        RuntimeError(f"parse failed at byte 42:\x00\x00\x00 raw content, token {FAKE_TOKEN}"),
+    )
+
+    assert outcome == "queued"
+    row = job_row(db_conn, job_id)
+    assert row["state"] == "queued", (
+        "the failure write was lost and the job is stranded holding the "
+        "partial unique index"
+    )
+    assert row["lease_owner"] is None
+    assert row["last_error"] is not None, "nothing was recorded for the failure"
+    assert "\x00" not in row["last_error"]
+    assert "parse failed at byte 42" in row["last_error"], (
+        "the readable part of the message must survive the strip"
+    )
+    assert "ghs_" not in row["last_error"], "redaction still applies after the strip"
     assert repo_row(db_conn, org_a.id, org_a.repo_id)["sync_state"] == "failed"
 
 
@@ -777,6 +968,23 @@ def test_abandon_supersedes_and_stands_the_repository_down(
     assert row["last_error"] == "installation uninstalled"
     assert repo_row(db_conn, org_a.id, org_a.repo_id)["sync_state"] == "never_synced"
 
+    # ⚠ `attempts` IS LEFT AS THE CLAIM SET IT, and that is deliberate.
+    # PR #41's review ruled KEEP after checking the two statements that
+    # could make it matter: `CLAIM_SQL`'s `attempts < max_attempts` and
+    # `_SWEEP_SQL`'s `attempts >= max_attempts` are reachable only from
+    # `queued` or `running`, so on a `superseded` row the column is
+    # behaviourally inert. Decrementing it would write a falsehood into an
+    # audit row 21-07 reads — a worker DID claim this job once.
+    #
+    # ISS-033's "no attempt consumed" is about the ENDING, and that
+    # property is `test_the_sweeper_leaves_an_abandoned_job_alone`. This
+    # assertion is what stops a reader who takes the phrase literally
+    # adding `attempts - 1` to ABANDON_SQL with CI agreeing.
+    assert row["attempts"] == 1, (
+        "abandon changed the attempt counter; see ABANDON_SQL's comment "
+        "for why a terminal row keeps it"
+    )
+
 
 def test_the_sweeper_leaves_an_abandoned_job_alone(db_conn, with_two_orgs, worker_id):
     """Even at max attempts: `dead` is a failure terminal and this is not."""
@@ -836,6 +1044,37 @@ def test_the_sweeper_dead_letters_a_running_job_with_an_expired_lease(
     claimed_job(db_conn, worker_id, job_id)
     exhaust(db_conn, job_id)
     expire_lease(db_conn, job_id)
+
+    assert sweep(db_conn) >= 1
+    assert job_row(db_conn, job_id)["state"] == "dead"
+
+
+def test_the_sweeper_dead_letters_a_running_job_with_a_null_lease(
+    db_conn, with_two_orgs, worker_id
+):
+    """⚠ The `lease_expires_at IS NULL` sub-branch of the sweeper.
+
+    The expired-lease test above sets a real expiry, so the null case never
+    runs there — PR #41's review measured `lease_expires_at IS NULL OR`
+    deletable with the suite green.
+
+    This is the backstop for the shape
+    `test_a_running_job_with_a_null_lease_is_reclaimed` exists for, at max
+    attempts, where the claim can no longer reach it: `NULL < NOW()` is
+    NULL rather than true, so without the explicit branch the row sits in
+    `running` holding the partial unique index forever, blocking every
+    future job for that repository.
+    """
+    org_a, _ = with_two_orgs
+    job_id = seed_job(db_conn, org_a)
+    backdate(db_conn, job_id)
+    claimed_job(db_conn, worker_id, job_id)
+    exhaust(db_conn, job_id)
+    sql(
+        db_conn,
+        "UPDATE ingestion_jobs SET lease_expires_at = NULL WHERE id = %s",
+        (job_id,),
+    )
 
     assert sweep(db_conn) >= 1
     assert job_row(db_conn, job_id)["state"] == "dead"
@@ -1068,6 +1307,51 @@ def test_a_job_at_max_attempts_is_not_claimed(db_conn, with_two_orgs, worker_id)
     assert row["state"] == "queued", "an exhausted job was claimed"
     assert row["lease_owner"] is None
     assert row["attempts"] == row["max_attempts"]
+
+
+def test_a_running_job_with_a_live_lease_is_not_claimed(db_conn, with_two_orgs):
+    """⚠ THE SINGLE PREDICATE THE WHOLE LEASE DESIGN RESTS ON.
+
+    Replacing the claim's reclaim branch with a bare `OR (state =
+    'running')` — any running job claimable, live lease or not — survived
+    the entire suite when PR #41's review measured it. `S` pins the same
+    exclusion for the SWEEPER; the claim's copy had no test at all.
+
+    ⚠ `assert_no_older_claimable` cannot catch it either: the helper
+    carries its own correct copy of the predicate, so it evaluates the
+    unmutated rule.
+
+    Without it, worker B claims a repository worker A is ninety seconds
+    into. Both clone, both embed, both write Qdrant points — and only A's
+    Postgres rows roll back, after the embedding spend. That is ISS-027's
+    failure mode arriving one phase early.
+    """
+    org_a, _ = with_two_orgs
+    worker_a, worker_b = new_worker_id(), new_worker_id()
+
+    job_id = seed_job(db_conn, org_a)
+    backdate(db_conn, job_id)
+    claimed_job(db_conn, worker_a, job_id)
+    held = job_row(db_conn, job_id)
+    assert held["lease_expires_at"] is not None
+
+    stolen = claim(db_conn, worker_b, LEASE)
+    assert stolen is None or str(stolen.id) != job_id, (
+        "worker B took a job whose lease is still live -- two workers are "
+        "now ingesting the same repository"
+    )
+
+    after = job_row(db_conn, job_id)
+    assert after["lease_owner"] == worker_a
+    assert after["attempts"] == held["attempts"]
+
+    # ⚠ The half that stops this passing for the wrong reason. If the job
+    # were simply unclaimable — wrong state, backoff not elapsed, attempts
+    # exhausted — everything above would hold and prove nothing about the
+    # lease. It is claimable the moment the lease is gone.
+    expire_lease(db_conn, job_id)
+    reclaimed = claimed_job(db_conn, worker_b, job_id)
+    assert reclaimed.attempts == held["attempts"] + 1
 
 
 def test_a_running_job_with_a_null_lease_is_reclaimed(db_conn, with_two_orgs):
