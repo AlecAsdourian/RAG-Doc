@@ -224,12 +224,27 @@ func (h *GitHubWebhookHandler) Receive(w http.ResponseWriter, r *http.Request) {
 		slog.Error("github webhook: handler failed",
 			slog.String("event", event), slog.String("delivery", delivery),
 			slog.String("error", err.Error()))
-		// The delivery row stays. GitHub will redeliver with the SAME id,
-		// which the claim above will then reject as a duplicate — so a
-		// failure here is not automatically retried, by design. See
-		// `docs/api-github-webhooks.md`: recovery is a resync, not a
-		// redelivery, because a partially-applied event replayed is worse
-		// than one recorded as failed.
+		// The delivery row stays, recorded 'failed' — which
+		// `claimDelivery` RE-CLAIMS. GitHub redelivering with the same id
+		// therefore runs this handler a SECOND time, immediately, with no
+		// waiting period.
+		//
+		// (This comment used to say the opposite: that the claim would
+		// reject the redelivery as a duplicate, so "a failure here is not
+		// automatically retried, by design". That stopped being true when
+		// the failed disjunct was added to `claimDelivery` — the code and
+		// the comment have disagreed since, and `docs/api-github-webhooks.md`
+		// and TestGitHubWebhook/AFailedDeliveryIsReclaimableImmediately both
+		// describe the code. Corrected in 21-04, which is the plan that made
+		// it matter: every handler now writes to the queue, so re-entrancy
+		// is a property the producers have to hold rather than a paragraph.)
+		//
+		// ⚠ SO EVERY HANDLER MUST BE SAFE TO RUN TWICE. The enqueue upsert
+		// is — a second run joins the live job instead of creating another,
+		// which the partial unique index would refuse — and so is every
+		// UPDATE in github_webhook_events.go, each of which is keyed rather
+		// than incremental. A supersede of an already-superseded job matches
+		// nothing and reports it.
 		h.recordOutcome(ctx, delivery, "failed", tenant)
 		render.Status(r, http.StatusInternalServerError)
 		render.JSON(w, r, map[string]string{"status": "error", "error": "handler failed"})
