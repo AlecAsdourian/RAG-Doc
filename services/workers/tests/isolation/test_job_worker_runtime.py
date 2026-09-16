@@ -59,7 +59,7 @@ import pytest
 from psycopg2.extras import RealDictCursor
 
 from workers.db import require_tenant
-from workers.jobs import Worker, claim, new_worker_id
+from workers.jobs import Unfinished, Worker, claim, new_worker_id
 from workers.jobs.transitions import ENQUEUE_UPSERT_SQL
 
 # Same decade-in-the-past epoch `test_job_transitions.py` and 21-03 use, and
@@ -115,6 +115,33 @@ def conn(dsn: str):
     """The test's own connection, separate from every worker's."""
     connection = psycopg2.connect(dsn)
     connection.autocommit = False
+    try:
+        yield connection
+    finally:
+        connection.close()
+
+
+@pytest.fixture
+def superuser_conn(test_db_container):
+    """A connection that can `pg_terminate_backend`, which `rag_doc_app` cannot.
+
+    ⚠ DELIBERATELY WITHOUT the `role` option every other connection here
+    carries. Terminating another backend needs superuser or
+    `pg_signal_backend`, and `rag_doc_app` is NOSUPERUSER on purpose --
+    that is the whole reason the rest of this file uses it. The container's
+    own `isolation` account is the superuser, and it is used for nothing
+    except killing connections.
+
+    It is how the two failure tests below reproduce a Postgres restart, a
+    failover or an idle-connection reaper, which is otherwise not
+    something a test can cause.
+    """
+    connection = psycopg2.connect(
+        test_db_container.get_connection_url().replace(
+            "postgresql+psycopg2://", "postgresql://"
+        )
+    )
+    connection.autocommit = True
     try:
         yield connection
     finally:
@@ -313,6 +340,27 @@ def job_when(
     return until(check, what, timeout)
 
 
+def kill_backends(superuser: Any, application_name: str) -> int:
+    """`pg_terminate_backend` every backend with this `application_name`.
+
+    The worker tags its two connections differently -- `rag-doc-worker` for
+    the loop and `rag-doc-worker-heartbeat` for the beat -- so a test can
+    kill exactly one of them and watch the right recovery path. That tag is
+    not test scaffolding: it is what `pg_stat_activity` shows an operator
+    trying to work out which connection is wedged.
+
+    Returns how many were killed, so a caller can assert it actually hit
+    something. A test that silently kills nothing passes for free.
+    """
+    with superuser.cursor() as cur:
+        cur.execute(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+            "WHERE application_name = %s AND pid <> pg_backend_pid()",
+            (application_name,),
+        )
+        return len(cur.fetchall())
+
+
 def until(predicate: Callable[[], Any], what: str, timeout: float = SETTLE) -> Any:
     """Poll `predicate` against a deadline. Returns its first truthy value.
 
@@ -360,9 +408,19 @@ def running(worker: Worker):
     finally:
         stop.set()
         thread.join(timeout=SETTLE)
-        assert not thread.is_alive(), (
-            f"worker {worker.worker_id} did not return after stop was set"
-        )
+        alive = thread.is_alive()
+
+    # ⚠ OUTSIDE THE `finally`, DELIBERATELY. An exception raised in a
+    # `finally` REPLACES the one already propagating, so asserting there
+    # hid every real failure inside the block behind "the worker did not
+    # return" -- which is usually a CONSEQUENCE of the real failure, since
+    # a test that fails mid-block never releases the handler it is
+    # blocking. Cost two debugging rounds while these tests were written.
+    # Code after a try/finally does not run when the body raised, which is
+    # exactly the behaviour wanted here.
+    assert not alive, (
+        f"worker {worker.worker_id} did not return after stop was set"
+    )
 
 
 class Probe:
@@ -410,10 +468,12 @@ class Recorder:
         self.probe = probe
         self.job_ids: List[str] = []
         self.saw_abort_at_return: Optional[bool] = None
+        self.saw_shutdown_at_return: Optional[bool] = None
 
     def __call__(self, ctx) -> Optional[Probe]:
         self.job_ids.append(str(ctx.job.id))
         self.saw_abort_at_return = ctx.should_abort()
+        self.saw_shutdown_at_return = ctx.is_shutting_down()
         return self.probe
 
 
@@ -1142,13 +1202,13 @@ def test_a_dead_installation_abandons_the_job(conn, dsn, with_two_orgs, shape):
 
 
 def test_a_shutdown_finishes_the_job_in_flight(conn, dsn, with_two_orgs):
-    """`stop` asks; it does not interrupt.
+    """`stop` asks; it does not interrupt. A handler that FINISHES is completed.
 
-    The handler is told through `should_abort()` -- one signal for "the
-    lease is gone" and "the worker is going away" -- but a handler that
-    finishes anyway gets its job COMPLETED. Killing it mid-write is what
-    the lease and the sweeper exist to recover from, and it is not
-    something a graceful shutdown should cause.
+    ⚠ AND `should_abort()` STAYS FALSE THROUGHOUT, which is the half PR
+    #42's review made the plan enforce. The job is still ours during a
+    shutdown; only `is_shutting_down()` goes true. Folding the two together
+    is what let an unfinished handler's bare return be written `completed`
+    -- see the `Unfinished` test below for the other side of the split.
     """
     org, _ = with_two_orgs
     link_installation(conn, org)
@@ -1174,11 +1234,395 @@ def test_a_shutdown_finishes_the_job_in_flight(conn, dsn, with_two_orgs):
         may_finish.set()
         until(lambda: job_row(conn, job_id)["state"] == "completed", "the last job")
 
-    assert handler.saw_abort_at_return is True, (
-        "should_abort() must be true while the worker is shutting down"
+    assert handler.saw_shutdown_at_return is True, (
+        "is_shutting_down() must be true once stop is set"
+    )
+    assert handler.saw_abort_at_return is False, (
+        "should_abort() means 'this job is not ours'; a shutdown does not "
+        "take the job away, and conflating the two is what wrote `completed` "
+        "over unfinished work"
     )
     assert probe.calls == 1
     assert runs_for(conn, org.id, probe.commit_sha)
+    assert repo_row(conn, org.id, org.repo_id)["sync_state"] == "synced"
+
+
+def test_a_handler_that_stops_early_on_shutdown_defers_instead_of_completing(
+    conn, dsn, with_two_orgs
+):
+    """`Unfinished` is how a handler says "I stopped part-way".
+
+    ⚠ THE ROW THIS PREVENTS was built by PR #42's review against a real
+    database, with a Phase-22-shaped handler that stopped after `clone`:
+
+        state=completed  last_stage=parse  sync_state=synced
+
+    -- a job row contradicting itself, `last_synced_at` stamped, the UI
+    saying the repository is ingested, and the partial unique index freed
+    so nothing re-queues it. A bare `return` means "done"; only a raise can
+    mean anything else.
+
+    ⚠ AND IT DEFERS RATHER THAN FAILS, which is the second half. `fail`
+    consumes an attempt, so five operator restarts spread across an
+    ingest's retries would walk a HEALTHY repository to `dead` -- the same
+    shape `defer` exists to prevent for a suspended installation.
+    `attempts == 0` below is that property.
+    """
+    org, _ = with_two_orgs
+    link_installation(conn, org)
+    job_id = seed_job(conn, org)
+    backdate(conn, job_id)
+    assert_only_claimable(conn, job_id)
+
+    in_handler = threading.Event()
+    probe = Probe(org.repo_id, f"sha-unfin-{job_id[:8]}")
+    stages: List[str] = []
+
+    def winds_down(ctx):
+        ctx.report_progress("clone")
+        stages.append("clone")
+        in_handler.set()
+        while not ctx.is_shutting_down():
+            time.sleep(0.02)
+        # Everything the runtime must NOT do is expressed by what this
+        # handler does NOT do: it never returns `probe`.
+        raise Unfinished("worker shutting down after clone")
+
+    with running(build_worker(dsn, {"full_ingest": winds_down})) as stop:
+        assert in_handler.wait(timeout=SETTLE), "the handler never started"
+        stop.set()
+        row = job_when(
+            conn,
+            job_id,
+            lambda r: r["lease_owner"] is None and r["state"] != "running",
+            "the job to be handed back",
+        )
+
+    assert stages == ["clone"]
+    assert row["state"] == "queued", (
+        f"an unfinished job must go back in the queue, not to {row['state']!r}"
+    )
+    assert row["attempts"] == 0, (
+        "the deferral must hand the attempt back; a `fail` here would walk a "
+        "healthy repository to `dead` after max_attempts restarts"
+    )
+    assert row["last_stage"] == "clone", "the breadcrumb survives the deferral"
+    assert "shutting down" in (row["last_error"] or "")
+    assert probe.calls == 0
+    assert runs_for(conn, org.id, probe.commit_sha) == []
+    # ⚠ `syncing`, NOT `pending` -- measured, and right. The handler DID
+    # start, so `mark_started` projected `syncing`, and `defer` writes no
+    # projection at all (21-05, deliberately). The repository is therefore
+    # left exactly where a CRASHED worker leaves it, which is the truth:
+    # the job is claimable this instant and the work is about to resume.
+    # What matters is the thing below it.
+    repo = repo_row(conn, org.id, org.repo_id)
+    assert repo["sync_state"] == "syncing"
+    assert repo["sync_state"] != "synced"
+    assert repo["last_synced_at"] is None, (
+        "nothing may stamp last_synced_at for an ingest that did not finish"
+    )
+
+
+def test_a_worker_whose_connection_dies_reconnects_and_claims_the_next_job(
+    conn, superuser_conn, dsn, with_two_orgs
+):
+    """psycopg2 connections do not self-heal, and the loop's was opened once.
+
+    ⚠ REPRODUCED BY PR #42's REVIEW before it was fixed: a
+    `pg_terminate_backend` on the loop's backend produced 44 identical
+    error lines in 15 seconds, the next job was never claimed, and the
+    process stayed alive -- so no `restart:` policy fired and the container
+    looked healthy while its queue backed up. A Postgres restart, a
+    failover, or an idle-connection reaper in front of the database is
+    enough to cause it.
+
+    The heartbeat already reconnected per job; this is the same property
+    for the connection that could not heal.
+    """
+    org, other = with_two_orgs
+    link_installation(conn, org)
+    link_installation(conn, other)
+
+    first = seed_job(conn, org)
+    backdate(conn, first)
+    assert_only_claimable(conn, first)
+
+    handler = Recorder(None)
+
+    with running(build_worker(dsn, {"full_ingest": handler})):
+        until(lambda: job_row(conn, first)["state"] == "completed", "the first job")
+
+        # Kill the loop's backend, and only it. `application_name` is what
+        # tells the two connections apart -- the heartbeat's is tagged
+        # separately and is not running right now anyway.
+        killed = kill_backends(superuser_conn, "rag-doc-worker")
+        assert killed >= 1, (
+            "no loop backend was killed, so this test would pass without "
+            "exercising the reconnect at all"
+        )
+
+        second = seed_job(conn, other)
+        backdate(conn, second)
+        until(
+            lambda: job_row(conn, second)["state"] == "completed",
+            "the worker to reconnect and claim the next job",
+        )
+
+    assert handler.job_ids == [first, second]
+
+
+def test_a_heartbeat_whose_connection_dies_reopens_it_and_the_job_survives(
+    conn, superuser_conn, dsn, with_two_orgs
+):
+    """One dropped heartbeat connection must not cost a whole ingest.
+
+    ⚠ THIS IS THE CASE THE GIVE-UP RULE BELOW MUST NOT SWALLOW, and it is
+    why the heartbeat reopens IN PLACE rather than only at the next job.
+    A single dropped connection -- a failover, a reaper -- is survivable:
+    the next beat notices the socket is dead, reconnects and carries on,
+    the lease is never allowed to expire, and the handler is never
+    disturbed. Giving up on the first `InterfaceError` would throw away
+    minutes of clone/parse/embed for a blip.
+    """
+    org, _ = with_two_orgs
+    link_installation(conn, org)
+    job_id = seed_job(conn, org)
+    backdate(conn, job_id)
+    assert_only_claimable(conn, job_id)
+
+    started_work = threading.Event()
+    may_finish = threading.Event()
+    observed: dict = {}
+    probe = Probe(org.repo_id, f"sha-hbheal-{job_id[:8]}")
+
+    def patient(ctx):
+        started_work.set()
+        may_finish.wait(timeout=SETTLE)
+        observed["aborted"] = ctx.should_abort()
+        return probe
+
+    with running(build_worker(dsn, {"full_ingest": patient})):
+        assert started_work.wait(timeout=SETTLE), "the handler never started"
+        # ⚠ WAIT FOR A BEAT TO LAND BEFORE KILLING, not merely for the
+        # claim. The lease is set by `claim`, and the heartbeat thread
+        # opens its connection a moment LATER -- so a kill issued as soon
+        # as `lease_expires_at` is non-NULL races the connection into
+        # existence and hits nothing. Measured: it killed 0 backends about
+        # half the time, and the test then proved nothing while passing
+        # its own `killed >= 1` check in the other half.
+        claimed_at = until(
+            lambda: job_row(conn, job_id)["lease_expires_at"], "the claim"
+        )
+        beaten = until(
+            lambda: (
+                row["lease_expires_at"]
+                if (row := job_row(conn, job_id))["lease_expires_at"] > claimed_at
+                else None
+            ),
+            "the first heartbeat, so its connection exists to be killed",
+        )
+        killed = kill_backends(superuser_conn, "rag-doc-worker-heartbeat")
+        assert killed >= 1, "no heartbeat backend was killed"
+        # The beat that follows the kill has to reconnect to land at all,
+        # so a lease that moves forward again IS the reconnect.
+        until(
+            lambda: job_row(conn, job_id)["lease_expires_at"] > beaten,
+            "the heartbeat to reconnect and extend the lease again",
+        )
+        may_finish.set()
+        until(lambda: job_row(conn, job_id)["state"] == "completed", "completion")
+
+    assert observed["aborted"] is False, (
+        "a single dropped heartbeat connection aborted the handler; it is "
+        "supposed to reconnect and carry on"
+    )
+    assert probe.calls == 1
+
+
+def test_a_heartbeat_that_cannot_beat_for_a_full_lease_gives_up(
+    conn, superuser_conn, dsn, with_two_orgs
+):
+    """A heartbeat that cannot land must stop the handler, not beat into the void.
+
+    ⚠ REPRODUCED BY PR #42's REVIEW: kill the heartbeat's backend mid-job
+    and the lease expires underneath the running handler while
+    `should_abort()` stays False. The fence stops the corruption -- the
+    stale `complete` is refused -- so the cost is a whole ingest thrown
+    away and then duplicated, unbounded in duration. For Phase 22 that is
+    minutes of clone, parse and embed against a token-authenticated remote.
+
+    The rule that fires is the clock one: once a full `lease` has passed
+    with no beat landing, the lease has demonstrably expired and somebody
+    else may already hold the job.
+
+    ⚠ HOW THE FAILURE IS MADE PERSISTENT, and why a kill alone will not do
+    it any more: the heartbeat now REOPENS its connection (the test above),
+    so one kill heals within a beat. The outage has to survive reconnection
+    to exercise the give-up rule at all.
+
+    Revoking `UPDATE` on `ingestion_jobs` from `rag_doc_app` does that: the
+    connection comes back and the statement still cannot run. It bites
+    because the worker's sessions authenticate as the superuser and then
+    drop to `rag_doc_app` through the DSN's `options=-c role=...`, and
+    `SET ROLE` to a non-superuser gives up superuser privilege -- the same
+    property the whole isolation harness rests on.
+
+    ⚠ TWO LEVERS WERE TRIED AND MEASURED USELESS FIRST, both because
+    SUPERUSERS ARE EXEMPT: `REVOKE rag_doc_app FROM isolation` (a superuser
+    may `SET ROLE` to anything, membership or not, so every reconnect
+    succeeded) and a `CONNECTION LIMIT` (not enforced for superusers).
+    """
+    org, _ = with_two_orgs
+    link_installation(conn, org)
+    job_id = seed_job(conn, org)
+    backdate(conn, job_id)
+    assert_only_claimable(conn, job_id)
+
+    beating = threading.Event()
+    observed: dict = {}
+    patience = 25.0
+
+    def cooperative(ctx):
+        beating.set()
+        started = time.monotonic()
+        while not ctx.should_abort() and time.monotonic() - started < patience:
+            time.sleep(0.02)
+        observed["aborted"] = ctx.should_abort()
+        observed["elapsed"] = time.monotonic() - started
+        raise Unfinished("the lease went away")
+
+    try:
+        with running(build_worker(dsn, {"full_ingest": cooperative})):
+            assert beating.wait(timeout=SETTLE), "the handler never started"
+            # Let one beat land first: `last_ok` must be a real timestamp
+            # rather than the start of the job, and the heartbeat's
+            # connection must exist before there is anything to kill.
+            claimed_at = until(
+                lambda: job_row(conn, job_id)["lease_expires_at"], "the claim"
+            )
+            until(
+                lambda: job_row(conn, job_id)["lease_expires_at"] > claimed_at,
+                "one heartbeat to land before the outage",
+            )
+            with superuser_conn.cursor() as cur:
+                cur.execute("REVOKE UPDATE ON ingestion_jobs FROM rag_doc_app")
+            # Kill it too, so the path under test is the reviewer's:
+            # the connection dies, it reconnects, and the beat still
+            # cannot land.
+            killed = kill_backends(superuser_conn, "rag-doc-worker-heartbeat")
+            assert killed >= 1, "no heartbeat backend was killed"
+            until(lambda: observed.get("aborted") is not None, "the handler to stop")
+    finally:
+        with superuser_conn.cursor() as cur:
+            cur.execute("GRANT UPDATE ON ingestion_jobs TO rag_doc_app")
+
+    assert observed["aborted"] is True, (
+        "the heartbeat could not land for a full lease and the handler was "
+        "never told; it would have kept working on a lease it no longer held"
+    )
+    # The clock rule fires one lease after the last beat that landed, and
+    # the handler notices within a heartbeat interval of that.
+    bound = LEASE.total_seconds() + 4 * HEARTBEAT.total_seconds() + 8.0
+    assert observed["elapsed"] < bound, (
+        f"the handler took {observed['elapsed']:.1f}s to be told, and the "
+        f"lease is only {LEASE.total_seconds()}s"
+    )
+
+
+def test_a_handler_that_overruns_max_job_duration_is_cut_loose(
+    conn, dsn, with_two_orgs
+):
+    """A hung handler must stop having its lease renewed for it.
+
+    Without a bound the heartbeat extends the lease forever: nothing can
+    reclaim the job, the repository sits `syncing`, and this worker's
+    sweeper -- which lives in the same loop -- never runs again either.
+    21-07's admin endpoint would show a job that looks perfectly alive.
+
+    The default is `None` (no bound) because the right number is a multiple
+    of a typical ingest and nothing has ingested end to end yet. The
+    mechanism is what this test pins; Phase 22 picks the number.
+    """
+    org, _ = with_two_orgs
+    link_installation(conn, org)
+    job_id = seed_job(conn, org)
+    backdate(conn, job_id)
+    assert_only_claimable(conn, job_id)
+
+    observed: dict = {}
+    patience = 25.0
+
+    def hangs(ctx):
+        started = time.monotonic()
+        while not ctx.should_abort() and time.monotonic() - started < patience:
+            time.sleep(0.02)
+        observed["aborted"] = ctx.should_abort()
+        observed["elapsed"] = time.monotonic() - started
+        raise Unfinished("cut loose")
+
+    worker = build_worker(
+        dsn,
+        {"full_ingest": hangs},
+        max_job_duration=timedelta(seconds=1),
+    )
+    with running(worker):
+        until(lambda: observed.get("aborted") is not None, "the handler to stop")
+
+    assert observed["aborted"] is True
+    assert observed["elapsed"] < 10.0, (
+        f"max_job_duration was 1s and the handler ran {observed['elapsed']:.1f}s"
+    )
+
+
+def test_progress_fields_are_redacted_before_they_reach_the_column(
+    conn, dsn, with_two_orgs
+):
+    """`last_stage` and `progress` are handler-supplied and 21-07 hands them back.
+
+    ⚠ EVERY OTHER HANDLER-SUPPLIED STRING WAS ALREADY REDACTED and these
+    two were not: `last_error` goes through `sanitize_error`, and `defer`'s
+    and `abandon`'s reasons through `_sanitize_text`. `last_stage` is bare
+    `TEXT` with **no `CHECK`** (000014), so the documented
+    `clone|parse|embed|store` enum is a comment and nothing enforces it,
+    and `progress`'s documented `current_file` is exactly the shape a clone
+    URL ends up in.
+
+    Keys as well as values, because a redaction with a hole in it is worse
+    than none: it gets trusted.
+    """
+    org, _ = with_two_orgs
+    link_installation(conn, org)
+    job_id = seed_job(conn, org)
+    backdate(conn, job_id)
+    assert_only_claimable(conn, job_id)
+
+    clone_url = f"https://x-access-token:{FAKE_TOKEN}@github.com/acme/widgets.git"
+
+    def leaky(ctx):
+        ctx.report_progress(
+            f"clone {clone_url}",
+            {
+                "current_file": clone_url,
+                "files_parsed": 7,
+                "nested": [clone_url, {"deeper": clone_url}],
+                clone_url: "a key, too",
+            },
+        )
+        return None
+
+    with running(build_worker(dsn, {"full_ingest": leaky})):
+        until(lambda: job_row(conn, job_id)["state"] == "completed", "completion")
+
+    row = job_row(conn, job_id)
+    written = f"{row['last_stage']} {row['progress']}"
+    assert FAKE_TOKEN not in written, f"the token reached the column: {written}"
+    assert row["last_stage"].startswith("clone ")
+    assert "[REDACTED]" in row["last_stage"]
+    assert row["progress"]["files_parsed"] == 7, "counters must survive intact"
+    assert "[REDACTED]" in row["progress"]["current_file"]
+    assert FAKE_TOKEN not in str(row["progress"]["nested"])
+    assert not any(FAKE_TOKEN in key for key in row["progress"])
 
 
 def test_a_job_type_with_no_handler_is_failed_rather_than_left_running(

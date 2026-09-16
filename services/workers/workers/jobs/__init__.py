@@ -18,8 +18,10 @@ something that can do it.
 from workers.jobs.backoff import next_run_after_delay
 from workers.jobs.handlers import REGISTRY
 from workers.jobs.runtime import (
+    DatabaseUnavailable,
     Handler,
     JobContext,
+    Unfinished,
     UnknownJobType,
     Worker,
     WriteResults,
@@ -41,11 +43,13 @@ from workers.jobs.transitions import (
 )
 
 __all__ = [
+    "DatabaseUnavailable",
     "Handler",
     "Job",
     "JobContext",
     "LeaseLost",
     "REGISTRY",
+    "Unfinished",
     "UnknownJobType",
     "Worker",
     "WriteResults",

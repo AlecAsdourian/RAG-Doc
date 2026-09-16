@@ -96,13 +96,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # cannot be turned into an import error by anything the runtime pulls
     # in. The refusal has to survive a broken dependency to be worth
     # having.
-    from workers.jobs.runtime import Worker
+    from workers.jobs.runtime import DatabaseUnavailable, Worker
+    from workers.jobs.transitions import sanitize_error
 
     stop = threading.Event()
     _install_signal_handlers(stop)
 
     worker = Worker(dsn, dict(REGISTRY))
-    worker.run(stop)
+    try:
+        worker.run(stop)
+    except DatabaseUnavailable as exc:
+        # ⚠ EXIT 1, AND THE DIFFERENCE FROM 2 IS THE POINT. 2 means "this
+        # build is configured not to run", which no restart can fix. 1
+        # means "this process could not do its job" -- the same code an
+        # unhandled crash produces, and the one a `restart: on-failure`
+        # policy is there for. PR #42's review found the worker staying
+        # alive forever on a dead connection, producing no exit code at
+        # all, so nothing ever restarted it.
+        logger.error("%s", sanitize_error(exc))
+        return 1
     return 0
 
 

@@ -22,16 +22,19 @@ Until `stop` is set:
      write anything; it is queue-wide and cross-tenant by construction.
   2. **Claim.** Nothing claimable -> wait `idle_poll`, jittered, or until
      `stop`.
-  3. **No handler for this job type** -> `fail` it with `UnknownJobType`.
+  3. **Check the installation**, per the table below, BEFORE anything
+     that could write a `sync_state` projection.
+  4. **No handler for this job type** -> `fail` it with `UnknownJobType`.
      Defensive only: `workers/__main__` refuses to start with an empty
      registry, so a deployed worker cannot reach this.
-  4. **Check the installation**, per the table below.
-  5. **`mark_started`** -- and not before step 4. See the table.
+  5. **`mark_started`** -- and not before step 3. See the table.
   6. **Start the heartbeat thread**, on ITS OWN CONNECTION.
   7. **Run the handler.** Returned normally -> `complete` with whatever
      `write_results` it gave back, UNLESS the lease was lost meanwhile, in
-     which case write nothing. Raised -> `fail`. `LeaseLost` from either
-     -> log a warning and carry on; the job belongs to someone else now.
+     which case write nothing. Raised `Unfinished` -> `defer` with the
+     attempt handed back. Raised anything else -> `fail`. `LeaseLost` from
+     either -> log a warning and carry on; the job belongs to someone else
+     now.
   8. **Stop the heartbeat thread** and join it.
 
 =====================================================================
@@ -85,6 +88,13 @@ TRANSACTION. The heartbeat's commit would commit whatever the handler had
 half-written on the main connection, or its rollback would discard it. The
 thread therefore opens its own connection and closes it when the job ends.
 
+It also GIVES UP rather than beating into the void: once a full lease has
+passed with no beat landing (or `MAX_HEARTBEAT_FAILURES` in a row), the
+lease has demonstrably expired, so the abort flag goes up and the handler
+stops working on a job somebody else may already hold. And it reopens its
+connection in place, so a drop heals within the job rather than only at the
+next one.
+
 The heartbeat's `UPDATE` carries the SAME two-part fence as every terminal
 write, `lease_owner = %s AND state = 'running'`, and that is what detects a
 supersede: `supersedeLiveSQL` deliberately leaves the lease attached to the
@@ -100,13 +110,27 @@ SHUTDOWN
 `run(stop)` returns after the job in flight reaches a terminal write. It
 never abandons a job mid-write, and it never kills a handler.
 
-`should_abort()` is true while the worker is shutting down as well as when
-the lease is lost, because a handler wants ONE signal meaning "wind down".
-⚠ THE TWO ARE NOT THE SAME TO THE WORKER, and the completion decision uses
-only the lease: a handler that finishes during a shutdown gets its job
-COMPLETED ("finish the current job"), while a handler that returns without
-finishing must RAISE, so the attempt is recorded and retried rather than a
-half-done job being written `completed`.
+⚠ TWO QUESTIONS, TWO METHODS, AND THE FIRST CUT CONFLATED THEM.
+
+  - `should_abort()` -- **this job is not ours any more.** The lease is
+    gone. The worker will write nothing whatever the handler does.
+  - `is_shutting_down()` -- **the worker is going away; the job is still
+    ours.** What gets written depends entirely on how the handler ends.
+
+Three endings, and a handler picks one:
+
+  return              done            -> `complete`
+  raise Unfinished    stopped early   -> `defer`, attempt handed back
+  raise anything else failed          -> `fail`, attempt consumed
+
+The first cut folded shutdown into `should_abort()` and told handlers, in a
+docstring, to raise if they had not finished. PR #42's review reproduced
+what that costs: a Phase-22-shaped handler that stopped after `clone` was
+written `state=completed, last_stage=parse, sync_state=synced` -- a row
+that contradicts itself, a UI that says the repository is ingested, and a
+freed unique index so nothing re-queues it. `Unfinished` makes that
+unrepresentable, and `defer` rather than `fail` means an operator's
+restarts cannot walk a healthy repository towards `dead`.
 
 =====================================================================
 WORKER-POOL SIZING (Phase 22 measures it)
@@ -131,6 +155,7 @@ from datetime import timedelta
 from typing import Any, Callable, Dict, Mapping, Optional
 
 import psycopg2
+from psycopg2.extensions import TRANSACTION_STATUS_UNKNOWN
 from psycopg2.extras import Json, RealDictCursor
 
 from workers.db import require_tenant
@@ -138,6 +163,7 @@ from workers.jobs.transitions import (
     Job,
     LeaseLost,
     _interval,
+    _sanitize_text,
     _unscoped,
     abandon,
     claim,
@@ -171,8 +197,12 @@ logger = logging.getLogger(__name__)
 #: short lease.
 DEFAULT_LEASE = timedelta(minutes=5)
 
-#: One twelfth of the lease, so four consecutive heartbeats may be lost
-#: before the job is reclaimable. Also the sweeper's schedule: the sweep is
+#: ⚠ ONE FIFTH OF THE LEASE -- 60s into 300s. (The first cut said "one
+#: twelfth", which would be 25 s; PR #42's review caught it. The sentence
+#: matters because it is what somebody re-tuning these numbers would use to
+#: re-derive them.) Four consecutive heartbeats may therefore be lost
+#: before the job becomes reclaimable: beats due at 60, 120, 180 and 240
+#: all miss, and the lease expires at 300. Also the sweeper's schedule: the sweep is
 #: two indexed `UPDATE`s and there is no reason to give it a timer of its
 #: own.
 DEFAULT_HEARTBEAT = timedelta(seconds=60)
@@ -193,6 +223,29 @@ DEFAULT_SUSPENDED_DEFER = timedelta(minutes=60)
 #: ±20% on the idle poll, so a pool of workers restarted together does not
 #: stay in lockstep on the claim query.
 IDLE_POLL_JITTER = 0.2
+
+#: `application_name` for the two connections a busy worker holds. They
+#: fail differently and they recover differently, so `pg_stat_activity`
+#: should say which is which -- and it is what lets a test kill exactly one
+#: of them.
+LOOP_APPLICATION_NAME = "rag-doc-worker"
+HEARTBEAT_APPLICATION_NAME = "rag-doc-worker-heartbeat"
+
+#: The reconnect backoff for the loop's connection: 1 s, doubling, capped.
+#: Bounded rather than indefinite, because a worker that cannot reach the
+#: database is not doing anything a supervisor could not do better by
+#: restarting it.
+RECONNECT_BACKOFF_BASE = timedelta(seconds=1)
+RECONNECT_BACKOFF_MAX = timedelta(seconds=30)
+MAX_RECONNECT_ATTEMPTS = 10
+
+#: Consecutive heartbeat failures after which the lease is assumed lost,
+#: regardless of the clock. The clock rule below is the principled one --
+#: once a full lease has passed with no beat landing, the lease has
+#: demonstrably expired -- and this is the backstop for a deployment that
+#: configures a very long lease, where "a full lease" could be an hour of
+#: a handler working on a job somebody else already owns.
+MAX_HEARTBEAT_FAILURES = 5
 
 #: How long `run` waits for the heartbeat thread to notice the job ended.
 #: It is a bound on a thread that only ever waits on an Event and runs one
@@ -264,6 +317,65 @@ RETURNING id"""
 # =====================================================================
 
 
+class DatabaseUnavailable(RuntimeError):
+    """Reconnection kept failing. The worker gives up so it can be restarted.
+
+    ⚠ IT IS RAISED OUT OF `run`, DELIBERATELY. A worker that cannot reach
+    the database is doing nothing, and a process that stays up doing
+    nothing produces no exit code, so no `restart:` policy fires and the
+    container looks healthy while its queue backs up. `__main__` turns this
+    into a non-zero exit, which is the only thing a supervisor can act on.
+    """
+
+
+def _is_dead(conn: Any) -> bool:
+    """True when this connection can no longer be used, for either reason.
+
+    `closed` covers the ordinary case. `TRANSACTION_STATUS_UNKNOWN` is the
+    one that bites: it is what psycopg2 reports for a connection whose
+    BACKEND is gone but whose object has not been closed, and it is what
+    `_unscoped`'s idle precondition used to misread as "you are inside a
+    transaction" -- sending the operator to the wrong file.
+    """
+    if conn.closed:
+        return True
+    try:
+        return conn.info.transaction_status == TRANSACTION_STATUS_UNKNOWN
+    except Exception:  # noqa: BLE001 - asking a dead object is answer enough
+        return True
+
+
+class Unfinished(Exception):
+    """A handler stopped early WITHOUT finishing. Not a failure, not a success.
+
+    ⚠ RAISE THIS TO WIND DOWN. It is the only way to stop a job part-way
+    and have the row say so. The worker `defer`s it: `DEFER_SQL` hands the
+    claim's attempt back, writes no `sync_state`, and puts the job straight
+    back in the queue for whoever claims next.
+
+    A bare `return` means "this job is DONE" and gets `complete` --
+    `state = 'completed'`, `sync_state = 'synced'`, `last_synced_at`
+    stamped and the partial unique index freed, so nothing re-queues it.
+    PR #42's review reproduced exactly that against a real database with a
+    Phase-22-shaped handler that stopped after `clone`:
+
+        state=completed  last_stage=parse  sync_state=synced
+
+    a row that contradicts itself and a UI that says the repository is
+    ingested. `raise Unfinished(...)` is what makes that unrepresentable.
+
+    ⚠ AND NOT `fail`, WHICH IS WHY THIS EXISTS RATHER THAN "just raise
+    something". A failure consumes an attempt and applies the backoff, so
+    five operator-initiated restarts spread across an ingest's retries walk
+    a HEALTHY repository to `dead` -- the same shape `defer` exists to
+    prevent for a suspended installation. Nothing went wrong here; the
+    worker is going away.
+
+    The message becomes the job's `last_error`, sanitized like every other
+    one, so 21-07 can say why the job went back in the queue.
+    """
+
+
 class UnknownJobType(Exception):
     """No handler is registered for a claimed job's `job_type`.
 
@@ -287,11 +399,47 @@ WriteResults = Callable[[Any], None]
 #: A job handler. Takes the context, does the work, and returns its
 #: `write_results` callback -- or None.
 #:
-#: ⚠ A HANDLER THAT STOPS EARLY MUST RAISE, NOT RETURN. Returning means
-#: "the job is done"; the worker cannot tell an unfinished return from a
-#: finished one, and a shutdown is not a reason to write `completed` over
-#: work that did not happen. Raising records the attempt and retries it.
+#: THREE ENDINGS, and each of them writes something different:
+#:
+#:   return        the job is DONE          -> `complete`
+#:   raise Unfinished   stopped part-way    -> `defer`, attempt handed back
+#:   raise anything else    it FAILED       -> `fail`, attempt consumed
+#:
+#: ⚠ THE FIRST TWO ARE THE ONES THAT GET CONFUSED. The worker cannot tell
+#: an unfinished return from a finished one, so a bare `return` during a
+#: shutdown writes `completed` over work that did not happen. `Unfinished`
+#: is the difference; see its docstring for the row PR #42's review
+#: produced without it.
 Handler = Callable[["JobContext"], Optional[WriteResults]]
+
+
+def _sanitize_progress(value: Any) -> Any:
+    """Redact the string leaves of a `progress` value, keys included.
+
+    `progress` is handler-supplied JSON that 21-07 hands back over HTTP,
+    and its documented `current_file` is exactly where a clone URL carrying
+    an installation token ends up. `_sanitize_text` already knows every
+    shape worth redacting (21-05 widened it to all six GitHub prefixes,
+    JWTs and PEM blocks specifically because this plan puts them in the
+    worker's reach); this walks the structure so it reaches them.
+
+    ⚠ KEYS TOO. A handler that builds `{"<the failing url>": 3}` is not
+    the obvious shape, but nothing stops it, and a redaction with a hole in
+    it is worse than none because it is trusted.
+
+    Numbers, booleans and `None` are returned unchanged -- `files_parsed`
+    and `chunks_embedded` are the point of the column.
+    """
+    if isinstance(value, str):
+        return _sanitize_text(value)
+    if isinstance(value, dict):
+        return {
+            _sanitize_text(str(key)): _sanitize_progress(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_progress(item) for item in value]
+    return value
 
 
 def _stamp(value: Any) -> str:
@@ -338,22 +486,42 @@ class JobContext:
         self._stopping = stopping
 
     def should_abort(self) -> bool:
-        """True when the handler should stop and return as soon as it can.
+        """True when THIS JOB IS NO LONGER OURS. Stop; nothing will be written.
 
-        Two causes, one signal:
+        One cause, and only one: the heartbeat's fenced `UPDATE` matched no
+        row, so the job was superseded (a relink, L4) or its lease expired
+        and someone else reclaimed it. `report_progress` sets it too, for
+        the same reason and by the same fence.
 
-        - **The lease is gone.** The heartbeat's fenced `UPDATE` matched no
-          row, so this job was superseded (a relink, L4) or reclaimed. The
-          worker will write NOTHING when the handler returns, so every
-          second spent after this is wasted.
-        - **The worker is shutting down.** SIGTERM arrived.
+        Whatever the handler does next, the worker writes **nothing** --
+        not a completion, not a failure, not a deferral. So every second
+        spent after this is wasted, and a bare `return` is as safe as a
+        raise.
 
-        ⚠ A HANDLER THAT RETURNS BECAUSE OF THIS, WITHOUT HAVING FINISHED,
-        MUST RAISE INSTEAD. See `Handler`. On the lease-lost path it makes
-        no difference -- the worker writes nothing either way -- but on the
-        shutdown path a bare return is indistinguishable from success.
+        ⚠ SHUTDOWN IS A DIFFERENT QUESTION AND HAS A DIFFERENT METHOD.
+        `is_shutting_down()`. The first cut folded the two together, on the
+        argument that a handler wants one signal; PR #42's review ruled
+        against it and was right. The job IS still ours during a shutdown,
+        so what the worker writes depends entirely on whether the handler
+        finished -- and a method called `should_abort()` reads as "stop
+        now", which is precisely the wrong thing to do silently when the
+        answer will be written down as `completed`.
         """
-        return self._lease_lost.is_set() or self._stopping.is_set()
+        return self._lease_lost.is_set()
+
+    def is_shutting_down(self) -> bool:
+        """True once SIGTERM/SIGINT has arrived. The job is still OURS.
+
+        A handler may ignore this and finish -- the worker will not
+        interrupt it, and the job is completed normally ("finish the
+        current job"). If it would rather stop, it must
+        `raise Unfinished(...)`, which defers the job with its attempt
+        handed back so the replacement worker picks it straight up.
+
+        ⚠ RETURNING EARLY BECAUSE OF THIS WRITES `completed`. See
+        `Unfinished`.
+        """
+        return self._stopping.is_set()
 
     def report_progress(self, stage: str, progress: Optional[dict] = None) -> bool:
         """Record coarse progress on the job row. Fenced. Returns whether it landed.
@@ -364,26 +532,45 @@ class JobContext:
 
         ⚠ IT RUNS ON THE WORKER'S MAIN CONNECTION, which is idle for as
         long as a handler is running: every transition opens and closes its
-        own transaction, and the handler runs between two of them. That is
-        checked rather than assumed -- `_unscoped` refuses a connection
-        that is not idle -- so a future caller that gets this wrong fails
-        loudly instead of silently committing someone else's work.
+        own transaction, and the handler runs between two of them.
 
-        ⚠ NO PAYLOAD-SHAPED VALUES. `progress` is written to a column an
-        admin endpoint hands back, so it is for counters and file paths,
-        not for anything a token could be hiding in.
+        ⚠ AND IF A FUTURE HANDLER PARALLELISES AND CALLS THIS FROM TWO
+        THREADS, WHAT REFUSES IT IS NOT THE IDLE PRECONDITION. The first
+        version of this docstring said it was. **Measured by PR #42's
+        review, on a real connection:** psycopg2 begins its transaction
+        LAZILY, so after one `_unscoped` scope has been entered and before
+        it executes, `transaction_status` is still `IDLE` and a second
+        scope sails straight past the check. What actually refuses it is
+        psycopg2's own `with conn:` reentrancy guard, one line later:
+        `ProgrammingError: the connection cannot be re-entered recursively`.
+
+        The conclusion is the same and is worth having stated correctly:
+        **this failure mode is LOUD, not silent.** Two concurrent scopes on
+        one connection raise; they do not quietly commit each other's work.
+        Trust the reentrancy guard, not the idle check.
+
+        ⚠ BOTH ARGUMENTS ARE REDACTED BEFORE THEY ARE WRITTEN. `last_stage`
+        is bare `TEXT` (000014) with **no `CHECK`**, so the documented
+        `clone|parse|embed|store` enum is a comment and nothing enforces
+        it; `progress`'s documented `current_file` is exactly the shape a
+        clone URL ends up in --
+        `https://x-access-token:ghs_...@github.com/org/repo.git`. 21-07
+        hands both columns back over HTTP, so they go through the same
+        `_sanitize_text` that `last_error` and `defer`/`abandon`'s reasons
+        do. `progress` is walked to its string leaves, keys included.
 
         Returns:
             True if the row was updated; False if the lease was lost, in
             which case the abort flag is raised so `should_abort()` tells
             the handler the same thing.
         """
+        safe_stage = _sanitize_text(stage)
         with _unscoped(self._conn) as cur:
             cur.execute(
                 PROGRESS_SQL,
                 (
-                    stage,
-                    Json(progress) if progress is not None else None,
+                    safe_stage,
+                    Json(_sanitize_progress(progress)) if progress is not None else None,
                     str(self.job.id),
                     self.worker_id,
                 ),
@@ -395,7 +582,7 @@ class JobContext:
                 "job %s: progress report '%s' matched no row -- the lease is "
                 "not ours (reclaimed or superseded) worker=%s repo=%s",
                 self.job.id,
-                stage,
+                safe_stage,
                 self.worker_id,
                 self.job.repository_id,
             )
@@ -405,7 +592,7 @@ class JobContext:
         logger.info(
             "job %s: stage=%s org=%s repo=%s attempt=%d/%d worker=%s",
             self.job.id,
-            stage,
+            safe_stage,
             self.job.organization_id,
             self.job.repository_id,
             self.job.attempts,
@@ -439,6 +626,17 @@ class Worker:
         lease, heartbeat, idle_poll, suspended_defer: see the module
             constants. They are parameters so that tests can run in
             seconds; nothing in production passes them.
+        max_job_duration: how long a handler may run before the heartbeat
+            stops beating and the job is handed back to the reclaim path.
+            **None by default, which means no bound** -- and that is not an
+            oversight. A hung handler is a real hazard (PR #42's n2: the
+            lease is extended forever, nothing can reclaim, the repository
+            sits `syncing`, and this worker's sweeper never runs again
+            either), but the right number is a multiple of a typical
+            ingest and NOTHING HAS INGESTED END TO END YET. The mechanism
+            is here and tested; Phase 22 sets the number once it has one
+            to multiply. Inventing it now is the mistake 21-RESEARCH
+            already made once with pool sizing.
     """
 
     def __init__(
@@ -451,6 +649,7 @@ class Worker:
         heartbeat: timedelta = DEFAULT_HEARTBEAT,
         idle_poll: timedelta = DEFAULT_IDLE_POLL,
         suspended_defer: timedelta = DEFAULT_SUSPENDED_DEFER,
+        max_job_duration: Optional[timedelta] = None,
     ) -> None:
         if not handlers:
             raise ValueError(
@@ -465,6 +664,7 @@ class Worker:
         self.heartbeat = heartbeat
         self.idle_poll = idle_poll
         self.suspended_defer = suspended_defer
+        self.max_job_duration = max_job_duration
 
         self._handlers: Dict[str, Handler] = dict(handlers)
         self._rng = random.random
@@ -492,17 +692,30 @@ class Worker:
             self.idle_poll.total_seconds(),
             self.suspended_defer.total_seconds(),
         )
-        conn = psycopg2.connect(self.dsn)
+        conn = self._connect(LOOP_APPLICATION_NAME)
         last_sweep: Optional[float] = None
         try:
             while not stop.is_set():
                 try:
+                    # ⚠ HEALTH FIRST, so a dead connection is replaced
+                    # before `claim` or `sweep` is asked to use it.
+                    conn = self._ensure_live(conn, stop)
+                    if conn is None:
+                        return
                     last_sweep = self._maybe_sweep(conn, last_sweep)
                     job = claim(conn, self.worker_id, self.lease)
                     if job is None:
                         stop.wait(self._idle_delay())
                         continue
                     self._run_job(conn, job, stop)
+                except DatabaseUnavailable:
+                    # ⚠ THE ONE THING THE BROAD CATCH BELOW MUST NOT EAT.
+                    # It is raised only after reconnection has failed
+                    # `MAX_RECONNECT_ATTEMPTS` times, and its entire purpose
+                    # is to end the process; logging it and continuing
+                    # would restore the wedged-forever behaviour PR #42's
+                    # review found.
+                    raise
                 except Exception as exc:  # noqa: BLE001 - see the docstring
                     logger.error(
                         "worker %s: loop iteration failed, continuing: %s",
@@ -511,8 +724,87 @@ class Worker:
                     )
                     stop.wait(self._idle_delay())
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
         logger.info("worker %s stopped", self.worker_id)
+
+    def _connect(self, application_name: str):
+        """Open a connection, tagged so `pg_stat_activity` says what it is.
+
+        A worker holds two while a job runs and they behave differently
+        under failure, so telling them apart from the database's side is
+        worth one parameter -- and it is what lets a test kill one of them
+        precisely.
+        """
+        return psycopg2.connect(self.dsn, application_name=application_name)
+
+    def _ensure_live(self, conn: Any, stop: threading.Event) -> Optional[Any]:
+        """Return a usable connection, reconnecting if this one has died.
+
+        ⚠ psycopg2 CONNECTIONS DO NOT SELF-HEAL. Once the backend is gone
+        the object is permanently bad, and the loop's connection was opened
+        ONCE outside the `while`. PR #42's review reproduced what that
+        costs: `pg_terminate_backend` on the loop's backend produced 44
+        identical error lines in 15 seconds, the next job was never
+        claimed, and the process stayed alive -- so no `restart:` policy
+        fired and the container looked healthy while the queue backed up
+        behind it. A Postgres restart, a failover or an idle-connection
+        reaper in front of the database is enough to trigger it.
+
+        The heartbeat already reconnects per job; this is the same
+        property for the connection that could not heal.
+
+        Returns:
+            A live connection, or **None** when reconnection has failed
+            `MAX_RECONNECT_ATTEMPTS` times in a row, or when `stop` was set
+            while backing off. On None the loop returns and `run` raises
+            `DatabaseUnavailable`, so a supervisor restarts the process --
+            which is the whole point of giving up rather than looping.
+        """
+        if conn is not None and not _is_dead(conn):
+            return conn
+
+        if conn is not None:
+            logger.warning(
+                "worker %s: the loop's connection is dead; reopening",
+                self.worker_id,
+            )
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001 - closing a dead socket
+                pass
+
+        delay = RECONNECT_BACKOFF_BASE.total_seconds()
+        for attempt in range(1, MAX_RECONNECT_ATTEMPTS + 1):
+            if stop.is_set():
+                return None
+            try:
+                fresh = self._connect(LOOP_APPLICATION_NAME)
+            except Exception as exc:  # noqa: BLE001 - the thing we retry
+                logger.error(
+                    "worker %s: reconnect %d/%d failed: %s",
+                    self.worker_id,
+                    attempt,
+                    MAX_RECONNECT_ATTEMPTS,
+                    sanitize_error(exc),
+                )
+                if stop.wait(delay):
+                    return None
+                delay = min(delay * 2, RECONNECT_BACKOFF_MAX.total_seconds())
+                continue
+            logger.info(
+                "worker %s: reconnected on attempt %d", self.worker_id, attempt
+            )
+            return fresh
+
+        # ⚠ LOUDLY, AND BY EXITING. A worker that cannot reach the database
+        # is not doing anything useful, and a process that stays up doing
+        # nothing is invisible to every restart policy there is.
+        raise DatabaseUnavailable(
+            f"worker {self.worker_id}: could not reconnect after "
+            f"{MAX_RECONNECT_ATTEMPTS} attempts; exiting so the supervisor "
+            "can restart this process"
+        )
 
     def _maybe_sweep(self, conn: Any, last_sweep: Optional[float]) -> float:
         """Dead-letter exhausted jobs, at most once per heartbeat interval.
@@ -547,14 +839,17 @@ class Worker:
 
     def _run_job(self, conn: Any, job: Job, stop: threading.Event) -> None:
         handler = self._handlers.get(job.job_type)
-        if handler is None:
-            # Defensive. `__main__` cannot start with an empty registry and
-            # 000014's CHECK bounds `job_type` to the two keys Phase 22
-            # registers, so reaching this means a caller built a Worker by
-            # hand with a partial map.
-            self._fail(conn, job, UnknownJobType(f"no handler for {job.job_type}"))
-            return
 
+        # ⚠ THE INSTALLATION CHECK COMES FIRST, BEFORE EVERY PROJECTION
+        # THIS METHOD CAN WRITE -- including the unknown-job-type failure
+        # below. PR #42's review found that one exception to the rule the
+        # module docstring states: `fail` writes `PROJECT_FAILED_SQL`, so
+        # ordering it ahead of this projected `failed` for a repository
+        # whose App was uninstalled, which is the retry-looking terminal
+        # state the abandon path exists to avoid. Unreachable in practice
+        # (000014's CHECK bounds `job_type`, and `__main__` refuses an
+        # empty registry), and the rule is cheaper to keep true than to
+        # qualify.
         found = self._read_installation(conn, job)
         if found.action == "abandon":
             self._guarded(
@@ -569,6 +864,14 @@ class Worker:
                     conn, job, self.worker_id, self.suspended_defer, found.reason
                 ),
             )
+            return
+
+        if handler is None:
+            # Defensive. `__main__` cannot start with an empty registry and
+            # 000014's CHECK bounds `job_type` to the two keys Phase 22
+            # registers, so reaching this means a caller built a Worker by
+            # hand with a partial map.
+            self._fail(conn, job, UnknownJobType(f"no handler for {job.job_type}"))
             return
 
         # Only now, and never before the check above: a job under a dead
@@ -613,7 +916,38 @@ class Worker:
             # The handler itself hit a fenced write that matched no row --
             # `attach_ingestion_run`, say. Not a job failure: some other
             # worker owns this job now, and `fail` would clobber it.
-            logger.warning("job %s: handler lost the lease: %s", job.id, exc)
+            #
+            # Redacted like every other exception rendering in this file.
+            # `LeaseLost` is built from ids by `transitions.py` today, but
+            # THIS clause catches one raised by the HANDLER, which in Phase
+            # 22 is code holding an installation token.
+            logger.warning(
+                "job %s: handler lost the lease: %s", job.id, sanitize_error(exc)
+            )
+            return
+        except Unfinished as exc:
+            # ⚠ NOT A FAILURE AND NOT A COMPLETION. The handler stopped
+            # part-way -- normally because `is_shutting_down()` went true.
+            # `defer` with a zero delay hands the claim's attempt back
+            # (DEFER_SQL decrements) and puts the job straight back in the
+            # queue, so the replacement worker picks it up immediately and
+            # an operator restart costs nothing. `fail` here would consume
+            # an attempt, and five restarts would walk a healthy repository
+            # to `dead`.
+            reason = str(exc) or "the handler stopped before finishing"
+            logger.info(
+                "job %s: handler stopped unfinished; deferring worker=%s "
+                "org=%s repo=%s",
+                job.id,
+                self.worker_id,
+                job.organization_id,
+                job.repository_id,
+            )
+            self._guarded(
+                job,
+                "defer",
+                lambda: defer(conn, job, self.worker_id, timedelta(0), reason),
+            )
             return
         except Exception as exc:  # noqa: BLE001 - every failure is the queue's
             # Handed to a method rather than closed over here: Python
@@ -659,7 +993,12 @@ class Worker:
         try:
             action()
         except LeaseLost as exc:
-            logger.warning("job %s: %s wrote nothing: %s", job.id, transition, exc)
+            logger.warning(
+                "job %s: %s wrote nothing: %s",
+                job.id,
+                transition,
+                sanitize_error(exc),
+            )
 
     # -----------------------------------------------------------------
     # The installation check
@@ -733,13 +1072,67 @@ class Worker:
         without a hook into this code -- a heartbeat interval longer than
         the lease means no beat ever lands before the lease expires, which
         is exactly what a worker that has stopped running looks like.
+
+        ⚠ IT GIVES UP, ON TWO RULES, AND THE FIRST CUT HAD NEITHER.
+        A single failed beat is a blip and is retried; a RUN of them is
+        not. PR #42's review killed the heartbeat's backend mid-job and
+        watched the lease expire underneath a running handler while
+        `should_abort()` stayed False -- the fence stops the corruption, so
+        the cost is a whole ingest thrown away and duplicated, unbounded in
+        duration.
+
+          - **The clock rule.** Once a full `lease` has passed with no beat
+            landing, the lease has demonstrably expired and somebody else
+            may already hold the job. Set the flag and stop.
+          - **The count rule.** `MAX_HEARTBEAT_FAILURES` consecutive
+            failures, as a backstop for a very long configured lease.
+
+        It also REOPENS its connection when that is what broke, so a
+        transient drop heals within the job rather than only at the next
+        one.
+
+        ⚠ AND IT ENFORCES `max_job_duration`, when one is set. A handler
+        that hangs -- a clone against an unresponsive remote with no socket
+        timeout -- is worse than one that crashes: the beat would keep the
+        lease alive forever, so nothing could ever reclaim the job, the
+        repository would sit `syncing`, and this worker's sweeper (which
+        lives in the same loop) would never run again either. Stopping the
+        beat hands the job to the existing reclaim-and-dead-letter path.
         """
         conn = None
         interval = self.heartbeat.total_seconds()
+        started = time.monotonic()
+        last_ok = started
+        failures = 0
         try:
-            conn = psycopg2.connect(self.dsn)
+            conn = self._connect(HEARTBEAT_APPLICATION_NAME)
             while not finished.wait(interval):
+                if self.max_job_duration is not None:
+                    ran_for = time.monotonic() - started
+                    if ran_for >= self.max_job_duration.total_seconds():
+                        logger.error(
+                            "job %s: handler has run %.0fs, past max_job_duration "
+                            "%.0fs; stopping the heartbeat so the lease can "
+                            "expire and another worker can reclaim worker=%s "
+                            "org=%s repo=%s",
+                            job.id,
+                            ran_for,
+                            self.max_job_duration.total_seconds(),
+                            self.worker_id,
+                            job.organization_id,
+                            job.repository_id,
+                        )
+                        lease_lost.set()
+                        return
                 try:
+                    if _is_dead(conn):
+                        # Reopen in place: the "heals at the next job"
+                        # property does nothing for the job in flight.
+                        try:
+                            conn.close()
+                        except Exception:  # noqa: BLE001 - a dead socket
+                            pass
+                        conn = self._connect(HEARTBEAT_APPLICATION_NAME)
                     with _unscoped(conn) as cur:
                         cur.execute(
                             HEARTBEAT_SQL,
@@ -747,18 +1140,36 @@ class Worker:
                         )
                         extended = cur.fetchone() is not None
                 except Exception as exc:  # noqa: BLE001 - a blip is not a loss
-                    # Deliberately NOT an abort. The lease is still ours as
-                    # far as the database is concerned; if the connection
-                    # stays broken the lease simply expires and another
-                    # worker reclaims, which is the crash path the sweeper
-                    # and the reclaim branch already handle.
+                    failures += 1
                     logger.warning(
-                        "job %s: heartbeat failed worker=%s: %s",
+                        "job %s: heartbeat failed (%d in a row) worker=%s: %s",
                         job.id,
+                        failures,
                         self.worker_id,
                         sanitize_error(exc),
                     )
+                    silent_for = time.monotonic() - last_ok
+                    if (
+                        silent_for >= self.lease.total_seconds()
+                        or failures >= MAX_HEARTBEAT_FAILURES
+                    ):
+                        logger.error(
+                            "job %s: no heartbeat has landed for %.1fs (%d "
+                            "consecutive failures) and the lease is %.1fs; "
+                            "assuming it is lost worker=%s org=%s repo=%s",
+                            job.id,
+                            silent_for,
+                            failures,
+                            self.lease.total_seconds(),
+                            self.worker_id,
+                            job.organization_id,
+                            job.repository_id,
+                        )
+                        lease_lost.set()
+                        return
                     continue
+                failures = 0
+                last_ok = time.monotonic()
                 if not extended:
                     logger.warning(
                         "job %s: heartbeat matched no row -- superseded or "
