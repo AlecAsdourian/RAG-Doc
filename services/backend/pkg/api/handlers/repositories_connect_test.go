@@ -617,6 +617,52 @@ func TestRepositoriesConnect_ReconnectingToTheSameInstallationCreatesNoJob(t *te
 	})
 }
 
+// ⚠ THE FIRST LAYER UNDER THE RELINK COMPARISON.
+//
+// Whether a call is a relink is now a Go string comparison between the
+// request's `installation_id` and `installation_id::text` from the row,
+// which Postgres renders lowercase and undecorated. Any request id that is
+// not in that exact form would look like a changed installation and
+// re-queue the repository on EVERY call, forever, with no error anywhere.
+//
+// Two things stop that, and this test pins the outer one: `validate:"uuid"`
+// is lowercase-canonical-only, so all four of these are 400s before the
+// handler runs. (The inner one is the `uuid.Parse(...).String()` in
+// Connect. It is unreachable while this test passes, which is exactly why
+// this test is here — the day someone widens the tag to `uuid_rfc4122`,
+// which DOES accept uppercase, this fails and the normalisation is what
+// keeps the behaviour correct.)
+func TestRepositoriesConnect_ANonCanonicalInstallationIDIsRejected(t *testing.T) {
+	pool := isolation.SetupTestDB(t)
+
+	isolation.WithTwoOrgs(t, pool, func(orgA, _ *isolation.TestOrg) {
+		tokenA := testjwt.Sign(orgA.OwnerSupabaseID, orgA.ID, "owner")
+		instA := seedInstallation(t, pool, orgA.ID, 563000)
+		require.NotEqual(t, strings.ToUpper(instA), instA,
+			"the fixture id must contain hex letters for the uppercase case to mean anything")
+
+		url := newConnectServer(t, pool, &stubLister{repos: []github.Repository{
+			stubRepo("shouty", "https://github.com/someone/shouty.git"),
+		}})
+		before := countRepositories(t, pool, orgA)
+
+		for _, id := range []string{
+			strings.ToUpper(instA),
+			"urn:uuid:" + instA,
+			"{" + instA + "}",
+			strings.ReplaceAll(instA, "-", ""),
+		} {
+			status, body := doRepoRequest(t, url, http.MethodPost,
+				"/api/repositories", tokenA, connectBody(id))
+			require.Equalf(t, http.StatusBadRequest, status,
+				"installation_id %q must be refused before the handler compares it; body=%s",
+				id, body)
+		}
+		require.Equal(t, before, countRepositories(t, pool, orgA),
+			"a refused body must write nothing")
+	})
+}
+
 // The ISS-016 scenario itself: relinking a repository whose run is IN
 // FLIGHT. It used to stamp `sync_state = 'pending'` over a `syncing` row
 // and let two writers race for the outcome. Now the running job is

@@ -473,14 +473,20 @@ func (h *RepositoriesHandler) Connect(w http.ResponseWriter, r *http.Request) {
 
 	// CANONICALISE THE INSTALLATION ID BEFORE COMPARING IT TO ANYTHING.
 	//
-	// The `uuid` validator tag accepts uppercase hex, and Postgres accepts
-	// an uppercase UUID literal, so every query below works either way.
-	// What does NOT work either way is the Go string comparison that
-	// classifies a relink: `installation_id::text` comes back lowercase,
-	// so an uppercase request would look like a changed installation and
-	// re-queue an ingest on every call. The SQL `CASE` this replaced used
-	// `IS DISTINCT FROM $2::uuid`, which compared UUIDs rather than text
-	// and had no such edge.
+	// The SQL `CASE` this replaced compared UUIDs — `installation_id IS
+	// DISTINCT FROM $2::uuid` — so spelling did not matter. The relink
+	// decision is now a Go string comparison against `installation_id::text`,
+	// which Postgres renders lowercase and undecorated, and a request id in
+	// any other form would look like a changed installation and re-queue
+	// the repository on EVERY call, forever, with no error anywhere.
+	//
+	// ⚠ THE SECOND LAYER, NOT THE FIRST. `validate:"uuid"` above is
+	// lowercase-canonical-only, so nothing that reaches here should need
+	// normalising — pinned by
+	// TestRepositoriesConnect_ANonCanonicalInstallationIDIsRejected. This
+	// exists so that the correctness of the comparison does not rest on a
+	// struct tag ten lines away: `uuid_rfc4122` accepts uppercase, and
+	// swapping the tag for it would otherwise be a silent infinite re-queue.
 	parsedInstallation, perr := uuid.Parse(req.InstallationID)
 	if perr != nil {
 		render.Render(w, r, ErrInvalidRequest(errors.New(
