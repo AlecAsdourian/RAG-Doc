@@ -43,6 +43,7 @@ reader does not mistake it for coverage.
 
 from __future__ import annotations
 
+import logging
 import os
 import pathlib
 import subprocess
@@ -416,10 +417,24 @@ class Recorder:
         return self.probe
 
 
-def never_called(ctx):  # pragma: no cover - the assertion is that it is not
-    raise AssertionError(
-        f"the handler ran for job {ctx.job.id}, and this test says it must not"
-    )
+class NeverCalled:
+    """A handler that must not run -- and that RECORDS it if it does.
+
+    ⚠ RAISING IS NOT ENOUGH, and a plain `assert False` handler would be a
+    test that cannot fail. `_invoke` catches EVERY exception a handler
+    raises and turns it into `fail`, which is exactly right for a real
+    handler and swallows an assertion whole. So the test reads `calls`
+    afterwards instead of trusting the raise to escape.
+    """
+
+    def __init__(self) -> None:
+        self.calls: List[str] = []
+
+    def __call__(self, ctx):
+        self.calls.append(str(ctx.job.id))
+        raise AssertionError(
+            f"the handler ran for job {ctx.job.id}, and this test says it must not"
+        )
 
 
 # =====================================================================
@@ -692,6 +707,59 @@ def test_a_supersede_mid_run_aborts_the_handler_and_writes_nothing(
     )
 
 
+def test_a_supersede_is_reported_in_the_log(conn, dsn, with_two_orgs, caplog):
+    """The supersede's only operator-visible signal, read as a LogRecord.
+
+    ⚠ A TEST THAT READS NO LOG RECORD CANNOT CATCH A LOGGING BUG, which is
+    how 21-05 shipped a fix whose mutation survived the whole suite until
+    one test read an actual record. A supersede leaves NOTHING behind in
+    the database that says a worker was stopped -- the row looks the same
+    whether the worker noticed or is still grinding away -- so this line is
+    the whole of the evidence, and it has to name the job.
+    """
+    org, _ = with_two_orgs
+    link_installation(conn, org)
+    job_id = seed_job(conn, org)
+    backdate(conn, job_id)
+    assert_only_claimable(conn, job_id)
+
+    caplog.set_level(logging.WARNING, logger="workers.jobs.runtime")
+    stopped = threading.Event()
+
+    def cooperative(ctx):
+        while not ctx.should_abort() and not stopped.wait(0.02):
+            pass
+        return None
+
+    with running(build_worker(dsn, {"full_ingest": cooperative})):
+        until(lambda: job_row(conn, job_id)["state"] == "running", "the claim")
+        sql(
+            conn,
+            "UPDATE ingestion_jobs SET state = 'superseded', updated_at = NOW() "
+            "WHERE id = %s",
+            (job_id,),
+        )
+        messages = until(
+            lambda: [
+                record.getMessage()
+                for record in caplog.records
+                if record.levelno >= logging.WARNING
+                and "heartbeat matched no row" in record.getMessage()
+            ],
+            "the heartbeat to log the lost lease",
+        )
+    stopped.set()
+
+    assert len(messages) == 1, messages
+    line = messages[0]
+    assert job_id in line, f"the log line does not name the job: {line}"
+    assert str(org.id) in line and str(org.repo_id) in line, (
+        f"the log line carries no tenant or repository: {line}"
+    )
+    assert "superseded or reclaimed" in line
+    assert FAKE_TOKEN not in line
+
+
 def test_a_handlers_progress_report_lands_on_the_job_row(conn, dsn, with_two_orgs):
     org, _ = with_two_orgs
     link_installation(conn, org)
@@ -818,9 +886,10 @@ def test_an_expired_lease_is_reclaimed_until_the_job_dead_letters(
 
         # A fourth worker, alive and sweeping on the heartbeat schedule.
         # It can never CLAIM this job -- `attempts < max_attempts` is false
-        # now -- so `never_called` doubles as the assertion that the claim
+        # now -- so `idle_sweeper` doubles as the assertion that the claim
         # guard holds, and the sweeper is the only thing that can move it.
-        sweeper = build_worker(dsn, {"full_ingest": never_called})
+        idle_sweeper = NeverCalled()
+        sweeper = build_worker(dsn, {"full_ingest": idle_sweeper})
         with running(sweeper):
             until(
                 lambda: job_row(conn, job_id)["state"] == "dead",
@@ -835,6 +904,10 @@ def test_an_expired_lease_is_reclaimed_until_the_job_dead_letters(
         )
 
     row = job_row(conn, job_id)
+    assert idle_sweeper.calls == [], (
+        "the sweeping worker CLAIMED the exhausted job; `attempts < "
+        f"max_attempts` should have excluded it. Claims: {idle_sweeper.calls}"
+    )
     assert sorted(set(claimed)) == [job_id], f"a worker ran on another job: {claimed}"
     assert len(claimed) == 3
     assert row["state"] == "dead"
@@ -970,10 +1043,17 @@ def test_a_suspended_installation_defers_without_consuming_an_attempt(
         # with no lease, so a condition on the state alone is satisfied
         # before the worker has even claimed it, and the assertions below
         # would then all run against the seeded row.
+        # ⚠ A SETTLED DEFERRED ROW, not just one with a `last_error`. The
+        # worker re-claims this job every `suspended_defer` seconds and
+        # defers it again, so a read that lands inside one of those claims
+        # would see `running` and every assertion below would be about the
+        # wrong moment.
         deferred = job_when(
             conn,
             job_id,
-            lambda row: row["last_error"] is not None,
+            lambda row: row["last_error"] is not None
+            and row["state"] == "queued"
+            and row["lease_owner"] is None,
             "the job to be deferred",
         )
         assert handler.job_ids == [], "the handler ran for a suspended installation"
@@ -1115,13 +1195,16 @@ def test_a_job_type_with_no_handler_is_failed_rather_than_left_running(
     backdate(conn, job_id)
     assert_only_claimable(conn, job_id)
 
-    with running(build_worker(dsn, {"incremental": never_called})):
-        until(
-            lambda: job_row(conn, job_id)["last_error"] is not None,
+    wrong_type = NeverCalled()
+    with running(build_worker(dsn, {"incremental": wrong_type})):
+        row = job_when(
+            conn,
+            job_id,
+            lambda r: r["last_error"] is not None and r["lease_owner"] is None,
             "the job to be failed",
         )
 
-    row = job_row(conn, job_id)
+    assert wrong_type.calls == [], "the incremental handler ran on a full_ingest job"
     assert row["state"] == "queued", "below max_attempts a failure re-queues (O2)"
     assert row["attempts"] == 1
     assert "no handler for full_ingest" in row["last_error"]
@@ -1147,12 +1230,13 @@ def test_a_handler_that_raises_fails_the_job_with_a_redacted_error(
         raise RuntimeError(f"clone failed: https://x-access-token:{FAKE_TOKEN}@github.com/a/b.git")
 
     with running(build_worker(dsn, {"full_ingest": exploding})):
-        until(
-            lambda: job_row(conn, job_id)["last_error"] is not None,
+        row = job_when(
+            conn,
+            job_id,
+            lambda r: r["last_error"] is not None and r["lease_owner"] is None,
             "the failure to be recorded",
         )
 
-    row = job_row(conn, job_id)
     assert row["state"] == "queued"
     assert row["attempts"] == 1
     assert FAKE_TOKEN not in row["last_error"]
