@@ -194,7 +194,9 @@ value as of the moment the call committed.
 
 **Two connects landing at the same moment both succeed.** They resolve to
 one repository row and one queued job between them; neither gets an error,
-and neither is silently dropped.
+neither is silently dropped, and the repository is ingested **once**, not
+twice. A double-clicked button or a client retry on a slow 201 costs
+nothing.
 
 **Connecting a repository your organization already has returns that same
 row** — even if it sits in a project other than the default, and even if

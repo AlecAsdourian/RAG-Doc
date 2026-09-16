@@ -12,8 +12,8 @@ requires:
   - phase: 20-03
     provides: POST /api/repositories, its org-wide adopt lookup, and the InstallationRepositoryLister seam that makes the persist path testable
 provides:
-  - "pkg/jobs.Enqueue and pkg/jobs.SupersedeLive — the only supported way for backend code to put work on the queue, both taking the caller's transaction"
-  - "enqueueConflictClause / enqueueReturning / enqueueUpsertSQL / enqueueSetSQL / liveSetPredicate / supersedeLiveSQL / supersedeLiveSetSQL / projectPendingSQL in producer.go, referenced by schema_test.go rather than copied"
+  - "pkg/jobs.Enqueue and pkg/jobs.SupersedeLive(ctx, tx, organizationID, repositoryIDs) — the only supported way for backend code to put work on the queue, both taking the caller's transaction"
+  - "enqueueConflictClause / enqueueReturning / enqueueUpsertSQL / enqueueSetSQL / liveSetPredicate / supersedeLiveSQL / supersedeLiveSetSQL / clearRerunOnUnstartedSQL / projectPendingSQL in producer.go, referenced by schema_test.go rather than copied"
   - "POST /api/repositories classifies new / relink / unchanged in Go and acts through pkg/jobs; `FOR UPDATE OF r` on the adopt lookup"
   - "isolation.RetryOnLockContention, IsDeadlock, IsLockTimeout, LockWaitTimeout — the ISS-032 fix, reusable"
   - "handlers.ExistingRepositoryLookupSQL (export_test.go) so a test can run the production lookup"
@@ -51,16 +51,19 @@ key-decisions:
   - "`enqueueReturning` is split out of `enqueueConflictClause` so the set form can report `repository_id` while `enqueueUpsertSQL` stays byte-identical to what 21-02 shipped. Splitting the RETURNING list is what avoids copying the ON CONFLICT clause, which is the part that is easy to get wrong."
   - "Enqueue returns one result per DISTINCT repository, not per input element, and the first request for a repository wins. A bulk payload that names a repository twice is asking for one job."
   - "The projection is written only for repositories that got a NEW job. A repository whose live job was merely flagged keeps its `sync_state`, because that job is running and the state belongs to its worker."
-  - "SupersedeLive keeps the plan's signature and is NOT tenant-scoped; the obligation on the caller is stated in the doc comment and PINNED by a test that measures the cross-tenant supersede rather than leaving it as folklore. Adding an `EXISTS (SELECT 1 FROM repositories ...)` scope was considered and rejected: it would depart from the statement 21-02 proved, and would turn a caller's bug into a silent no-op."
+  - "SupersedeLive takes the organization and filters on it. The first cut did not, on the argument that an `EXISTS (SELECT 1 FROM repositories ...)` scope would depart from 21-02's statement and turn a caller bug into a silent no-op; PR #39's review pointed out that both objections are about the EXISTS form specifically, and that a plain column filter has neither cost. A silent no-op also beats the status quo, which was a successful cross-tenant write."
+  - "A rerun flag the upsert sets on a job that has NOT STARTED (`queued`, `attempts = 0`) is cleared again in the same transaction. The L7 upsert is untouched — 21-02 proved it and 21-05 ports it to Python — and the clear never reaches a `running` job or one with `attempts > 0`."
   - "A nil transaction is reported ahead of an empty batch: a caller that got here without a transaction is broken whether or not this particular batch was empty."
   - "The installation id is canonicalised with `uuid.Parse(...).String()` before the relink comparison, even though `validate:\"uuid\"` already guarantees the canonical form. The correctness of a text comparison should not rest on a struct tag ten lines away — `uuid_rfc4122` accepts uppercase, and swapping the tag for it would otherwise be a silent infinite re-queue."
   - "`withQueue`'s blanket delete was REMOVED rather than scoped or serialised. Neither of those works: the delete existed so `claimSQL` could be tested against an empty queue, and a concurrently enqueued job with a tied `run_after` breaks that test whether or not the delete holds locks. Ordering replaced it."
 
 issues-created: []
+review: "PR #39 — APPROVE WITH NITS. Three findings applied: SupersedeLive's tenant filter, the unstarted-job rerun flag, and the deadlock_timeout premise assertion."
+
 issues-closed:
   - "ISS-032 — reproduced locally first, then fixed with `lock_timeout` below `deadlock_timeout` plus six jittered retries on 40P01/55P03"
 
-duration: ~4h
+duration: ~4h, plus ~1h applying PR #39's review
 completed: 2026-09-16
 ---
 
@@ -88,7 +91,7 @@ type EnqueueRequest struct { OrganizationID, RepositoryID string; JobType JobTyp
 type EnqueueResult  struct { RepositoryID, JobID string; WasExisting bool }
 
 func Enqueue(ctx context.Context, tx pgx.Tx, reqs []EnqueueRequest) ([]EnqueueResult, error)
-func SupersedeLive(ctx context.Context, tx pgx.Tx, repositoryIDs []string) ([]string, error)
+func SupersedeLive(ctx context.Context, tx pgx.Tx, organizationID string, repositoryIDs []string) ([]string, error)
 ```
 
 `Enqueue`, in order:
@@ -106,7 +109,9 @@ func SupersedeLive(ctx context.Context, tx pgx.Tx, repositoryIDs []string) ([]st
    `unnest($1::uuid[], $2::uuid[], $3::text[])`, sharing the
    `enqueueConflictClause` constant with the single-row form. One
    repository and two hundred take the same code path.
-4. **Writes the projection** — `sync_state = 'pending'` — for the
+4. **Clears the rerun flag again** where the live job it just flagged has
+   not started. See the double-connect race below.
+5. **Writes the projection** — `sync_state = 'pending'` — for the
    repositories that got a **new** job only, and checks the row count,
    because under row-level security a write to somebody else's repository
    matches nothing and reports success.
@@ -129,23 +134,43 @@ Two constants are new, and both are shared rather than copied:
 | `enqueueReturning` | split out of the conflict clause so the set form can report `repository_id`. `enqueueUpsertSQL` expands byte-identically to 21-02's. |
 | `liveSetPredicate` | `state IN ('queued','running')`, shared by both supersede forms so they cannot disagree about what "live" means. |
 
-### ⚠ `SupersedeLive` is not tenant-scoped, and that is now measured
+### `SupersedeLive` is tenant-scoped, by one predicate
 
-Its statement touches neither `organization_id` nor `repository_id`, so
-`trg_ingestion_jobs_tenant` never fires, and `ingestion_jobs` has no
-row-level security. **A repository id from another organization is
-superseded just as readily as one of the caller's.**
+`AND organization_id = $2`, and the function takes the organization.
 
-`TestSupersedeLive_IsNotScopedByTheDatabase` runs exactly that from inside
-org A's transaction and asserts it succeeds. The obligation the doc comment
-states — pass only ids the same transaction has already read out of
-`repositories`, which *is* scoped — is the only thing standing between a
-caller and another tenant's queue. Connect satisfies it through its
-`FOR UPDATE OF r` lookup.
+**It is the only scope that statement has.** `ingestion_jobs` has no
+row-level security (L5), and the UPDATE touches neither `organization_id`
+nor `repository_id`, so `trg_ingestion_jobs_tenant` never fires — unlike
+the enqueue, whose `BEFORE INSERT` trigger refuses a mismatched tenant with
+42501 (`TestEnqueue_AnotherTenantsRepositoryIsRefusedAndNothingIsWritten`).
+That asymmetry is now stated in `doc.go` rather than left to be rediscovered.
 
-This follows `doc.go`'s existing treatment of `claimSQL` and `sweepSQL`:
-state the cross-tenant property and pin it, rather than quietly adding a
-filter to a statement 21-02 proved.
+**This shipped after PR #39's review, and the first cut got it wrong for a
+defensible reason.** The original rejected scoping on two grounds: an
+`EXISTS (SELECT 1 FROM repositories ...)` form would depart from the
+statement 21-02 proved, and it would turn a caller's bug into a silent
+no-op. The review's answer was that both objections are about the `EXISTS`
+form specifically. A plain column filter is not a join, not a sub-select and
+not a departure from 21-02's shape; `ingestion_jobs.organization_id` cannot
+be spoofed, because `ingestion_jobs_repo_tenant_fk` makes a mismatch
+unrepresentable and the trigger refuses it on the way in; and a silent
+no-op is strictly better than the status quo, which was a **successful
+cross-tenant write**. All three points hold, and the fix is one predicate.
+
+**Nothing in this PR could reach the hole** — the reviewer traced every
+caller, and Connect's only argument comes from an RLS-scoped read inside the
+same `InTenantTx`. **21-04 can.** A webhook resolves repositories by
+`github_repo_id`, which `idx_repositories_project_github_repo` makes unique
+only PER PROJECT, never globally, so a resolution less careful than
+`github_webhook_events.go`'s already is hands this function a set that
+straddles tenants. `21-04-PLAN.md` now carries the new signature and that
+reasoning, so the next plan cannot reintroduce it.
+
+**`TestSupersedeLive_IsNotScopedByTheDatabase` asserted the hole; it is now
+`TestSupersedeLive_CancelsNothingForAnotherTenant` and asserts its
+absence.** It passes org B's repository and org A's in one call — the shape
+a bulk webhook produces — and **commits**, because a rolled-back
+transaction would pass even if the predicate did nothing.
 
 ## The Connect restructure
 
@@ -201,6 +226,7 @@ the existing structure deliberately avoids, and this plan did not touch it.
 |---|---|---|
 | `TestEnqueue_ConcurrentEnqueuesResolveToOneLiveJob` | 16 goroutines, each with its **own transaction opened before the barrier**, released together onto the same repository. Every call must succeed, exactly one `WasExisting=false`, exactly one live job, `sync_state = pending`. | **5 rounds per run**, all warm but the first; run 3× under `-race` → **15 rounds**, no failures, no data races |
 | `TestRepositoriesConnect_ConcurrentRelinksLeaveOneLiveJob` | two relinks of the same repository through the **real router**, released together, over a live `running` job seeded per round. Both must be 201; one live job; `sync_state = pending`. | **5 rounds per run**, run 3× under `-race` → **15 rounds** |
+| `TestRepositoriesConnect_ConcurrentFirstConnectsDoNotDoubleIngest` | two connects of a repository with **no row yet**, held at the stub lister (which the handler calls between its two transactions) and released together. Both 201; one repository row; one live job at `attempts = 0`; **`needs_rerun = false`**. Added for PR #39's review. | **5 rounds per run** |
 | `TestRepositoriesConnect_ConcurrentConnectsOfDifferentRepositoriesDoNotBlock` | one transaction holds a repository's row with the production lookup; a connect for a different repository in the same organization must finish within 15s | run 3× under `-race` |
 
 **Its own pool for the barrier test.** `pgxpool` defaults `MaxConns` to
@@ -208,13 +234,53 @@ the existing structure deliberately avoids, and this plan did not touch it.
 matters 16 racers would have queued for connections instead of racing. The
 test copies the harness pool's config with `MaxConns = 18`.
 
-**One honest limit.** The two-caller relink race does not exercise the
-upsert's conflict branch: `FOR UPDATE OF r` serialises the two into
-`relink` + `unchanged`, so the second caller enqueues nothing. That is the
-correct behaviour and it is what L8 asks for ("both succeed, one job"), but
-the *flagging* path at the HTTP level is therefore untested. The producer's
-16-way barrier is what covers it — and mutation 1 confirms the coverage, by
-failing there and **not** in the handler suite.
+**The honest limit, and where the review found what it hid.** The
+two-caller *relink* race does not exercise the upsert's conflict branch:
+`FOR UPDATE OF r` serialises the two into `relink` + `unchanged`, so the
+second caller enqueues nothing. The reviewer confirmed it from the suite
+log — `flagged_existing_job=true` appears **0 times** across the whole clean
+handler suite. That is correct behaviour and is what L8 asks for.
+
+**But there is one HTTP path that does reach it,** and it was the gap:
+two concurrent *first* connects. See the next section.
+
+### Two concurrent first connects left a rerun flag on a job that never ran
+
+Two connects of a repository that has **no row yet** have nothing for
+`FOR UPDATE OF r` to serialise on. Both classify as `new`, both run the
+repositories upsert, and the loser's `Enqueue` takes the conflict branch
+against the winner's brand-new job. L8 still holds — both 201, one
+repository row, one live job — but the flag the upsert sets would make
+21-05 run a **second full ingest** of a repository that was ingested once.
+One double-clicked Connect button, two ingests. **Before this phase the
+same race was idempotent**, so it is a regression the queue introduced.
+
+Found in PR #39's review, reproduced 3/3 there and 5/5 here.
+
+**The fix is not in the upsert.** 21-02 proved that statement and 21-05
+ports it to Python; changing it to serve this case would be the wrong
+lever. `Enqueue` clears the flag afterwards instead, in the same
+transaction, and only where clearing it is provably safe:
+
+```sql
+UPDATE ingestion_jobs SET needs_rerun = FALSE, updated_at = NOW()
+WHERE id = ANY($1::uuid[]) AND state = 'queued' AND attempts = 0
+```
+
+A `queued` job at `attempts = 0` has not read the repository: when a worker
+claims it, it clones at whatever HEAD is current then, so it already covers
+everything that arrived while it waited. **It must not reach a job that has
+run.** `running` means a worker has the repository open at some commit, and
+`attempts > 0` means an earlier attempt may have recorded `last_stage` and
+`progress` that a retry resumes from rather than re-cloning. Both are
+pinned, and mutation 19 shows what removing the predicate costs.
+
+One consequence recorded rather than papered over: `WasExisting = true` now
+means "a live job already existed and this call joined it", **not** "a
+rerun is pending". The handler's log attribute was renamed
+`flagged_existing_job` → `joined_existing_job` to match, and 21-04's plan
+carries a note, because a `push` outcome string derived from `WasExisting`
+would otherwise be wrong for an unclaimed job.
 
 ## Mutation results
 
@@ -254,6 +320,15 @@ mutations that depended on it were re-run:
 | 13 | Drop `attempts < max_attempts` from `claimSQL` | **Killed: 1 subtest.** `Claim/a_job_at_max_attempts_is_not_claimed` |
 | 14 | Drop the `state = 'queued'` branch from `sweepSQL` | **Killed: 2 subtests.** `Sweeper/a_queued_job_at_max_attempts_is_dead-lettered` and `EveryStatementAdvancesUpdatedAt/sweepSQL` |
 | 15 | Delete `FOR UPDATE SKIP LOCKED` from `claimSQL` | **Killed: 1.** `ClaimSkipsRowsLockedByAnotherWorker`, `57014` after the 3s statement timeout |
+
+### PR #39's review — the three fixes
+
+| # | Mutation | Result |
+|---|---|---|
+| 17 | Neuter `SupersedeLive`'s tenant filter (`AND organization_id = $2` → `AND $2::uuid IS NOT NULL`, so the parameter is still bound and the statement still parses) | **Killed: 1.** `TestSupersedeLive_CancelsNothingForAnotherTenant` — `expected ["<orgA repo>"], actual ["<orgB repo>", "<orgA repo>"]`. Org B's running job was cancelled from inside org A's committed transaction. |
+| 18 | Never clear the rerun flag | **Killed: 2 in `pkg/jobs` + 1 in the handlers.** `ClearsARerunFlagOnlyOnAJobThatHasNotStarted/a_queued_job_that_has_never_run`, `ClearsAPreviouslySetFlagOnAnUnstartedJob`, and `ConcurrentFirstConnectsDoNotDoubleIngest` on **round 1** — which is also the proof that the HTTP barrier really reaches the upsert's conflict branch rather than passing vacuously |
+| 19 | Clear the flag regardless of whether the job started (drop `state = 'queued' AND attempts = 0`) | **Killed: 3 top-level.** Both negative subtests, plus `ASecondEnqueueFlagsTheLiveJob` and `TheWrongOrderLosesTheJobSilently`, whose fixtures are a claimed job |
+| 20 | `LockWaitTimeout` 750ms → 1500ms | **Killed: 1.** `LockWaitTimeout_IsBelowTheServersDeadlockTimeout`: `"1.5s" is not less than "1s"`. Note `LockWaitTimeout_ProducesARetryableLockTimeout` still **passed** at 1.5s — which is exactly the reviewer's point: without the premise assertion, nothing was guarding the relationship. |
 
 ### One deliberate survivor
 
@@ -380,7 +455,13 @@ one measurement.
    toolchain — the same condition `backend-ci.yml`'s comment records. Run
    as `golang:1.25` on Linux with the worktree and the Docker socket
    mounted and `TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal`.
-8. **No new `EnqueueRequest` field for `payload`.** The plan's signature
+8. **`SupersedeLive` takes an organization,** which the plan's signature
+   does not. From PR #39's review; see the section above for why the
+   original rejection did not apply to a plain column filter.
+9. **`Enqueue` has a fourth step the plan does not list** — clearing a
+   rerun flag from a job that has not started. Also from the review. The L7
+   upsert is untouched.
+10. **No new `EnqueueRequest` field for `payload`.** The plan's signature
    has none, and migration 000014's comment is explicit that a payload must
    never carry credentials or an installation id. 21-04 can add one when it
    has something to put in it.
@@ -399,6 +480,13 @@ one measurement.
 | The plan's grep gate | `grep -nE "sync_state *= *'pending'" services/backend/pkg/api/handlers/repositories.go` | nothing |
 | CI isolation scanner | `python scripts/ci/check-isolation-tests.py --base-ref RAG-Doc/main --head-ref HEAD --json` | `{"missing": [], "skipped": [], "covered": []}` — no route line changed, as the plan predicted |
 | Commit trailers | `git log --format=%B RAG-Doc/main..HEAD` | none |
+
+**Re-run after PR #39's review,** with the same environment: whole module
+`-p 1` → **186 top-level pass (486 with subtests), 3 skip, 1 fail** (the
+same CRLF test); `-race` on `./pkg/jobs/...` and `./pkg/api/...` → no data
+races. **The workers suite was NOT re-run, and did not need to be:** the
+review changed five Go files and four Markdown files, and `git diff` shows
+nothing under `services/workers`.
 
 **No container on port 5434 (docker-compose Postgres) or Qdrant was started
 or touched.** Scratch containers: `rag2103-ci` (55503) and `rag2103-redis`
@@ -421,12 +509,18 @@ the signature looks alarming and would otherwise be chased.
   `VALUES` list.
 - **`SupersedeLive` takes a slice too,** and reports which repositories
   actually had a live job — the honest answer to "what did this
-  interrupt?", which is what a webhook handler wants to log.
+  interrupt?", which is what a webhook handler wants to log, and what
+  `21-04-PLAN.md` already tells it to drive `markUninstalled`'s widened
+  stand-down off.
 - **The ordering rule and its silence,** in both doc comments and pinned by
   `TestSupersedeLive_TheWrongOrderLosesTheJobSilently`.
-- **`SupersedeLive`'s tenant obligation.** A webhook resolves repositories
-  by GitHub id; whatever it passes must have come from a scoped read of
-  `repositories` in the same transaction.
+- **`SupersedeLive`'s tenant filter,** which exists FOR 21-04: a webhook
+  resolves repositories by `github_repo_id`, unique only per project. Pass
+  the handler's own resolved organization. `21-04-PLAN.md` carries the
+  signature and the reasoning.
+- **`WasExisting` does not mean "a rerun is pending".** A flag on a job
+  that has not started is cleared by `Enqueue` itself, so a `push` outcome
+  string derived from it would be wrong for an unclaimed job.
 - **`asWorker` and `claimTestEpoch`,** so a new test in `pkg/jobs` does not
   reintroduce a blanket delete.
 - **`isolation.RetryOnLockContention`,** for any future test that takes
