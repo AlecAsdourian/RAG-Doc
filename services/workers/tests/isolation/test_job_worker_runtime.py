@@ -536,6 +536,15 @@ def test_the_heartbeat_extends_the_lease_of_a_job_that_outlives_it(
         first = until(
             lambda: job_row(conn, job_id)["lease_expires_at"], "the job to be claimed"
         )
+        # ⚠ THE ONLY PLACE `syncing` IS OBSERVABLE, and therefore the only
+        # test that can tell `mark_started` was called at all: every other
+        # test here reads `sync_state` after the job has reached a terminal
+        # state, which overwrites it. A long handler is what holds the
+        # projection still long enough to look at.
+        until(
+            lambda: repo_row(conn, org.id, org.repo_id)["sync_state"] == "syncing",
+            "mark_started to project `syncing`",
+        )
         until(
             lambda: job_row(conn, job_id)["lease_expires_at"] > first,
             "the heartbeat to push the lease out",
@@ -551,6 +560,67 @@ def test_the_heartbeat_extends_the_lease_of_a_job_that_outlives_it(
         f"{LEASE.total_seconds()}s lease it is supposed to outlive"
     )
     assert probe.calls == 1
+
+
+def test_the_heartbeat_thread_opens_its_own_connection(
+    conn, dsn, with_two_orgs, monkeypatch
+):
+    """The one invariant here whose failure mode is a race, not a result.
+
+    psycopg2 connections may be shared between threads, and sharing one
+    here would be a DATA-LOSS bug rather than a slow one: a connection
+    shares its TRANSACTION, so a heartbeat's commit would commit whatever
+    `complete` had half-written on the main connection -- or its rollback
+    would throw the results away. Neither shows up as a wrong value; both
+    show up as an intermittently wrong database.
+
+    ⚠ SO THIS TEST COUNTS CONNECTIONS, which is a structural assertion and
+    is admitted as one. The behaviour it protects cannot be provoked
+    reliably -- `require_tenant` and `_unscoped` both refuse a connection
+    that is mid-transaction, so the shared version fails LOUDLY on some
+    interleavings and silently on others, and a test that waits for the
+    unlucky one is a flake. Counting is what makes the invariant killable
+    by a mutation at all.
+    """
+    org, _ = with_two_orgs
+    link_installation(conn, org)
+    job_id = seed_job(conn, org)
+    backdate(conn, job_id)
+    assert_only_claimable(conn, job_id)
+
+    opened: List[Any] = []
+    real_connect = psycopg2.connect
+
+    def counting(*args, **kwargs):
+        connection = real_connect(*args, **kwargs)
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr(psycopg2, "connect", counting)
+
+    running_long = threading.Event()
+    may_finish = threading.Event()
+
+    def slow(ctx):
+        running_long.set()
+        may_finish.wait(timeout=SETTLE)
+        return None
+
+    with running(build_worker(dsn, {"full_ingest": slow})):
+        assert running_long.wait(timeout=SETTLE), "the handler never started"
+        # Both connections are open right now: the loop's and the
+        # heartbeat thread's.
+        until(lambda: len(opened) >= 2, "the heartbeat to open a connection")
+        may_finish.set()
+        until(lambda: job_row(conn, job_id)["state"] == "completed", "completion")
+
+    assert len({id(c) for c in opened}) == len(opened), (
+        "the worker handed the same connection out twice"
+    )
+    assert len(opened) >= 2, (
+        f"the worker opened {len(opened)} connection(s) for one job; the "
+        "heartbeat must not run on the loop's"
+    )
 
 
 # =====================================================================
