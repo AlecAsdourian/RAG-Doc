@@ -65,13 +65,14 @@
 //
 //   - `ingestion_jobs` HAS NO ROW-LEVEL SECURITY, so organization_id on it
 //     is an authorization input that nothing in the database will apply for
-//     you. Any handler reading this table filters by it explicitly (21-07).
-//     THE SAME APPLIES TO SupersedeLive: its statement touches neither
-//     organization_id nor repository_id, so the tenant trigger does not
-//     fire and a repository id from another organization would be
-//     superseded just as readily. Pass only ids the same transaction has
-//     already read out of `repositories`, which IS scoped. Enqueue is safe
-//     by contrast, because inserting a row DOES fire the trigger.
+//     you. Any handler reading this table filters by it explicitly (21-07),
+//     AND SO DOES SupersedeLive, which is why it takes the organization as
+//     a parameter. The asymmetry is worth knowing: Enqueue is guarded by
+//     the database, because inserting a row fires trg_ingestion_jobs_tenant
+//     and a mismatched tenant is refused with 42501; SupersedeLive's UPDATE
+//     touches neither organization_id nor repository_id, so the trigger
+//     never fires and the predicate in the statement is the whole of its
+//     scope. Pass the caller's own tenant, never a value from a request.
 //
 //   - ⚠ `claimSQL` AND `sweepSQL` ARE QUEUE-WIDE AND CROSS-TENANT BY
 //     CONSTRUCTION. They carry no organization filter and, because the table

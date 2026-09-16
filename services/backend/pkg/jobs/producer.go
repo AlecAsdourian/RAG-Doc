@@ -111,17 +111,70 @@ UPDATE ingestion_jobs SET state = 'superseded', updated_at = NOW()
 WHERE repository_id = $1 AND ` + liveSetPredicate
 
 // supersedeLiveSetSQL is the same statement over a set, and reports which
-// repositories actually had a live job to supersede. $1 repository_id[].
+// repositories actually had a live job to supersede.
+// $1 repository_id[], $2 organization_id.
 //
-// ⚠ THIS STATEMENT IS NOT TENANT-SCOPED BY THE DATABASE. It touches neither
-// organization_id nor repository_id, so trg_ingestion_jobs_tenant does not
-// fire, and `ingestion_jobs` has no row-level security. A repository id from
-// another organization would be superseded exactly as readily as one of the
-// caller's. SupersedeLive's doc comment states the obligation that follows.
+// ⚠ `AND organization_id = $2` IS THE TENANT SCOPE, AND IT IS THE ONLY ONE
+// THIS STATEMENT HAS. The database supplies none: `ingestion_jobs` has no
+// row-level security (L5), and this UPDATE touches neither organization_id
+// nor repository_id, so trg_ingestion_jobs_tenant does not fire either —
+// unlike the enqueue above, where the BEFORE INSERT trigger refuses a
+// mismatched tenant with 42501. Without the predicate a repository id from
+// another organization cancels that organization's in-flight ingest,
+// successfully and silently.
+//
+// IT IS A PLAIN COLUMN FILTER, NOT A JOIN, and it is as strong as one:
+// `ingestion_jobs.organization_id` is equal to the repository's real owner
+// by construction — `ingestion_jobs_repo_tenant_fk` makes a mismatch
+// unrepresentable and the tenant trigger refuses it on the way in — so it
+// cannot be spoofed by a caller who supplies the wrong pair. An
+// `EXISTS (SELECT 1 FROM repositories ...)` form would buy nothing for the
+// cost of a sub-select and a departure from 21-02's statement shape.
+//
+// A foreign id now matches zero rows, and SupersedeLive's return value
+// reports exactly that: the repositories it did NOT cancel are simply
+// absent. A silent no-op is the right failure for a caller bug here,
+// because the alternative is a successful cross-tenant write.
 const supersedeLiveSetSQL = `
 UPDATE ingestion_jobs SET state = 'superseded', updated_at = NOW()
-WHERE repository_id = ANY($1::uuid[]) AND ` + liveSetPredicate + `
+WHERE repository_id = ANY($1::uuid[])
+  AND organization_id = $2
+  AND ` + liveSetPredicate + `
 RETURNING repository_id::text`
+
+// clearRerunOnUnstartedSQL drops a `needs_rerun` the upsert has just set on
+// a job that HAS NOT STARTED. $1 the job ids the upsert flagged.
+//
+// ⚠ WHY A FLAG ON AN UNSTARTED JOB IS WRONG, not merely redundant. A
+// `queued` job at `attempts = 0` has not read the repository yet: when a
+// worker claims it, it clones at whatever HEAD is current then, so it
+// already covers everything that arrived while it was waiting. The flag
+// would make 21-05 enqueue a SECOND full ingest on completion — of a
+// repository that was ingested once, correctly. One user action, two
+// ingests.
+//
+// The case that makes this reachable is two concurrent connects of a
+// repository that has NO ROW YET: there is nothing for
+// `FOR UPDATE OF r` to serialise on, both callers classify the connect as
+// `new`, and the loser's enqueue takes the conflict branch against the
+// winner's brand-new job. Found in PR #39's review, reproduced 3/3. Before
+// this phase the same race was idempotent — both callers just wrote
+// `sync_state = 'pending'` — so this is a regression the queue introduced,
+// not a pre-existing one.
+//
+// ⚠ IT MUST NOT CLEAR A FLAG ON A JOB THAT HAS RUN. `state = 'running'`
+// means a worker has the repository open at some commit and everything
+// after it is genuinely a rerun. `attempts > 0` means an earlier attempt
+// got far enough to record `last_stage` and `progress`, which a retry may
+// resume from rather than re-clone, so the same argument does not hold.
+// Both are pinned by TestEnqueue_ClearsARerunFlagOnlyOnAJobThatHasNotStarted.
+//
+// The `needs_rerun` predicate is deliberately absent: the upsert has just
+// set it on exactly these ids, in this transaction.
+const clearRerunOnUnstartedSQL = `
+UPDATE ingestion_jobs SET needs_rerun = FALSE, updated_at = NOW()
+WHERE id = ANY($1::uuid[]) AND state = 'queued' AND attempts = 0
+RETURNING id::text`
 
 // projectPendingSQL is the `sync_state` projection (L2). It runs in the
 // same transaction as the enqueue, over the repositories that got a NEW
@@ -173,9 +226,14 @@ type EnqueueRequest struct {
 // EnqueueResult is what happened to one repository.
 //
 // WasExisting = true means a job for this repository was ALREADY live and
-// has been flagged `needs_rerun` instead; JobID is that job's id, not a new
-// one. The repository's `sync_state` is deliberately left alone in that
-// case — the live job owns it.
+// this call joined it rather than creating a second one; JobID is that
+// job's id, not a new one. The repository's `sync_state` is deliberately
+// left alone in that case — the live job owns it.
+//
+// It does NOT mean a rerun is now pending. If that job had not started
+// (`queued`, `attempts = 0`) the flag is cleared again in this same
+// transaction, because the job will pick the new work up on its own — see
+// clearRerunOnUnstartedSQL.
 type EnqueueResult struct {
 	RepositoryID string
 	JobID        string
@@ -220,7 +278,10 @@ var ErrNoTransaction = errors.New("jobs: a transaction is required")
 //     more than once.
 //  3. Runs enqueueSetSQL, which either inserts a `queued` job or flags the
 //     live one.
-//  4. Writes `sync_state = 'pending'` for the repositories that got a NEW
+//  4. Clears that flag again where the live job HAS NOT STARTED, because
+//     a job that has not read the repository yet will cover the new work
+//     without a second ingest. See clearRerunOnUnstartedSQL.
+//  5. Writes `sync_state = 'pending'` for the repositories that got a NEW
 //     job only.
 //
 // The results come back in the order of the de-duplicated input, one per
@@ -281,6 +342,7 @@ func Enqueue(ctx context.Context, tx pgx.Tx, reqs []EnqueueRequest) ([]EnqueueRe
 	}
 	results := make([]EnqueueResult, 0, len(repoIDs))
 	fresh := make([]string, 0, len(repoIDs))
+	flagged := make([]string, 0, len(repoIDs))
 	for _, repoID := range repoIDs {
 		result, ok := byRepo[repoID]
 		if !ok {
@@ -289,8 +351,20 @@ func Enqueue(ctx context.Context, tx pgx.Tx, reqs []EnqueueRequest) ([]EnqueueRe
 				len(collected), len(repoIDs), repoID)
 		}
 		results = append(results, result)
-		if !result.WasExisting {
+		if result.WasExisting {
+			flagged = append(flagged, result.JobID)
+		} else {
 			fresh = append(fresh, repoID)
+		}
+	}
+
+	// A rerun flag on a job that has not started asks for a second ingest
+	// of a repository the first one has not read yet. See
+	// clearRerunOnUnstartedSQL for why that is wrong rather than merely
+	// redundant, and for the race that reaches it.
+	if len(flagged) > 0 {
+		if _, err := tx.Exec(ctx, clearRerunOnUnstartedSQL, flagged); err != nil {
+			return nil, fmt.Errorf("jobs: clear rerun on %d unstarted jobs: %w", len(flagged), err)
 		}
 	}
 
@@ -319,24 +393,39 @@ func Enqueue(ctx context.Context, tx pgx.Tx, reqs []EnqueueRequest) ([]EnqueueRe
 //
 // A repository with no live job is not an error and is simply absent from
 // the result, so the return value is the honest answer to "what did this
-// interrupt?" — which is what a caller logs.
+// interrupt?" — which is what a caller logs, and what a caller widening a
+// stand-down `UPDATE` should drive off (21-04).
 //
-// ⚠ IT IS NOT TENANT-SCOPED, AND THE DATABASE WILL NOT SCOPE IT FOR YOU.
-// `ingestion_jobs` has no row-level security (21-CONTEXT L5), and this
-// statement touches neither organization_id nor repository_id, so
-// trg_ingestion_jobs_tenant never fires. A repository id belonging to
-// another organization is superseded just as readily as one of the
-// caller's. THE OBLIGATION: pass only repository ids this same transaction
-// has already read out of `repositories`, which IS row-level-security
-// scoped. Connect reads its id through a `FOR UPDATE OF r` lookup and
-// passes that. Pinned, as a measured property rather than an assumption, by
-// TestSupersedeLive_IsNotScopedByTheDatabase.
-func SupersedeLive(ctx context.Context, tx pgx.Tx, repositoryIDs []string) ([]string, error) {
+// ⚠ organizationID IS AN AUTHORIZATION INPUT, NOT A CONVENIENCE. It is the
+// only tenant scope this statement has, because the database supplies none:
+// `ingestion_jobs` has no row-level security (21-CONTEXT L5), and the
+// UPDATE touches neither organization_id nor repository_id, so
+// trg_ingestion_jobs_tenant never fires. Enqueue is guarded — its
+// BEFORE INSERT trigger refuses a mismatched tenant with 42501 — and this
+// is the one statement in the package where that is not true.
+//
+// A repository belonging to another organization therefore matches nothing
+// and is absent from the result. That is deliberate: it makes a caller's
+// resolution bug a silent no-op instead of a successful cross-tenant
+// cancellation of somebody else's in-flight ingest. The case that makes it
+// worth a predicate is 21-04's: a webhook resolves repositories by
+// `github_repo_id`, which `idx_repositories_project_github_repo` makes
+// unique only PER PROJECT, never globally. Pinned by
+// TestSupersedeLive_CancelsNothingForAnotherTenant.
+//
+// organizationID must be the CALLER'S OWN tenant — the one its transaction
+// is scoped to — and not a value taken from a request.
+func SupersedeLive(ctx context.Context, tx pgx.Tx, organizationID string, repositoryIDs []string) ([]string, error) {
 	if tx == nil {
 		return nil, ErrNoTransaction
 	}
 	if len(repositoryIDs) == 0 {
 		return nil, nil
+	}
+
+	orgID, err := canonicalUUID(organizationID)
+	if err != nil {
+		return nil, fmt.Errorf("jobs: supersede: organization id: %w", err)
 	}
 
 	ids := make([]string, 0, len(repositoryIDs))
@@ -353,7 +442,7 @@ func SupersedeLive(ctx context.Context, tx pgx.Tx, repositoryIDs []string) ([]st
 		ids = append(ids, id)
 	}
 
-	rows, err := tx.Query(ctx, supersedeLiveSetSQL, ids)
+	rows, err := tx.Query(ctx, supersedeLiveSetSQL, ids, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("jobs: supersede live jobs for %d repositories: %w", len(ids), err)
 	}

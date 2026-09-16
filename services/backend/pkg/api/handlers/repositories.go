@@ -738,12 +738,14 @@ func (h *RepositoriesHandler) Connect(w http.ResponseWriter, r *http.Request) {
 		// enforces the order, because through the upsert there is no
 		// collision to raise.
 		//
-		// SupersedeLive is not tenant-scoped by the database. It is safe
-		// here because created.ID came out of `repositories` — which is —
-		// in this same transaction. See its doc comment.
+		// SupersedeLive takes the organization because the database gives
+		// that statement no scope of its own — see its doc comment. orgID
+		// is the tenant this transaction is already scoped to, read from
+		// `github_installations` under RLS above, not anything the request
+		// supplied.
 		if decision == connectRelink {
 			var serr error
-			if superseded, serr = jobs.SupersedeLive(ctx, tx, []string{created.ID}); serr != nil {
+			if superseded, serr = jobs.SupersedeLive(ctx, tx, orgID, []string{created.ID}); serr != nil {
 				return fmt.Errorf("supersede live ingestion job: %w", serr)
 			}
 		}
@@ -815,9 +817,11 @@ func logConnectOutcome(
 	}
 	attrs = append(attrs,
 		slog.String("job_id", enqueued[0].JobID),
-		// true means a job was already live and has been flagged
-		// needs_rerun instead — the L7 push-against-a-live-job case.
-		slog.Bool("flagged_existing_job", enqueued[0].WasExisting))
+		// true means a job was already live and this call joined it rather
+		// than creating a second one — the L7 push-against-a-live-job case.
+		// NOT "a rerun is now pending": a job that had not started has its
+		// flag cleared again in the same transaction (see pkg/jobs).
+		slog.Bool("joined_existing_job", enqueued[0].WasExisting))
 	slog.Info("connect repository: ingestion job enqueued", attrs...)
 }
 

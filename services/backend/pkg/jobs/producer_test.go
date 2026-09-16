@@ -65,6 +65,11 @@ func TestEnqueue_CreatesOneQueuedJobAndProjectsPending(t *testing.T) {
 // A push against a live job flags it instead of queueing a second one
 // (L7), and the projection is deliberately NOT rewritten: the live job owns
 // `sync_state` from the moment it is claimed.
+//
+// The job is CLAIMED first, which matters: a job that has not started has
+// its flag cleared again in the same transaction — see
+// TestEnqueue_ClearsARerunFlagOnlyOnAJobThatHasNotStarted — so an unclaimed
+// job would be the wrong fixture for the flag half of this.
 func TestEnqueue_ASecondEnqueueFlagsTheLiveJobAndLeavesTheProjection(t *testing.T) {
 	pool := isolation.SetupTestDB(t)
 
@@ -74,6 +79,7 @@ func TestEnqueue_ASecondEnqueueFlagsTheLiveJobAndLeavesTheProjection(t *testing.
 
 		// A worker has claimed it since; `syncing` is what the second
 		// enqueue must not stomp.
+		claim(t, pool, first.JobID, "worker-1")
 		setSyncState(t, pool, orgA, orgA.RepoID, "syncing")
 
 		second := enqueueOne(t, pool, orgA, orgA.RepoID, JobTypeIncremental)
@@ -210,7 +216,7 @@ func TestSupersedeLive_ThenEnqueueInOneTransaction(t *testing.T) {
 		require.NoError(t, err)
 		defer func() { _ = tx.Rollback(ctx) }()
 
-		superseded, err := SupersedeLive(ctx, tx, []string{orgA.RepoID, quiet})
+		superseded, err := SupersedeLive(ctx, tx, orgA.ID, []string{orgA.RepoID, quiet})
 		require.NoError(t, err)
 		require.Equal(t, []string{orgA.RepoID}, superseded,
 			"only repositories that actually had a live job are reported")
@@ -263,7 +269,7 @@ func TestSupersedeLive_TheWrongOrderLosesTheJobSilently(t *testing.T) {
 		require.True(t, results[0].WasExisting)
 		require.Equal(t, old, results[0].JobID)
 
-		superseded, err := SupersedeLive(ctx, tx, []string{orgA.RepoID})
+		superseded, err := SupersedeLive(ctx, tx, orgA.ID, []string{orgA.RepoID})
 		require.NoError(t, err)
 		require.Equal(t, []string{orgA.RepoID}, superseded)
 		require.NoError(t, tx.Commit(ctx))
@@ -320,36 +326,164 @@ func TestEnqueue_AnotherTenantsRepositoryIsRefusedAndNothingIsWritten(t *testing
 	})
 }
 
-// ⚠ SupersedeLive is NOT scoped, and this test is here to keep that a
-// measured fact rather than a surprise. `ingestion_jobs` has no row-level
-// security, and the statement touches neither organization_id nor
-// repository_id, so trg_ingestion_jobs_tenant never fires.
+// ⚠ THE ONE STATEMENT IN THIS PACKAGE THE DATABASE DOES NOT SCOPE.
 //
-// The obligation the doc comment states — pass only ids the same
-// transaction has already read out of `repositories` — is the ONLY thing
-// standing between a caller and another tenant's queue. Connect satisfies
-// it through its `FOR UPDATE OF r` lookup.
-func TestSupersedeLive_IsNotScopedByTheDatabase(t *testing.T) {
+// `ingestion_jobs` has no row-level security, and the supersede touches
+// neither organization_id nor repository_id, so trg_ingestion_jobs_tenant
+// never fires — where the enqueue's BEFORE INSERT trigger refuses a
+// mismatched tenant with 42501 (the test above). The `AND organization_id
+// = $2` predicate is the whole of the scope, which is why it is tested
+// head-on rather than assumed.
+//
+// It commits, deliberately: a rolled-back transaction would pass even if
+// the predicate did nothing.
+//
+// The case this exists for is 21-04's. A webhook resolves repositories by
+// `github_repo_id`, which `idx_repositories_project_github_repo` makes
+// unique only PER PROJECT, so a less careful resolution can hand this
+// function another tenant's repository. It must cancel nothing.
+func TestSupersedeLive_CancelsNothingForAnotherTenant(t *testing.T) {
 	pool := isolation.SetupTestDB(t)
 	ctx := context.Background()
 
 	isolation.WithTwoOrgs(t, pool, func(orgA, orgB *isolation.TestOrg) {
-		foreign := seedJob(t, pool, orgB, orgB.RepoID, "queued", jobOpts{})
+		foreign := seedJob(t, pool, orgB, orgB.RepoID, "running", jobOpts{LeaseOwner: "worker-b"})
+		own := seedJob(t, pool, orgA, orgA.RepoID, "running", jobOpts{LeaseOwner: "worker-a"})
 
 		tx, err := isolation.TenantScope(ctx, pool, orgA.ID)
 		require.NoError(t, err)
 		defer func() { _ = tx.Rollback(ctx) }()
 
-		superseded, err := SupersedeLive(ctx, tx, []string{orgB.RepoID})
+		// Both ids in one call, the shape a bulk webhook would produce.
+		superseded, err := SupersedeLive(ctx, tx, orgA.ID, []string{orgB.RepoID, orgA.RepoID})
 		require.NoError(t, err,
-			"no error: the database does not scope this statement")
-		require.Equal(t, []string{orgB.RepoID}, superseded,
-			"org B's live job was superseded from inside org A's transaction — "+
-				"which is why the caller must only pass ids it read under its own scope")
-		require.NoError(t, tx.Rollback(ctx))
+			"a foreign id is not an error; it simply matches nothing")
+		require.Equal(t, []string{orgA.RepoID}, superseded,
+			"only the caller's own repository may be reported as superseded")
+		require.NoError(t, tx.Commit(ctx))
 
-		require.Equal(t, "queued", jobState(t, pool, foreign),
-			"rolled back, so nothing is left behind by this test")
+		require.Equal(t, "running", jobState(t, pool, foreign),
+			"org B's in-flight ingest must survive a cancellation aimed at it from org A")
+		require.Equal(t, []string{foreign}, liveJobIDs(t, pool, orgB.RepoID),
+			"and it must still be the live job for its repository")
+		require.Equal(t, "superseded", jobState(t, pool, own))
+
+		// The organization id is validated like every other id here.
+		tx2, err := isolation.TenantScope(ctx, pool, orgA.ID)
+		require.NoError(t, err)
+		defer func() { _ = tx2.Rollback(ctx) }()
+		_, err = SupersedeLive(ctx, tx2, "urn:uuid:"+orgA.ID, []string{orgA.RepoID})
+		require.ErrorContains(t, err, "canonical")
+
+		isolation.AssertNoRepositoryTenantDrift(t, pool)
+	})
+}
+
+// =====================================================================
+// A rerun flag on a job that has not started
+// =====================================================================
+//
+// Found in PR #39's review. Two concurrent connects of a repository with no
+// row yet have nothing to serialise on, so both classify as `new` and the
+// loser's enqueue takes the upsert's conflict branch against the winner's
+// brand-new job — leaving `needs_rerun = true` on a job at `attempts = 0`
+// that has not run. 21-05 turns that flag into a SECOND full ingest, so one
+// double-clicked Connect costs two.
+//
+// The L7 upsert is NOT changed: 21-02 proved it and 21-05 ports it to
+// Python. The flag is cleared afterwards, in the same transaction, and only
+// where clearing it is provably safe.
+
+func TestEnqueue_ClearsARerunFlagOnlyOnAJobThatHasNotStarted(t *testing.T) {
+	pool := isolation.SetupTestDB(t)
+
+	cases := []struct {
+		name    string
+		state   string
+		opts    jobOpts
+		cleared bool
+		why     string
+	}{
+		{
+			name:    "a queued job that has never run",
+			state:   "queued",
+			opts:    jobOpts{},
+			cleared: true,
+			why: "it has not read the repository yet, so it will cover this work " +
+				"when it is claimed; the flag would only buy a duplicate ingest",
+		},
+		{
+			name:    "a queued job that has already attempted",
+			state:   "queued",
+			opts:    jobOpts{Attempts: 2},
+			cleared: false,
+			why: "an earlier attempt may have recorded last_stage and progress that " +
+				"a retry resumes from, so it cannot be assumed to re-read the repository",
+		},
+		{
+			name:    "a running job",
+			state:   "running",
+			opts:    jobOpts{Attempts: 1, LeaseOwner: "worker-1"},
+			cleared: false,
+			why:     "a worker has the repository open at some commit; everything after it is a real rerun",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			isolation.WithTwoOrgs(t, pool, func(orgA, _ *isolation.TestOrg) {
+				live := seedJob(t, pool, orgA, orgA.RepoID, tc.state, tc.opts)
+				require.False(t, needsRerun(t, pool, live), "the fixture starts unflagged")
+
+				result := enqueueOne(t, pool, orgA, orgA.RepoID, JobTypeIncremental)
+				require.True(t, result.WasExisting)
+				require.Equal(t, live, result.JobID)
+
+				require.Equal(t, !tc.cleared, needsRerun(t, pool, live), tc.why)
+				require.Equal(t, tc.state, jobState(t, pool, live),
+					"clearing the flag must not move the job")
+				require.Len(t, liveJobIDs(t, pool, orgA.RepoID), 1)
+
+				isolation.AssertNoRepositoryTenantDrift(t, pool)
+			})
+		})
+	}
+}
+
+// A flag that was ALREADY set, on a job that has not started, is cleared
+// too — and correctly so, by the same argument. It is called out because
+// "clear the flag this call just set" is the tempting narrower reading, and
+// the statement deliberately does not try to tell the two apart.
+func TestEnqueue_ClearsAPreviouslySetFlagOnAnUnstartedJob(t *testing.T) {
+	pool := isolation.SetupTestDB(t)
+
+	isolation.WithTwoOrgs(t, pool, func(orgA, _ *isolation.TestOrg) {
+		live := seedJob(t, pool, orgA, orgA.RepoID, "queued", jobOpts{NeedsRerun: true})
+
+		result := enqueueOne(t, pool, orgA, orgA.RepoID, JobTypeIncremental)
+		require.True(t, result.WasExisting)
+		require.False(t, needsRerun(t, pool, live),
+			"a job that has not started covers every push that arrived before it was claimed")
+	})
+}
+
+// The clear must not reach a job this call did not flag — a different
+// repository's unstarted job with a rerun pending keeps it.
+func TestEnqueue_DoesNotClearAnotherRepositorysRerunFlag(t *testing.T) {
+	pool := isolation.SetupTestDB(t)
+
+	isolation.WithTwoOrgs(t, pool, func(orgA, _ *isolation.TestOrg) {
+		other := insertRepository(t, pool, orgA, "bystander")
+		bystander := seedJob(t, pool, orgA, other, "queued", jobOpts{NeedsRerun: true})
+		mine := seedJob(t, pool, orgA, orgA.RepoID, "queued", jobOpts{})
+
+		result := enqueueOne(t, pool, orgA, orgA.RepoID, JobTypeIncremental)
+		require.Equal(t, mine, result.JobID)
+
+		require.True(t, needsRerun(t, pool, bystander),
+			"the clear is restricted to the jobs this call flagged")
+
+		isolation.AssertNoRepositoryTenantDrift(t, pool)
 	})
 }
 
@@ -473,9 +607,9 @@ func TestProducer_EmptyInputAndNilTransaction(t *testing.T) {
 	require.ErrorIs(t, err, ErrNoTransaction)
 	_, err = Enqueue(ctx, nil, []EnqueueRequest{{}})
 	require.ErrorIs(t, err, ErrNoTransaction)
-	_, err = SupersedeLive(ctx, nil, nil)
+	_, err = SupersedeLive(ctx, nil, "", nil)
 	require.ErrorIs(t, err, ErrNoTransaction)
-	_, err = SupersedeLive(ctx, nil, []string{uuid.NewString()})
+	_, err = SupersedeLive(ctx, nil, uuid.NewString(), []string{uuid.NewString()})
 	require.ErrorIs(t, err, ErrNoTransaction)
 
 	isolation.WithTwoOrgs(t, pool, func(orgA, _ *isolation.TestOrg) {
@@ -487,7 +621,7 @@ func TestProducer_EmptyInputAndNilTransaction(t *testing.T) {
 		require.NoError(t, err, "an empty batch is not an error")
 		require.Empty(t, results)
 
-		superseded, err := SupersedeLive(ctx, tx, nil)
+		superseded, err := SupersedeLive(ctx, tx, orgA.ID, nil)
 		require.NoError(t, err)
 		require.Empty(t, superseded)
 	})
@@ -502,7 +636,7 @@ func TestSupersedeLive_RejectsANonCanonicalID(t *testing.T) {
 		require.NoError(t, err)
 		defer func() { _ = tx.Rollback(ctx) }()
 
-		_, err = SupersedeLive(ctx, tx, []string{"urn:uuid:" + orgA.RepoID})
+		_, err = SupersedeLive(ctx, tx, orgA.ID, []string{"urn:uuid:" + orgA.RepoID})
 		require.ErrorContains(t, err, "canonical")
 	})
 }
@@ -661,6 +795,21 @@ func syncStateOf(t *testing.T, pool *pgxpool.Pool, org *isolation.TestOrg, repoI
 	require.NoError(t, tx.QueryRow(ctx,
 		`SELECT sync_state FROM repositories WHERE id = $1`, repoID).Scan(&state))
 	return state
+}
+
+// claim moves a job to `running` with a lease, the way a worker does
+// (21-05). A test that wants to observe a rerun FLAG needs it: an unstarted
+// job has that flag cleared again by the enqueue itself.
+func claim(t *testing.T, pool *pgxpool.Pool, jobID, owner string) {
+	t.Helper()
+	tag, err := pool.Exec(context.Background(), `
+		UPDATE ingestion_jobs
+		SET state = 'running', lease_owner = $2,
+		    lease_expires_at = NOW() + INTERVAL '5 minutes',
+		    attempts = attempts + 1, updated_at = NOW()
+		WHERE id = $1`, jobID, owner)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, tag.RowsAffected())
 }
 
 func jobTypeOf(t *testing.T, q querier, id string) string {

@@ -800,6 +800,103 @@ func TestRepositoriesConnect_ConcurrentRelinksLeaveOneLiveJob(t *testing.T) {
 	})
 }
 
+// ⚠ A DOUBLE-CLICKED CONNECT MUST NOT COST TWO INGESTS.
+//
+// The one HTTP path that reaches the enqueue upsert's conflict branch, and
+// the reason it needs a guard. Two concurrent connects of a repository that
+// has NO ROW YET have nothing for `FOR UPDATE OF r` to serialise on, so
+// both classify as `new`, both run the repositories upsert, and the loser's
+// enqueue conflicts with the winner's brand-new job. L8 holds — both 201,
+// one repository row, one live job — but the flag the upsert sets would
+// make 21-05 run a SECOND full ingest of a repository that was ingested
+// once. Before this phase the same race was idempotent.
+//
+// Found in PR #39's review, which reproduced it 3/3. The fix is in
+// pkg/jobs: a rerun flag on a `queued` job at `attempts = 0` is cleared in
+// the same transaction, because that job has not read the repository yet.
+//
+// The barrier is inside the stub lister, which the handler calls BETWEEN
+// its two transactions — the only place both requests can be held after
+// tx1 and before the write.
+func TestRepositoriesConnect_ConcurrentFirstConnectsDoNotDoubleIngest(t *testing.T) {
+	pool := isolation.SetupTestDB(t)
+
+	const rounds = 5
+
+	isolation.WithTwoOrgs(t, pool, func(orgA, _ *isolation.TestOrg) {
+		tokenA := testjwt.Sign(orgA.OwnerSupabaseID, orgA.ID, "owner")
+		instA := seedInstallation(t, pool, orgA.ID, 564000)
+
+		lister := &stubLister{}
+		url := newConnectServer(t, pool, lister)
+
+		for round := 1; round <= rounds; round++ {
+			// A repository that does not exist yet, fresh each round, so
+			// no row is deleted and no other test's rows are touched.
+			ghID := int64(4250000 + round)
+			cloneURL := fmt.Sprintf("https://github.com/someone/first-connect-%d.git", round)
+
+			var arrived sync.WaitGroup
+			arrived.Add(2)
+			release := make(chan struct{})
+			lister.mu.Lock()
+			lister.repos = []github.Repository{{
+				ID: ghID, Name: fmt.Sprintf("first-connect-%d", round), Visibility: "private",
+				DefaultBranch: "main", CloneURL: cloneURL, SizeKB: 9,
+			}}
+			lister.beforeReturn = func() {
+				arrived.Done()
+				<-release
+			}
+			lister.mu.Unlock()
+
+			var (
+				mu       sync.Mutex
+				statuses []int
+				bodies   []string
+			)
+			var done sync.WaitGroup
+			done.Add(2)
+			for i := 0; i < 2; i++ {
+				go func() {
+					defer done.Done()
+					status, body := doRepoRequest(t, url, http.MethodPost, "/api/repositories", tokenA,
+						fmt.Sprintf(`{"github_repo_id":%d,"installation_id":%q}`, ghID, instA))
+					mu.Lock()
+					defer mu.Unlock()
+					statuses = append(statuses, status)
+					bodies = append(bodies, body)
+				}()
+			}
+
+			// Both are now past tx1 and about to open tx2. Release them
+			// together into the write.
+			arrived.Wait()
+			close(release)
+			done.Wait()
+
+			for i, status := range statuses {
+				require.Equalf(t, http.StatusCreated, status,
+					"round %d: both concurrent first connects must succeed; body=%s", round, bodies[i])
+			}
+
+			repoID := onlyRepositoryWithGitHubID(t, pool, orgA, ghID)
+			live := liveJobsFor(t, pool, repoID)
+			require.Lenf(t, live, 1, "round %d: exactly one live job", round)
+			require.Equalf(t, "queued", live[0].State, "round %d", round)
+			require.Equalf(t, 0, live[0].Attempts, "round %d: the job has not started", round)
+			require.Falsef(t, live[0].NeedsRerun,
+				"round %d: a rerun flag on a job that has never run buys a SECOND full ingest "+
+					"of a repository the first one has not read yet", round)
+			require.Lenf(t, jobsFor(t, pool, repoID), 1,
+				"round %d: and there must be no second job either", round)
+			require.Equalf(t, "pending", syncStateOfRepo(t, pool, orgA.ID, repoID), "round %d", round)
+		}
+
+		isolation.AssertNoRepositoryTenantDrift(t, pool)
+	})
+}
+
 // ⚠ THIS IS WHAT PINS `FOR UPDATE OF r`.
 //
 // Connect's adopt lookup joins `projects`, and a bare `FOR UPDATE` locks
@@ -1062,6 +1159,28 @@ func setInstallation(t *testing.T, pool *pgxpool.Pool, orgID, repoID, installati
 			`UPDATE repositories SET installation_id = $2 WHERE id = $1`, repoID, installationID)
 		return err
 	}))
+}
+
+// onlyRepositoryWithGitHubID asserts the organization holds exactly one row
+// for that GitHub repository and returns its id. Read under tenant scope,
+// because `repositories` carries row-level security.
+func onlyRepositoryWithGitHubID(t *testing.T, pool *pgxpool.Pool, org *isolation.TestOrg, ghID int64) string {
+	t.Helper()
+	ctx := auth.ContextWithOrgID(context.Background(), org.ID)
+	scoper := db.NewTenantScoper(pool)
+
+	var ids []string
+	require.NoError(t, scoper.InTenantTx(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(context.Background(),
+			`SELECT id::text FROM repositories WHERE github_repo_id = $1 ORDER BY id`, ghID)
+		if err != nil {
+			return err
+		}
+		ids, err = pgx.CollectRows(rows, pgx.RowTo[string])
+		return err
+	}))
+	require.Len(t, ids, 1, "two concurrent connects must produce exactly one repository row")
+	return ids[0]
 }
 
 func syncStateOfRepo(t *testing.T, pool *pgxpool.Pool, orgID, repoID string) string {
