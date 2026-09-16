@@ -181,12 +181,14 @@ class TestSanitizeError:
         assert len(result) == MAX_ERROR_LENGTH
         assert result.endswith("[truncated]")
 
-    def test_it_redacts_before_truncating(self):
-        """⚠ The order is the guard.
+    def test_a_token_straddling_the_truncation_point_is_still_redacted(self):
+        """The boundary case, which is the one worth pinning.
 
-        Truncating first would cut this token in half and leave most of it
-        in the column -- still a secret, and one that looks redacted-ish to
-        a reader skimming the admin endpoint.
+        NOT a test of the redact-then-truncate ORDER: measured, the other
+        order is equally safe, because a truncated token's prefix still
+        matches the pattern. See `_sanitize_text`'s docstring and mutation
+        X. What this holds is the property both orders must have -- that a
+        token overlapping the cut leaves nothing behind.
         """
         secret = "ghs_" + "Z" * 300
         error = Exception("y" * (MAX_ERROR_LENGTH - 100) + secret + " trailing")

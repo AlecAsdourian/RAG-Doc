@@ -1039,6 +1039,87 @@ def test_the_unscoped_statements_do_not_depend_on_connection_history(
     assert sweep(db_conn) >= 0
 
 
+def test_a_job_at_max_attempts_is_not_claimed(db_conn, with_two_orgs, worker_id):
+    """⚠ `attempts < max_attempts`, which applies to BOTH claim branches.
+
+    Without it a job that reliably kills its worker is reclaimed forever
+    and never reaches `dead`, because the transition to `dead` was to be
+    written by the worker -- which is the thing that does not survive. The
+    sweeper is what then reaches the row (below); the claim's job is to
+    stop competing with it.
+
+    Added after the mutation table found this clause unguarded on the
+    Python side: 21-02's Go suite pins it, and a port can drift from what
+    it copied.
+    """
+    org_a, _ = with_two_orgs
+    job_id = seed_job(db_conn, org_a)
+    backdate(db_conn, job_id)
+    exhaust(db_conn, job_id)
+
+    claim(db_conn, worker_id, LEASE)
+
+    row = job_row(db_conn, job_id)
+    assert row["state"] == "queued", "an exhausted job was claimed"
+    assert row["lease_owner"] is None
+    assert row["attempts"] == row["max_attempts"]
+
+
+def test_a_running_job_with_a_null_lease_is_reclaimed(db_conn, with_two_orgs):
+    """⚠ `lease_expires_at IS NULL`, and why `NULL < NOW()` is not enough.
+
+    `NULL < NOW()` evaluates to NULL, not true, so a `running` row with a
+    null lease matched neither branch: invisible to every claim while still
+    occupying the partial unique index, and therefore blocking every future
+    job for that repository, silently and forever. A null lease is
+    reachable from any partial write or manual intervention.
+    """
+    org_a, _ = with_two_orgs
+    worker_a, worker_b = new_worker_id(), new_worker_id()
+
+    job_id = seed_job(db_conn, org_a)
+    backdate(db_conn, job_id)
+    claimed_job(db_conn, worker_a, job_id)
+    sql(
+        db_conn,
+        "UPDATE ingestion_jobs SET lease_expires_at = NULL WHERE id = %s",
+        (job_id,),
+    )
+    assert job_row(db_conn, job_id)["state"] == "running"
+
+    reclaimed = claimed_job(db_conn, worker_b, job_id)
+    assert reclaimed.attempts == 2
+    assert job_row(db_conn, job_id)["lease_owner"] == worker_b
+
+
+def test_the_claim_takes_the_oldest_claimable_job_whatever_its_tenant(
+    db_conn, with_two_orgs, worker_id
+):
+    """⚠ One queue, ordered by `run_after`, with no organization filter.
+
+    `claimSQL` is queue-wide and cross-tenant BY CONSTRUCTION (21-CONTEXT
+    L5): a worker learns its tenant FROM the row it claimed, so scoping the
+    claim by the answer would be circular. That is also why neither this
+    statement nor the sweeper may ever run inside a request handler.
+
+    The ordering half matters on its own: without `ORDER BY run_after` a
+    backed-off job could be picked ahead of one that has been waiting, and
+    every other claim assertion in this file would start passing by luck.
+    """
+    org_a, org_b = with_two_orgs
+    older = seed_job(db_conn, org_a)
+    newer = seed_job(db_conn, org_b)
+    backdate(db_conn, older, offset_seconds=0)
+    backdate(db_conn, newer, offset_seconds=100)
+
+    job = claimed_job(db_conn, worker_id, older)
+    assert str(job.organization_id) == org_a.id, (
+        "the claim must report the tenant of the row it took, because "
+        "nothing else will tell the worker which tenant to scope to"
+    )
+    assert job_row(db_conn, newer)["state"] == "queued"
+
+
 def test_claim_returns_none_when_nothing_is_claimable(db_conn, with_two_orgs, worker_id):
     """Not an error, and not an empty Job: the caller idles and polls."""
     org_a, _ = with_two_orgs

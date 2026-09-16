@@ -485,10 +485,18 @@ _TRUNCATION_MARKER = "... [truncated]"
 def _sanitize_text(text: str) -> str:
     """Redact token-shaped substrings, then truncate to MAX_ERROR_LENGTH.
 
-    ⚠ THE ORDER IS LOAD-BEARING. Truncating first can cut a token in half
-    and leave the first 1,900 characters of it in the column, which is
-    still a secret. Redacting first replaces the whole token however long
-    it is, and only then is what remains trimmed.
+    REDACTING FIRST IS NOT A SECURITY GUARD, and the first version of this
+    comment claimed it was ("truncating first can cut a token in half and
+    leave most of it in the column"). MEASURED, that is false: a truncated
+    token's prefix still matches the pattern, so truncate-then-redact
+    replaces the fragment too. Recorded as mutation X, a deliberate
+    survivor.
+
+    What redacting first does buy is that the OUTPUT LENGTH is computed
+    over the text a reader will actually get, so a message made entirely of
+    tokens collapses to a few markers instead of being trimmed to 2,000
+    characters of `[REDACTED]`. That is tidiness, and it is stated as
+    tidiness.
     """
     redacted = _TOKEN_PATTERN.sub(_REDACTED, text)
     if len(redacted) <= MAX_ERROR_LENGTH:
