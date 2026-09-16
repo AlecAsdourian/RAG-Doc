@@ -54,6 +54,35 @@ BEGIN
   FOR org IN SELECT id FROM public.organizations LOOP
     PERFORM set_config('app.current_tenant', org.id::text, true);
 
+    -- ⚠ THE PROOF THAT THE LINE ABOVE RAN, AND IT IS NOT DECORATION.
+    --
+    -- 000013 could prove its backfill with `SET NOT NULL`, whose
+    -- validation scan ignores row-level security. This migration has no
+    -- such statement, and MEASURED, a backfill that lost its tenant scope
+    -- fails in two different ways depending on who runs it:
+    --
+    --   - as a SUPERUSER (the test harness): 42501 from trg_assert_tenant,
+    --     because row-level security is bypassed, a row reaches the
+    --     `syncing` UPDATE below and the row trigger fires. Loud.
+    --   - as the RLS-SUBJECT OWNER WE DEPLOY AS: nothing at all. Every
+    --     read is filtered to zero rows before a row trigger can fire, the
+    --     `DO` block succeeds, no job is created, and the migration is
+    --     recorded as applied. Measured on a scratch database in the
+    --     deployment shape: exit 0, `DO`, zero rows backfilled.
+    --
+    -- The second is the shape that matters and the one nothing else here
+    -- would catch, so the assertion is explicit. It costs one
+    -- `current_setting` per organization. 21-01 measured the same
+    -- asymmetry for 000013's backfill; this is that lesson, applied.
+    IF current_setting('app.current_tenant', true) IS DISTINCT FROM org.id::text THEN
+      RAISE EXCEPTION
+        'backfill is not scoped to organization %: app.current_tenant is %',
+        org.id, coalesce(current_setting('app.current_tenant', true), '<unset>')
+        USING ERRCODE = '42501',
+              HINT = 'Every statement below reads or writes a table with row-level '
+                     'security; unscoped, they silently match nothing.';
+    END IF;
+
     -- WHAT MAKES A REPOSITORY ELIGIBLE, and why each clause is here:
     --
     --   - `sync_state IN ('pending','syncing')` — the two states the old
