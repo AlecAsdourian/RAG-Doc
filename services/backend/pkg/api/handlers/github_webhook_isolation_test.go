@@ -16,10 +16,28 @@ package handlers_test
 //
 // The `push` and `installation_repositories` payloads were NOT captured:
 // no such delivery has ever been made to a capture server. They are built
-// here from GitHub's documentation, and `TestGitHubWebhook_UnverifiedShapes`
-// says so out loud. See 20-05-SUMMARY.md; capturing them is a real task,
-// not a formality — capturing the installation payloads is what corrected
-// three specs in 20-02.
+// here from GitHub's documentation. See 20-05-SUMMARY.md; capturing them is
+// a real task, not a formality — capturing the installation payloads is
+// what corrected three specs in 20-02.
+//
+// THE CONVENTION, STATED EXACTLY, because the looser version of it was
+// claimed and was not true. Per-event subtests that drive an unverified
+// payload carry an `UNVERIFIED_` prefix. FIVE tests drive one without the
+// prefix — `AddedOnlyTouchesTheOwningOrganization` and
+// `CrossTenant_AWebhookCannotTouchAnotherOrgsRepositories` (both from
+// 20-05), and 21-04's `RedeliveryOfAFailedDeliveryCreatesNoSecondLiveJob`,
+// `TestGitHubWebhook_BulkAddedRacingARelinkQueuesEveryRepository` and
+// `TestGitHubWebhook_DeliveriesNeverTouchAnotherOrgsJobs`. All five are
+// about a property that spans events — tenancy, redelivery, the queue —
+// rather than about one event's behaviour, so each carries the caveat in
+// its own comment instead. Renaming them was considered and rejected: the
+// prefix earns its place by marking the per-event cases a reader would
+// otherwise take as evidence about the SHAPE, and spreading it over every
+// test that happens to send a `push` body would make it mean nothing.
+//
+// (An earlier version of this header pointed at a
+// `TestGitHubWebhook_UnverifiedShapes` that has never existed anywhere in
+// the repo.)
 
 import (
 	"context"
@@ -28,6 +46,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -633,7 +652,7 @@ func TestGitHubWebhook(t *testing.T) {
 			status, resp := deliver(t, srv, "installation_repositories",
 				uniqueDelivery("repos-removed"), []byte(body), "")
 			require.Equal(t, http.StatusAccepted, status)
-			require.Contains(t, resp, "1 live jobs superseded")
+			require.Contains(t, resp, "1 live job superseded")
 
 			state, installation := repoSyncState(t, pool, orgA.ID, repo)
 			require.Equal(t, "never_synced", state)
@@ -979,6 +998,11 @@ func TestGitHubWebhook(t *testing.T) {
 		})
 
 		t.Run("RedeliveryOfAFailedDeliveryCreatesNoSecondLiveJob", func(t *testing.T) {
+			// UNVERIFIED SHAPE (ISS-019): the `push` body below is
+			// documentation-derived. No `UNVERIFIED_` prefix, because this
+			// is about redelivery rather than about what `push` does — see
+			// the convention in this file's header.
+			//
 			// ⚠ EVERY HANDLER HERE RUNS TWICE. `claimDelivery` re-claims a
 			// 'failed' row immediately, so GitHub redelivering an event we
 			// answered 500 to runs the whole handler again — which the
@@ -1083,6 +1107,46 @@ func seedRetryingJob(t *testing.T, pool *pgxpool.Pool, orgID, repoID string, att
 // against each other. `webhookServer` gives the router a stub lister that
 // reports nothing, which is right for every test that never connects and
 // wrong for this one.
+// buildWebhookRequest signs and builds a delivery WITHOUT sending it, so a
+// barrier can release the send rather than the signing.
+//
+// It is `deliver` split in half. The halves are kept next to each other
+// deliberately: if the headers ever diverge, the barrier test stops
+// exercising the real receiver and nothing would say so.
+func buildWebhookRequest(t *testing.T, baseURL, event, deliveryID string, body []byte) *http.Request {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/webhooks/github",
+		strings.NewReader(string(body)))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Event", event)
+	req.Header.Set("X-GitHub-Delivery", deliveryID)
+	req.Header.Set("X-Hub-Signature-256", signPayload(TestGitHubWebhookSecret, body))
+	return req
+}
+
+// buildConnectRequest is the same split for `POST /api/repositories`.
+func buildConnectRequest(t *testing.T, baseURL, token, body string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/api/repositories",
+		strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	return req
+}
+
+// send performs a pre-built request. This is the only thing the barrier
+// releases.
+func send(t *testing.T, req *http.Request) (int, string) {
+	t.Helper()
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(raw)
+}
+
 func webhookAndConnectServer(
 	t *testing.T, pool *pgxpool.Pool, lister handlers.InstallationRepositoryLister,
 ) string {
@@ -1124,6 +1188,17 @@ func webhookAndConnectServer(
 // status codes alone would pass under the broken design, which is the
 // point.
 //
+// ⚠ WHAT ACTUALLY KILLS THE REGRESSION IS THE BULK SHAPE, NOT THE RACE,
+// and that is worth saying because the name says otherwise. Mutation 18 —
+// enqueue only the first of the three and report success, which is the
+// original bug — fails this test and NOTHING ELSE in the module: every
+// other `added` test carries one repository and cannot see the difference.
+// The race is what makes the fixture realistic (a relink landing on one of
+// the three mid-delivery, which is how the bug was found in review) and it
+// is a second, weaker thing this test buys. PR #40's review made the
+// distinction; the barrier below was tightened in the same round so that
+// the second claim is at least honest.
+//
 // FIVE ROUNDS ON A WARM SERVER. A single cold round proves nothing: the
 // first pays for connection setup and the two actors arrive spread out,
 // which is the opposite of the contention being tested. The servers share
@@ -1131,6 +1206,12 @@ func webhookAndConnectServer(
 // max(4, NumCPU) and CI's runner has two cores — two HTTP requests that
 // each open two transactions can otherwise queue for connections instead
 // of racing.
+//
+// UNVERIFIED SHAPE: the `installation_repositories.added` body below is
+// documentation-derived, like every other one in this file (ISS-019). The
+// name carries no `UNVERIFIED_` prefix because this is a top-level test
+// about the queue rather than one of the per-event cases the prefix marks;
+// the caveat is here instead.
 func TestGitHubWebhook_BulkAddedRacingARelinkQueuesEveryRepository(t *testing.T) {
 	pool := isolation.SetupTestDB(t)
 	ctx := context.Background()
@@ -1198,32 +1279,48 @@ func TestGitHubWebhook_BulkAddedRacingARelinkQueuesEveryRepository(t *testing.T)
 			// that row and the insert branch for the other two.
 			seedRunningJob(t, pool, orgA.ID, repoIDs[0], "worker-bulk-race")
 
+			// ⚠ THE BARRIER RELEASES THE `Do`, NOT THE GOROUTINE.
+			//
+			// An earlier version released `start` and THEN built and signed
+			// each request inside the goroutine, so everything before the
+			// send — HMAC signing, dialling, routing, `claimDelivery`,
+			// `resolveInstallation`, JWT validation on the connect side —
+			// happened after the barrier and the two actors reached their
+			// transactions at genuinely different times. Caught by PR #40's
+			// review. Each request is now fully built first; `ready` says
+			// so, and only then are the two sends released together.
+			webhookReq := buildWebhookRequest(t, srv, "installation_repositories",
+				uniqueDelivery(fmt.Sprintf("bulk-race-%d", round)), []byte(addedBody))
+			connectReq := buildConnectRequest(t, srv, token,
+				fmt.Sprintf(`{"github_repo_id":%d,"installation_id":%q}`,
+					racedGitHubID, relinkTarget))
+
 			var (
-				start       sync.WaitGroup
+				ready       sync.WaitGroup
 				done        sync.WaitGroup
+				release     = make(chan struct{})
 				webhookCode int
 				webhookBody string
 				connectCode int
 				connectResp string
 			)
-			start.Add(1)
+			ready.Add(2)
 			done.Add(2)
 
 			go func() {
 				defer done.Done()
-				start.Wait() // release them together
-				webhookCode, webhookBody = deliver(t, srv, "installation_repositories",
-					uniqueDelivery(fmt.Sprintf("bulk-race-%d", round)), []byte(addedBody), "")
+				ready.Done()
+				<-release
+				webhookCode, webhookBody = send(t, webhookReq)
 			}()
 			go func() {
 				defer done.Done()
-				start.Wait()
-				connectCode, connectResp = doRepoRequest(t, srv, http.MethodPost,
-					"/api/repositories", token,
-					fmt.Sprintf(`{"github_repo_id":%d,"installation_id":%q}`,
-						racedGitHubID, relinkTarget))
+				ready.Done()
+				<-release
+				connectCode, connectResp = send(t, connectReq)
 			}()
-			start.Done()
+			ready.Wait()
+			close(release)
 			done.Wait()
 
 			require.Equalf(t, http.StatusAccepted, webhookCode,
@@ -1273,6 +1370,11 @@ func TestGitHubWebhook_BulkAddedRacingARelinkQueuesEveryRepository(t *testing.T)
 // So both orgs get a repository with the SAME github_repo_id, both have a
 // live job, and only orgA's installations send deliveries. Nothing of
 // orgB's may be created, flagged or cancelled.
+//
+// UNVERIFIED SHAPES (ISS-019): the `installation_repositories.added` body
+// is documentation-derived; the `installation.deleted` one is the shape of
+// a real capture. No `UNVERIFIED_` prefix, because this is about tenancy
+// rather than about either event — see this file's header.
 func TestGitHubWebhook_DeliveriesNeverTouchAnotherOrgsJobs(t *testing.T) {
 	pool := isolation.SetupTestDB(t)
 

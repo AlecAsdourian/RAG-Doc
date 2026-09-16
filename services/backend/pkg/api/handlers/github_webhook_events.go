@@ -485,6 +485,16 @@ func (h *GitHubWebhookHandler) recordAddedRepositories(
 // job that has not read the repository yet will clone at whatever HEAD is
 // current when it is claimed and so already covers the new work. See
 // clearRerunOnUnstartedSQL in pkg/jobs.
+// plural renders a count with the right noun. Outcome strings are read by
+// people in the App's delivery log, and "1 live jobs superseded" is the
+// kind of thing that makes a reader wonder whether the number is right.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, one)
+	}
+	return fmt.Sprintf("%d %s", n, many)
+}
+
 func countEnqueued(results []jobs.EnqueueResult) (queued, joined int) {
 	for _, r := range results {
 		if r.WasExisting {
@@ -561,8 +571,8 @@ func (h *GitHubWebhookHandler) standDownRepositories(
 		slog.Int("repositories_stood_down", len(stoodDown)),
 		slog.Int("live_jobs_superseded", len(superseded)))
 
-	return fmt.Sprintf("removed: %d repositories stood down, %d live jobs superseded",
-		len(stoodDown), len(superseded)), &orgID, nil
+	return fmt.Sprintf("removed: %d repositories stood down, %s superseded",
+		len(stoodDown), plural(len(superseded), "live job", "live jobs")), &orgID, nil
 }
 
 // handlePush marks a repository as needing a sync.
@@ -651,7 +661,16 @@ func (h *GitHubWebhookHandler) handlePush(
 	}
 
 	queued, joined := countEnqueued(enqueued)
-	slog.Info("github webhook: push queued",
+	// ⚠ THE MESSAGE HAS TO MATCH THE OUTCOME, not just the fields. A
+	// constant "push queued" line with `jobs_queued=0` on it over-counts
+	// queues for anyone grepping the message rather than reading the
+	// attributes, and the commonest steady-state case is exactly the one
+	// where nothing was queued (L7).
+	message := "github webhook: push queued"
+	if queued == 0 {
+		message = "github webhook: push joined the live job"
+	}
+	slog.Info(message,
 		slog.String("organization_id", orgID),
 		slog.String("repositories", strings.Join(repoIDs, ",")),
 		slog.Int("jobs_queued", queued),
