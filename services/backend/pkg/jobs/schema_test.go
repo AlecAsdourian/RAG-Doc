@@ -77,6 +77,15 @@ VALUES ($1, $2, $3, 'queued')` + enqueueConflictClause
 
 // supersedeLiveSQL takes a repository's live job out of the live set (L4).
 // It runs BEFORE the enqueue of its replacement, in the same transaction.
+//
+// ⚠ IT DELIBERATELY LEAVES `lease_owner` AND `lease_expires_at` ATTACHED.
+// A supersede is written by a different actor from the worker that holds the
+// lease, and the pair is the only record of which worker was running the job
+// when it was taken away — which 21-07's admin endpoint wants. The
+// consequence is that a lease-fenced statement CANNOT rely on the lease
+// alone to mean "still mine": every one of them also carries
+// `AND state = 'running'`. See clearRerunSQL, where that predicate was
+// missing.
 const supersedeLiveSQL = `
 UPDATE ingestion_jobs SET state = 'superseded', updated_at = NOW()
 WHERE repository_id = $1 AND state IN ('queued','running')`
@@ -173,9 +182,25 @@ WHERE id = $1 AND lease_owner = $2 AND state = 'running'`
 // `... SET needs_rerun = FALSE RETURNING needs_rerun` returns the NEW
 // value, so the worker reads `false` and drops the rerun. `RETURNING OLD.*`
 // would say it directly and is PostgreSQL 18; we run 16.
+//
+// ⚠ `AND state = 'running'` IS PART OF THE FENCE, and it is not in
+// 21-CONTEXT L7's transcription. Found in PR #38's review, measured:
+// `supersedeLiveSQL` leaves `lease_owner` and `lease_expires_at` attached,
+// so without this predicate a superseded worker's clear still matched —
+// `UPDATE 1` — while its `completeSQL` correctly matched zero rows. The
+// worker would consume the rerun flag and then be unable to act on it,
+// losing the rerun WITHOUT leaving the `needs_rerun = true` breadcrumb that
+// W5's silent-loss case at least leaves behind. Pinned by
+// TestIngestionJobs_ClearingARerunIsFencedOnTheRunningState.
+//
+// The alternative fix — having `supersedeLiveSQL` null the lease pair —
+// was rejected: it removes the matching value rather than stating the
+// invariant, it would leave any FUTURE fenced statement exposed, and the
+// lease pair on a superseded row is the only record of which worker was
+// running it, which 21-07's admin endpoint wants.
 const clearRerunSQL = `
 UPDATE ingestion_jobs SET needs_rerun = FALSE, updated_at = NOW()
-WHERE id = $1 AND lease_owner = $2 AND needs_rerun
+WHERE id = $1 AND lease_owner = $2 AND state = 'running' AND needs_rerun
 RETURNING id`
 
 // clearRerunNaiveSQL is the form that looks right and silently drops the
@@ -498,6 +523,8 @@ func TestIngestionJobs_BulkEnqueueRacingALiveJobHandlesEveryRow(t *testing.T) {
 			require.Len(t, liveJobIDs(t, pool, repo), 1,
 				"repository %s must end with exactly one live job", repo)
 		}
+
+		isolation.AssertNoRepositoryTenantDrift(t, pool)
 	})
 }
 
@@ -530,6 +557,8 @@ func TestIngestionJobs_ConditionalClearReportsARerun(t *testing.T) {
 		require.NoError(t, pool.QueryRow(ctx, clearRerunNaiveSQL, naive, owner).Scan(&reported))
 		require.False(t, reported,
 			"RETURNING needs_rerun returns the NEW value, so the worker would drop the rerun")
+
+		isolation.AssertNoRepositoryTenantDrift(t, pool)
 	})
 }
 
@@ -989,7 +1018,316 @@ func TestIngestionJobs_FailIsFencedAndDeadLettersOnTheFinalAttempt(t *testing.T)
 		require.NoError(t, err)
 		require.EqualValues(t, 1, tag.RowsAffected())
 		require.Equal(t, "dead", jobState(t, pool, exhausted))
+
+		isolation.AssertNoRepositoryTenantDrift(t, pool)
 	})
+}
+
+// =====================================================================
+// The OTHER half of the lease fence: `AND state = 'running'`
+// =====================================================================
+//
+// `lease_owner = $2` is exercised by the test above and by W5. The `state`
+// half was not, and PR #38's review measured that deleting it from BOTH
+// completeSQL and failSQL left the whole suite green.
+//
+// It is the half 21-CONTEXT L3 spends a paragraph on, because it is what
+// stops the two bugs review found: a worker whose lease expired and was
+// reclaimed elsewhere writing `completed` over the new attempt's result,
+// and a SUPERSEDED worker writing `queued` back into the live set, where it
+// collides with the replacement job — "on exactly the ISS-016 path".
+//
+// Every terminal state is tested WITH THE LEASE STILL ATTACHED, because
+// that is the reachable shape: supersedeLiveSQL leaves it, and a job whose
+// lease the claim query reassigned carries the new owner, not none.
+func TestIngestionJobs_TerminalWritesAreFencedOnTheRunningState(t *testing.T) {
+	pool := isolation.SetupTestDB(t)
+	ctx := context.Background()
+
+	const owner = "worker-1"
+
+	for _, state := range []string{"completed", "dead", "superseded"} {
+		t.Run("a "+state+" job still holding its lease", func(t *testing.T) {
+			isolation.WithTwoOrgs(t, pool, func(orgA, _ *isolation.TestOrg) {
+				id := seedJob(t, pool, orgA, orgA.RepoID, state,
+					jobOpts{Attempts: 1, MaxAttempts: 5, LeaseOwner: owner})
+
+				// The CORRECT owner, so only the state predicate can refuse
+				// these.
+				tag, err := pool.Exec(ctx, completeSQL, id, owner)
+				require.NoError(t, err)
+				require.EqualValues(t, 0, tag.RowsAffected(),
+					"completeSQL must not overwrite a %s job", state)
+
+				tag, err = pool.Exec(ctx, failSQL, id, owner, "30 seconds", "boom")
+				require.NoError(t, err)
+				require.EqualValues(t, 0, tag.RowsAffected(),
+					"failSQL must not resurrect a %s job into the live set", state)
+
+				require.Equal(t, state, jobState(t, pool, id), "the row must be untouched")
+			})
+		})
+	}
+}
+
+// Clearing a rerun is fenced the same way, and was the one lease-fenced
+// statement that was not.
+//
+// FOUND IN PR #38's REVIEW, and a real defect rather than a coverage gap:
+// 21-CONTEXT L7's transcription fences the clear on id and lease_owner only.
+// Because supersedeLiveSQL leaves the lease attached, a superseded worker's
+// clear matched (`UPDATE 1`) while its completion did not (`UPDATE 0`) — so
+// it consumed the rerun flag and then could not act on it. That loses the
+// rerun WITHOUT leaving the `needs_rerun = true` breadcrumb W5's case does,
+// which makes it worse than the failure mode this PR was written to pin.
+func TestIngestionJobs_ClearingARerunIsFencedOnTheRunningState(t *testing.T) {
+	pool := isolation.SetupTestDB(t)
+	ctx := context.Background()
+
+	isolation.WithTwoOrgs(t, pool, func(orgA, _ *isolation.TestOrg) {
+		const owner = "worker-1"
+		id := seedJob(t, pool, orgA, orgA.RepoID, "running",
+			jobOpts{LeaseOwner: owner, NeedsRerun: true})
+
+		// The relink supersedes the running job. L4 step 3 is cooperative,
+		// so the old worker is still going until its next heartbeat.
+		tag, err := pool.Exec(ctx, supersedeLiveSQL, orgA.RepoID)
+		require.NoError(t, err)
+		require.EqualValues(t, 1, tag.RowsAffected())
+
+		// The lease really is still attached — that is what makes the
+		// missing predicate reachable, so assert it rather than assume it.
+		var leaseOwner *string
+		require.NoError(t, pool.QueryRow(ctx,
+			`SELECT lease_owner FROM ingestion_jobs WHERE id = $1`, id).Scan(&leaseOwner))
+		require.NotNil(t, leaseOwner, "supersedeLiveSQL leaves the lease attached, by design")
+		require.Equal(t, owner, *leaseOwner)
+
+		// The old worker finishes its stage and runs its clear.
+		var clearedID string
+		err = pool.QueryRow(ctx, clearRerunSQL, id, owner).Scan(&clearedID)
+		require.ErrorIs(t, err, pgx.ErrNoRows,
+			"a superseded worker must not consume the rerun flag it cannot act on")
+
+		require.True(t, needsRerun(t, pool, id),
+			"the flag must survive for the replacement job's producer to see")
+
+		// And its completion is refused, as it already was.
+		tag, err = pool.Exec(ctx, completeSQL, id, owner)
+		require.NoError(t, err)
+		require.EqualValues(t, 0, tag.RowsAffected())
+	})
+}
+
+// =====================================================================
+// FOR UPDATE SKIP LOCKED
+// =====================================================================
+//
+// Deleting the clause left the whole suite green (PR #38's review). Without
+// it, `ORDER BY run_after ... FOR UPDATE LIMIT 1` makes every concurrent
+// claim wait on the single oldest row, so a worker pool serialises on one
+// job instead of spreading across the queue — a performance collapse with no
+// error anywhere, and 21-05 ports this statement into Python.
+//
+// No barrier and no goroutine: one transaction claims and stays open, and a
+// second connection must claim the OTHER job rather than block on the first.
+// A short statement_timeout turns "blocks" into a failure instead of a hang.
+func TestIngestionJobs_ClaimSkipsRowsLockedByAnotherWorker(t *testing.T) {
+	pool := isolation.SetupTestDB(t)
+	ctx := context.Background()
+
+	isolation.WithTwoOrgs(t, pool, func(orgA, _ *isolation.TestOrg) {
+		// Two claimable jobs, backdated far enough that they sort ahead of
+		// anything any other test in this package creates (the next oldest
+		// is one hour). `claimSQL` has no repository filter, so ordering is
+		// how this test names the rows it means.
+		oldest := time.Now().Add(-365 * 24 * time.Hour)
+		nextOldest := time.Now().Add(-364 * 24 * time.Hour)
+		jobA := seedJob(t, pool, orgA, orgA.RepoID, "queued", jobOpts{RunAfter: &oldest})
+		jobB := seedJob(t, pool, orgA, insertRepository(t, pool, orgA, "skiplocked"), "queued",
+			jobOpts{RunAfter: &nextOldest})
+
+		// Self-diagnosis rather than a confusing failure: if a crashed run
+		// ever leaves a job older than these, say so plainly.
+		var older int
+		require.NoError(t, pool.QueryRow(ctx,
+			`SELECT count(*) FROM ingestion_jobs
+			 WHERE id <> ALL($1::uuid[]) AND run_after < $2`,
+			[]string{jobA, jobB}, nextOldest,
+		).Scan(&older))
+		require.Zero(t, older, "a leaked job older than this test's fixtures would break its ordering")
+
+		// tx1 claims the oldest and holds the row lock open.
+		tx1, err := pool.Begin(ctx)
+		require.NoError(t, err)
+		defer func() { _ = tx1.Rollback(ctx) }()
+
+		_, err = tx1.Exec(ctx,
+			`DELETE FROM ingestion_jobs WHERE id <> ALL($1::uuid[])`, []string{jobA, jobB})
+		require.NoError(t, err)
+
+		rows, err := tx1.Query(ctx, claimSQL, "worker-1", leaseInterval)
+		require.NoError(t, err)
+		claimed, err := pgx.CollectRows(rows, pgx.RowToMap)
+		require.NoError(t, err)
+		require.Len(t, claimed, 1)
+		require.Equal(t, jobA, uuidString(t, claimed[0]["id"]), "tx1 must take the oldest job")
+
+		// tx2, on its own connection, must skip jobA's lock and take jobB.
+		conn2, err := pool.Acquire(ctx)
+		require.NoError(t, err)
+		defer conn2.Release()
+
+		tx2, err := conn2.Begin(ctx)
+		require.NoError(t, err)
+		defer func() { _ = tx2.Rollback(ctx) }()
+
+		// Without SKIP LOCKED this waits on tx1 forever; with it, this
+		// timeout is never reached. 3s is far above the statement's real
+		// cost and far below the package timeout.
+		_, err = tx2.Exec(ctx, "SET LOCAL statement_timeout = '3s'")
+		require.NoError(t, err)
+
+		rows, err = tx2.Query(ctx, claimSQL, "worker-2", leaseInterval)
+		require.NoError(t, err)
+		claimed2, err := pgx.CollectRows(rows, pgx.RowToMap)
+		require.NoError(t, err, "a blocked claim fails here with 57014 query_canceled")
+		require.Len(t, claimed2, 1, "tx2 must claim a job rather than find none")
+		require.Equal(t, jobB, uuidString(t, claimed2[0]["id"]),
+			"tx2 must SKIP the row tx1 locked and take the next one")
+
+		isolation.AssertNoRepositoryTenantDrift(t, pool)
+	})
+}
+
+// =====================================================================
+// `updated_at = NOW()`
+// =====================================================================
+//
+// Deleting it from claimSQL, sweepSQL and completeSQL left the whole suite
+// green (PR #38's review). The table comment advertises Phase 24's pruning
+// as `... AND updated_at < NOW() - INTERVAL '30 days'`, so a statement that
+// stops touching the column leaves the row on its INSERT-time default and a
+// job that ran for a week is pruned on its creation date. Silent, and only
+// visible a month later.
+//
+// Every statement that claims to write it is covered, not only the three the
+// review deleted it from. `NOW()` is transaction start time and each of
+// these runs in a later transaction than the seed, so the comparison is
+// strict.
+func TestIngestionJobs_EveryStatementAdvancesUpdatedAt(t *testing.T) {
+	pool := isolation.SetupTestDB(t)
+	ctx := context.Background()
+
+	const owner = "worker-1"
+	past := func(d time.Duration) *time.Time { at := time.Now().Add(-d); return &at }
+
+	cases := []struct {
+		name  string
+		state string
+		opts  jobOpts
+		run   func(t *testing.T, org *isolation.TestOrg, id string)
+	}{
+		{
+			name: "claimSQL", state: "queued", opts: jobOpts{RunAfter: past(time.Hour)},
+			run: func(t *testing.T, org *isolation.TestOrg, id string) {
+				withQueue(t, pool, []string{org.RepoID}, func(tx pgx.Tx) {
+					rows, err := tx.Query(ctx, claimSQL, owner, leaseInterval)
+					require.NoError(t, err)
+					claimed, err := pgx.CollectRows(rows, pgx.RowToMap)
+					require.NoError(t, err)
+					require.Len(t, claimed, 1)
+					requireAdvanced(t, tx, id)
+				})
+			},
+		},
+		{
+			name: "sweepSQL", state: "queued", opts: jobOpts{Attempts: 5, MaxAttempts: 5},
+			run: func(t *testing.T, org *isolation.TestOrg, id string) {
+				withQueue(t, pool, []string{org.RepoID}, func(tx pgx.Tx) {
+					_, err := tx.Exec(ctx, sweepSQL)
+					require.NoError(t, err)
+					requireAdvanced(t, tx, id)
+				})
+			},
+		},
+		{
+			name: "completeSQL", state: "running", opts: jobOpts{LeaseOwner: owner},
+			run: func(t *testing.T, _ *isolation.TestOrg, id string) {
+				tag, err := pool.Exec(ctx, completeSQL, id, owner)
+				require.NoError(t, err)
+				require.EqualValues(t, 1, tag.RowsAffected())
+				requireAdvanced(t, pool, id)
+			},
+		},
+		{
+			name: "failSQL", state: "running", opts: jobOpts{Attempts: 1, LeaseOwner: owner},
+			run: func(t *testing.T, _ *isolation.TestOrg, id string) {
+				tag, err := pool.Exec(ctx, failSQL, id, owner, "30 seconds", "boom")
+				require.NoError(t, err)
+				require.EqualValues(t, 1, tag.RowsAffected())
+				requireAdvanced(t, pool, id)
+			},
+		},
+		{
+			name: "supersedeLiveSQL", state: "running", opts: jobOpts{LeaseOwner: owner},
+			run: func(t *testing.T, org *isolation.TestOrg, id string) {
+				tag, err := pool.Exec(ctx, supersedeLiveSQL, org.RepoID)
+				require.NoError(t, err)
+				require.EqualValues(t, 1, tag.RowsAffected())
+				requireAdvanced(t, pool, id)
+			},
+		},
+		{
+			name: "clearRerunSQL", state: "running",
+			opts: jobOpts{LeaseOwner: owner, NeedsRerun: true},
+			run: func(t *testing.T, _ *isolation.TestOrg, id string) {
+				var cleared string
+				require.NoError(t, pool.QueryRow(ctx, clearRerunSQL, id, owner).Scan(&cleared))
+				requireAdvanced(t, pool, id)
+			},
+		},
+		{
+			// The upsert's DO UPDATE branch, which is what a push against a
+			// live job runs. Its row is the one most likely to sit in the
+			// table longest, so its timestamp matters most to pruning.
+			name: "the enqueue upsert's DO UPDATE branch", state: "running",
+			opts: jobOpts{LeaseOwner: owner},
+			run: func(t *testing.T, org *isolation.TestOrg, id string) {
+				tx, err := isolation.TenantScope(ctx, pool, org.ID)
+				require.NoError(t, err)
+				defer func() { _ = tx.Rollback(ctx) }()
+
+				flagged, wasExisting := enqueue(t, ctx, tx, org.ID, org.RepoID, "incremental")
+				require.True(t, wasExisting)
+				require.Equal(t, id, flagged.String())
+				requireAdvanced(t, tx, id)
+				require.NoError(t, tx.Rollback(ctx))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			isolation.WithTwoOrgs(t, pool, func(orgA, _ *isolation.TestOrg) {
+				id := seedJob(t, pool, orgA, orgA.RepoID, tc.state, tc.opts)
+				tc.run(t, orgA, id)
+			})
+		})
+	}
+}
+
+// requireAdvanced asserts the job's updated_at is strictly later than its
+// created_at, which seedJob left equal.
+func requireAdvanced(t *testing.T, q querier, id string) {
+	t.Helper()
+	var createdAt, updatedAt time.Time
+	require.NoError(t, q.QueryRow(context.Background(),
+		`SELECT created_at, updated_at FROM ingestion_jobs WHERE id = $1`, id,
+	).Scan(&createdAt, &updatedAt))
+	require.True(t, updatedAt.After(createdAt),
+		"updated_at (%s) must have advanced past created_at (%s); Phase 24's pruning reads it",
+		updatedAt, createdAt)
 }
 
 // =====================================================================
@@ -1111,14 +1449,22 @@ func TestIngestionJobs_SchemaShape(t *testing.T) {
 }
 
 // =====================================================================
-// D5's drift check, over everything this suite wrote
+// D5's drift check
 // =====================================================================
 //
-// LAST IN THE FILE ON PURPOSE: `go test` runs a package's tests in source
-// order, so this sees whatever every test above left behind. Each test also
-// cleans up after itself, which is exactly why a whole-table check at the
-// end is worth having — it reads rows no individual test is looking at.
-func TestIngestionJobs_ZZ_NoRepositoryTenantDrift(t *testing.T) {
+// ⚠ THIS TEST DOES NOT DEPEND ON RUNNING LAST, and an earlier revision's
+// `ZZ_` name said it did (PR #38's review). `go test` runs a package's tests
+// in source order, but `-shuffle=on` and `-run` do not, and a check that is
+// only meaningful in one ordering is a check whose green result nobody can
+// read.
+//
+// What makes it order-independent: the tests that create repositories call
+// AssertNoRepositoryTenantDrift themselves, while their rows still exist.
+// This one is the whole-table sweep — it runs with row-level security
+// bypassed and reads EVERY repository in the database, including rows left
+// behind by a crashed earlier run that no fixture is still tracking. That is
+// worth having whenever it runs, and worth nothing more for running last.
+func TestIngestionJobs_NoRepositoryTenantDrift(t *testing.T) {
 	pool := isolation.SetupTestDB(t)
 	isolation.AssertNoRepositoryTenantDrift(t, pool)
 }
@@ -1222,6 +1568,17 @@ func seedJob(t *testing.T, pool *pgxpool.Pool, org *isolation.TestOrg, repoID, s
 // queue. In a container shared across packages and reused across runs, a
 // stray row from anywhere would make "nothing was claimed" untestable. The
 // transaction is never committed, so nothing is actually removed.
+//
+// ⚠ THIS IS ONLY SAFE WHILE `pkg/jobs` IS THE SOLE WRITER of the table, and
+// today it is — nothing else in `services/backend` mentions
+// `ingestion_jobs`, and CI's default-parallelism step ("Harness under
+// package parallelism" in backend-ci.yml) does not include `./pkg/jobs/...`.
+// 21-03 and 21-04 put producers in `pkg/api/handlers`, which IS in that
+// step. From then on this blanket delete holds row locks on every other
+// package's `ingestion_jobs` rows for the length of the test. Not a deadlock
+// — it takes no `repositories` locks, so there is no lock-order cycle — but
+// a source of confusing waits under `go test ./...`. Narrow it to this
+// test's rows, or serialise the package, before that lands.
 func withQueue(t *testing.T, pool *pgxpool.Pool, repoIDs []string, fn func(tx pgx.Tx)) {
 	t.Helper()
 	ctx := context.Background()

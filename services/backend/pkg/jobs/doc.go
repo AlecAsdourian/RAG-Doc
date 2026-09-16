@@ -40,7 +40,26 @@
 //     the claim stays genuinely pre-tenant — which is the whole reason the
 //     table has no row-level security of its own.
 //
+//   - EVERY LEASE-FENCED STATEMENT ALSO CARRIES `AND state = 'running'`,
+//     not just `lease_owner = $2`. `supersedeLiveSQL` leaves the lease
+//     attached — deliberately, so the row records which worker was running
+//     when it was superseded — so the owner alone does not mean "still
+//     mine". PR #38's review measured the one statement that was missing
+//     the predicate letting a superseded worker consume a rerun flag it
+//     could then do nothing with.
+//
 //   - `ingestion_jobs` HAS NO ROW-LEVEL SECURITY, so organization_id on it
 //     is an authorization input that nothing in the database will apply for
 //     you. Any handler reading this table filters by it explicitly (21-07).
+//
+//   - ⚠ `claimSQL` AND `sweepSQL` ARE QUEUE-WIDE AND CROSS-TENANT BY
+//     CONSTRUCTION. They carry no organization filter and, because the table
+//     has no row-level security, an unscoped session running either one
+//     reaches every tenant's rows — measured in PR #38's review, where a
+//     claim returned another organization's job and its organization_id.
+//     That is the design: a worker learns the tenant FROM the row it
+//     claimed. It also means NEITHER STATEMENT MAY EVER RUN INSIDE A REQUEST
+//     HANDLER, whatever tenant scope that handler holds. The table comment
+//     warns about 21-07's GET; this is the warning for the two statements
+//     themselves.
 package jobs
