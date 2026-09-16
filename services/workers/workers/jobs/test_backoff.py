@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
+
 from workers.jobs.backoff import (
     BASE_DELAY,
     JITTER_FLOOR,
@@ -202,3 +204,119 @@ class TestSanitizeError:
         message = "parse error in pkg/skeleton/sk.go at line 12 (ghost branch)"
         result = sanitize_error(SyntaxError(message))
         assert result == f"SyntaxError: {message}"
+
+    def test_the_cap_counts_characters_not_bytes(self):
+        """Stated so the comment and the code cannot drift apart.
+
+        2,000 characters of accented text is 3,974 UTF-8 bytes. That is
+        deliberate — the column is `TEXT`, and the budget this bounds is
+        what a human reads in 21-07's response, not what the row occupies.
+        """
+        result = sanitize_error(Exception("é" * 50_000))
+        assert len(result) == MAX_ERROR_LENGTH
+        assert len(result.encode("utf-8")) > MAX_ERROR_LENGTH
+
+    # -- the prefixes PR #41's review measured surviving ------------------
+
+    @pytest.mark.parametrize("prefix", ["gho_", "ghu_", "ghr_"])
+    def test_it_redacts_githubs_other_documented_prefixes(self, prefix):
+        """All six of GitHub's prefixes, not the three the first cut had.
+
+        `gho_` (OAuth), `ghu_` (user-to-server) and `ghr_` (refresh) were
+        measured passing through unredacted.
+        """
+        secret = prefix + "16C7e42F292c6912E7710c838347Ae178B4a"
+        result = sanitize_error(Exception(f"request rejected for {secret}"))
+        assert prefix not in result
+        assert "16C7e42F" not in result
+        assert "request rejected for [REDACTED]" == result.split(": ", 1)[1]
+
+    def test_it_redacts_a_jwt(self):
+        """⚠ Not reachable from this module today; 21-06 makes it so.
+
+        Covers BOTH the GitHub App JWT that mints an installation token —
+        which is what the claim-time installation read will hold — and
+        Supabase's service-role key, which is also a JWT.
+        """
+        jwt = (
+            "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9"
+            ".eyJpc3MiOiI0ODgwODY2IiwiZXhwIjoxNzAwMDAwMDAwfQ"
+            ".sIgNaTuRe-part_0123456789"
+        )
+        result = sanitize_error(Exception(f"401 from GitHub with {jwt}"))
+        assert "eyJ" not in result
+        assert "sIgNaTuRe" not in result
+        assert "401 from GitHub" in result
+
+    def test_it_redacts_a_jwt_with_an_empty_signature(self):
+        """An `alg: none` token is still a credential-shaped thing."""
+        result = sanitize_error(Exception("token eyJhbGciOiJub25lIn0.eyJhIjoxfQ. seen"))
+        assert "eyJ" not in result
+        assert "[REDACTED]" in result
+
+    def test_it_redacts_a_pem_private_key_block_whole(self):
+        """One marker for the block, not one per base64 line."""
+        pem = (
+            "-----BEGIN RSA PRIVATE KEY-----\n"
+            "MIIEowIBAAKCAQEAxNotARealKey0123456789+/abcdef\n"
+            "ghijklmnopqrstuvwxyz0123456789ABCDEF+/==\n"
+            "-----END RSA PRIVATE KEY-----"
+        )
+        result = sanitize_error(Exception(f"failed to sign: {pem} (app 4880866)"))
+        assert "BEGIN" not in result
+        assert "MIIEowIBAAKCAQEA" not in result
+        assert result.count("[REDACTED]") == 1
+        assert "app 4880866" in result
+
+    def test_a_commit_sha_is_deliberately_not_redacted(self):
+        """The 40-hex arm was considered and declined; this pins the choice.
+
+        A bare 40-hex pattern would catch the App client secret AND every
+        git commit SHA — which is legitimate, useful context in exactly
+        these messages. Redacting it would blind 21-07 to which commit
+        failed. If someone adds that arm, this test says why not to.
+        """
+        sha = "0c639171a2b3c4d5e6f708192a3b4c5d6e7f8091"
+        result = sanitize_error(Exception(f"clone of {sha} failed"))
+        assert sha in result
+
+    # -- NUL: the finding that lost the whole write ----------------------
+
+    def test_it_strips_a_nul_byte(self):
+        """⚠ A storability fix, not a disclosure one.
+
+        psycopg2 refuses a NUL in a text parameter CLIENT-SIDE, so without
+        this the `ValueError` fires inside `require_tenant`, the failure
+        write rolls back, and the job is stranded `running` with
+        `last_error` NULL. Measured on the real container by PR #41's
+        review; `test_a_nul_byte_in_an_error_still_records_the_failure`
+        is the end-to-end half.
+        """
+        result = sanitize_error(Exception("parse failed:\x00\x00 binary content"))
+        assert "\x00" not in result
+        assert "parse failed: binary content" in result
+
+    def test_a_nul_inside_a_token_does_not_split_the_redaction(self):
+        """⚠ THIS ordering is load-bearing, unlike redact-before-truncate.
+
+        A NUL is in none of the pattern's character classes, so it ENDS a
+        match. Redacting before stripping leaves the tail of the token
+        visible; stripping first hands the pattern one contiguous token.
+        """
+        result = sanitize_error(Exception("ghs_ABCDEF\x00GHIJKL0123 rejected"))
+        assert "GHIJKL" not in result, (
+            "the NUL split the token and its tail survived the redaction"
+        )
+        assert "ghs_" not in result
+        assert "rejected" in result
+
+    def test_it_strips_a_nul_only_and_keeps_every_other_control_character(self):
+        """⚠ Exactly one character, measured — not "control characters".
+
+        Probed on a scratch `postgres:16-alpine`: 0x01-0x1F, 0x7F and the
+        C1 range all insert into a TEXT column and read back unchanged; only
+        0x00 is refused. Stripping more would throw away the tab or newline
+        that makes a subprocess dump readable.
+        """
+        result = sanitize_error(Exception("line one\n\tindented\r\x0b still here"))
+        assert "\n" in result and "\t" in result and "\r" in result and "\x0b" in result
