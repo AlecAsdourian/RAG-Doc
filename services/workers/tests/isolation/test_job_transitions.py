@@ -46,6 +46,7 @@ one.
 
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 from typing import Any, Optional
 
@@ -921,6 +922,42 @@ def test_defer_returns_the_attempt_and_leaves_the_projection_alone(
     # `failed` here would call a healthy repository broken, and writing
     # `pending` would flap every hour the App stays suspended.
     assert repo_row(db_conn, org_a.id, org_a.repo_id)["sync_state"] == "pending"
+
+
+@pytest.mark.parametrize("transition", ["defer", "abandon"])
+def test_the_caller_supplied_reason_is_sanitized_in_the_log_too(
+    db_conn, with_two_orgs, worker_id, caplog, transition
+):
+    """⚠ A log line must not become the second place a token lives.
+
+    `_log`'s own docstring says so, and `defer` and `abandon` broke it: both
+    wrote `_sanitize_text(reason)` to the column and passed the caller's RAW
+    string to the logger. Found by PR #41's review. Harmless while 21-06
+    passes constants, and exactly the kind of rule that is stated and then
+    quietly violated in the two places the value is caller-supplied.
+
+    This is the only test in the file that reads a log record; without it
+    the mutation that reinstates the raw value survives the whole suite.
+    """
+    org_a, _ = with_two_orgs
+    job_id = seed_job(db_conn, org_a)
+    backdate(db_conn, job_id)
+    job = claimed_job(db_conn, worker_id, job_id)
+
+    reason = f"could not mint a token with {FAKE_TOKEN}"
+    with caplog.at_level(logging.INFO, logger="workers.jobs.transitions"):
+        if transition == "defer":
+            defer(db_conn, job, worker_id, timedelta(hours=1), reason)
+        else:
+            abandon(db_conn, job, worker_id, reason)
+
+    lines = [r.getMessage() for r in caplog.records if transition in r.getMessage()]
+    assert lines, f"no {transition} line was logged at all"
+    logged = lines[-1]
+    assert "ghs_" not in logged, f"the {transition} log line carries a raw token"
+    assert "[REDACTED]" in logged
+    # The column and the log must agree; sanitizing once is what guarantees it.
+    assert job_row(db_conn, job_id)["last_error"] == "could not mint a token with [REDACTED]"
 
 
 def test_a_repeatedly_deferred_job_never_dead_letters(db_conn, with_two_orgs, worker_id):
