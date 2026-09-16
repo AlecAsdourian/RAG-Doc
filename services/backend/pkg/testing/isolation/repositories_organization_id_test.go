@@ -305,26 +305,32 @@ func TestRepositoriesOrganizationID_MovingAProjectWithRepositoriesIsRejected(t *
 // 8. The drift check itself. Every test above ends with it; these two prove it
 // can fail. A check that has never been seen to fail proves nothing.
 //
-// ⚠ RETRIED ON 40P01 — ISS-032. The `ALTER TABLE ... DROP CONSTRAINT` below
-// takes AccessExclusiveLock on `repositories` AND on `projects` (the
-// referenced table, whose RI triggers it removes), while every other
-// package's fixture cleanup is deleting from those two tables in the other
-// order. That is a lock cycle in which this transaction can be picked as
-// the victim through no fault of its own, and it fired once in CI's
-// package-parallelism step. 21-03 adds more concurrent tests against the
-// same two tables, so it is fixed here rather than left to recur.
+// ⚠ RETRIED, AND ON A SHORT `lock_timeout` — ISS-032. The `ALTER TABLE ...
+// DROP CONSTRAINT` below takes AccessExclusiveLock on `repositories` AND on
+// `projects` (the referenced table, whose RI triggers it removes), while
+// other packages hold AccessShare on `projects` and then take RowExclusive
+// on `repositories` — which is what every connect does, since it reads the
+// organization's default project before writing the repository. That is a
+// lock cycle in which this transaction can be picked as the victim through
+// no fault of its own. It fired once in CI's package-parallelism step, and
+// 21-03 reproduced it locally by adding `./pkg/jobs/...` to that set.
 //
-// The retry weakens nothing: each attempt rebuilds its own transaction from
-// scratch, the assertions below run on the attempt that completed, and
-// three failures still fail — naming 40P01, so the next reader is not left
-// guessing.
+// THE RETRY ALONE WAS NOT ENOUGH, MEASURED: three attempts on a 100ms
+// backoff still failed with "still deadlocking after 3 attempts". The
+// `lock_timeout` below is what actually fixes it — see
+// isolation.LockWaitTimeout — and the retry is what turns a lost race into
+// a slower pass instead of a failure.
+//
+// Nothing about what this test proves is weakened: each attempt rebuilds
+// its own transaction from scratch, the assertions run on the attempt that
+// completed, and six failures still fail, naming the SQLSTATE.
 func TestRepositoriesOrganizationID_DriftCheckDetectsDrift(t *testing.T) {
 	pool := isolation.SetupTestDB(t)
 	ctx := context.Background()
 
 	isolation.WithTwoOrgs(t, pool, func(orgA, orgB *isolation.TestOrg) {
 		var ids []string
-		require.NoError(t, isolation.RetryOnDeadlock(ctx, func() error {
+		require.NoError(t, isolation.RetryOnLockContention(ctx, func() error {
 			var attemptErr error
 			isolation.WithSuperuserConn(t, pool, func(conn *pgx.Conn) {
 				ids, attemptErr = manufactureDriftAndCheck(ctx, conn, orgA, orgB)
@@ -343,9 +349,9 @@ func TestRepositoriesOrganizationID_DriftCheckDetectsDrift(t *testing.T) {
 // it.
 //
 // It returns an error rather than calling t.Fatal so that the caller can
-// retry it: a deadlock here says nothing about the code under test. Every
-// statement's error is returned unwrapped, so RetryOnDeadlock can see the
-// SQLSTATE.
+// retry it: losing a lock race here says nothing about the code under test.
+// Every statement's error is returned unwrapped, so RetryOnLockContention
+// can see the SQLSTATE.
 func manufactureDriftAndCheck(
 	ctx context.Context, conn *pgx.Conn, orgA, orgB *isolation.TestOrg,
 ) ([]string, error) {
@@ -356,6 +362,15 @@ func manufactureDriftAndCheck(
 	// Never committed: the deferred rollback puts both guards back, and the
 	// server aborts the transaction if this process dies first.
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	// ISS-032. Give up on a contended table rather than queue behind it:
+	// below `deadlock_timeout`, so this transaction is normally out of the
+	// way before any detector looks for a cycle. The retry above brings it
+	// back when the other packages are quieter.
+	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL lock_timeout = '%dms'",
+		isolation.LockWaitTimeout.Milliseconds())); err != nil {
+		return nil, err
+	}
 
 	if _, err := tx.Exec(ctx, `ALTER TABLE repositories DROP CONSTRAINT `+compositeTenantFK); err != nil {
 		return nil, err
