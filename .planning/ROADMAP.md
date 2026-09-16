@@ -132,7 +132,7 @@ Locked decisions: GitHub only (GitLab handlers deleted); one installation serves
 **Plans:** 7 plans
 
 Plans:
-- [ ] 21-01: `repositories.organization_id` — stored, trigger-maintained tenant column plus `UNIQUE (id, organization_id)`, so the job table's composite foreign key can make a cross-tenant job unrepresentable
+- [x] 21-01: `repositories.organization_id` — stored tenant column, filled by trigger and guaranteed by a composite foreign key to `projects (id, organization_id)`, plus `UNIQUE (id, organization_id)`, so the job table's composite foreign key can make a cross-tenant job unrepresentable
 - [ ] 21-02: `ingestion_jobs` schema — five states, lease fields, partial unique index, composite FK, tenant trigger, no RLS by decision; every shared SQL statement (W1-W6, L4, claim, sweeper) tested on PostgreSQL 16
 - [ ] 21-03: Go producer — `pkg/jobs` `Enqueue` (per-row upsert) and `SupersedeLive`; `POST /api/repositories` enqueues on connect and supersedes on relink; barrier race test
 - [ ] 21-04: Webhook producers — push, installation_repositories added/removed and installation deleted go through `pkg/jobs`; the bulk-add race is tested

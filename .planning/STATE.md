@@ -10,10 +10,10 @@ See: .planning/PROJECT.md (updated 2026-01-08; product-vision reframe recorded i
 ## Current Position
 
 Milestone: v1.0 MVP (9 phases: 17-25)
-Phase: 20 COMPLETE — Repository Integration. All five plans merged. Phase 21 (Job Infrastructure) is researched, has locked context, and is broken into seven plans (21-01 … 21-07), none executed yet.
+Phase: 21 IN PROGRESS — Ingestion Job Infrastructure. 1 of 7 plans executed (21-01, in review); 21-02 … 21-07 not started. Phase 20 COMPLETE — all five plans merged.
 Plan: Phases 17, 19 and 20 closed. Phase 21 researched 2026-09-10 (`21-RESEARCH.md`, `21-CONTEXT.md`); eight decisions locked (L1-L8); planned 2026-09-14; ISS-016 settled in that context, closes when the phase ships (21-07).
-Status: Phase 17 closed 2026-09-06. Phase 18 deprioritized. Phase 19 closed 2026-09-08. The GitHub App is registered and its contract verified against the live API (20-02). Repositories now have a tenant-scoped CRUD API (20-03).
-Last activity: 2026-09-14 — retrieval measured on two open-source codebases with blind questions (PR #31); Qdrant uploads batched so larger repositories can be indexed (PR #30); search boosts made neutral by default, decided on fresh blind questions (PR #32); ISS-030 filed and closed by PR #34 (a failed retriever now fails the request); Phase 21 broken into seven plans
+Status: Phase 17 closed 2026-09-06. Phase 18 deprioritized. Phase 19 closed 2026-09-08. The GitHub App is registered and its contract verified against the live API (20-02). Repositories now have a tenant-scoped CRUD API (20-03). `repositories.organization_id` is stored and guaranteed by a composite foreign key (21-01), which 21-02's `ingestion_jobs` foreign key references.
+Last activity: 2026-09-14 — 21-01 executed: migration 000013 stores `repositories.organization_id`, backfilled one tenant at a time and proven on seeded data under row-level security; a composite foreign key to `projects (id, organization_id)` makes drift unrepresentable; `isolation.AssertNoRepositoryTenantDrift` is D5's reusable drift check. Earlier the same day: benchmark (PR #31), batched Qdrant uploads (PR #30), neutral boost defaults (PR #32), ISS-030 closed (PR #34), Phase 21 broken into seven plans
 
 **Retrieval quality, 2026-09-13.** `services/workers/scripts/rag_quality_harness.py`
 measures retrieval on this repository's own code. It asks 25 tuning questions and
@@ -189,10 +189,10 @@ Recent decisions still affecting current work:
 ## Session Continuity
 
 Last session: 2026-09-14
-Stopped at: Phase 21 planned (seven PLAN files), not yet executed.
+Stopped at: 21-01 executed (`21-01-SUMMARY.md`), PR open for review. 21-02 … 21-07 not started.
 Resume file: None
 
-Next command suggested: execute 21-01 (`.planning/phases/21-ingestion-job-infrastructure/21-01-PLAN.md`). The plans run in order; each reads the previous plan's SUMMARY.
+Next command suggested: execute 21-02 (`.planning/phases/21-ingestion-job-infrastructure/21-02-PLAN.md`) once 21-01 merges. The plans run in order; 21-02 reads `21-01-SUMMARY.md`, references `repositories_id_org_key`, and calls `isolation.AssertNoRepositoryTenantDrift` and `isolation.WithSuperuserConn`.
 
 **Settle ISS-016 as part of planning Phase 21, not after.** `sync_state` on
 `repositories` is a status column being used as a queue: no lease, no owner,
