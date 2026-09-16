@@ -10,10 +10,10 @@ See: .planning/PROJECT.md (updated 2026-01-08; product-vision reframe recorded i
 ## Current Position
 
 Milestone: v1.0 MVP (9 phases: 17-25)
-Phase: 21 IN PROGRESS — Ingestion Job Infrastructure. 1 of 7 plans executed (21-01, in review); 21-02 … 21-07 not started. Phase 20 COMPLETE — all five plans merged.
+Phase: 21 IN PROGRESS — Ingestion Job Infrastructure. 2 of 7 plans executed (21-01 merged as `fbb9793` / PR #37; 21-02 in review); 21-03 … 21-07 not started. Phase 20 COMPLETE — all five plans merged.
 Plan: Phases 17, 19 and 20 closed. Phase 21 researched 2026-09-10 (`21-RESEARCH.md`, `21-CONTEXT.md`); eight decisions locked (L1-L8); planned 2026-09-14; ISS-016 settled in that context, closes when the phase ships (21-07).
-Status: Phase 17 closed 2026-09-06. Phase 18 deprioritized. Phase 19 closed 2026-09-08. The GitHub App is registered and its contract verified against the live API (20-02). Repositories now have a tenant-scoped CRUD API (20-03). `repositories.organization_id` is stored and guaranteed by a composite foreign key (21-01), which 21-02's `ingestion_jobs` foreign key references.
-Last activity: 2026-09-14 — 21-01 executed: migration 000013 stores `repositories.organization_id`, backfilled one tenant at a time and proven on seeded data under row-level security; a composite foreign key to `projects (id, organization_id)` makes drift unrepresentable; `isolation.AssertNoRepositoryTenantDrift` is D5's reusable drift check. Earlier the same day: benchmark (PR #31), batched Qdrant uploads (PR #30), neutral boost defaults (PR #32), ISS-030 closed (PR #34), Phase 21 broken into seven plans
+Status: Phase 17 closed 2026-09-06. Phase 18 deprioritized. Phase 19 closed 2026-09-08. The GitHub App is registered and its contract verified against the live API (20-02). Repositories now have a tenant-scoped CRUD API (20-03). `repositories.organization_id` is stored and guaranteed by a composite foreign key (21-01). The queue table exists (21-02): `ingestion_jobs`, with the ISS-016 guard as a partial unique index, a composite foreign key onto `repositories (id, organization_id)`, a tenant trigger for the message, and no row-level security by documented decision.
+Last activity: 2026-09-16 — 21-02 executed: migration 000014 creates `ingestion_jobs` with `UNIQUE (repository_id) WHERE state IN ('queued','running')` — ISS-016's fix, in the schema — plus `ingestion_jobs_repo_tenant_fk` and `trg_ingestion_jobs_tenant`; `pkg/jobs/schema_test.go` holds every shared statement (enqueue upsert, supersede, complete, claim, sweeper, fail, conditional rerun clear, run resolution) as a named constant with a passing test on PostgreSQL 16, and pins the corrected wrong-order failure as **silent loss, not 23505**. PR #38's review then found a real defect — `clearRerunSQL` fenced on the lease but not on `state`, so a superseded worker could consume a rerun flag it could no longer act on, because `supersedeLiveSQL` deliberately leaves the lease attached; fixed, and `FOR UPDATE SKIP LOCKED`, `updated_at = NOW()` and the `state` half of the fence are now tested rather than merely present. 2026-09-14: 21-01 merged (PR #37) — migration 000013 stores `repositories.organization_id`, backfilled one tenant at a time and proven on seeded data under row-level security; `isolation.AssertNoRepositoryTenantDrift` is D5's reusable drift check. Earlier the same day: benchmark (PR #31), batched Qdrant uploads (PR #30), neutral boost defaults (PR #32), ISS-030 closed (PR #34), Phase 21 broken into seven plans
 
 **Retrieval quality, 2026-09-13.** `services/workers/scripts/rag_quality_harness.py`
 measures retrieval on this repository's own code. It asks 25 tuning questions and
@@ -165,7 +165,7 @@ Recent decisions still affecting current work:
 - **ISS-006:** Test database connectivity — **✅ closed 2026-09-05** in Phase 17-01 via testcontainers-go harness (`pkg/testing/isolation`); see ISSUES.md
 - **ISS-007:** JWT-carried tenant claim — **✅ closed 2026-09-08** in Phase 19-03. Tenant identity now comes only from the Supabase-signed `app_metadata.organization_id` claim; the `X-Organization-ID` path is deleted, including from CORS. Closed without the per-request membership re-check the original filing called for — reasoning in ISSUES.md and 19-03-SUMMARY.md.
 - **ISS-008:** Request-scoped tenant transaction for DB-hitting endpoints — **✅ closed 2026-09-08** in Phase 20-01 (`db.TenantScoper`). Handlers touching an RLS table take the scoper and not a pool, so an unscoped query is inexpressible rather than merely discouraged.
-- **ISS-013:** Unscoped access to an RLS table behaves differently depending on connection history — **filed 2026-09-08** during 20-01. Not live (the scoper makes it unreachable), but it is a heisenbug generator and the fix is now known to be a one-line `AfterConnect` sentinel rather than a six-table migration. It bit a test during 20-03.
+- **ISS-013:** Unscoped access to an RLS table behaves differently depending on connection history — **filed 2026-09-08** during 20-01. Not live (the scoper makes it unreachable), but it is a heisenbug generator and the fix is now known to be a one-line `AfterConnect` sentinel rather than a six-table migration. It bit a test during 20-03. Both shapes are now pinned for the new queue table too (21-02, `TestIngestionJobs_EnqueueingNeedsTenantScope`), because an unscoped enqueue reaches them through the tenant trigger's read of `repositories`.
 - **ISS-014:** `pkg/db` imports `pkg/auth`, inverting the layering — **filed 2026-09-08** during 20-01.
 - **ISS-015:** The isolation scanner's coverage match is method-blind — **filed 2026-09-08** during 20-03's review. The nested-block, middleware-wrapped and multi-segment holes it originally also claimed are closed and pinned.
 - **ISS-016:** `sync_state` has no lease, so a relink can re-queue a run already in flight — **filed 2026-09-09** during 20-03's review. **Must be settled before Phase 21 builds the queue**, not after.
@@ -188,11 +188,11 @@ Recent decisions still affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-09-14
-Stopped at: 21-01 executed (`21-01-SUMMARY.md`), PR open for review. 21-02 … 21-07 not started.
+Last session: 2026-09-16
+Stopped at: 21-02 executed (`21-02-SUMMARY.md`), PR open for review. 21-01 merged as `fbb9793` (PR #37). 21-03 … 21-07 not started.
 Resume file: None
 
-Next command suggested: execute 21-02 (`.planning/phases/21-ingestion-job-infrastructure/21-02-PLAN.md`) once 21-01 merges. The plans run in order; 21-02 reads `21-01-SUMMARY.md`, references `repositories_id_org_key`, and calls `isolation.AssertNoRepositoryTenantDrift` and `isolation.WithSuperuserConn`.
+Next command suggested: execute 21-03 (`.planning/phases/21-ingestion-job-infrastructure/21-03-PLAN.md`) once 21-02 merges. The plans run in order. 21-03 reads `21-02-SUMMARY.md` and **lifts the shared statements verbatim out of `services/backend/pkg/jobs/schema_test.go`** — `enqueueUpsertSQL` and `supersedeLiveSQL` — rather than retyping them; `pkg/jobs/doc.go` carries the three rules a producer has to honour, including that the wrong enqueue order loses work silently rather than raising 23505.
 
 **Settle ISS-016 as part of planning Phase 21, not after.** `sync_state` on
 `repositories` is a status column being used as a queue: no lease, no owner,
@@ -232,9 +232,11 @@ variables through and would panic on the missing `SUPABASE_WEBHOOK_SECRET`
 
 The workflow supplies Postgres and Redis service containers for `pkg/auth`'s pre-17-01 helpers. Migrating those onto the testcontainers harness would let both be dropped; tracked in `19-02-SUMMARY.md`.
 
-The full gate is: `go mod download`/`verify`/`tidy -diff`, migrations applied, `go build ./...`, `go vet ./...`, `go test -p 1 ./...`, the harness packages again at default parallelism, and `go test -race` on the concurrency-sensitive packages. **All of them gate** — the `-race` step shipped as `continue-on-error` because it could not be executed on the authoring machine (no cgo), and was promoted once it ran green.
+The full gate is: `go mod download`/`verify`/`tidy -diff`, migrations applied, `go build ./...`, `go vet ./...`, `go test -p 1 ./...`, the harness packages again at default parallelism, and `go test -race` on the concurrency-sensitive packages — `./pkg/api/...`, `./pkg/db/...`, `./pkg/jobs/...` and `./pkg/testing/...` (21-02 added `pkg/jobs` before it had a concurrent test, so 21-03's barrier race test and 21-06's worker pool gate from the day they land). **All of them gate** — the `-race` step shipped as `continue-on-error` because it could not be executed on the authoring machine (no cgo), and was promoted once it ran green.
 
 **On ISS-010's regression guard:** the real one is `TestEnsureAppRoleIsConcurrencySafe` in `pkg/testing/isolation`, which releases 16 concurrent callers through a barrier and detected the missing advisory lock 8 times out of 8. The CI step that runs the harness packages at default parallelism is defense in depth only — measured at roughly one detection in eight, so a green result there proves little on its own. Do not replace the test with the step.
+
+**That step now has a known flake — ISS-032, filed 2026-09-16.** 21-01's `TestRepositoriesOrganizationID_DriftCheckDetectsDrift` takes `ACCESS EXCLUSIVE` on `repositories` **and** `projects` (measured from `pg_locks`: dropping a foreign key locks the referenced table too), while other packages' fixtures write both in the other order. One deadlock in fifteen runs; the identical commit passed on re-run, and 16 local runs produced none. A red result there is worth re-running once before treating it as a real failure.
 
 **Fleet handoff notes for the worker session:**
 - Read the phase `-CONTEXT.md` first for vision context

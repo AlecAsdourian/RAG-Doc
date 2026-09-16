@@ -4,6 +4,25 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 ## Open Enhancements
 
+### ISS-032: The drift self-test takes ACCESS EXCLUSIVE locks on shared tables, and deadlocks under CI's package-parallelism step
+
+- **Discovered:** 2026-09-16, on PR #38's CI (run 35118173356). First occurrence in fifteen Backend CI runs; the re-run of the identical commit passed.
+- **Type:** Test reliability
+- **Priority:** LOW-MEDIUM — it fails a step the workflow itself calls "defense in depth. Do not rely on it", and nothing in the product is affected. It will recur.
+- **What happened:** `TestRepositoriesOrganizationID_DriftCheckDetectsDrift` (`pkg/testing/isolation`, added by 21-01) failed with `ERROR: deadlock detected (SQLSTATE 40P01)` in the `Harness under package parallelism (ISS-010, defense in depth)` step, which runs `./pkg/api/... ./pkg/auth/... ./pkg/db/... ./pkg/testing/...` at default parallelism against one shared container.
+- **The mechanism, measured on PostgreSQL 16.15 rather than inferred:**
+  - That test manufactures drift by dropping a constraint and disabling a trigger inside a transaction it rolls back. Its first statement, `ALTER TABLE repositories DROP CONSTRAINT repositories_project_org_fkey`, takes **`AccessExclusiveLock` on `repositories` AND on `projects`** — the referenced table, whose RI triggers it must remove. Confirmed from `pg_locks`.
+  - Meanwhile every other package's `WithTwoOrgs` cleanup is deleting and inserting `projects` and `repositories` in the other order. That is a lock-order cycle, and it does not need any one test to be at fault.
+- **000014 (21-02) did not create the cycle, and does widen the window.** Measured both ways:
+  - The drift test's lock set is **unchanged**: the `ALTER TABLE` takes no lock on `ingestion_jobs`.
+  - But `DELETE FROM repositories` — which every fixture cleanup runs — now takes `RowExclusiveLock` on `ingestion_jobs` as well as `chunks`, `ingestion_runs` and `repositories`, because of `ingestion_jobs`' two foreign keys. One more table in the lock set, and a slightly longer cleanup transaction, on the other side of the cycle.
+- **Not reproducible locally:** 16 runs of the same command on a fresh container, six at default parallelism and ten at `GOMAXPROCS=2`, produced zero deadlocks. CI's two-core runner is where it shows.
+- **Fix direction, cheapest first:**
+  1. **Bounded retry on `40P01`** around the drift self-test's closure. A transaction doing DDL on a contended table can legitimately be chosen as the deadlock victim; retrying is the standard answer and weakens nothing the test proves.
+  2. Manufacture the drift without DDL, if a way exists that does not need the foreign key dropped — unlikely, since the key is what makes drift unrepresentable.
+  3. Serialise the isolation package against the others, which costs the cross-package contention the step exists to create.
+- **Related:** ISS-010 (the same step, the same shared container).
+
 ### ISS-031: A migration that sets a tenant leaves the migrating session unable to read RLS tables, and CI cannot catch it
 
 - **Discovered:** 2026-09-16, by the reviewer session on PR #37 (21-01). Independently reproduced there.

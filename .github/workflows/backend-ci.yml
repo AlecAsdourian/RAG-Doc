@@ -182,4 +182,10 @@ jobs:
         working-directory: services/backend
         # Scoped rather than module-wide: -race roughly doubles runtime,
         # and these are the packages with concurrent tests worth the cost.
-        run: go test -race ./pkg/api/... ./pkg/db/... ./pkg/testing/... -count=1 -p 1 -timeout 15m
+        #
+        # ./pkg/jobs/... was added in 21-02, BEFORE it had a concurrent test
+        # rather than after. It runs in about 2s, so the cost is a couple of
+        # seconds; the alternative was a follow-up that had to survive a plan
+        # boundary to get done. 21-03's barrier race test and 21-06's worker
+        # pool both land in that package.
+        run: go test -race ./pkg/api/... ./pkg/db/... ./pkg/jobs/... ./pkg/testing/... -count=1 -p 1 -timeout 15m
