@@ -63,6 +63,12 @@ BEGIN
     --     installation is UNSYNCABLE, not failed (ISS-016's note, and
     --     docs/api-github-webhooks.md). A job for one would clone nothing,
     --     fail five times and dead-letter.
+    --
+    --     ⚠ THIS ONE IS REDUNDANT, and is kept as documentation rather
+    --     than as a guard: the INNER JOIN below already drops a row whose
+    --     `installation_id` is NULL. Measured — removing it changes
+    --     nothing, which is recorded in 21-04-SUMMARY.md's mutation table
+    --     rather than left for a reader to assume it is load-bearing.
     --   - `gi.uninstalled_at IS NULL` — the same argument, one hop out.
     --     The App was removed; the link is kept so a reinstall can recover,
     --     but no token can be minted until it is. The join is to
