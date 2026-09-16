@@ -4,6 +4,35 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 ## Open Enhancements
 
+### ISS-033: The webhook producers do not check `uninstalled_at`, so a push racing an uninstall queues a job under a dead installation
+
+- **Discovered:** 2026-09-16, by the reviewer session on PR #40 (21-04), with a concrete race and file:line evidence.
+- **Type:** Correctness / Ingestion
+- **Priority:** LOW-MEDIUM — wasteful rather than wrong, *provided 21-06 lands as planned*. See "Why it is not urgent".
+- **What is wrong:** `handlePush`'s lookup (`services/backend/pkg/api/handlers/github_webhook_events.go:617-621`) and `recordAddedRepositories`'s lookup resolve repositories by `installation_id` alone:
+  ```sql
+  SELECT id::text FROM repositories
+  WHERE installation_id = $1 AND github_repo_id = $2
+  ```
+  Neither joins `github_installations` or tests `uninstalled_at`. Migration `000015` does (`AND gi.uninstalled_at IS NULL`, pinned by mutation 13), and `docs/api-github-webhooks.md` asserts the rule for the whole system — so the invariant is currently enforced in the backfill and in the handlers that *stand down*, but not in the two that *produce*.
+- **The race, which needs no operator action.** A `push` and an `installation.deleted` dispatched close together. They are independent requests and **neither takes a lock the other waits on** — `markUninstalled`'s repository read has no `FOR UPDATE`, and neither does the push lookup:
+  1. `push` reads the repository; it is still linked.
+  2. `installation.deleted` supersedes the live jobs (none yet) and stands the repository down to `never_synced`.
+  3. `push` commits: `Enqueue` inserts an `incremental` job **and** projects `sync_state = 'pending'`, undoing the stand-down.
+  4. The repository shows `pending` under a dead installation, with a live job no token can serve.
+
+  A manual redelivery from the App's Advanced tab reaches the same place, and `claimDelivery` re-claims `'failed'` deliveries specifically so that path works.
+- **⚠ WHY IT IS NOT URGENT, and why the reviewer's stated ending does not survive the phase.** The review described the job burning five attempts and dead-lettering to `failed` — the retry-looking terminal state `markUninstalled`'s own comment forbids. **That is not where 21-06 leaves it.** The worker checks the repository's installation when it CLAIMS the job, which is the same reason `payload` deliberately carries no installation id (21-CONTEXT L2, L8), and a job whose installation is uninstalled is **abandoned**: superseded, repository back to `never_synced`, no attempt consumed and no dead-letter. So the cost is one claim's round trip and a `sync_state` that is briefly wrong, not a wrong terminal state — as long as 21-06 implements that check. If it does not, this issue's priority rises with it.
+- **The fix, when someone is next in the file:** join the installation in both lookups, exactly as the migration does, and answer `ignored: installation uninstalled` rather than `queued`.
+  ```sql
+  SELECT r.id::text FROM repositories r
+  JOIN github_installations gi ON gi.id = r.installation_id
+  WHERE r.installation_id = $1 AND r.github_repo_id = $2
+    AND gi.uninstalled_at IS NULL
+  ```
+  **It is defence in depth, not the fix for the race.** Two statements in two transactions with no shared lock can always interleave the other way — the uninstall can land *between* the producer's read and its commit — so the check narrows the window without closing it. Closing it would mean locking the installation row in both handlers, which is a bigger change than the symptom justifies while the claim-time check exists.
+- **Related:** the identical argument already applies to `suspended_at`, which is deferred at claim time by design rather than checked by a producer (21-05/21-06).
+
 ### ISS-031: A migration that sets a tenant leaves the migrating session unable to read RLS tables, and CI cannot catch it
 
 - **Discovered:** 2026-09-16, by the reviewer session on PR #37 (21-01). Independently reproduced there.
@@ -253,7 +282,8 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **How to capture:** start a tunnel, point the App's webhook URL at it, run a capture server, then (a) push to a connected repository and (b) add and remove a repository from the installation in GitHub's settings. The existing fixtures in `services/backend/pkg/api/handlers/testdata/github/` show the envelope format.
 - **One thing to fix while doing it:** the existing captures stored the body **parsed**, not as raw bytes, so their real signatures cannot be replayed. Capture the raw body too, and a signature test can then run against a genuine GitHub signature rather than a self-signed one.
 - **And capture a REDELIVERY of the same event.** The whole idempotency design rests on `X-GitHub-Delivery` being stable when GitHub redelivers, and `github-app-setup.md` tells readers redelivery is safe on that basis. The two fixtures we have are different events with different ids, so nothing in the repo actually evidences stability — it is documented as verified and is not. The Redeliver button makes this a one-minute check once a tunnel is up.
-- **Unchanged by 21-04, deliberately.** That plan rewrote what `push` and `installation_repositories` DO — they now go through `pkg/jobs` — without reading one additional payload field. `githubWebhookEnvelope` is byte-identical to 20-05's, the new tests keep the `UNVERIFIED_*` prefix, and `docs/api-github-webhooks.md` now carries this warning in the section that describes the handlers rather than only in the one about redelivery. So the exposure is the same size it was: the handler logic is tested, the field names are still not evidence.
+- **Unchanged by 21-04, deliberately.** That plan rewrote what `push` and `installation_repositories` DO — they now go through `pkg/jobs` — without reading one additional payload field. `githubWebhookEnvelope` is byte-identical to 20-05's (PR #40's review diffed it: every changed line in `github_webhook.go` is a comment), and `docs/api-github-webhooks.md` now carries this warning in the section that describes the handlers rather than only in the one about redelivery. So the exposure is the same size it was: the handler logic is tested, the field names are still not evidence.
+- **The `UNVERIFIED_` convention, stated precisely.** 21-04 first claimed "every new test keeps the prefix", which PR #40's review showed was too strong. The convention is: a **per-event subtest** driving an unverified payload carries the prefix. Five tests drive one without it — `AddedOnlyTouchesTheOwningOrganization` and `CrossTenant_AWebhookCannotTouchAnotherOrgsRepositories` from 20-05, and 21-04's `RedeliveryOfAFailedDeliveryCreatesNoSecondLiveJob`, `TestGitHubWebhook_BulkAddedRacingARelinkQueuesEveryRepository` and `TestGitHubWebhook_DeliveriesNeverTouchAnotherOrgsJobs`. All five are about a property spanning events (tenancy, redelivery, the queue), and each now carries the caveat in its own comment. **Renaming them was considered and rejected:** the prefix earns its place by marking the cases a reader would otherwise take as evidence about the payload SHAPE, and spreading it across every test that happens to send a `push` body would drain it of meaning. The file header states the rule and names all five, so the exception is written down rather than inferred.
 
 ### ISS-018: A Redis outage at startup disables GitHub installs until the process restarts
 
