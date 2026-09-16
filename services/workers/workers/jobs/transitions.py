@@ -6,8 +6,24 @@ claim, start, complete, fail, defer, abandon, sweep and run resolution. The
 two halves share one thing, and it is the point of the design: **the SQL**.
 Every statement below that also exists in Go was lifted from
 `pkg/jobs/schema_test.go` and `pkg/jobs/producer.go` as they stand on
-`main`, with `$n` rewritten to psycopg2's `%s` and nothing else changed.
-21-02 ran each of them against `postgres:16-alpine`, the version we deploy.
+`main`, with `$n` rewritten to psycopg2's `%s`. 21-02 ran each of them
+against `postgres:16-alpine`, the version we deploy.
+
+PR #41's review diffed all seven mechanically and **six are byte-identical**
+once `$n` is rewritten: `completeSQL`, `claimSQL`, `sweepSQL`, `failSQL`,
+`clearRerunSQL` and `resolveRunSQL`. THREE STATEMENTS DIFFER, all three
+deliberately and all three by a `RETURNING` clause only -- same rows
+selected, nothing extra written:
+
+  - `ENQUEUE_UPSERT_SQL` returns `id::text` where Go returns `id`, because
+    psycopg2 hands an unqualified `uuid` back as `str` anyway (see `Job`)
+    and the cast says so at the statement rather than leaving it implicit.
+  - `SWEEP_SQL` adds a `RETURNING` list the bare `sweepSQL` has none of, so
+    each dead-lettered job can be logged with its id, repository and
+    attempts.
+  - `FAIL_SQL` adds `RETURNING state`, so `fail` reports the state the
+    DATABASE chose rather than re-deriving `failSQL`'s `CASE` in Python
+    against a snapshot of `attempts`.
 
 There is no long-running process here. 21-06 builds the loop, the
 heartbeat and the sweeper's schedule on top of these functions.
@@ -322,13 +338,25 @@ WHERE id = %s AND lease_owner = %s AND state = 'running'"""
 # the state for "this job was taken out of the live set by something other
 # than its own completion", which is exactly what an uninstall does.
 #
-# `attempts` IS LEFT ALONE, deliberately, unlike DEFER_SQL above. The row is
-# terminal, so the counter is no longer a budget that could be consumed --
-# it is the record that a worker claimed this job once, which is what
-# 21-07's admin endpoint reads. ISS-033's "no attempt consumed" is the
-# statement that this path cannot walk a repository towards `dead`, and it
-# holds because the job leaves the live set here rather than going back to
-# `queued`.
+# ⚠ `attempts` IS LEFT ALONE, deliberately, unlike DEFER_SQL above, and
+# PR #41's review ruled KEEP after checking the two statements that could
+# make it matter. `CLAIM_SQL`'s `attempts < max_attempts` and `_SWEEP_SQL`'s
+# `attempts >= max_attempts` are both reachable only from `queued` or
+# `running`; a `superseded` row matches neither, so the column is
+# BEHAVIOURALLY INERT here. That makes this purely a question of what the
+# row records -- and a worker DID claim this job once, so decrementing
+# would write a falsehood into an audit row 21-07 reads. The distinction
+# from `defer` is principled rather than inconsistent: `defer` returns the
+# attempt because the row goes back to `queued`, where the counter IS a
+# budget; here it is history.
+#
+# ISS-033's "no attempt consumed" is about the ENDING -- this path cannot
+# walk a repository towards `dead` -- and that holds because the job leaves
+# the live set rather than returning to `queued`.
+#
+# Pinned by test_abandon_supersedes_and_stands_the_repository_down, so a
+# reader who takes ISS-033's phrase literally cannot "fix" it with CI
+# agreeing.
 ABANDON_SQL = """
 UPDATE ingestion_jobs
 SET state = 'superseded', lease_owner = NULL, lease_expires_at = NULL,
@@ -456,49 +484,121 @@ class LeaseLost(Exception):
 #: (`https://x-access-token:ghs_...@github.com/...`), or an OpenAI client
 #: error quoting its own key.
 #:
-#: The patterns are GitHub's documented token prefixes plus OpenAI's:
+#: ALL SIX of GitHub's documented token prefixes, plus OpenAI's, plus the
+#: two shapes 21-06 puts into this worker's reach:
 #:   ghs_        installation access token (the one a clone URL carries)
 #:   ghp_        classic personal access token
+#:   gho_        OAuth access token
+#:   ghu_        user-to-server token
+#:   ghr_        refresh token
 #:   github_pat_ fine-grained personal access token
 #:   sk-         OpenAI API key, including the `sk-proj-` form
+#:   eyJ....     a JWT: three base64url segments. Covers BOTH the GitHub
+#:               App JWT that mints an installation token and Supabase's
+#:               service-role key, which is also a JWT.
+#:   -----BEGIN ... PRIVATE KEY-----  a PEM block, whole.
 #:
-#: `github_pat_` is listed FIRST so it wins against any future prefix that
-#: is its own prefix; `re.sub` with an alternation takes the leftmost match
-#: and, at equal position, the earliest alternative.
+#: ⚠ THE LAST TWO ARE NOT REACHABLE FROM THIS MODULE TODAY -- the worker
+#: holds only `ghs_` and `sk-`. They are here because 21-06 adds the
+#: claim-time installation read, and whatever mints an installation token
+#: holds an App JWT signed with the App private key. Widening the pattern
+#: before that path exists costs one regular expression; widening it
+#: afterwards costs whatever was written to the column in between.
+#:
+#: TWO SHAPES WERE CONSIDERED AND DECLINED, both because the cure is worse:
+#:   - a bare 40-hex run (the App client secret). It also matches a git
+#:     COMMIT SHA, which is legitimate, useful context in exactly these
+#:     messages -- redacting it would blind the admin endpoint to which
+#:     commit failed.
+#:   - a generic `://user:password@` DSN arm. psycopg2's connection errors
+#:     do not quote the password, and the clone-URL case is already covered
+#:     by the `ghs_` arm; a generic arm would redact the visible half of a
+#:     credential-free URL for nothing.
+#:
+#: ORDER: the PEM arm first, so a whole block collapses to one marker
+#: rather than having its base64 body picked at by the other arms; then
+#: `github_pat_`, so it wins against any future prefix that is its own
+#: prefix. `re.sub` with an alternation takes the leftmost match and, at
+#: equal position, the earliest alternative.
 _TOKEN_PATTERN = re.compile(
-    r"github_pat_[A-Za-z0-9_]+"
-    r"|ghs_[A-Za-z0-9]+"
-    r"|ghp_[A-Za-z0-9]+"
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"
+    r"|github_pat_[A-Za-z0-9_]+"
+    r"|gh[psuor]_[A-Za-z0-9]+"
     r"|sk-[A-Za-z0-9_-]+"
+    r"|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*"
 )
 
 _REDACTED = "[REDACTED]"
 
-#: The cap on `last_error`. A Python traceback repr or a multi-megabyte
-#: subprocess dump would otherwise be written verbatim into a column the
-#: admin endpoint returns.
+#: ⚠ psycopg2 REFUSES A NUL IN A TEXT PARAMETER, and it refuses it
+#: CLIENT-SIDE: `ValueError: A string literal cannot contain NUL (0x00)
+#: characters`, raised while building the statement, before anything is
+#: sent. So it is not a `psycopg2.Error` and cannot be caught as one.
+#:
+#: Left in, it loses the whole failure write. The `ValueError` is raised
+#: INSIDE `require_tenant`, which rolls back, so `fail` leaves the job
+#: `running` at `attempts = 1` with `last_error` still NULL -- holding the
+#: partial unique index, with nothing recorded, until the lease expires.
+#: Deterministic input, so it repeats every attempt: five wasted worker
+#: slots and a repository that dead-letters with no reason on it. Found by
+#: PR #41's review and reproduced on the real container.
+#:
+#: REACHABLE FROM A HOSTILE REPOSITORY: binary or malformed file content
+#: echoed back through a parser error, a `git`/subprocess stderr dump, or a
+#: tree-sitter failure carrying raw bytes.
+#:
+#: ⚠ IT IS EXACTLY ONE CHARACTER, MEASURED, not "control characters".
+#: Every other code point in 0x01-0x1F, 0x7F and the C1 range inserts into
+#: a `TEXT` column and reads back unchanged -- probed on a scratch
+#: `postgres:16-alpine`, 34 accepted, one rejected. Stripping more would
+#: throw away a tab or a newline that makes the error readable.
+_NUL = "\x00"
+
+#: The cap on `last_error`, in CHARACTERS rather than bytes -- a 2,000
+#: character message of accented text measures 3,974 UTF-8 bytes. That is
+#: deliberate and costs nothing: the column is `TEXT`, which has no
+#: declared limit, and the budget this cap exists to bound is what a human
+#: reads in 21-07's response, not what the row occupies. A Python traceback
+#: repr or a multi-megabyte subprocess dump would otherwise be written
+#: verbatim.
 MAX_ERROR_LENGTH = 2000
 
 _TRUNCATION_MARKER = "... [truncated]"
 
 
 def _sanitize_text(text: str) -> str:
-    """Redact token-shaped substrings, then truncate to MAX_ERROR_LENGTH.
+    """Make a string safe to WRITE and safe to SHOW: strip NUL, redact, trim.
 
-    REDACTING FIRST IS NOT A SECURITY GUARD, and the first version of this
-    comment claimed it was ("truncating first can cut a token in half and
-    leave most of it in the column"). MEASURED, that is false: a truncated
-    token's prefix still matches the pattern, so truncate-then-redact
-    replaces the fragment too. Recorded as mutation X, a deliberate
-    survivor.
+    Three steps, and the first of them is the one whose absence lost the
+    write entirely:
 
-    What redacting first does buy is that the OUTPUT LENGTH is computed
-    over the text a reader will actually get, so a message made entirely of
-    tokens collapses to a few markers instead of being trimmed to 2,000
-    characters of `[REDACTED]`. That is tidiness, and it is stated as
-    tidiness.
+    1. **Drop every NUL.** See `_NUL` above. This is a storability fix, not
+       a disclosure one -- without it psycopg2 raises before the statement
+       is built and the job is stranded `running` with nothing recorded.
+    2. **Redact.** See `_TOKEN_PATTERN`.
+    3. **Truncate** to `MAX_ERROR_LENGTH`.
+
+    ⚠ STEP 1 COMES BEFORE STEP 2, and that ordering IS load-bearing:
+    `ghs_ABC\\x00DEF` redacted first leaves `DEF` visible, because a NUL is
+    in none of the character classes and ends the match. Stripping first
+    hands the pattern one contiguous token.
+
+    REDACTING BEFORE TRUNCATING IS *NOT* A SECURITY GUARD, and the first
+    version of this comment claimed it was ("truncating first can cut a
+    token in half and leave most of it in the column"). MEASURED, that is
+    false, and PR #41's review re-measured it independently over eighteen
+    constructed inputs with zero leaks in either order. The reason is
+    structural: truncation removes a SUFFIX and every pattern here anchors
+    on a PREFIX, so whatever survives the cut still begins with the prefix
+    and still matches. Recorded as mutation X, a deliberate survivor.
+
+    What redacting before truncating does buy is that the OUTPUT LENGTH is
+    computed over the text a reader will actually get, so a message made
+    entirely of tokens collapses to a few markers instead of being trimmed
+    to 2,000 characters of `[REDACTED]`. That is tidiness, and it is stated
+    as tidiness.
     """
-    redacted = _TOKEN_PATTERN.sub(_REDACTED, text)
+    redacted = _TOKEN_PATTERN.sub(_REDACTED, text.replace(_NUL, ""))
     if len(redacted) <= MAX_ERROR_LENGTH:
         return redacted
     keep = MAX_ERROR_LENGTH - len(_TRUNCATION_MARKER)
@@ -850,10 +950,17 @@ def defer(
     Raises:
         LeaseLost: the job was reclaimed or superseded; nothing is written.
     """
+    # Sanitized ONCE, and used for both the column and the log line. The
+    # reason is caller-supplied, and `_log`'s docstring says a log line
+    # must not become the second place a token lives; passing the raw value
+    # to one of them and the clean value to the other is how that rule gets
+    # broken without anyone noticing. Found by PR #41's review.
+    detail = _sanitize_text(reason)
+
     with require_tenant(conn, job.organization_id) as cur:
         cur.execute(
             DEFER_SQL,
-            (_interval(delay), _sanitize_text(reason), str(job.id), worker_id),
+            (_interval(delay), detail, str(job.id), worker_id),
         )
         if cur.rowcount == 0:
             raise LeaseLost(
@@ -863,7 +970,7 @@ def defer(
 
     _log(logging.INFO, "defer", job, worker_id, "running", "queued",
          sync_state="unchanged", attempts_returned=1,
-         retry_in=f"{delay.total_seconds():.0f}s", reason=reason)
+         retry_in=f"{delay.total_seconds():.0f}s", reason=detail)
 
 
 def abandon(conn: Any, job: Job, worker_id: str, reason: str) -> None:
@@ -895,10 +1002,14 @@ def abandon(conn: Any, job: Job, worker_id: str, reason: str) -> None:
     Raises:
         LeaseLost: the job was reclaimed or superseded; nothing is written.
     """
+    # Sanitized once; see `defer` for why the log line gets the same value
+    # the column does.
+    detail = _sanitize_text(reason)
+
     with require_tenant(conn, job.organization_id) as cur:
         cur.execute(
             ABANDON_SQL,
-            (_sanitize_text(reason), str(job.id), worker_id),
+            (detail, str(job.id), worker_id),
         )
         if cur.rowcount == 0:
             raise LeaseLost(
@@ -909,7 +1020,7 @@ def abandon(conn: Any, job: Job, worker_id: str, reason: str) -> None:
         cur.execute(PROJECT_NEVER_SYNCED_SQL, (str(job.repository_id),))
 
     _log(logging.INFO, "abandon", job, worker_id, "running", "superseded",
-         sync_state="never_synced", reason=reason)
+         sync_state="never_synced", reason=detail)
 
 
 def sweep(conn: Any) -> int:
