@@ -1,7 +1,7 @@
 # GitHub webhooks
 
-What we receive, what we do with it, and what Phase 21 is expected to
-pick up.
+What we receive, what we do with it, and what it puts on the ingestion
+queue.
 
 Related: [`api-github-install.md`](api-github-install.md),
 [`api-repositories.md`](api-repositories.md),
@@ -62,12 +62,21 @@ different rules:
 
 Only a finished delivery is a duplicate outright.
 
+**A redelivery therefore RUNS THE HANDLER AGAIN**, which is what makes
+re-entrancy a property the handlers have to hold rather than a paragraph.
+Every producer call they make is safe to repeat: the enqueue is an upsert
+against `(repository_id) WHERE state IN ('queued','running')`, so a second
+run joins the live job instead of creating another one; a supersede of an
+already-superseded job matches nothing and says so; and every other write
+is keyed rather than incremental.
+
 **Do not rely on this to recover a lost event on its own.** It recovers
 one *if* GitHub redelivers, *and* redelivers again after the five-minute
 mark, *and* reuses `X-GitHub-Delivery`. The last of those is recorded as
 unverified in ISS-019, and the plan for this phase warned against
 designing around a vendor's retry behaviour. A delivery that fails and is
-never redelivered stays lost until a resync exists (Phase 21).
+never redelivered stays lost until the repository is pushed to or
+reconnected.
 
 That is a correction to an earlier design which treated any existing row
 as a duplicate, on the reasoning that replaying a partially-applied event
@@ -98,7 +107,18 @@ directly.
 
 Everything here **records intent**. Nothing fetches from GitHub and
 nothing starts work — a goroutine begun in a webhook dies with the
-process and takes the only record of the work with it.
+process and takes the only record of the work with it. What "recording
+intent" produces is a row in `ingestion_jobs`, written through `pkg/jobs`
+and nowhere else.
+
+**⚠ Two of these payload shapes are unverified — ISS-019.** The
+`installation` payloads were captured from real deliveries; `push` and
+`installation_repositories` were written from GitHub's documentation,
+because no such delivery has ever reached a capture server. Their tests
+are named `UNVERIFIED_*` so nobody mistakes them for evidence, and this is
+not pedantry: capturing the `installation` payloads corrected three specs,
+including a size field that was out by a factor of a thousand. The handler
+behaviour below is tested; the field names it reads are not.
 
 ### `installation`
 
@@ -106,8 +126,15 @@ process and takes the only record of the work with it.
 |---|---|
 | `created`, already linked | Refreshes account name, type and repository selection. **Never** changes which organization owns it. |
 | `created`, unknown | **Nothing.** See below. |
-| `deleted` | Marks `uninstalled_at`. Repositories are **kept**; those that were `pending` or `syncing` are stood down to `never_synced`. One already `synced` keeps that state — it is simply not re-synced until the App returns. |
-| `suspend` / `unsuspend` | Sets or clears `suspended_at`. |
+| `deleted` | Marks `uninstalled_at`. Repositories are **kept**; every live job under the installation is **superseded**, and the repositories that had one — plus any left `pending` or `syncing` by an older build — are stood down to `never_synced`. One already `synced` keeps that state. |
+| `suspend` / `unsuspend` | Sets or clears `suspended_at`. **No job is created or cancelled** — that is the whole of the behaviour today. *From 21-05*, the worker is to **defer** a job whose installation is suspended at claim time, without consuming an attempt, so a suspension that is lifted resumes rather than having burned retries. |
+
+**`deleted` supersedes and then stands down, in that order and in one
+transaction.** The stand-down covers exactly the repositories whose live
+job was cancelled, not a list of sync states — under the projection, a
+repository whose job is *retrying* reads `failed`, and a state-based
+filter would leave it looking like it is still retrying after its job was
+taken away.
 
 **An installation we do not recognise is not adopted.** A user can
 install from GitHub's directory without passing through our install flow,
@@ -131,8 +158,16 @@ and how to recover from it.
 
 | Action | Effect |
 |---|---|
-| `added` | Repositories we already track are re-pointed at the installation and queued. New ones are **not** created. |
-| `removed` | `installation_id` cleared, `sync_state` set to `never_synced`. Rows are **not** deleted. |
+| `added` | Repositories we already track are re-pointed at the installation and get a `full_ingest` job — one call for the whole set. Any whose `installation_id` actually **changed** have their live job superseded first. New repositories are **not** created. |
+| `removed` | `installation_id` cleared, `sync_state` set to `never_synced`, and any live job **superseded** — a job for a repository the App can no longer read fails on its first call anyway, so it is stopped promptly rather than left to race the stand-down. |
+
+**`added` queues every repository, not most of them.** One
+`jobs.Enqueue` over the whole set, where each row either inserts a job or
+joins the live one. The design this replaced caught the unique-index
+violation from a plain `INSERT` and returned success, which is correct for
+two reconnects of one repository and wrong for a set: three repositories
+racing a relink left two of them never queued while the handler reported a
+win.
 
 **A webhook cannot create a repository row.** Verified 2026-09-08: the
 payload's repository shape is reduced to `id`, `node_id`, `name`,
@@ -152,12 +187,25 @@ installation token and can fetch the real shape.
 
 ### `push`
 
-Marks the repository `pending`. **Default branch only** — ingesting every
-feature branch is not the product, and the comparison uses the branch
-GitHub reports on the payload rather than a stored value, so a repository
-whose default branch changed is handled without us noticing the change.
+Creates an **`incremental`** job for the repository. **Default branch
+only** — ingesting every feature branch is not the product, and the
+comparison uses the branch GitHub reports on the payload rather than a
+stored value, so a repository whose default branch changed is handled
+without us noticing the change.
 
-A repository already `syncing` is left alone (ISS-016).
+**A push arriving while a job is already live joins that job** rather than
+queueing a second one, and the outcome says `joined the live job`. This is
+close to all steady-state volume, not an edge case: an ingest takes
+minutes and people push repeatedly. The live job covers the new commits
+either way — if it has not been claimed yet it will clone at whatever HEAD
+is current when it is, and if it is running, `needs_rerun` is set so that
+the worker re-queues it once on completion (*from 21-05*; nothing reads
+that flag yet).
+
+That replaces the old behaviour, which refused to touch a repository whose
+`sync_state` was `syncing` and so **dropped the push**. Both halves of that
+were ISS-016: `sync_state` was the queue, stamping over `syncing` gave one
+repository two writers, and not stamping lost the work.
 
 A push to a repository nobody connected is ignored.
 
@@ -168,32 +216,72 @@ there is the first red line in the delivery log.
 
 ---
 
-## What Phase 21 inherits
+## What a webhook puts on the queue
 
-**The work item is a row in `repositories` with `sync_state = 'pending'`.**
-There is no queue table; this phase deliberately did not invent one,
-because the queue's shape is Phase 21's decision.
+**The work item is a row in `ingestion_jobs`** — leased, retried and
+dead-lettered — and **`pkg/jobs` is the only producer**. Nothing in
+`services/backend` writes that table directly, and nothing writes
+`repositories.sync_state` as a way of asking for work.
 
-To find work:
+**`sync_state` is a projection.** The producer writes `pending` for a
+repository that got a *new* job, and the handlers write `never_synced`
+when access is lost. It is what the UI reads and what
+`idx_repositories_sync_state` indexes. It is not a queue, and treating it
+as one is what **ISS-016** was: a status column with no owner, no lease and
+no attempt counter, so two writers could each believe they owned the same
+repository.
+
+**⚠ Nothing consumes the queue yet.** The worker arrives in 21-05 and
+21-06. Until then a repository that gets a job stays `pending`
+indefinitely, and every "the worker …" sentence below describes what is
+being built, not what is running.
+
+To find work, read the queue, not the projection:
 
 ```sql
-SELECT id, project_id, installation_id, github_repo_id, default_branch
-FROM repositories
-WHERE sync_state = 'pending' AND installation_id IS NOT NULL;
+SELECT id, organization_id, repository_id, job_type, attempts
+FROM ingestion_jobs
+WHERE state = 'queued' AND run_after <= NOW()
+ORDER BY run_after
+FOR UPDATE SKIP LOCKED
+LIMIT 1;
 ```
 
-`idx_repositories_sync_state` is a partial index on
-`sync_state <> 'synced'`, which covers exactly this.
+`idx_ingestion_jobs_claimable` covers exactly that, and
+`idx_ingestion_jobs_one_live_per_repo` —
+`UNIQUE (repository_id) WHERE state IN ('queued','running')` — makes two
+live jobs for one repository unrepresentable rather than merely unlikely.
 
-Three things the queue must handle, none of which this phase solved:
+Four things that follow, and that a reader of this page needs:
 
-1. **`sync_state` is a status column being used as a queue.** It has no
-   lease, owner or attempt counter, so two workers can believe they own
-   the same repository. **ISS-016**, and it should be settled before the
-   queue is built rather than after.
-2. **`installation_id IS NULL` means unsyncable, not failed.** Those rows
-   are waiting for a reinstall and must not be retried.
-3. **A suspended installation cannot mint a token.** Check
-   `github_installations.suspended_at` and `uninstalled_at` before
-   attempting a sync, or the failure arrives as an opaque 403 from
-   GitHub.
+1. **`installation_id IS NULL` gets no job.** Those repositories are
+   *unsyncable*, not failed: they are waiting for a reinstall, and a job
+   for one would clone nothing, fail its attempts and dead-letter. The
+   same goes for a repository whose installation carries `uninstalled_at`.
+   Their `sync_state` is `never_synced`, so nothing tells a user that work
+   is under way when none can be.
+
+   **Enforced by migration 000015 and by the handlers, not yet by the
+   producers.** `handlePush` and `recordAddedRepositories` resolve
+   repositories by `installation_id` without checking `uninstalled_at`, so
+   a `push` racing an `installation.deleted` can still create a job under a
+   dead installation — **ISS-033**, which also records why 21-06's
+   claim-time check makes it a wasted round trip rather than a wrong
+   terminal state.
+2. **A suspended installation will be DEFERRED, not failed** — *from
+   21-05.* The worker is to read `github_installations.suspended_at` when
+   it claims a job and put the job back without consuming an attempt, so a
+   suspension that is lifted resumes rather than having burned its retries.
+   What is true **today** is the other half: nothing here cancels or
+   re-queues a job on `suspend` or `unsuspend`.
+3. **An uninstall supersedes and stands down.** Live jobs leave the live
+   set; their repositories become `never_synced`, keeping their rows,
+   their ingested content and their installation link so a reinstall can
+   recover.
+4. **Supersede before enqueue, always.** Both in one transaction. The
+   reverse order raises no error at all through the enqueue upsert: it
+   flags `needs_rerun` on the job that is about to leave the live set, the
+   supersede then removes it, and the repository ends with no live job.
+
+`services/backend/migrations/000015_backfill_ingestion_jobs.up.sql` gave a
+job to every repository the pre-queue webhook path had left `pending`.

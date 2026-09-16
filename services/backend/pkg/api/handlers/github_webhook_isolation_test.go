@@ -16,10 +16,28 @@ package handlers_test
 //
 // The `push` and `installation_repositories` payloads were NOT captured:
 // no such delivery has ever been made to a capture server. They are built
-// here from GitHub's documentation, and `TestGitHubWebhook_UnverifiedShapes`
-// says so out loud. See 20-05-SUMMARY.md; capturing them is a real task,
-// not a formality — capturing the installation payloads is what corrected
-// three specs in 20-02.
+// here from GitHub's documentation. See 20-05-SUMMARY.md; capturing them is
+// a real task, not a formality — capturing the installation payloads is
+// what corrected three specs in 20-02.
+//
+// THE CONVENTION, STATED EXACTLY, because the looser version of it was
+// claimed and was not true. Per-event subtests that drive an unverified
+// payload carry an `UNVERIFIED_` prefix. FIVE tests drive one without the
+// prefix — `AddedOnlyTouchesTheOwningOrganization` and
+// `CrossTenant_AWebhookCannotTouchAnotherOrgsRepositories` (both from
+// 20-05), and 21-04's `RedeliveryOfAFailedDeliveryCreatesNoSecondLiveJob`,
+// `TestGitHubWebhook_BulkAddedRacingARelinkQueuesEveryRepository` and
+// `TestGitHubWebhook_DeliveriesNeverTouchAnotherOrgsJobs`. All five are
+// about a property that spans events — tenancy, redelivery, the queue —
+// rather than about one event's behaviour, so each carries the caveat in
+// its own comment instead. Renaming them was considered and rejected: the
+// prefix earns its place by marking the per-event cases a reader would
+// otherwise take as evidence about the SHAPE, and spreading it over every
+// test that happens to send a `push` body would make it mean nothing.
+//
+// (An earlier version of this header pointed at a
+// `TestGitHubWebhook_UnverifiedShapes` that has never existed anywhere in
+// the repo.)
 
 import (
 	"context"
@@ -28,6 +46,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -43,9 +62,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/api"
+	"github.com/yourusername/smart-docs-platform/services/backend/pkg/api/handlers"
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/auth"
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/client"
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/db"
+	"github.com/yourusername/smart-docs-platform/services/backend/pkg/github"
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/testing/isolation"
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/testing/isolation/testjwt"
 )
@@ -374,7 +395,22 @@ func TestGitHubWebhook(t *testing.T) {
 			d := loadCaptured(t, "installation-deleted")
 			ghID := installationIDOf(t, d.Body)
 			instID := seedLinkedInstallation(t, pool, orgA.ID, ghID)
-			repoID := seedRepoUnder(t, pool, orgA, instID, 771001, "pending")
+
+			// Four repositories, one per state an uninstall has to handle.
+			stranded := seedRepoUnder(t, pool, orgA, instID, 771001, "pending")
+			running := seedRepoUnder(t, pool, orgA, instID, 771002, "syncing")
+			seedRunningJob(t, pool, orgA.ID, running, "worker-uninstall-771")
+			// ⚠ THE CASE THE OLD FILTER WALKED PAST. Under 21-05's
+			// projection a repository whose job is RETRYING reads `failed`
+			// — the state machine has no `failed` job state, so "currently
+			// failing" is `queued AND attempts > 0`. The pre-21-04
+			// stand-down matched only `pending` and `syncing`, so this row
+			// would have kept `failed` after its job was cancelled: a
+			// repository that looks like it is retrying and never will,
+			// which is exactly what this handler's own comment forbids.
+			retrying := seedRepoUnder(t, pool, orgA, instID, 771003, "failed")
+			seedRetryingJob(t, pool, orgA.ID, retrying, 2)
+			done := seedRepoUnder(t, pool, orgA, instID, 771004, "synced")
 
 			status, _ := deliver(t, srv, "installation", uniqueDelivery("deleted"), d.Body, "")
 			require.Equal(t, http.StatusAccepted, status)
@@ -383,10 +419,23 @@ func TestGitHubWebhook(t *testing.T) {
 			uninstalled, _, _, _ := installationRow(t, pool, orgA.ID, instID)
 			require.NotNil(t, uninstalled, "the row must be kept and marked, not deleted")
 
-			// And so does the repository, with its ingested history.
-			state, installation := repoSyncState(t, pool, orgA.ID, repoID)
+			// And so do the repositories, with their ingested history.
+			state, installation := repoSyncState(t, pool, orgA.ID, stranded)
 			require.Equal(t, "never_synced", state, "a queued repo must stand down, not fail")
 			require.NotNil(t, installation, "the link must survive so a reinstall can recover")
+
+			require.Empty(t, liveJobsFor(t, pool, running),
+				"an uninstall must stop the run in flight, not race it")
+			require.Equal(t, "never_synced", syncStateOfRepo(t, pool, orgA.ID, running))
+
+			require.Empty(t, liveJobsFor(t, pool, retrying),
+				"the retrying job must be cancelled")
+			require.Equal(t, "never_synced", syncStateOfRepo(t, pool, orgA.ID, retrying),
+				"a repository whose job was just cancelled must not be left looking "+
+					"like it is still retrying")
+
+			require.Equal(t, "synced", syncStateOfRepo(t, pool, orgA.ID, done),
+				"a repository that finished is not re-synced, and is not stood down either")
 		})
 
 		t.Run("SuspendAndUnsuspend", func(t *testing.T) {
@@ -507,8 +556,22 @@ func TestGitHubWebhook(t *testing.T) {
 				"installation":{"id":%d,"account":{"login":"x","type":"User"},
 				"repository_selection":"selected"}}`, ghID)
 
-			status, _ := deliver(t, srv, "push", uniqueDelivery("push-main"), []byte(body), "")
+			status, resp := deliver(t, srv, "push", uniqueDelivery("push-main"), []byte(body), "")
 			require.Equal(t, http.StatusAccepted, status)
+			require.Contains(t, resp, "queued")
+
+			// THE WORK ITEM, not the projection. `sync_state` is asserted
+			// too, but as the thing the producer WROTE — the queue is what
+			// a worker reads, and a test that only checked the column would
+			// pass for a handler that still used it as a queue.
+			live := liveJobsFor(t, pool, repo)
+			require.Len(t, live, 1, "a push must create exactly one job")
+			require.Equal(t, "queued", live[0].State)
+			require.Equal(t, "incremental", live[0].JobType,
+				"a push changed part of a repository we have already seen")
+			require.Equal(t, orgA.ID, live[0].OrganizationID)
+			require.False(t, live[0].NeedsRerun)
+
 			state, _ := repoSyncState(t, pool, orgA.ID, repo)
 			require.Equal(t, "pending", state)
 		})
@@ -526,28 +589,46 @@ func TestGitHubWebhook(t *testing.T) {
 			status, body2 := deliver(t, srv, "push", uniqueDelivery("push-feature"), []byte(body), "")
 			require.Equal(t, http.StatusAccepted, status)
 			require.Contains(t, body2, "not the default branch")
+			require.Empty(t, jobsFor(t, pool, repo), "a feature branch must not queue work")
 			state, _ := repoSyncState(t, pool, orgA.ID, repo)
 			require.Equal(t, "synced", state,
 				"ingesting every feature branch is not the product")
 		})
 
-		t.Run("UNVERIFIED_PushDoesNotRequeueARunInFlight", func(t *testing.T) {
+		t.Run("UNVERIFIED_PushAgainstARunningJobJoinsItRatherThanQueueingASecond", func(t *testing.T) {
 			// ISS-016: re-queueing a repository that is mid-sync makes two
 			// writers believe they own it. The webhook is the other place
-			// that could happen.
+			// that could happen, and this is the case 21-CONTEXT L7 is
+			// about — close to all steady-state volume, since people push
+			// repeatedly and an ingest takes minutes.
+			//
+			// THE OLD ANSWER WAS TO DROP THE PUSH. `sync_state <> 'syncing'`
+			// stopped the second writer by losing the work. The upsert is
+			// the third answer: the live job absorbs it and `needs_rerun`
+			// makes 21-05 re-queue once on completion.
 			ghID := int64(778000)
 			inst := seedLinkedInstallation(t, pool, orgA.ID, ghID)
 			repo := seedRepoUnder(t, pool, orgA, inst, 778001, "syncing")
+			seedRunningJob(t, pool, orgA.ID, repo, "worker-push-778")
 
 			body := fmt.Sprintf(`{"ref":"refs/heads/main",
 				"repository":{"id":778001,"name":"r","full_name":"o/r","default_branch":"main"},
 				"installation":{"id":%d,"account":{"login":"x","type":"User"},
 				"repository_selection":"selected"}}`, ghID)
 
-			status, _ := deliver(t, srv, "push", uniqueDelivery("push-syncing"), []byte(body), "")
+			status, resp := deliver(t, srv, "push", uniqueDelivery("push-syncing"), []byte(body), "")
 			require.Equal(t, http.StatusAccepted, status)
+			require.Contains(t, resp, "joined the live job")
+
+			all := jobsFor(t, pool, repo)
+			require.Len(t, all, 1, "a push against a live job must not create a second one")
+			require.Equal(t, "running", all[0].State)
+			require.True(t, all[0].NeedsRerun,
+				"a job that has already read the repository must be told to run again")
+
 			state, _ := repoSyncState(t, pool, orgA.ID, repo)
-			require.Equal(t, "syncing", state, "a run in flight must not be re-queued")
+			require.Equal(t, "syncing", state,
+				"a running job owns its repository's projected state")
 		})
 
 		t.Run("UNVERIFIED_RepositoriesRemovedStandsDownWithoutDeleting", func(t *testing.T) {
@@ -557,19 +638,31 @@ func TestGitHubWebhook(t *testing.T) {
 			ghID := int64(779000)
 			inst := seedLinkedInstallation(t, pool, orgA.ID, ghID)
 			repo := seedRepoUnder(t, pool, orgA, inst, 779001, "synced")
+			// A run in flight for a repository we are about to lose access
+			// to. It would fail on its next GitHub call anyway; L4's point
+			// is that it stops PROMPTLY rather than racing this handler to
+			// write the final state.
+			seedRunningJob(t, pool, orgA.ID, repo, "worker-removed-779")
 
 			body := fmt.Sprintf(`{"action":"removed",
 				"installation":{"id":%d,"account":{"login":"x","type":"User"},
 				"repository_selection":"selected"},
 				"repositories_removed":[{"id":779001,"name":"r","full_name":"o/r","private":true}]}`, ghID)
 
-			status, _ := deliver(t, srv, "installation_repositories",
+			status, resp := deliver(t, srv, "installation_repositories",
 				uniqueDelivery("repos-removed"), []byte(body), "")
 			require.Equal(t, http.StatusAccepted, status)
+			require.Contains(t, resp, "1 live job superseded")
 
 			state, installation := repoSyncState(t, pool, orgA.ID, repo)
 			require.Equal(t, "never_synced", state)
 			require.Nil(t, installation, "access was lost, so the link is cleared")
+
+			require.Empty(t, liveJobsFor(t, pool, repo),
+				"a job for a repository the App can no longer read must be stopped")
+			all := jobsFor(t, pool, repo)
+			require.Len(t, all, 1)
+			require.Equal(t, "superseded", all[0].State)
 		})
 
 		t.Run("UNVERIFIED_RepositoriesAddedDoesNotInventARow", func(t *testing.T) {
@@ -610,13 +703,88 @@ func TestGitHubWebhook(t *testing.T) {
 			status, resp := deliver(t, srv, "installation_repositories",
 				uniqueDelivery("repos-added-positive"), []byte(body), "")
 			require.Equal(t, http.StatusAccepted, status)
-			require.Contains(t, resp, "already known and re-queued")
+			require.Contains(t, resp, "1 already known, 1 queued")
 
 			state, installation := repoSyncState(t, pool, orgA.ID, repo)
 			require.Equal(t, "pending", state, "a repository we regained access to must be queued")
 			require.NotNil(t, installation)
 			require.Equal(t, newInst, *installation,
 				"the repository must be re-pointed at the installation that now covers it")
+
+			live := liveJobsFor(t, pool, repo)
+			require.Len(t, live, 1)
+			require.Equal(t, "full_ingest", live[0].JobType,
+				"regaining access to a repository asks for the whole thing, not a diff")
+			require.Equal(t, orgA.ID, live[0].OrganizationID)
+		})
+
+		t.Run("UNVERIFIED_AddedWithAChangedInstallationSupersedesTheRunInFlight", func(t *testing.T) {
+			// The relink case, arriving as a webhook rather than as a
+			// connect. The job that is running holds a token for an
+			// installation that no longer covers this repository, so it is
+			// taken out of the live set BEFORE its replacement is queued —
+			// backwards, the upsert flags the job that is about to leave and
+			// the repository ends with no live job at all, silently.
+			oldInst := seedLinkedInstallation(t, pool, orgA.ID, 790000)
+			newInst := seedLinkedInstallation(t, pool, orgA.ID, 790100)
+			repo := seedRepoUnder(t, pool, orgA, oldInst, 790001, "syncing")
+			seedRunningJob(t, pool, orgA.ID, repo, "worker-added-790")
+
+			body := `{"action":"added",
+				"installation":{"id":790100,"account":{"login":"x","type":"User"},
+				"repository_selection":"selected"},
+				"repositories_added":[{"id":790001,"name":"r","full_name":"o/r","private":true}]}`
+
+			status, resp := deliver(t, srv, "installation_repositories",
+				uniqueDelivery("added-supersede"), []byte(body), "")
+			require.Equal(t, http.StatusAccepted, status)
+			require.Contains(t, resp, "1 superseded")
+
+			all := jobsFor(t, pool, repo)
+			require.Len(t, all, 2, "the old job is kept as a record, not deleted")
+			live := liveJobsFor(t, pool, repo)
+			require.Len(t, live, 1, "exactly one live job, which is the ISS-016 guarantee")
+			require.Equal(t, "queued", live[0].State)
+			require.Equal(t, "full_ingest", live[0].JobType)
+			require.False(t, live[0].NeedsRerun)
+
+			superseded := scanJobs(t, pool,
+				`repository_id = $1 AND state = 'superseded'`, repo)
+			require.Len(t, superseded, 1)
+			require.NotNil(t, superseded[0].LeaseOwner,
+				"the supersede keeps the lease, so the row records which worker was running")
+
+			_, installation := repoSyncState(t, pool, orgA.ID, repo)
+			require.NotNil(t, installation)
+			require.Equal(t, newInst, *installation)
+		})
+
+		t.Run("UNVERIFIED_AddedForAnUnchangedInstallationJoinsTheLiveJob", func(t *testing.T) {
+			// The other half, and the one that is easy to get wrong in the
+			// direction that costs a second ingest: this installation
+			// ALREADY covered the repository, so nothing is superseded —
+			// its running ingest holds credentials that are still valid.
+			inst := seedLinkedInstallation(t, pool, orgA.ID, 791000)
+			repo := seedRepoUnder(t, pool, orgA, inst, 791001, "syncing")
+			seedRunningJob(t, pool, orgA.ID, repo, "worker-added-791")
+
+			body := `{"action":"added",
+				"installation":{"id":791000,"account":{"login":"x","type":"User"},
+				"repository_selection":"selected"},
+				"repositories_added":[{"id":791001,"name":"r","full_name":"o/r","private":true}]}`
+
+			status, resp := deliver(t, srv, "installation_repositories",
+				uniqueDelivery("added-unchanged"), []byte(body), "")
+			require.Equal(t, http.StatusAccepted, status)
+			require.Contains(t, resp, "0 superseded")
+			require.Contains(t, resp, "1 joined a live job")
+
+			all := jobsFor(t, pool, repo)
+			require.Len(t, all, 1, "a re-offer of a link we already have is not a new run")
+			require.Equal(t, "running", all[0].State)
+			require.True(t, all[0].NeedsRerun)
+			require.Equal(t, "syncing", syncStateOfRepo(t, pool, orgA.ID, repo),
+				"the running job keeps its repository's projected state")
 		})
 
 		t.Run("AddedOnlyTouchesTheOwningOrganization", func(t *testing.T) {
@@ -643,6 +811,13 @@ func TestGitHubWebhook(t *testing.T) {
 			require.Equal(t, "pending", stateA)
 			require.Equal(t, "synced", stateB,
 				"cross-tenant leak: added for orgA's installation queued orgB's repository")
+
+			require.Len(t, liveJobsFor(t, pool, repoA), 1)
+			require.Empty(t, jobsFor(t, pool, repoB),
+				"cross-tenant leak: orgB's repository got a job from orgA's delivery")
+			require.Zero(t, countJobs(t, pool,
+				`repository_id = $1 AND organization_id = $2`, repoA, orgB.ID),
+				"no job for orgA's repository may carry orgB's organization id")
 		})
 
 		t.Run("RemovedOnlyTouchesTheNamedInstallation", func(t *testing.T) {
@@ -811,6 +986,57 @@ func TestGitHubWebhook(t *testing.T) {
 			require.Equal(t, "pending", stateA, "the owning tenant's repository must be queued")
 			require.Equal(t, "synced", stateB,
 				"cross-tenant leak: a push through orgA's installation queued orgB's repository")
+
+			// ⚠ ASSERTED WITH AN EXPLICIT organization_id FILTER, because
+			// `ingestion_jobs` has NO row-level security: a query on this
+			// table that omits one proves nothing about tenancy.
+			require.Len(t, liveJobsFor(t, pool, repoA), 1)
+			require.Empty(t, jobsFor(t, pool, repoB),
+				"cross-tenant leak: orgB's repository got a job from orgA's push")
+			require.Zero(t, countJobs(t, pool, `organization_id = $1 AND repository_id = $2`,
+				orgB.ID, repoA), "no job may carry the wrong tenant")
+		})
+
+		t.Run("RedeliveryOfAFailedDeliveryCreatesNoSecondLiveJob", func(t *testing.T) {
+			// UNVERIFIED SHAPE (ISS-019): the `push` body below is
+			// documentation-derived. No `UNVERIFIED_` prefix, because this
+			// is about redelivery rather than about what `push` does — see
+			// the convention in this file's header.
+			//
+			// ⚠ EVERY HANDLER HERE RUNS TWICE. `claimDelivery` re-claims a
+			// 'failed' row immediately, so GitHub redelivering an event we
+			// answered 500 to runs the whole handler again — which the
+			// comment in github_webhook.go denied until this plan. The
+			// producers have to be re-entrant, and this is the assertion
+			// that says so about the queue rather than about the column.
+			ghID := int64(792000)
+			inst := seedLinkedInstallation(t, pool, orgA.ID, ghID)
+			repo := seedRepoUnder(t, pool, orgA, inst, 792001, "synced")
+
+			id := uniqueDelivery("redeliver-push")
+			body := fmt.Sprintf(`{"ref":"refs/heads/main",
+				"repository":{"id":792001,"name":"r","full_name":"o/r","default_branch":"main"},
+				"installation":{"id":%d,"account":{"login":"x","type":"User"},
+				"repository_selection":"selected"}}`, ghID)
+
+			status, _ := deliver(t, srv, "push", id, []byte(body), "")
+			require.Equal(t, http.StatusAccepted, status)
+			require.Len(t, liveJobsFor(t, pool, repo), 1)
+
+			// The delivery is recorded 'failed', as a 500 would leave it.
+			_, err := pool.Exec(context.Background(),
+				`UPDATE github_webhook_deliveries SET outcome = 'failed' WHERE delivery_id = $1`, id)
+			require.NoError(t, err)
+
+			status, resp := deliver(t, srv, "push", id, []byte(body), "")
+			require.Equal(t, http.StatusAccepted, status)
+			require.NotContains(t, resp, "duplicate",
+				"a failed delivery must be re-claimed, which is what makes re-entrancy matter")
+
+			require.Len(t, liveJobsFor(t, pool, repo), 1,
+				"a redelivery must join the live job, never queue a second one")
+			require.Len(t, jobsFor(t, pool, repo), 1,
+				"and it must not leave a second row behind at all")
 		})
 	})
 }
@@ -846,4 +1072,377 @@ func seedRepoUnder(t *testing.T, pool *pgxpool.Pool, org *isolation.TestOrg,
 			state).Scan(&id)
 	}))
 	return id
+}
+
+// seedRetryingJob is a job that has FAILED at least once and is waiting
+// for its next attempt.
+//
+// The state machine has five states and `failed` is not one of them
+// (decision O2): a failed attempt goes back to `queued` with `run_after`
+// in the future and `attempts` incremented, so "this repository is
+// currently failing" is `state = 'queued' AND attempts > 0`. It is still
+// LIVE — the partial unique index covers `queued` — so an uninstall has to
+// supersede it, and the repository it belongs to projects as `failed`,
+// which is the state markUninstalled's old filter walked straight past.
+func seedRetryingJob(t *testing.T, pool *pgxpool.Pool, orgID, repoID string, attempts int) {
+	t.Helper()
+	ctx := context.Background()
+	scoper := db.NewTenantScoper(pool)
+	require.NoError(t, scoper.InTenantTx(auth.ContextWithOrgID(ctx, orgID), func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO ingestion_jobs
+			  (organization_id, repository_id, job_type, state, attempts,
+			   run_after, last_error)
+			VALUES ($1, $2, 'full_ingest', 'queued', $3,
+			        NOW() + INTERVAL '10 minutes', 'clone failed')`,
+			orgID, repoID, attempts)
+		return err
+	}))
+}
+
+// webhookAndConnectServer stands up the real router with BOTH producers
+// mounted: `POST /webhooks/github` and `POST /api/repositories`.
+//
+// The barrier test below needs them on one router because it races them
+// against each other. `webhookServer` gives the router a stub lister that
+// reports nothing, which is right for every test that never connects and
+// wrong for this one.
+// buildWebhookRequest signs and builds a delivery WITHOUT sending it, so a
+// barrier can release the send rather than the signing.
+//
+// It is `deliver` split in half. The halves are kept next to each other
+// deliberately: if the headers ever diverge, the barrier test stops
+// exercising the real receiver and nothing would say so.
+func buildWebhookRequest(t *testing.T, baseURL, event, deliveryID string, body []byte) *http.Request {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/webhooks/github",
+		strings.NewReader(string(body)))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Event", event)
+	req.Header.Set("X-GitHub-Delivery", deliveryID)
+	req.Header.Set("X-Hub-Signature-256", signPayload(TestGitHubWebhookSecret, body))
+	return req
+}
+
+// buildConnectRequest is the same split for `POST /api/repositories`.
+func buildConnectRequest(t *testing.T, baseURL, token, body string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/api/repositories",
+		strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	return req
+}
+
+// send performs a pre-built request. This is the only thing the barrier
+// releases.
+func send(t *testing.T, req *http.Request) (int, string) {
+	t.Helper()
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(raw)
+}
+
+func webhookAndConnectServer(
+	t *testing.T, pool *pgxpool.Pool, lister handlers.InstallationRepositoryLister,
+) string {
+	t.Helper()
+	deadRAG := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("neither producer may call the RAG service; got %s", r.URL.Path)
+	}))
+	t.Cleanup(deadRAG.Close)
+
+	router := api.NewRouterWithValidatorAndAdmin(
+		pool, client.NewRAGClient(deadRAG.URL), testjwt.NewValidator(), nil,
+		api.Config{
+			LogLevel:            slog.LevelWarn,
+			GitHubWebhookSecret: TestGitHubWebhookSecret,
+			GitHubRepositories:  lister,
+			GitHubInstallations: &stubInstallClient{installation: githubInstallation("x")},
+			InstallStates:       newMemoryStates(),
+			GitHubAppSlug:       "rag-doc-test",
+			FrontendURL:         "https://app.example.test/settings",
+		},
+	)
+	srv := httptest.NewServer(router)
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+// ⚠ THE BULK CASE THAT LOST TWO REPOSITORIES OF THREE (21-CONTEXT L8).
+//
+// An `installation_repositories.added` for three repositories, racing a
+// relink of one of them through a barrier. The design this replaced caught
+// 23505 from a plain INSERT and returned success — correct for two
+// reconnects of ONE repository, and wrong the moment a statement touches a
+// set: two of the three were never queued and the handler reported a win.
+// Measured in review, which is why L8 was rewritten around a per-row
+// upsert and why this is a test rather than an argument.
+//
+// WHAT IT ASSERTS is the only thing that distinguishes the two designs:
+// after both actors finish, EVERY repository has exactly one live job. The
+// status codes alone would pass under the broken design, which is the
+// point.
+//
+// ⚠ WHAT ACTUALLY KILLS THE REGRESSION IS THE BULK SHAPE, NOT THE RACE,
+// and that is worth saying because the name says otherwise. Mutation 18 —
+// enqueue only the first of the three and report success, which is the
+// original bug — fails this test and NOTHING ELSE in the module: every
+// other `added` test carries one repository and cannot see the difference.
+// The race is what makes the fixture realistic (a relink landing on one of
+// the three mid-delivery, which is how the bug was found in review) and it
+// is a second, weaker thing this test buys. PR #40's review made the
+// distinction; the barrier below was tightened in the same round so that
+// the second claim is at least honest.
+//
+// FIVE ROUNDS ON A WARM SERVER. A single cold round proves nothing: the
+// first pays for connection setup and the two actors arrive spread out,
+// which is the opposite of the contention being tested. The servers share
+// a pool with MaxConns raised, because pgxpool defaults to
+// max(4, NumCPU) and CI's runner has two cores — two HTTP requests that
+// each open two transactions can otherwise queue for connections instead
+// of racing.
+//
+// UNVERIFIED SHAPE: the `installation_repositories.added` body below is
+// documentation-derived, like every other one in this file (ISS-019). The
+// name carries no `UNVERIFIED_` prefix because this is a top-level test
+// about the queue rather than one of the per-event cases the prefix marks;
+// the caveat is here instead.
+func TestGitHubWebhook_BulkAddedRacingARelinkQueuesEveryRepository(t *testing.T) {
+	pool := isolation.SetupTestDB(t)
+	ctx := context.Background()
+
+	const (
+		rounds = 5
+		// The repository the relink and the bulk add both touch.
+		racedGitHubID = int64(795002)
+	)
+	githubIDs := []int64{795001, racedGitHubID, 795003}
+
+	isolation.WithTwoOrgs(t, pool, func(orgA, _ *isolation.TestOrg) {
+		cfg := pool.Config()
+		cfg.MaxConns = 12
+		racePool, err := pgxpool.NewWithConfig(ctx, cfg)
+		require.NoError(t, err)
+		defer racePool.Close()
+
+		token := testjwt.Sign(orgA.OwnerSupabaseID, orgA.ID, "owner")
+
+		// Three installations: where the repositories start, where the
+		// bulk `added` re-points them, and where the concurrent relink
+		// sends the one it touches.
+		origin := seedLinkedInstallation(t, pool, orgA.ID, 795100)
+		bulkTarget := seedLinkedInstallation(t, pool, orgA.ID, 795200)
+		relinkTarget := seedLinkedInstallation(t, pool, orgA.ID, 795300)
+
+		repoIDs := make([]string, 0, len(githubIDs))
+		for _, ghID := range githubIDs {
+			repoIDs = append(repoIDs, seedRepoUnder(t, pool, orgA, origin, ghID, "synced"))
+		}
+
+		lister := &stubLister{repos: []github.Repository{{
+			ID:            racedGitHubID,
+			Name:          fmt.Sprintf("r%d", racedGitHubID),
+			FullName:      "someone/raced",
+			Private:       true,
+			Visibility:    "private",
+			SizeKB:        12,
+			DefaultBranch: "main",
+			CloneURL: fmt.Sprintf("https://github.com/%s/r%d.git",
+				orgA.Slug, racedGitHubID),
+		}}}
+		srv := webhookAndConnectServer(t, racePool, lister)
+
+		addedBody := fmt.Sprintf(`{"action":"added",
+			"installation":{"id":795200,"account":{"login":"x","type":"User"},
+			"repository_selection":"selected"},
+			"repositories_added":[
+				{"id":%d,"name":"a","full_name":"o/a","private":true},
+				{"id":%d,"name":"b","full_name":"o/b","private":true},
+				{"id":%d,"name":"c","full_name":"o/c","private":true}]}`,
+			githubIDs[0], githubIDs[1], githubIDs[2])
+
+		for round := 1; round <= rounds; round++ {
+			// Reset to the starting shape. Only this test's own rows are
+			// touched — no blanket delete, because the claim tests in
+			// pkg/jobs rely on nothing removing rows it did not create.
+			for _, repoID := range repoIDs {
+				setInstallation(t, pool, orgA.ID, repoID, origin)
+				clearJobsFor(t, pool, repoID)
+			}
+			// One of the three is already being ingested, which is what
+			// makes the bulk enqueue take the upsert's conflict branch for
+			// that row and the insert branch for the other two.
+			seedRunningJob(t, pool, orgA.ID, repoIDs[0], "worker-bulk-race")
+
+			// ⚠ THE BARRIER RELEASES THE `Do`, NOT THE GOROUTINE.
+			//
+			// An earlier version released `start` and THEN built and signed
+			// each request inside the goroutine, so everything before the
+			// send — HMAC signing, dialling, routing, `claimDelivery`,
+			// `resolveInstallation`, JWT validation on the connect side —
+			// happened after the barrier and the two actors reached their
+			// transactions at genuinely different times. Caught by PR #40's
+			// review. Each request is now fully built first; `ready` says
+			// so, and only then are the two sends released together.
+			webhookReq := buildWebhookRequest(t, srv, "installation_repositories",
+				uniqueDelivery(fmt.Sprintf("bulk-race-%d", round)), []byte(addedBody))
+			connectReq := buildConnectRequest(t, srv, token,
+				fmt.Sprintf(`{"github_repo_id":%d,"installation_id":%q}`,
+					racedGitHubID, relinkTarget))
+
+			var (
+				ready       sync.WaitGroup
+				done        sync.WaitGroup
+				release     = make(chan struct{})
+				webhookCode int
+				webhookBody string
+				connectCode int
+				connectResp string
+			)
+			ready.Add(2)
+			done.Add(2)
+
+			go func() {
+				defer done.Done()
+				ready.Done()
+				<-release
+				webhookCode, webhookBody = send(t, webhookReq)
+			}()
+			go func() {
+				defer done.Done()
+				ready.Done()
+				<-release
+				connectCode, connectResp = send(t, connectReq)
+			}()
+			ready.Wait()
+			close(release)
+			done.Wait()
+
+			require.Equalf(t, http.StatusAccepted, webhookCode,
+				"round %d: the bulk add must be accepted; body=%s", round, webhookBody)
+			require.Equalf(t, http.StatusCreated, connectCode,
+				"round %d: the concurrent relink must succeed; body=%s", round, connectResp)
+
+			for i, repoID := range repoIDs {
+				live := liveJobsFor(t, pool, repoID)
+				require.Lenf(t, live, 1,
+					"round %d: repository %d (github id %d) must end with exactly one live "+
+						"job; a bulk enqueue that reports success while losing rows is the "+
+						"L8 failure this test exists for", round, i, githubIDs[i])
+				require.Equalf(t, orgA.ID, live[0].OrganizationID, "round %d", round)
+			}
+
+			// And every repository still points at one of the two
+			// installations this round asked for — never NULL, never stale.
+			for i, repoID := range repoIDs {
+				_, installation := repoSyncState(t, pool, orgA.ID, repoID)
+				require.NotNilf(t, installation, "round %d: repository %d lost its link",
+					round, i)
+				require.Containsf(t, []string{bulkTarget, relinkTarget}, *installation,
+					"round %d: repository %d", round, i)
+			}
+		}
+
+		for _, repoID := range repoIDs {
+			clearJobsFor(t, pool, repoID)
+		}
+		isolation.AssertNoRepositoryTenantDrift(t, pool)
+	})
+}
+
+// ⚠ THE TENANT BOUNDARY, ON THE TABLE THE DATABASE WILL NOT DEFEND.
+//
+// `ingestion_jobs` has NO row-level security (21-CONTEXT L5), and
+// `jobs.SupersedeLive`'s `AND organization_id = $2` is the only scope that
+// statement has — its UPDATE touches neither `organization_id` nor
+// `repository_id`, so the tenant trigger never fires. The case that makes
+// that predicate matter is exactly this one: a webhook resolves
+// repositories by `github_repo_id`, which
+// `idx_repositories_project_github_repo` makes unique only PER PROJECT,
+// never globally. Two organizations holding the same GitHub repository id
+// is ordinary, not contrived.
+//
+// So both orgs get a repository with the SAME github_repo_id, both have a
+// live job, and only orgA's installations send deliveries. Nothing of
+// orgB's may be created, flagged or cancelled.
+//
+// UNVERIFIED SHAPES (ISS-019): the `installation_repositories.added` body
+// is documentation-derived; the `installation.deleted` one is the shape of
+// a real capture. No `UNVERIFIED_` prefix, because this is about tenancy
+// rather than about either event — see this file's header.
+func TestGitHubWebhook_DeliveriesNeverTouchAnotherOrgsJobs(t *testing.T) {
+	pool := isolation.SetupTestDB(t)
+
+	const shared = int64(796001)
+
+	isolation.WithTwoOrgs(t, pool, func(orgA, orgB *isolation.TestOrg) {
+		srv := webhookServer(t, pool)
+
+		instA := seedLinkedInstallation(t, pool, orgA.ID, 796100)
+		repoA := seedRepoUnder(t, pool, orgA, instA, shared, "syncing")
+		seedRunningJob(t, pool, orgA.ID, repoA, "worker-a")
+
+		instB := seedLinkedInstallation(t, pool, orgB.ID, 796200)
+		repoB := seedRepoUnder(t, pool, orgB, instB, shared, "syncing")
+		seedRunningJob(t, pool, orgB.ID, repoB, "worker-b")
+
+		// A relink of the shared id through one of orgA's installations:
+		// the handler supersedes and re-enqueues, which is the pair of
+		// writes that could reach across if the resolution were careless.
+		relinked := seedLinkedInstallation(t, pool, orgA.ID, 796300)
+		added := `{"action":"added",
+			"installation":{"id":796300,"account":{"login":"x","type":"User"},
+			"repository_selection":"selected"},
+			"repositories_added":[{"id":796001,"name":"r","full_name":"o/r","private":true}]}`
+		status, _ := deliver(t, srv, "installation_repositories",
+			uniqueDelivery("tenant-added"), []byte(added), "")
+		require.Equal(t, http.StatusAccepted, status)
+
+		// And an uninstall of orgA's original installation, which
+		// supersedes every repository still under it.
+		deleted := `{"action":"deleted",
+			"installation":{"id":796100,"account":{"login":"x","type":"User"},
+			"repository_selection":"selected"}}`
+		status, _ = deliver(t, srv, "installation", uniqueDelivery("tenant-deleted"),
+			[]byte(deleted), "")
+		require.Equal(t, http.StatusAccepted, status)
+
+		// orgB is untouched: its job is still running, unflagged, and it
+		// gained no second one.
+		jobsB := jobsFor(t, pool, repoB)
+		require.Len(t, jobsB, 1, "orgB must have gained no job from orgA's deliveries")
+		require.Equal(t, "running", jobsB[0].State,
+			"cross-tenant cancellation: orgA's delivery superseded orgB's in-flight ingest")
+		require.False(t, jobsB[0].NeedsRerun,
+			"cross-tenant flag: orgA's delivery asked orgB's job to run again")
+		require.Equal(t, orgB.ID, jobsB[0].OrganizationID)
+		require.Equal(t, "syncing", syncStateOfRepo(t, pool, orgB.ID, repoB))
+
+		// And no job for either row carries the other's tenant.
+		require.Zero(t, countJobs(t, pool,
+			`repository_id = $1 AND organization_id <> $2`, repoA, orgA.ID))
+		require.Zero(t, countJobs(t, pool,
+			`repository_id = $1 AND organization_id <> $2`, repoB, orgB.ID))
+
+		// orgA's own repository did move: the relink superseded its running
+		// job and queued the replacement, and the later uninstall of the
+		// ORIGINAL installation left it alone, because the relink had
+		// already re-pointed it away.
+		require.Len(t, liveJobsFor(t, pool, repoA), 1)
+		require.Equal(t, relinked, mustInstallationOf(t, pool, orgA.ID, repoA))
+
+		isolation.AssertNoRepositoryTenantDrift(t, pool)
+	})
+}
+
+func mustInstallationOf(t *testing.T, pool *pgxpool.Pool, orgID, repoID string) string {
+	t.Helper()
+	_, installation := repoSyncState(t, pool, orgID, repoID)
+	require.NotNil(t, installation)
+	return *installation
 }
