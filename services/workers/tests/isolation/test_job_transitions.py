@@ -1105,19 +1105,25 @@ def test_the_claim_takes_the_oldest_claimable_job_whatever_its_tenant(
     The ordering half matters on its own: without `ORDER BY run_after` a
     backed-off job could be picked ahead of one that has been waiting, and
     every other claim assertion in this file would start passing by luck.
+
+    ⚠ THE INSERTION ORDER IS DELIBERATELY THE OPPOSITE OF THE `run_after`
+    ORDER. Seeded the other way round the test passes with the `ORDER BY`
+    deleted, because a scan with `LIMIT 1` and no ordering returns the
+    physically first matching row -- which would be the right answer for
+    the wrong reason.
     """
     org_a, org_b = with_two_orgs
-    older = seed_job(db_conn, org_a)
-    newer = seed_job(db_conn, org_b)
-    backdate(db_conn, older, offset_seconds=0)
-    backdate(db_conn, newer, offset_seconds=100)
+    inserted_first = seed_job(db_conn, org_a)
+    inserted_second = seed_job(db_conn, org_b)
+    backdate(db_conn, inserted_first, offset_seconds=100)
+    backdate(db_conn, inserted_second, offset_seconds=0)
 
-    job = claimed_job(db_conn, worker_id, older)
-    assert str(job.organization_id) == org_a.id, (
+    job = claimed_job(db_conn, worker_id, inserted_second)
+    assert str(job.organization_id) == org_b.id, (
         "the claim must report the tenant of the row it took, because "
         "nothing else will tell the worker which tenant to scope to"
     )
-    assert job_row(db_conn, newer)["state"] == "queued"
+    assert job_row(db_conn, inserted_first)["state"] == "queued"
 
 
 def test_claim_returns_none_when_nothing_is_claimable(db_conn, with_two_orgs, worker_id):
