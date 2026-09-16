@@ -187,6 +187,39 @@ func TestRetryOnLockContention_RecognisesARealPostgresDeadlock(t *testing.T) {
 	})
 }
 
+// ⚠ THE PREMISE OF THE ISS-032 FIX, ASSERTED AGAINST THE SERVER RATHER
+// THAN AGAINST A COMMENT.
+//
+// `LockWaitTimeout` is only the right number relative to the server's
+// `deadlock_timeout`: below it, a waiting transaction gives up before the
+// detector ever looks for a cycle. `deadlock.go` reasons about PostgreSQL's
+// DEFAULT of one second — and lowering `deadlock_timeout` is a common tweak
+// to surface deadlocks faster in CI, which would invert the whole argument
+// while the constant kept its name and its comment.
+//
+// This is what `SHOW deadlock_timeout` reports, read from `pg_settings` so
+// the UNIT comes with it: a future release that changed the unit would
+// otherwise silently compare seconds against milliseconds.
+func TestLockWaitTimeout_IsBelowTheServersDeadlockTimeout(t *testing.T) {
+	pool := isolation.SetupTestDB(t)
+	ctx := context.Background()
+
+	var setting int64
+	var unit string
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT setting::bigint, unit FROM pg_settings WHERE name = 'deadlock_timeout'`,
+	).Scan(&setting, &unit))
+	require.Equal(t, "ms", unit,
+		"deadlock_timeout is expected in milliseconds; the comparison below assumes it")
+
+	deadlockTimeout := time.Duration(setting) * time.Millisecond
+	require.Less(t, isolation.LockWaitTimeout, deadlockTimeout,
+		"isolation.LockWaitTimeout (%s) must stay BELOW the server's deadlock_timeout (%s), "+
+			"or a contended transaction waits long enough to be reported as a deadlock "+
+			"instead of giving up and retrying — which is the whole of the ISS-032 fix",
+		isolation.LockWaitTimeout, deadlockTimeout)
+}
+
 // `lock_timeout` below `deadlock_timeout` is the half of the ISS-032 fix
 // that the retry cannot supply, so the SQLSTATE it produces is measured
 // here rather than assumed: a transaction that gives up waiting gets 55P03,
@@ -194,10 +227,6 @@ func TestRetryOnLockContention_RecognisesARealPostgresDeadlock(t *testing.T) {
 func TestLockWaitTimeout_ProducesARetryableLockTimeout(t *testing.T) {
 	pool := isolation.SetupTestDB(t)
 	ctx := context.Background()
-
-	require.Less(t, isolation.LockWaitTimeout, time.Second,
-		"LockWaitTimeout must stay below PostgreSQL's default deadlock_timeout, "+
-			"or the transaction waits long enough to be reported as a deadlock instead")
 
 	isolation.WithTwoOrgs(t, pool, func(orgA, _ *isolation.TestOrg) {
 		// Holder takes a row lock and keeps it.
