@@ -4,25 +4,6 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 ## Open Enhancements
 
-### ISS-032: The drift self-test takes ACCESS EXCLUSIVE locks on shared tables, and deadlocks under CI's package-parallelism step
-
-- **Discovered:** 2026-09-16, on PR #38's CI (run 35118173356). First occurrence in fifteen Backend CI runs; the re-run of the identical commit passed.
-- **Type:** Test reliability
-- **Priority:** LOW-MEDIUM — it fails a step the workflow itself calls "defense in depth. Do not rely on it", and nothing in the product is affected. It will recur.
-- **What happened:** `TestRepositoriesOrganizationID_DriftCheckDetectsDrift` (`pkg/testing/isolation`, added by 21-01) failed with `ERROR: deadlock detected (SQLSTATE 40P01)` in the `Harness under package parallelism (ISS-010, defense in depth)` step, which runs `./pkg/api/... ./pkg/auth/... ./pkg/db/... ./pkg/testing/...` at default parallelism against one shared container.
-- **The mechanism, measured on PostgreSQL 16.15 rather than inferred:**
-  - That test manufactures drift by dropping a constraint and disabling a trigger inside a transaction it rolls back. Its first statement, `ALTER TABLE repositories DROP CONSTRAINT repositories_project_org_fkey`, takes **`AccessExclusiveLock` on `repositories` AND on `projects`** — the referenced table, whose RI triggers it must remove. Confirmed from `pg_locks`.
-  - Meanwhile every other package's `WithTwoOrgs` cleanup is deleting and inserting `projects` and `repositories` in the other order. That is a lock-order cycle, and it does not need any one test to be at fault.
-- **000014 (21-02) did not create the cycle, and does widen the window.** Measured both ways:
-  - The drift test's lock set is **unchanged**: the `ALTER TABLE` takes no lock on `ingestion_jobs`.
-  - But `DELETE FROM repositories` — which every fixture cleanup runs — now takes `RowExclusiveLock` on `ingestion_jobs` as well as `chunks`, `ingestion_runs` and `repositories`, because of `ingestion_jobs`' two foreign keys. One more table in the lock set, and a slightly longer cleanup transaction, on the other side of the cycle.
-- **Not reproducible locally:** 16 runs of the same command on a fresh container, six at default parallelism and ten at `GOMAXPROCS=2`, produced zero deadlocks. CI's two-core runner is where it shows.
-- **Fix direction, cheapest first:**
-  1. **Bounded retry on `40P01`** around the drift self-test's closure. A transaction doing DDL on a contended table can legitimately be chosen as the deadlock victim; retrying is the standard answer and weakens nothing the test proves.
-  2. Manufacture the drift without DDL, if a way exists that does not need the foreign key dropped — unlikely, since the key is what makes drift unrepresentable.
-  3. Serialise the isolation package against the others, which costs the cross-package contention the step exists to create.
-- **Related:** ISS-010 (the same step, the same shared container).
-
 ### ISS-031: A migration that sets a tenant leaves the migrating session unable to read RLS tables, and CI cannot catch it
 
 - **Discovered:** 2026-09-16, by the reviewer session on PR #37 (21-01). Independently reproduced there.
@@ -315,6 +296,7 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **NARROWED and SETTLED 2026-09-10; not yet shipped.** This issue is now **the racing-relink half only**. The second half — a `failed` repository cannot be retried through the public API — is split out as **ISS-023**, because an issue that half-closes never closes cleanly: the first draft of Phase 21 had three files giving three different answers about whether this closed when Phase 21 ships.
 - **The resolution, locked in `.planning/phases/21-ingestion-job-infrastructure/21-CONTEXT.md` (L2, L4):** not a lease on `sync_state`. The root cause is that a *status column* was used as a *queue*, so Phase 21 introduces `ingestion_jobs` as the work item, demotes `sync_state` to a projection the job writes and the UI reads, and makes a relink **supersede** an in-flight job rather than race it. A partial unique index on `(repository_id) WHERE state IN ('queued','running')` makes two live jobs unrepresentable — the guard is in the schema, not only in the code path that remembers it.
 - **⚠ Ordering matters and review caught it wrong the first time:** supersede **then** enqueue, both in one transaction. The reverse order raises 23505 against the non-deferrable partial unique index in exactly this issue's own scenario. **Corrected 2026-09-14:** that is true of a plain `INSERT`. Through L7's upsert, the only enqueue path, the reverse order raises nothing and silently leaves no live job. The order is still mandatory, and 21-02 pins both behaviours.
+- **Progress, 2026-09-16 (21-03):** the CONNECT path is done. `POST /api/repositories` no longer writes `sync_state` as a way of asking for work; it classifies the call (new / relink / unchanged) in Go and goes through `pkg/jobs`, superseding any live job before enqueueing its replacement in the same transaction. `TestRepositoriesConnect_RelinkSupersedesARunningJob` is this issue's own scenario, and `TestRepositoriesConnect_ConcurrentRelinksLeaveOneLiveJob` races two of them. **Still open:** 21-04's webhook producers write the same column through the same upsert, and the phase's other paths (push, `installation_repositories.added`) have not moved yet.
 - **Closes when Phase 21 ships.**
 
 ### ISS-015: The isolation scanner's coverage match is method-blind
@@ -364,6 +346,22 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Recommendation:** the `AfterConnect` sentinel, giving deterministically **loud**. With `TenantScoper` in place an unscoped query is by definition a bug, and a bug that always throws is cheaper than one that sometimes returns `[]`. Still an operational-risk judgement — a 500 is worse than an empty list for a user who trips it — so it belongs to whoever owns that call, but it is now a pool-constructor line rather than a schema change.
 
 ## Closed Enhancements
+
+### ISS-032: The drift self-test takes ACCESS EXCLUSIVE locks on shared tables, and deadlocks under CI's package-parallelism step ✅
+
+- **Discovered:** 2026-09-16, on PR #38's CI (run 35118173356). First occurrence in fifteen Backend CI runs; the re-run of the identical commit passed.
+- **Type:** Test reliability
+- **Resolved:** 2026-09-16 in 21-03, which is the plan that made it likely enough to matter: it puts job producers in `pkg/api/handlers`, so more concurrent transactions touch `repositories` and `projects` at once.
+- **The mechanism, as filed, re-confirmed:** `TestRepositoriesOrganizationID_DriftCheckDetectsDrift` manufactures drift by dropping a foreign key, and `ALTER TABLE repositories DROP CONSTRAINT repositories_project_org_fkey` takes `AccessExclusiveLock` on **`repositories` AND `projects`** — the referenced table, whose RI triggers it must remove. Other packages hold `AccessShare` on `projects` while taking `RowExclusive` on `repositories` (every connect does: it reads the organization's default project, then writes the repository), and fixture cleanup takes them the other way round. A cycle with no author at fault.
+- **⚠ REPRODUCED LOCALLY, which the original entry said was not possible.** The filing recorded 16 local runs with zero deadlocks. Adding `./pkg/jobs/...` to the package-parallelism set — which 21-03's tests make a realistic thing to do — reproduced it on this machine: `go test ./pkg/api/... ./pkg/auth/... ./pkg/db/... ./pkg/jobs/... ./pkg/testing/... -count=3` at default parallelism failed with `still deadlocking after 3 attempts: ERROR: deadlock detected (SQLSTATE 40P01)`.
+- **So fix direction 1 as filed — "a bounded retry on 40P01" — was tried first and measured INSUFFICIENT.** Three attempts on a 100ms linear backoff exhausted all three. Under four packages' worth of sustained traffic, a short fixed backoff just lands in the next burst.
+- **What shipped, two halves:**
+  1. **`SET LOCAL lock_timeout = 750ms`** on the transaction that does the DDL — deliberately *below* PostgreSQL's default `deadlock_timeout` of one second. The detector does not run until a transaction has waited that long, so a transaction that gives up first is normally not a deadlock victim and, more usefully, stops being one side of a cycle before a cycle can be reported. Waiting *longer* is the instinct and is what makes a deadlock the likely outcome instead of a timeout.
+  2. **`isolation.RetryOnLockContention`** — six attempts, linear backoff with jitter, retrying **both** `40P01` and `55P03`. The other side's detector can still fire first and pick us, so both codes are retryable; `40001` deliberately is not.
+- **Where it lives:** `services/backend/pkg/testing/isolation/deadlock.go`, with self-tests in `deadlock_test.go` — including one that causes a real PostgreSQL deadlock and one that measures that `LockWaitTimeout` produces a retryable `55P03`. A retry nobody has watched retry is a `for` loop with a comment on it.
+- **Evidence after the fix:** the command that reproduced it, at `-count=5` (25 package runs, default parallelism, `./pkg/jobs/...` included), passed every time; the drift test never failed.
+- **What is NOT established:** which half does the work. A mutation removing only the `lock_timeout`, leaving the six retries, also passed 5 rounds — the original deadlock was a one-in-N event and this machine could not reproduce it again on demand. Both halves are cheap, complementary and argued from the lock model rather than from that one measurement.
+- **Related:** ISS-010 (the same step, the same shared container).
 
 ### ISS-030: Search returns partial or empty results as a success when one retriever fails ✅
 

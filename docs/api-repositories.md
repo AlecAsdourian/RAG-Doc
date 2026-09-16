@@ -28,6 +28,33 @@ will show nothing indefinitely.
 | `synced` | Content is current as of `last_synced_at`. |
 | `failed` | Last attempt failed. Nothing here explains why yet. |
 
+### `sync_state` is a projection of a job, not a queue
+
+Since Phase 21 the work item is a row in an `ingestion_jobs` table, and
+`sync_state` only reports what happened to it. That is invisible over
+HTTP — the field, its values and the response shape are unchanged — but it
+changes what the field is *evidence of*, which matters if you are building
+a UI on top of it.
+
+| Event | Written by | `sync_state` |
+|---|---|---|
+| a job is queued for a repository | the API, in the same transaction as the write | `pending` |
+| a job is queued while one is already in flight | nobody | unchanged — the running job is flagged to re-run when it finishes |
+| a worker claims the job | the worker | `syncing` |
+| the job completes | the worker | `synced` |
+| an attempt fails and will be retried | the worker | `failed` |
+| the job runs out of attempts | the worker | `failed` |
+| a relink supersedes an in-flight job | nobody | the replacement job's queueing writes `pending` |
+| the App is uninstalled | the webhook | `never_synced` — that describes the installation, not a job |
+
+Two consequences worth designing for:
+
+- **A repository never has two runs in flight.** The database enforces it,
+  not the code path that remembers to check. A relink cancels the run that
+  was in flight rather than racing it.
+- **`failed` can mean "retrying shortly" or "given up".** The response does
+  not yet distinguish them. ISS-023 covers an explicit retry endpoint.
+
 **`installation_id` can be null.** It becomes null when the GitHub App is
 uninstalled — the repository and everything ingested from it are kept
 deliberately, but it cannot be re-synced until the App is reinstalled.
@@ -37,8 +64,9 @@ is still there.
 To recover, reinstall the App and `POST /api/repositories` again with the
 new installation. That relinks the existing row rather than creating a
 second one, and moves it back to `pending` — including when the
-repository was mid-sync, so a run that was in flight against the old
-installation is superseded rather than waited for.
+repository was mid-sync, in which case the in-flight run is **superseded**
+and a fresh one queued behind it, rather than the two racing to write the
+final state.
 
 **`archived` repositories still appear.** GitHub archived them; we do not
 filter. Worth a visual marker.
@@ -150,13 +178,23 @@ refreshes the stored metadata and returns 201 with the existing row. Safe
 to retry, and safe to call on a repository whose App was reinstalled: the
 existing row is relinked to the new installation rather than duplicated.
 
-**Re-connecting does not reset `sync_state`, with one exception.** A
-repository that is `failed` comes back `failed`; a re-connect is a
-metadata refresh, not a retry, and re-queueing here would restart a run
-already in flight. The exception is a repository whose `installation_id`
-changed — it has to be fetched again through the new credential, so it
-returns to `pending`. **Do not show "queued" on the strength of having
-called this**; read the `sync_state` in the response.
+**A connect queues work in exactly two cases**, and both are decided from
+the row that is already there:
+
+| The call is… | What it does |
+|---|---|
+| a **new** repository — nothing in your organization matches it | queues a full ingest; `sync_state` comes back `pending` |
+| a **relink** — the `installation_id` changed, or the row has never carried a GitHub id | cancels any run in flight, queues a full ingest; `sync_state` comes back `pending` |
+| **anything else** | refreshes the stored metadata and queues nothing; `sync_state` comes back unchanged |
+
+So a repository that is `failed` comes back `failed`: a re-connect is a
+metadata refresh, not a retry. **Do not show "queued" on the strength of
+having called this** — read the `sync_state` in the response, which is the
+value as of the moment the call committed.
+
+**Two connects landing at the same moment both succeed.** They resolve to
+one repository row and one queued job between them; neither gets an error,
+and neither is silently dropped.
 
 **Connecting a repository your organization already has returns that same
 row** — even if it sits in a project other than the default, and even if
