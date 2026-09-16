@@ -304,37 +304,75 @@ func TestRepositoriesOrganizationID_MovingAProjectWithRepositoriesIsRejected(t *
 
 // 8. The drift check itself. Every test above ends with it; these two prove it
 // can fail. A check that has never been seen to fail proves nothing.
+//
+// ⚠ RETRIED ON 40P01 — ISS-032. The `ALTER TABLE ... DROP CONSTRAINT` below
+// takes AccessExclusiveLock on `repositories` AND on `projects` (the
+// referenced table, whose RI triggers it removes), while every other
+// package's fixture cleanup is deleting from those two tables in the other
+// order. That is a lock cycle in which this transaction can be picked as
+// the victim through no fault of its own, and it fired once in CI's
+// package-parallelism step. 21-03 adds more concurrent tests against the
+// same two tables, so it is fixed here rather than left to recur.
+//
+// The retry weakens nothing: each attempt rebuilds its own transaction from
+// scratch, the assertions below run on the attempt that completed, and
+// three failures still fail — naming 40P01, so the next reader is not left
+// guessing.
 func TestRepositoriesOrganizationID_DriftCheckDetectsDrift(t *testing.T) {
 	pool := isolation.SetupTestDB(t)
 	ctx := context.Background()
 
 	isolation.WithTwoOrgs(t, pool, func(orgA, orgB *isolation.TestOrg) {
-		isolation.WithSuperuserConn(t, pool, func(conn *pgx.Conn) {
-			tx, err := conn.Begin(ctx)
-			require.NoError(t, err)
-			defer func() { _ = tx.Rollback(ctx) }()
+		var ids []string
+		require.NoError(t, isolation.RetryOnDeadlock(ctx, func() error {
+			var attemptErr error
+			isolation.WithSuperuserConn(t, pool, func(conn *pgx.Conn) {
+				ids, attemptErr = manufactureDriftAndCheck(ctx, conn, orgA, orgB)
+			})
+			return attemptErr
+		}), "manufacturing drift")
 
-			// Manufacture the drift the schema forbids. It takes removing BOTH
-			// guards, inside a transaction that is never committed.
-			_, err = tx.Exec(ctx, `ALTER TABLE repositories DROP CONSTRAINT `+compositeTenantFK)
-			require.NoError(t, err)
-			_, err = tx.Exec(ctx, `ALTER TABLE repositories DISABLE TRIGGER trg_repositories_organization_id`)
-			require.NoError(t, err)
-			_, err = tx.Exec(ctx, fmt.Sprintf("SET LOCAL app.current_tenant = '%s'", orgA.ID))
-			require.NoError(t, err)
-			_, err = tx.Exec(ctx,
-				`UPDATE repositories SET organization_id = $1 WHERE id = $2`,
-				orgB.ID, orgA.RepoID,
-			)
-			require.NoError(t, err)
-
-			ids, err := isolation.CheckRepositoryTenantDrift(ctx, tx)
-			require.NoError(t, err)
-			require.Equal(t, []string{orgA.RepoID}, ids)
-		})
+		require.Equal(t, []string{orgA.RepoID}, ids)
 
 		isolation.AssertNoRepositoryTenantDrift(t, pool)
 	})
+}
+
+// manufactureDriftAndCheck removes BOTH guards and writes a drifted row,
+// inside a transaction that is never committed, then runs the check over
+// it.
+//
+// It returns an error rather than calling t.Fatal so that the caller can
+// retry it: a deadlock here says nothing about the code under test. Every
+// statement's error is returned unwrapped, so RetryOnDeadlock can see the
+// SQLSTATE.
+func manufactureDriftAndCheck(
+	ctx context.Context, conn *pgx.Conn, orgA, orgB *isolation.TestOrg,
+) ([]string, error) {
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Never committed: the deferred rollback puts both guards back, and the
+	// server aborts the transaction if this process dies first.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `ALTER TABLE repositories DROP CONSTRAINT `+compositeTenantFK); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `ALTER TABLE repositories DISABLE TRIGGER trg_repositories_organization_id`); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL app.current_tenant = '%s'", orgA.ID)); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE repositories SET organization_id = $1 WHERE id = $2`,
+		orgB.ID, orgA.RepoID,
+	); err != nil {
+		return nil, err
+	}
+	return isolation.CheckRepositoryTenantDrift(ctx, tx)
 }
 
 func TestRepositoriesOrganizationID_DriftCheckRefusesToRunUnderRowLevelSecurity(t *testing.T) {
