@@ -199,6 +199,11 @@ func NewRouterWithValidatorAndAdmin(
 	}
 	repositoriesHandler := handlers.NewRepositoriesHandler(tenantScoper, repositoryGitHub, validate)
 
+	// Ingestion job status (21-07). Takes the scoper for consistency with
+	// its neighbours; the table it reads has no RLS, so what makes it safe
+	// is the explicit organization filter in the statement. See jobs.go.
+	jobsHandler := handlers.NewJobsHandler(tenantScoper)
+
 	// GitHub App installation flow (20-04).
 	//
 	// GITHUB_APP_SLUG is required WHENEVER the App is configured, and the
@@ -424,6 +429,28 @@ func NewRouterWithValidatorAndAdmin(
 				r.Get("/installations", githubInstallHandler.ListInstallations)
 				r.Get("/installations/{id}/repositories", githubInstallHandler.ListRepositories)
 			})
+
+			// Ingestion job status — readable by ANY member of the job's
+			// organization (the user's decision, 2026-09-14). No role gate:
+			// it shows the caller's own repository's indexing status, and
+			// Phase 23's progress UI reads it directly.
+			//
+			// ⚠ THE PATH IS "/admin/jobs/{id}", NOT "/api/admin/jobs/{id}".
+			// This block is already mounted at /api by the Route above, so a
+			// leading /api here would serve it at /api/api/... . Registering
+			// it OUTSIDE the block would lose the 60-second timeout instead.
+			//
+			// ⚠ THE CI ISOLATION SCANNER WILL NOT ASK THIS ROUTE FOR A TEST.
+			// `scripts/ci/check-isolation-tests.py` matches POST/PUT/PATCH/
+			// DELETE only, and only route lines added in the diff, so a GET
+			// passes the gate with no isolation test at all. `ingestion_jobs`
+			// has no row-level security either (21-CONTEXT L5), so nothing in
+			// the database catches a mistake and nothing in CI asks for one.
+			// Its test is therefore written deliberately —
+			// handlers/jobs_isolation_test.go — and its cross-tenant case is
+			// mutation-checked: removing `AND organization_id = $2` from
+			// jobs.go must fail it.
+			r.Get("/admin/jobs/{id}", jobsHandler.Get)
 		})
 
 		// SSE streaming route - no timeout middleware (streams are long-lived)
