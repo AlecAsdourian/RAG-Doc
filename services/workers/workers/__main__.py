@@ -27,16 +27,21 @@ true statement about the wrong problem and would send whoever reads it off
 to add one. Check the handlers first and it says the thing that is
 actually true: there is no work this build knows how to do.
 
-WHAT PHASE 22 CHANGES, and it is exactly three things:
+WHAT LIFTS THIS REFUSAL is two things, and they are the only two:
 
   1. register `full_ingest` and `incremental` in
      `workers.jobs.handlers.REGISTRY`;
-  2. add `DATABASE_URL` to the compose `workers` service;
-  3. size the pool -- one job at a time per process, so scale by replicas,
-     and 21-RESEARCH leaves the number to be MEASURED once something
-     ingests end to end.
+  2. add `DATABASE_URL` to the compose `workers` service.
 
-After 1 and 2 this entrypoint starts and the queue drains.
+After those the entrypoint starts and the queue drains. **The rest of what
+Phase 22 has to do is in `docs/api-ingestion-jobs.md`, under "The Phase 22
+hand-off", which is the authority** -- including `max_job_duration` (it
+defaults to None, and until it is set a hung handler holds its lease
+indefinitely), the three endings a handler may take, and sizing the pool,
+whose number 21-RESEARCH leaves to be MEASURED once something ingests end to
+end. This docstring deliberately keeps no count of that list: PR #43's review
+found three files carrying three different versions of it, which is the
+failure mode `21-CONTEXT.md` opens by naming.
 """
 
 from __future__ import annotations
