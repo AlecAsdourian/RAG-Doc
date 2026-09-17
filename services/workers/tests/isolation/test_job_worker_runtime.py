@@ -535,6 +535,109 @@ def test_the_worker_connects_as_the_unprivileged_app_role(dsn):
     assert bypasses_rls is False
 
 
+def test_an_unset_max_job_duration_is_announced_rather_than_silent(
+    conn, dsn, with_two_orgs, caplog
+):
+    """The omission has to be visible, and only a log record can show it.
+
+    Shipping the mechanism without a number is the right call — it is a
+    multiple of a typical ingest and nothing has ingested end to end yet,
+    the same discipline that withdrew 21-RESEARCH's pool arithmetic. But
+    silence would let whoever writes Phase 22 skip the hand-off step and
+    never know the hazard had shipped: a hung handler holds its lease
+    indefinitely and stops that worker sweeping.
+
+    ⚠ IT READS THE ACTUAL `LogRecord`, for the same reason the supersede
+    test does. A docstring saying "we warn about this" is not a warning.
+    """
+    org, _ = with_two_orgs
+    caplog.set_level(logging.INFO, logger="workers.jobs.runtime")
+
+    with running(build_worker(dsn, {"full_ingest": lambda ctx: None})):
+        warnings = until(
+            lambda: [
+                record.getMessage()
+                for record in caplog.records
+                if record.levelno == logging.WARNING
+                and "no upper bound on handler runtime" in record.getMessage()
+            ],
+            "the missing-bound warning",
+        )
+        startup = [
+            record.getMessage()
+            for record in caplog.records
+            if "starting: job_types=" in record.getMessage()
+        ]
+
+    assert len(warnings) == 1, warnings
+    assert "Set max_job_duration" in warnings[0]
+    assert startup and "max_job_duration=none" in startup[0], (
+        f"the startup line does not say whether a bound is set: {startup}"
+    )
+
+    # And with one set, the line says so and nothing warns.
+    caplog.clear()
+    bounded = build_worker(
+        dsn,
+        {"full_ingest": lambda ctx: None},
+        max_job_duration=timedelta(seconds=120),
+    )
+    with running(bounded):
+        startup = until(
+            lambda: [
+                record.getMessage()
+                for record in caplog.records
+                if "starting: job_types=" in record.getMessage()
+            ],
+            "the second worker's startup line",
+        )
+
+    assert "max_job_duration=120s" in startup[0]
+    assert not [
+        record
+        for record in caplog.records
+        if "no upper bound on handler runtime" in record.getMessage()
+    ]
+
+
+def test_require_tenant_says_a_dead_connection_is_dead(conn, superuser_conn):
+    """`require_tenant` carries the same message `_unscoped` learned.
+
+    ⚠ IT IS THE ONE AN OPERATOR ACTUALLY READS. Every terminal write and
+    the claim-time installation read go through `require_tenant` —
+    `mark_started`, `complete`, `fail`, `defer`, `abandon` — so a
+    connection that dies MID-JOB produced "psycopg2's `with conn:` idiom
+    does not nest" for precisely the failure the new message exists for.
+    `_unscoped` was fixed in the first round and this was missed.
+
+    Recovery never depended on the message (`_is_dead` drives it), so this
+    is cosmetic — which is why it is asserted on the text.
+    """
+    with conn.cursor() as cur:
+        cur.execute("SELECT pg_backend_pid()")
+        pid = cur.fetchone()[0]
+    conn.commit()
+
+    with superuser_conn.cursor() as cur:
+        cur.execute("SELECT pg_terminate_backend(%s)", (pid,))
+        assert cur.fetchone()[0] is True, "the test's own backend was not killed"
+
+    # Make psycopg2 notice. `transaction_status` is a client-side cached
+    # value, so it still reads IDLE until an operation touches the socket —
+    # which is exactly why the loop met this on its NEXT iteration rather
+    # than on the one where the backend died. No `rollback()` afterwards:
+    # psycopg2 has closed the connection by then and rolling back raises.
+    with pytest.raises(psycopg2.Error):
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+
+    # Any valid UUID: `require_tenant` validates the id and THEN checks the
+    # connection, so no tenant has to exist for this to be the real path.
+    with pytest.raises(psycopg2.InterfaceError, match="no longer usable"):
+        with require_tenant(conn, "00000000-0000-4000-8000-000000000000"):
+            pass  # pragma: no cover - the scope must never open
+
+
 def test_a_worker_refuses_an_empty_handler_map(dsn):
     """The backstop for a caller that builds a `Worker` directly.
 
