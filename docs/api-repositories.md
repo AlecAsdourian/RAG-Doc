@@ -7,7 +7,9 @@ tenant-scoped: you see your organization's repositories and nobody else's.
 See [`auth-frontend-contract.md`](auth-frontend-contract.md) for how to get
 a token and what the organization claim means.
 
-Related: [`isolation.md`](isolation.md), [`github-app-setup.md`](github-app-setup.md).
+Related: [`isolation.md`](isolation.md), [`github-app-setup.md`](github-app-setup.md),
+[`api-ingestion-jobs.md`](api-ingestion-jobs.md) — the queue behind
+`sync_state`, and the endpoint that says *why* a sync is where it is.
 
 ---
 
@@ -24,9 +26,18 @@ will show nothing indefinitely.
 |---|---|
 | `never_synced` | Connected before sync existed, or never queued. Pre-existing rows. |
 | `pending` | Queued. Everything connected through this API starts here. |
-| `syncing` | In progress (Phase 21+). |
+| `syncing` | A worker started the job. **Not evidence that one is still working** — see below. |
 | `synced` | Content is current as of `last_synced_at`. |
-| `failed` | Last attempt failed. Nothing here explains why yet. |
+| `failed` | Last attempt failed. This field does not say why; `GET /api/admin/jobs/{id}` does. |
+
+**⚠ `syncing` does not mean a worker is alive.** It is written when a job
+starts and is deliberately *not* rewritten when one stops part-way, so a
+crashed worker, a worker whose connection died, and a job handed back during
+a shutdown all leave `syncing` behind with nobody working. A UI that reads it
+as "a worker is on it" shows a spinner forever. The evidence is on the job
+row — `state`, `lease_expires_at`, `updated_at`, `attempts` — and
+[`api-ingestion-jobs.md`](api-ingestion-jobs.md#-sync_state--syncing-is-not-evidence-of-a-live-worker)
+gives the rule and the endpoint that applies it for you.
 
 ### `sync_state` is a projection of a job, not a queue
 
@@ -52,8 +63,11 @@ Two consequences worth designing for:
 - **A repository never has two runs in flight.** The database enforces it,
   not the code path that remembers to check. A relink cancels the run that
   was in flight rather than racing it.
-- **`failed` can mean "retrying shortly" or "given up".** The response does
-  not yet distinguish them. ISS-023 covers an explicit retry endpoint.
+- **`failed` can mean "retrying shortly" or "given up".** This response does
+  not distinguish them, and the job does: `state = "queued"` with
+  `attempts > 0` is retrying, `state = "dead"` has given up. Read
+  `GET /api/admin/jobs/{id}`. ISS-023 covers an explicit retry endpoint;
+  today the way back into the queue is a push or a relink.
 
 **`installation_id` can be null.** It becomes null when the GitHub App is
 uninstalled — the repository and everything ingested from it are kept
@@ -287,9 +301,17 @@ is what a cross-tenant delete returns — the row is untouched.
 
 ## Not in this API yet
 
-- **Triggering a sync.** Phase 21 owns the queue; there is no
-  "sync now" endpoint.
-- **Why a sync failed.** `failed` carries no reason yet.
+- **Triggering a sync.** Phase 21 built the queue; there is still no
+  "sync now" endpoint, and a `dead` job has no user-facing route back in
+  (ISS-023). A push or a relink is what re-queues work.
+- **Why a sync failed, on *this* endpoint.** `sync_state` carries no reason.
+  The job does — `last_error`, `last_stage`, `attempts`, `stalled` — through
+  [`GET /api/admin/jobs/{id}`](api-ingestion-jobs.md#get-apiadminjobsid).
+- **A way to find a repository's job id.** Nothing in this API returns one:
+  a connect logs the job id server-side and the response carries only the
+  repository. Until a repository-to-job link exists, the job endpoint is
+  usable by anything that already has an id and not by a UI starting from a
+  repository. Phase 23 needs one of the two.
 - **Choosing a project.** Repositories connect to the organization's
   default project. Note that a repository connected before this API
   existed may sit in a different project — do not assume every repository

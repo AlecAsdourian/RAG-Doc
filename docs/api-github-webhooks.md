@@ -5,6 +5,8 @@ queue.
 
 Related: [`api-github-install.md`](api-github-install.md),
 [`api-repositories.md`](api-repositories.md),
+[`api-ingestion-jobs.md`](api-ingestion-jobs.md) — the queue these handlers
+write to, and every state a job can reach,
 [`github-app-setup.md`](github-app-setup.md).
 
 ---
@@ -127,7 +129,7 @@ behaviour below is tested; the field names it reads are not.
 | `created`, already linked | Refreshes account name, type and repository selection. **Never** changes which organization owns it. |
 | `created`, unknown | **Nothing.** See below. |
 | `deleted` | Marks `uninstalled_at`. Repositories are **kept**; every live job under the installation is **superseded**, and the repositories that had one — plus any left `pending` or `syncing` by an older build — are stood down to `never_synced`. One already `synced` keeps that state. |
-| `suspend` / `unsuspend` | Sets or clears `suspended_at`. **No job is created or cancelled** — that is the whole of the behaviour today. *From 21-05*, the worker is to **defer** a job whose installation is suspended at claim time, without consuming an attempt, so a suspension that is lifted resumes rather than having burned retries. |
+| `suspend` / `unsuspend` | Sets or clears `suspended_at`. **No job is created or cancelled** — that is the whole of the behaviour here, deliberately. The worker **defers** a job whose installation is suspended at claim time (21-06), for an hour and without consuming an attempt, so a suspension that is lifted resumes rather than having burned its retries — and the queue does not depend on `unsuspend` being delivered. |
 
 **`deleted` supersedes and then stands down, in that order and in one
 transaction.** The stand-down covers exactly the repositories whose live
@@ -199,8 +201,9 @@ close to all steady-state volume, not an edge case: an ingest takes
 minutes and people push repeatedly. The live job covers the new commits
 either way — if it has not been claimed yet it will clone at whatever HEAD
 is current when it is, and if it is running, `needs_rerun` is set so that
-the worker re-queues it once on completion (*from 21-05*; nothing reads
-that flag yet).
+the worker re-queues it once on completion. The completion clears the flag
+and enqueues an `incremental` follow-up in the same transaction, **after**
+the completion write — the reverse order silently loses the rerun (21-05).
 
 That replaces the old behaviour, which refused to touch a repository whose
 `sync_state` was `syncing` and so **dropped the push**. Both halves of that
@@ -231,10 +234,14 @@ as one is what **ISS-016** was: a status column with no owner, no lease and
 no attempt counter, so two writers could each believe they owned the same
 repository.
 
-**⚠ Nothing consumes the queue yet.** The worker arrives in 21-05 and
-21-06. Until then a repository that gets a job stays `pending`
-indefinitely, and every "the worker …" sentence below describes what is
-being built, not what is running.
+**⚠ The consumer exists and still claims nothing.** 21-05 and 21-06 built
+the transitions, the claim loop, the heartbeat and the sweeper, and
+`python -m workers` **refuses to start** — it finds the handler registry
+empty, says so and exits 2 before reading any configuration. So the
+sentences below describe code that is written and tested, and a repository
+that gets a job still stays `pending` until Phase 22 registers the ingestion
+handlers. See
+[`api-ingestion-jobs.md`](api-ingestion-jobs.md#the-phase-22-hand-off).
 
 To find work, read the queue, not the projection:
 
@@ -268,12 +275,12 @@ Four things that follow, and that a reader of this page needs:
    dead installation — **ISS-033**, which also records why 21-06's
    claim-time check makes it a wasted round trip rather than a wrong
    terminal state.
-2. **A suspended installation will be DEFERRED, not failed** — *from
-   21-05.* The worker is to read `github_installations.suspended_at` when
-   it claims a job and put the job back without consuming an attempt, so a
+2. **A suspended installation is DEFERRED, not failed** (21-06). The worker
+   reads `github_installations.suspended_at` when it claims a job and puts
+   the job back sixty minutes later without consuming an attempt, so a
    suspension that is lifted resumes rather than having burned its retries.
-   What is true **today** is the other half: nothing here cancels or
-   re-queues a job on `suspend` or `unsuspend`.
+   Nothing on this page cancels or re-queues a job on `suspend` or
+   `unsuspend`, and that is the design rather than a gap.
 3. **An uninstall supersedes and stands down.** Live jobs leave the live
    set; their repositories become `never_synced`, keeping their rows,
    their ingested content and their installation link so a reinstall can
