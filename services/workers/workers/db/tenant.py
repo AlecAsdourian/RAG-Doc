@@ -25,7 +25,8 @@ from contextlib import contextmanager
 from typing import Any, Iterator, Optional
 from uuid import UUID
 
-from psycopg2.extensions import TRANSACTION_STATUS_IDLE
+import psycopg2
+from psycopg2.extensions import TRANSACTION_STATUS_IDLE, TRANSACTION_STATUS_UNKNOWN
 
 
 @contextmanager
@@ -85,7 +86,30 @@ def require_tenant(
     # TenantScope pattern (services/backend/pkg/testing/isolation/tenants.go).
     UUID(tenant_str)
 
-    if conn.info.transaction_status != TRANSACTION_STATUS_IDLE:
+    status = conn.info.transaction_status
+    if status == TRANSACTION_STATUS_UNKNOWN:
+        # ⚠ NOT A TRANSACTION PROBLEM, AND SAYING SO SENDS THE READER TO THE
+        # WRONG FILE. `UNKNOWN` is what psycopg2 reports for a connection
+        # whose BACKEND IS GONE -- a Postgres restart, a failover, a
+        # `pg_terminate_backend`, an idle-connection reaper in front of the
+        # database.
+        #
+        # This matters here more than it looks: EVERY terminal write goes
+        # through `require_tenant` -- `mark_started`, `complete`, `fail`,
+        # `defer`, `abandon` and 21-06's claim-time installation read -- so
+        # a connection that dies MID-JOB produced the "does not nest" line
+        # below for precisely the failure this message exists for. PR #42's
+        # second review found it one file over from `_unscoped`, which had
+        # already been fixed. Recovery never depended on the message
+        # (`workers.jobs.runtime._is_dead` drives it), but this is the line
+        # an operator actually reads.
+        raise psycopg2.InterfaceError(
+            "the connection is no longer usable (transaction_status is "
+            "UNKNOWN, which means the server closed it -- a restart, a "
+            "failover or an idle-connection reaper). Reconnect; there is "
+            "no transaction here to commit or roll back."
+        )
+    if status != TRANSACTION_STATUS_IDLE:
         raise RuntimeError(
             "require_tenant must be entered on an idle connection; "
             "caller has an in-progress transaction that would be silently "

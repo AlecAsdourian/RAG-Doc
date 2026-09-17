@@ -46,6 +46,8 @@ from __future__ import annotations
 import logging
 import os
 import pathlib
+import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -60,6 +62,7 @@ from psycopg2.extras import RealDictCursor
 
 from workers.db import require_tenant
 from workers.jobs import Unfinished, Worker, claim, new_worker_id
+from workers.jobs.runtime import CONNECT_TIMEOUT_SECONDS
 from workers.jobs.transitions import ENQUEUE_UPSERT_SQL
 
 # Same decade-in-the-past epoch `test_job_transitions.py` and 21-03 use, and
@@ -1324,6 +1327,86 @@ def test_a_handler_that_stops_early_on_shutdown_defers_instead_of_completing(
     )
 
 
+def test_unfinished_outside_a_shutdown_fails_rather_than_re_claiming_forever(
+    conn, dsn, with_two_orgs
+):
+    """`Unfinished` is only free during a shutdown, and this is the bound.
+
+    ⚠ WHAT IT PREVENTS, measured by PR #42's second review with a handler
+    that always raises `Unfinished`:
+
+        193 re-claims in 6 seconds, attempts pinned at 0,
+        repository pinned at `syncing`
+
+    `defer(timedelta(0))` is the only ending that neither consumes an
+    attempt nor moves `run_after`, so **both** of the phase's backstops are
+    bypassed: `CLAIM_SQL`'s `attempts < max_attempts` never trips because
+    the counter never rises, and `_SWEEP_SQL`'s `attempts >= max_attempts`
+    never matches, so the sweeper can never dead-letter it. And nothing
+    raises, so nothing pages anyone.
+
+    The shutdown path keeps the free pass -- `..._defers_instead_of_completing`
+    above is that half -- because a shutdown happens once per process and
+    the loop exits immediately afterwards.
+
+    ⚠ HOW THIS TEST IS BOUNDED, because a test for a spin must not spin.
+    The handler counts its calls and switches to a plain `Exception` after
+    `SPIN_CAP`, which fails the job and ends the loop whatever the runtime
+    does. So the un-fixed code (and the mutation below) makes this test
+    FAIL in about a second rather than hang.
+    """
+    org, _ = with_two_orgs
+    link_installation(conn, org)
+    job_id = seed_job(conn, org)
+    backdate(conn, job_id)
+    assert_only_claimable(conn, job_id)
+
+    spin_cap = 25
+    calls: List[str] = []
+
+    def always_unfinished(ctx):
+        calls.append(str(ctx.job.id))
+        if len(calls) > spin_cap:
+            # The guard rail: make the spin terminate so the assertions
+            # below are what fails, not the clock.
+            raise RuntimeError("spin cap reached")
+        raise Unfinished("a handler bug, not a shutdown")
+
+    with running(build_worker(dsn, {"full_ingest": always_unfinished})):
+        row = job_when(
+            conn,
+            job_id,
+            lambda r: r["last_error"] is not None and r["lease_owner"] is None,
+            "the job to be failed",
+        )
+        # ⚠ A FIXED SLEEP, DELIBERATELY, AND THE ONLY ONE IN THIS FILE.
+        # Every other wait here is for something to HAPPEN, which is what
+        # `until()` is for. This one asserts that nothing happens, and
+        # there is no deadline to poll against for that. 1.5 s is ~45 spins
+        # at the rate the review measured (193 in 6 s), and the fix puts
+        # `run_after` a 30-60 s backoff away, so it cannot re-claim.
+        time.sleep(1.5)
+
+    assert len(calls) == 1, (
+        f"the handler ran {len(calls)} times; `Unfinished` outside a shutdown "
+        "must consume an attempt and take a backoff, or it re-claims without "
+        "bound"
+    )
+    assert row["state"] == "queued", "below max_attempts a failure re-queues (O2)"
+    assert row["attempts"] == 1, (
+        "the attempt must be CONSUMED here -- that is what lets "
+        "`attempts < max_attempts` and the sweeper eventually stop it"
+    )
+    assert row["run_after"] > row["updated_at"], (
+        "the failure must push `run_after` into the future; a zero delay is "
+        "what made the spin possible"
+    )
+    assert "Unfinished" in (row["last_error"] or "")
+
+    final = job_row(conn, job_id)
+    assert final["attempts"] == 1, "a second claim happened after the failure"
+
+
 def test_a_worker_whose_connection_dies_reconnects_and_claims_the_next_job(
     conn, superuser_conn, dsn, with_two_orgs
 ):
@@ -1370,6 +1453,144 @@ def test_a_worker_whose_connection_dies_reconnects_and_claims_the_next_job(
         )
 
     assert handler.job_ids == [first, second]
+
+
+def test_an_unreachable_database_is_retried_and_then_gives_up_with_exit_1(
+    monkeypatch, caplog
+):
+    """The FIRST connect goes through the reconnect policy like every other.
+
+    ⚠ IT DID NOT, AND THAT IS THE ONE MOST LIKELY TO FAIL. The compose
+    `workers` service has no `depends_on`, so on a stack restart this
+    process starts before Postgres is ready — every time. PR #42's second
+    review measured the old shape: one attempt, no retry, and a bare
+    `OperationalError` escaping `main`'s `except DatabaseUnavailable`, so
+    the operator got a traceback instead of the one clean line the new code
+    was written to give them.
+
+    The backoff constants are shrunk here rather than waited out: ten
+    attempts at 1 s doubling to 30 s is about two and a half minutes, which
+    is right in production and absurd in a test. The POLICY is what is under
+    test, not the arithmetic.
+    """
+    import workers.jobs.handlers as handlers_module
+    import workers.jobs.runtime as runtime_module
+    from workers.__main__ import main as workers_main
+
+    monkeypatch.setattr(runtime_module, "MAX_RECONNECT_ATTEMPTS", 3)
+    monkeypatch.setattr(
+        runtime_module, "RECONNECT_BACKOFF_BASE", timedelta(seconds=0.05)
+    )
+    monkeypatch.setattr(
+        runtime_module, "RECONNECT_BACKOFF_MAX", timedelta(seconds=0.1)
+    )
+    caplog.set_level(logging.INFO, logger="workers.jobs.runtime")
+
+    # Port 1 is reserved and nothing listens on it, so the connect is
+    # REFUSED rather than dropped -- fast and deterministic.
+    unreachable = "postgresql://nobody:nobody@127.0.0.1:1/nothing"
+
+    worker = build_worker(unreachable, {"full_ingest": lambda ctx: None})
+    with pytest.raises(runtime_module.DatabaseUnavailable):
+        worker.run(threading.Event())
+
+    attempts = [
+        record.getMessage()
+        for record in caplog.records
+        if "reconnect" in record.getMessage() and "failed" in record.getMessage()
+    ]
+    assert len(attempts) == 3, (
+        f"expected 3 retries before giving up, saw {len(attempts)}: {attempts}"
+    )
+
+    # And the entrypoint turns that into a non-zero exit, so a supervisor
+    # can restart the process. Exit 1, not 2: 2 means "this build is
+    # configured not to run", which no restart fixes.
+    previous = {
+        sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)
+    }
+    monkeypatch.setitem(handlers_module.REGISTRY, "full_ingest", lambda ctx: None)
+    monkeypatch.setenv("DATABASE_URL", unreachable)
+    try:
+        assert workers_main() == 1
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
+def test_a_connect_that_hangs_times_out_instead_of_blocking_forever(dsn):
+    """`connect_timeout` — and its absence was a hole in the give-up rules.
+
+    ⚠ A REFUSED CONNECTION FAILS AT ONCE, which is every case the tests and
+    the review's probes reached. A path that DROPS instead — a firewall, a
+    failing-over proxy, a partitioned network — blocks inside
+    `psycopg2.connect` for the OS TCP timeout. The heartbeat reopens its
+    connection **inside** its `try`, so a reopen that hangs raises nothing,
+    neither give-up rule can see it, and `lease_lost` is never set. That is
+    I3 one layer further in.
+
+    The black hole here is a real listening socket that accepts the TCP
+    connection and then never speaks, which is what a silently-dropping
+    middlebox looks like to libpq: the handshake is what hangs, not the
+    connect. Deterministic, local, and needs no network conditions.
+
+    ⚠ BOUNDED BY CONSTRUCTION. The attempt runs on a daemon thread with a
+    deadline, so without `connect_timeout` this test FAILS on the deadline
+    instead of hanging the suite.
+    """
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+
+    accepted: List[Any] = []
+
+    def accept_and_say_nothing():
+        try:
+            client, _ = listener.accept()
+            accepted.append(client)  # held open, never written to
+        except OSError:  # pragma: no cover - the socket closed under us
+            pass
+
+    acceptor = threading.Thread(target=accept_and_say_nothing, daemon=True)
+    acceptor.start()
+
+    worker = build_worker(
+        f"postgresql://nobody:nobody@127.0.0.1:{port}/nothing",
+        {"full_ingest": lambda ctx: None},
+    )
+
+    done = threading.Event()
+    outcome: dict = {}
+
+    def attempt():
+        started = time.monotonic()
+        try:
+            worker._connect("rag-doc-worker-probe").close()
+            outcome["error"] = None
+        except Exception as exc:  # noqa: BLE001 - the point of the test
+            outcome["error"] = exc
+        finally:
+            outcome["elapsed"] = time.monotonic() - started
+            done.set()
+
+    threading.Thread(target=attempt, daemon=True).start()
+    try:
+        landed = done.wait(timeout=CONNECT_TIMEOUT_SECONDS + 20)
+    finally:
+        for client in accepted:
+            client.close()
+        listener.close()
+
+    assert landed, (
+        f"psycopg2.connect was still blocked after "
+        f"{CONNECT_TIMEOUT_SECONDS + 20:.0f}s on a socket that accepts and "
+        "never speaks -- connect_timeout is missing"
+    )
+    assert isinstance(outcome["error"], psycopg2.OperationalError), (
+        f"expected an OperationalError, got {outcome['error']!r}"
+    )
+    assert outcome["elapsed"] < CONNECT_TIMEOUT_SECONDS + 15
 
 
 def test_a_heartbeat_whose_connection_dies_reopens_it_and_the_job_survives(

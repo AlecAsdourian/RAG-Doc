@@ -91,9 +91,13 @@ thread therefore opens its own connection and closes it when the job ends.
 It also GIVES UP rather than beating into the void: once a full lease has
 passed with no beat landing (or `MAX_HEARTBEAT_FAILURES` in a row), the
 lease has demonstrably expired, so the abort flag goes up and the handler
-stops working on a job somebody else may already hold. And it reopens its
-connection in place, so a drop heals within the job rather than only at the
-next one.
+stops working on a job somebody else may already hold. ⚠ BOTH RULES ARE
+EVALUATED ON EVERY BEAT, not only after an exception: they are a property
+of elapsed time, and putting them in the `except` made them a property of
+the control flow that happened to reach them. And it reopens its connection
+in place, so a drop heals within the job rather than only at the next one --
+with a `connect_timeout`, so a reopen that HANGS becomes an error the rules
+can see rather than a silence they cannot.
 
 The heartbeat's `UPDATE` carries the SAME two-part fence as every terminal
 write, `lease_owner = %s AND state = 'running'`, and that is what detects a
@@ -120,8 +124,18 @@ never abandons a job mid-write, and it never kills a handler.
 Three endings, and a handler picks one:
 
   return              done            -> `complete`
-  raise Unfinished    stopped early   -> `defer`, attempt handed back
+  raise Unfinished    stopped early   -> `defer` DURING A SHUTDOWN, with the
+                                         attempt handed back; `fail` at any
+                                         other time
   raise anything else failed          -> `fail`, attempt consumed
+
+⚠ `Unfinished` IS ONLY FREE DURING A SHUTDOWN, and the condition is the
+bound. `defer(timedelta(0))` neither consumes an attempt nor moves
+`run_after`, so a handler that always raises it re-claims without limit --
+measured at 193 times in six seconds, with `attempts` pinned at 0, past
+BOTH of the phase's backstops and raising nothing. A shutdown happens once
+per process and the loop exits straight afterwards, so there it is
+self-limiting; anywhere else it is a handler bug and gets an attempt.
 
 The first cut folded shutdown into `should_abort()` and told handlers, in a
 docstring, to raise if they had not finished. PR #42's review reproduced
@@ -230,6 +244,20 @@ IDLE_POLL_JITTER = 0.2
 #: of them.
 LOOP_APPLICATION_NAME = "rag-doc-worker"
 HEARTBEAT_APPLICATION_NAME = "rag-doc-worker-heartbeat"
+
+#: ⚠ EVERY CONNECT CARRIES THIS, and its absence was a hole in the
+#: heartbeat's give-up rules rather than a performance nit. A connection
+#: that is REFUSED fails at once -- which is every case the tests and the
+#: review's probes reached. A path that DROPS instead (a firewall, a
+#: failing-over proxy, a partitioned network) blocks inside
+#: `psycopg2.connect` for the OS TCP timeout, raising nothing: the
+#: heartbeat's reopen would then sit there while the lease expired, which
+#: is I3 one layer further in. With a timeout the hang becomes an
+#: `OperationalError`, which both give-up rules already handle.
+#:
+#: Five seconds: long enough to survive a slow handshake, short enough that
+#: it cannot outlast a production lease by much, and libpq's floor is two.
+CONNECT_TIMEOUT_SECONDS = 5
 
 #: The reconnect backoff for the loop's connection: 1 s, doubling, capped.
 #: Bounded rather than indefinite, because a worker that cannot reach the
@@ -684,15 +712,41 @@ class Worker:
         """
         logger.info(
             "worker %s starting: job_types=%s lease=%.0fs heartbeat=%.0fs "
-            "idle_poll=%.1fs suspended_defer=%.0fs",
+            "idle_poll=%.1fs suspended_defer=%.0fs max_job_duration=%s",
             self.worker_id,
             ",".join(sorted(self._handlers)),
             self.lease.total_seconds(),
             self.heartbeat.total_seconds(),
             self.idle_poll.total_seconds(),
             self.suspended_defer.total_seconds(),
+            "none"
+            if self.max_job_duration is None
+            else f"{self.max_job_duration.total_seconds():.0f}s",
         )
-        conn = self._connect(LOOP_APPLICATION_NAME)
+        if self.max_job_duration is None:
+            # ⚠ THE OMISSION HAS TO BE VISIBLE. Shipping the mechanism
+            # without a number is the right call -- the number is a multiple
+            # of a typical ingest and nothing has ingested end to end yet,
+            # which is the same discipline that withdrew 21-RESEARCH's pool
+            # arithmetic -- but silence would let Phase 22 skip the hand-off
+            # step and never know it had.
+            logger.warning(
+                "worker %s: no upper bound on handler runtime; a hung handler "
+                "will hold its lease indefinitely and stop this worker "
+                "sweeping. Set max_job_duration.",
+                self.worker_id,
+            )
+        # ⚠ `None`, NOT A CONNECTION, AND THAT IS THE WHOLE OF m2's FIX.
+        # `_ensure_live` opens the first one, so the ten-attempt backoff
+        # covers the connect MOST LIKELY TO FAIL: the compose `workers`
+        # service has no `depends_on`, so on a stack restart this process
+        # starts before Postgres is ready, every time. Connecting here
+        # instead raised a bare `OperationalError` past `main`'s clean
+        # handler and gave the operator a traceback. `_ensure_live` already
+        # began `if conn is not None and not _is_dead(conn)` and the
+        # `finally` already guarded `if conn is not None`, so this deletes
+        # a special case rather than adding one.
+        conn: Optional[Any] = None
         last_sweep: Optional[float] = None
         try:
             while not stop.is_set():
@@ -736,7 +790,11 @@ class Worker:
         worth one parameter -- and it is what lets a test kill one of them
         precisely.
         """
-        return psycopg2.connect(self.dsn, application_name=application_name)
+        return psycopg2.connect(
+            self.dsn,
+            application_name=application_name,
+            connect_timeout=CONNECT_TIMEOUT_SECONDS,
+        )
 
     def _ensure_live(self, conn: Any, stop: threading.Event) -> Optional[Any]:
         """Return a usable connection, reconnecting if this one has died.
@@ -926,18 +984,50 @@ class Worker:
             )
             return
         except Unfinished as exc:
-            # ⚠ NOT A FAILURE AND NOT A COMPLETION. The handler stopped
-            # part-way -- normally because `is_shutting_down()` went true.
-            # `defer` with a zero delay hands the claim's attempt back
-            # (DEFER_SQL decrements) and puts the job straight back in the
-            # queue, so the replacement worker picks it up immediately and
-            # an operator restart costs nothing. `fail` here would consume
-            # an attempt, and five restarts would walk a healthy repository
-            # to `dead`.
+            # ⚠ NOT A FAILURE AND NOT A COMPLETION -- BUT ONLY DURING A
+            # SHUTDOWN, AND THE CONDITION IS THE WHOLE OF THIS BRANCH.
+            #
+            # `defer(timedelta(0))` is the only ending that neither consumes
+            # an attempt nor moves `run_after`. That is exactly right for a
+            # shutdown: the replacement worker should pick the job up at
+            # once, and an operator's restart should not cost an attempt --
+            # five of them would otherwise walk a HEALTHY repository to
+            # `dead`. It is self-limiting there, because a shutdown happens
+            # once per process and this loop exits immediately afterwards.
+            #
+            # ⚠ AND IT IS UNBOUNDED ANYWHERE ELSE. PR #42's second review
+            # measured a handler that always raises `Unfinished`:
+            #
+            #     193 re-claims in 6 seconds, attempts pinned at 0,
+            #     repository pinned at `syncing`
+            #
+            # Both of the phase's backstops are bypassed -- `CLAIM_SQL`'s
+            # `attempts < max_attempts` never trips because the counter
+            # never rises, and `_SWEEP_SQL`'s `attempts >= max_attempts`
+            # never matches, so the sweeper can never dead-letter it. And
+            # nothing raises, so nothing pages anyone.
+            #
+            # Outside a shutdown, `Unfinished` is a HANDLER BUG -- a clone
+            # precondition misclassified as "unfinished" rather than
+            # "failed" is an ordinary mistake for Phase 22 to make -- and it
+            # gets a backoff and an attempt like any other failure.
             reason = str(exc) or "the handler stopped before finishing"
+            if not stop.is_set():
+                logger.warning(
+                    "job %s: the handler raised Unfinished but this worker is "
+                    "NOT shutting down; treating it as a failure so it cannot "
+                    "re-claim without bound worker=%s org=%s repo=%s",
+                    job.id,
+                    self.worker_id,
+                    job.organization_id,
+                    job.repository_id,
+                )
+                self._fail(conn, job, exc)
+                return
+
             logger.info(
-                "job %s: handler stopped unfinished; deferring worker=%s "
-                "org=%s repo=%s",
+                "job %s: handler stopped unfinished during shutdown; "
+                "deferring worker=%s org=%s repo=%s",
                 job.id,
                 self.worker_id,
                 job.organization_id,
@@ -1124,6 +1214,33 @@ class Worker:
                         )
                         lease_lost.set()
                         return
+                # ⚠ EVALUATED ON EVERY BEAT, NOT ONLY AFTER AN EXCEPTION.
+                # Both rules used to live inside the `except` below, so any
+                # way of failing that did NOT raise -- a reopen that hung,
+                # before `connect_timeout` existed -- skipped them entirely
+                # and the handler was never told. Checking here means the
+                # rules are a property of the elapsed time, which is what
+                # they are about, rather than of the control flow that
+                # happened to reach them.
+                silent_for = time.monotonic() - last_ok
+                if (
+                    silent_for >= self.lease.total_seconds()
+                    or failures >= MAX_HEARTBEAT_FAILURES
+                ):
+                    logger.error(
+                        "job %s: no heartbeat has landed for %.1fs (%d "
+                        "consecutive failures) and the lease is %.1fs; "
+                        "assuming it is lost worker=%s org=%s repo=%s",
+                        job.id,
+                        silent_for,
+                        failures,
+                        self.lease.total_seconds(),
+                        self.worker_id,
+                        job.organization_id,
+                        job.repository_id,
+                    )
+                    lease_lost.set()
+                    return
                 try:
                     if _is_dead(conn):
                         # Reopen in place: the "heals at the next job"
@@ -1148,25 +1265,6 @@ class Worker:
                         self.worker_id,
                         sanitize_error(exc),
                     )
-                    silent_for = time.monotonic() - last_ok
-                    if (
-                        silent_for >= self.lease.total_seconds()
-                        or failures >= MAX_HEARTBEAT_FAILURES
-                    ):
-                        logger.error(
-                            "job %s: no heartbeat has landed for %.1fs (%d "
-                            "consecutive failures) and the lease is %.1fs; "
-                            "assuming it is lost worker=%s org=%s repo=%s",
-                            job.id,
-                            silent_for,
-                            failures,
-                            self.lease.total_seconds(),
-                            self.worker_id,
-                            job.organization_id,
-                            job.repository_id,
-                        )
-                        lease_lost.set()
-                        return
                     continue
                 failures = 0
                 last_ok = time.monotonic()
