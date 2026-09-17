@@ -138,7 +138,23 @@ Plans:
 - [x] 21-04: Webhook producers — push, installation_repositories added/removed and installation deleted go through `pkg/jobs`; the bulk-add race is tested
 - [x] 21-05: Python consumer transitions — claim, complete (rerun follow-up, in-transaction results), fail (capped jittered backoff, dead-letter), sweeper, run resolution, `sync_state` projection; every terminal write fenced on the lease
 - [x] 21-06: Worker runtime — heartbeat with supersede abort, sweeper, graceful shutdown, `python -m workers` that refuses to start until Phase 22 registers handlers; claim-race and lease-expiry → dead-letter tests
-- [ ] 21-07: `GET /api/admin/jobs/{id}` — any member of the job's organization, explicit organization filter, deliberate isolation test; ISS-016 close-out and docs
+- [x] 21-07: `GET /api/admin/jobs/{id}` — any member of the job's organization, explicit organization filter, deliberate isolation test; ISS-016 close-out and docs
+
+**Phase 21 COMPLETE (2026-09-16).** The queue exists, every producer is on
+it, the consumer is built and tested, and one endpoint reads it. **ISS-016 is
+closed on evidence** — the partial unique index, `SupersedeLive`-before-
+`Enqueue`, and nine racing tests re-run on `main` before 21-07 was written.
+ISS-023 (retrying a `dead` repository through the API) stays open by decision
+O1, which is what let ISS-016 close cleanly.
+
+**Nothing claims a real job yet, on purpose.** `python -m workers` finds the
+handler registry empty and exits 2 before reading any configuration, so
+Phase 22 inherits a queue that is full of nothing and a worker that refuses
+to start. Turning it on is four steps, in `docs/api-ingestion-jobs.md`:
+register the two handlers, add `DATABASE_URL` to the compose `workers`
+service, set `max_job_duration` (it defaults to `None`, and an unset bound
+lets a hung handler hold its lease forever), and measure the pool — one job
+per process, two connections per busy worker.
 
 ### Phase 22: Repository Clone → Ingestion Orchestration
 

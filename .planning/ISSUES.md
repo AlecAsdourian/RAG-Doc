@@ -232,6 +232,11 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Description:** The organization claim is written at two moments — provisioning, and `POST /api/user/select-organization` — and at no other time. Supabase re-reads the same `raw_app_meta_data` column at every token mint, so refreshing a token *preserves* the claim rather than recomputing it. Removing a user from an organization therefore does not end their access to it: their token still names that org, `TenantMiddleware` still honors it, and every refresh renews it indefinitely.
 - **Why it is not a live bug:** no code path removes a membership. `git grep 'DELETE FROM organization_memberships'` finds only test cleanup.
 - **Why it is filed anyway:** the natural mental model — "stateless claims expire, so exposure is bounded by token lifetime" — is **wrong here**, and it is the model a future author will bring. Short token TTLs do not mitigate this at all. This was written into 19-03's summary as fact before a reviewer caught it.
+- **Affected surfaces — every tenant-scoped route, and these by name.** The list is kept because "every tenant route" is easy to agree with and hard to act on:
+  - `GET|POST /api/repositories`, `GET|DELETE /api/repositories/{id}` (20-03)
+  - `GET /api/github/install`, `GET /api/github/installations`, `GET /api/github/installations/{id}/repositories` (20-04)
+  - `POST /api/search` and `POST /api/chat/stream`
+  - **`GET /api/admin/jobs/{id}` (21-07)** — added when it shipped. Worth its own line for one reason: `ingestion_jobs` has **no row-level security**, so where the others would also have to get past a policy, here the organization claim is the *entire* boundary. A removed member holding a stale claim reads their former organization's job status — including `last_error`, `last_stage` and `progress` — with nothing else in the way. The handler is correct; the claim is what is stale.
 - **What closes it:** whatever ships membership removal must also rewrite the affected user's claim (and, if they were removed from their *active* org, decide what to put there — most likely another membership, or nothing plus a 403 that routes them to the org picker). `auth.AdminClient` is the mechanism; `cmd/backfill-org-claims` is the precedent.
 - **Related:** ISS-004 (closed), and the "Not covered here" section of `docs/auth-frontend-contract.md`, which carries this warning forward to Phase 20+.
 
@@ -272,6 +277,8 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Description:** re-connecting a repository deliberately does not reset its sync state, so a repository whose ingestion has exhausted its attempts has no user-facing route back into the queue. Documented in `docs/api-repositories.md`.
 - **Why it is separate from ISS-016:** ISS-016 is a correctness bug about two writers racing for one repository, and Phase 21 closes it by making the work item a real queue entry. This is a missing *feature* on the API surface. Bundling them meant Phase 21 could only ever half-close the issue, which is exactly the contradiction review found across three files.
 - **What Phase 21 gives it:** the state machine makes the retry *possible* — `dead` is a terminal state a repository can be lifted out of by re-queueing with `attempts` reset. Exposing that is not Phase 21's deliverable.
+- **STILL OPEN as of 2026-09-16, after Phase 21 shipped**, by decision O1 and deliberately. ISS-016 closed in 21-07; this did not, and the split is the reason it could. What changed is that the pieces now exist: a `dead` job is outside the live set, so `pkg/jobs.Enqueue`'s upsert would insert a fresh job rather than flag the old one, and `GET /api/admin/jobs/{id}` can already say *why* it died (`last_error`, `attempts`, `state`). What is missing is a user-facing route that does it — and a decision about whether it re-queues the existing job with `attempts` reset or enqueues a new one, which the docs should state either way.
+- **The workaround is real but not obvious:** a push to the repository, or a reconnect that changes the installation, enqueues fresh work. A plain reconnect does **not** — it is a metadata refresh, which `docs/api-repositories.md` says.
 - **Owner:** whichever phase works the repository API surface (22 or 23).
 
 ### ISS-019: `push` and `installation_repositories` payload shapes are unverified
@@ -316,27 +323,6 @@ Enhancements discovered during execution. Not critical - address in future phase
 3. **A leading `/` is now required, which drops a Go 1.22 ServeMux host pattern.** `mux.HandleFunc("POST example.com/api/wipe", h.Wipe)` is invisible. No impact while this repo is chi-only, and the leading slash is what stopped `cache.Delete("session-key")` reading as a route — but the module docstring advertises `HandleFunc("METHOD path")` without the caveat.
 
 - **Also noted:** the adoption query's `p.organization_id` predicate cannot be mutation-tested, because no test can simulate "RLS regressed". It is documented as the second layer rather than the scope, which is the honest framing.
-
-### ISS-016: `sync_state` has no lease, so a relink can re-queue a run already in flight
-
-- **Discovered:** Phase 20-03 second review (2026-09-09)
-- **Type:** Correctness / Ingestion
-- **Priority:** MEDIUM — must be settled **before Phase 21 builds the queue**, not after
-- **Description:** `POST /api/repositories` sets `sync_state = 'pending'` when a repository's `installation_id` changes. If the row was `syncing` at that moment, it is re-queued while the original run is still going, and whichever finishes last writes the final state. `idx_repositories_sync_state` is a partial index on `sync_state <> 'synced'`, so the Phase 21 worker will pick the re-queued row straight up.
-- **Why it was not simply avoided:** refusing to re-queue a `syncing` row is worse. The in-flight run holds an installation token for an App that was just uninstalled, so it will fail regardless — and leaving the row `syncing` strands it until that failure lands, with nothing to retry it.
-- **The actual gap:** `sync_state` is a status column being used as a queue, with no lease, owner or attempt counter. Two writers can believe they own the same repository. 20-05's webhook writes go through the same upsert, so it inherits this.
-- **~~What Phase 21 should do: give the queue a lease (`sync_lease_owner`, `sync_lease_expires_at`)~~** — superseded. Adding a lease to `sync_state` was the wrong fix; the column stops being a queue entirely. See the resolution below.
-- **Also carried:** a `failed` repository cannot be retried through this API at all — re-connecting deliberately does not reset the state. Documented in `docs/api-repositories.md`. **Split out as ISS-023** — Phase 21 does *not* own retry.
-- **NARROWED and SETTLED 2026-09-10; not yet shipped.** This issue is now **the racing-relink half only**. The second half — a `failed` repository cannot be retried through the public API — is split out as **ISS-023**, because an issue that half-closes never closes cleanly: the first draft of Phase 21 had three files giving three different answers about whether this closed when Phase 21 ships.
-- **The resolution, locked in `.planning/phases/21-ingestion-job-infrastructure/21-CONTEXT.md` (L2, L4):** not a lease on `sync_state`. The root cause is that a *status column* was used as a *queue*, so Phase 21 introduces `ingestion_jobs` as the work item, demotes `sync_state` to a projection the job writes and the UI reads, and makes a relink **supersede** an in-flight job rather than race it. A partial unique index on `(repository_id) WHERE state IN ('queued','running')` makes two live jobs unrepresentable — the guard is in the schema, not only in the code path that remembers it.
-- **⚠ Ordering matters and review caught it wrong the first time:** supersede **then** enqueue, both in one transaction. The reverse order raises 23505 against the non-deferrable partial unique index in exactly this issue's own scenario. **Corrected 2026-09-14:** that is true of a plain `INSERT`. Through L7's upsert, the only enqueue path, the reverse order raises nothing and silently leaves no live job. The order is still mandatory, and 21-02 pins both behaviours.
-- **Progress, 2026-09-16 (21-03):** the CONNECT path is done. `POST /api/repositories` no longer writes `sync_state` as a way of asking for work; it classifies the call (new / relink / unchanged) in Go and goes through `pkg/jobs`, superseding any live job before enqueueing its replacement in the same transaction. `TestRepositoriesConnect_RelinkSupersedesARunningJob` is this issue's own scenario, and `TestRepositoriesConnect_ConcurrentRelinksLeaveOneLiveJob` races two of them.
-- **Progress, 2026-09-16 (21-04): EVERY PRODUCER IS NOW ON THE QUEUE.** `push`, `installation_repositories` `added` and `removed`, and `installation` `deleted` all go through `pkg/jobs`; no webhook writes `sync_state` to ask for work, and `grep -rnE "sync_state *= *'pending'"` over non-test Go finds only `pkg/jobs/producer.go`'s projection. Three specifics worth recording, because each was a way this issue could have survived the phase:
-  - **The `push` guard that "fixed" ISS-016 by losing work is gone.** `sync_state <> 'syncing'` dropped a push against a repository mid-sync. A push now JOINS the live job (L7): unclaimed, it will clone at the current HEAD; running, `needs_rerun` makes 21-05 re-queue it once.
-  - **The bulk `installation_repositories.added` case is raced in a test.** Three known repositories, one already being ingested, against a concurrent relink of one of them, through a barrier, five rounds — every repository ends with exactly one live job.
-  - **Migration 000015 backfills the rows the old path stranded.** A repository left `pending` before this plan had no job at all; it now has one, unless it is unsyncable (`installation_id IS NULL`, or an uninstalled installation), in which case it deliberately gets none.
-- **Still open:** the consumer half. 21-05 and 21-06 write the state transitions and the worker runtime; 21-07 closes this issue with the admin endpoint.
-- **Closes in 21-07, when Phase 21 ships.**
 
 ### ISS-015: The isolation scanner's coverage match is method-blind
 
@@ -385,6 +371,49 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Recommendation:** the `AfterConnect` sentinel, giving deterministically **loud**. With `TenantScoper` in place an unscoped query is by definition a bug, and a bug that always throws is cheaper than one that sometimes returns `[]`. Still an operational-risk judgement — a 500 is worse than an empty list for a user who trips it — so it belongs to whoever owns that call, but it is now a pool-constructor line rather than a schema change.
 
 ## Closed Enhancements
+
+### ISS-016: `sync_state` has no lease, so a relink can re-queue a run already in flight ✅
+
+- **Discovered:** Phase 20-03 second review (2026-09-09)
+- **Type:** Correctness / Ingestion
+- **Priority:** MEDIUM — must be settled **before Phase 21 builds the queue**, not after
+- **Description:** `POST /api/repositories` sets `sync_state = 'pending'` when a repository's `installation_id` changes. If the row was `syncing` at that moment, it is re-queued while the original run is still going, and whichever finishes last writes the final state. `idx_repositories_sync_state` is a partial index on `sync_state <> 'synced'`, so the Phase 21 worker will pick the re-queued row straight up.
+- **Why it was not simply avoided:** refusing to re-queue a `syncing` row is worse. The in-flight run holds an installation token for an App that was just uninstalled, so it will fail regardless — and leaving the row `syncing` strands it until that failure lands, with nothing to retry it.
+- **The actual gap:** `sync_state` is a status column being used as a queue, with no lease, owner or attempt counter. Two writers can believe they own the same repository. 20-05's webhook writes go through the same upsert, so it inherits this.
+- **~~What Phase 21 should do: give the queue a lease (`sync_lease_owner`, `sync_lease_expires_at`)~~** — superseded. Adding a lease to `sync_state` was the wrong fix; the column stops being a queue entirely. See the resolution below.
+- **Also carried:** a `failed` repository cannot be retried through this API at all — re-connecting deliberately does not reset the state. Documented in `docs/api-repositories.md`. **Split out as ISS-023** — Phase 21 does *not* own retry.
+- **NARROWED and SETTLED 2026-09-10; not yet shipped.** This issue is now **the racing-relink half only**. The second half — a `failed` repository cannot be retried through the public API — is split out as **ISS-023**, because an issue that half-closes never closes cleanly: the first draft of Phase 21 had three files giving three different answers about whether this closed when Phase 21 ships.
+- **The resolution, locked in `.planning/phases/21-ingestion-job-infrastructure/21-CONTEXT.md` (L2, L4):** not a lease on `sync_state`. The root cause is that a *status column* was used as a *queue*, so Phase 21 introduces `ingestion_jobs` as the work item, demotes `sync_state` to a projection the job writes and the UI reads, and makes a relink **supersede** an in-flight job rather than race it. A partial unique index on `(repository_id) WHERE state IN ('queued','running')` makes two live jobs unrepresentable — the guard is in the schema, not only in the code path that remembers it.
+- **⚠ Ordering matters and review caught it wrong the first time:** supersede **then** enqueue, both in one transaction. The reverse order raises 23505 against the non-deferrable partial unique index in exactly this issue's own scenario. **Corrected 2026-09-14:** that is true of a plain `INSERT`. Through L7's upsert, the only enqueue path, the reverse order raises nothing and silently leaves no live job. The order is still mandatory, and 21-02 pins both behaviours.
+- **Progress, 2026-09-16 (21-03):** the CONNECT path is done. `POST /api/repositories` no longer writes `sync_state` as a way of asking for work; it classifies the call (new / relink / unchanged) in Go and goes through `pkg/jobs`, superseding any live job before enqueueing its replacement in the same transaction. `TestRepositoriesConnect_RelinkSupersedesARunningJob` is this issue's own scenario, and `TestRepositoriesConnect_ConcurrentRelinksLeaveOneLiveJob` races two of them.
+- **Progress, 2026-09-16 (21-04): EVERY PRODUCER IS NOW ON THE QUEUE.** `push`, `installation_repositories` `added` and `removed`, and `installation` `deleted` all go through `pkg/jobs`; no webhook writes `sync_state` to ask for work, and `grep -rnE "sync_state *= *'pending'"` over non-test Go finds only `pkg/jobs/producer.go`'s projection. Three specifics worth recording, because each was a way this issue could have survived the phase:
+  - **The `push` guard that "fixed" ISS-016 by losing work is gone.** `sync_state <> 'syncing'` dropped a push against a repository mid-sync. A push now JOINS the live job (L7): unclaimed, it will clone at the current HEAD; running, `needs_rerun` makes 21-05 re-queue it once.
+  - **The bulk `installation_repositories.added` case is raced in a test.** Three known repositories, one already being ingested, against a concurrent relink of one of them, through a barrier, five rounds — every repository ends with exactly one live job.
+  - **Migration 000015 backfills the rows the old path stranded.** A repository left `pending` before this plan had no job at all; it now has one, unless it is unsyncable (`installation_id IS NULL`, or an uninstalled installation), in which case it deliberately gets none.
+- **Still open:** the consumer half. 21-05 and 21-06 write the state transitions and the worker runtime; 21-07 closes this issue with the admin endpoint.
+- **CLOSED 2026-09-16 in 21-07, when Phase 21 shipped.** The racing half is
+  gone, and the three things that make it gone were re-run on `main` before
+  this line was written rather than cited from a summary:
+
+  | Guard | Where | Evidence re-run on `main` |
+  |---|---|---|
+  | two live jobs for one repository are **unrepresentable** | `idx_ingestion_jobs_one_live_per_repo`, `UNIQUE (repository_id) WHERE state IN ('queued','running')` (migration `000014`) | `TestIngestionJobs_OneLiveJobPerRepository` — PASS |
+  | **supersede before enqueue**, in one transaction | `pkg/jobs.SupersedeLive` then `pkg/jobs.Enqueue` | `TestIngestionJobs_SupersedeBeforeEnqueue` (all three cases, including the silent-loss one) — PASS |
+  | this issue's own scenario, raced | `POST /api/repositories` | `TestRepositoriesConnect_RelinkSupersedesARunningJob` — PASS; `TestRepositoriesConnect_ConcurrentRelinksLeaveOneLiveJob` — PASS |
+  | two first connects racing | `POST /api/repositories` | `TestRepositoriesConnect_ConcurrentFirstConnectsDoNotDoubleIngest` — PASS |
+  | sixteen concurrent enqueues, five warm rounds | `pkg/jobs` | `TestEnqueue_ConcurrentEnqueuesResolveToOneLiveJob` — PASS |
+  | the **bulk** case that once queued 1 of 3 while reporting success | `installation_repositories.added` racing a relink | `TestGitHubWebhook_BulkAddedRacingARelinkQueuesEveryRepository` — PASS; `TestEnqueue_BulkRacingALiveJobHandlesEveryRow` — PASS; `TestIngestionJobs_BulkEnqueueRacingALiveJobHandlesEveryRow` — PASS |
+
+  Nine tests, run together at `RAG-Doc/main` (`de6b6e9`) against PostgreSQL 16
+  before any 21-07 code existed, all passing. `sync_state` is a projection
+  now — written by the job, read by the UI — and no producer writes it to ask
+  for work: `grep -rnE "sync_state *= *'pending'"` over non-test Go finds only
+  `pkg/jobs/producer.go`'s projection.
+- **What does NOT close with it.** Retrying a `dead` repository through the
+  public API is **ISS-023**, split out by decision O1 and still open. The
+  state machine makes the retry possible; exposing it was never Phase 21's
+  deliverable, and pretending otherwise is what made this issue unable to
+  close cleanly in its first draft.
 
 ### ISS-032: The drift self-test takes ACCESS EXCLUSIVE locks on shared tables, and deadlocks under CI's package-parallelism step ✅
 
