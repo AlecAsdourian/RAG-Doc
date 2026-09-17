@@ -20,7 +20,7 @@ provides:
   - "workers.jobs.handlers.REGISTRY — empty in Phase 21, with the Phase 22 recipe in its docstring"
   - "workers/__main__.py — `python -m workers`, which FAILS CLOSED with exit 2 while the registry is empty, before it reads any configuration"
   - "the claim-time installation check: abandon / defer 60 min / run, with `mark_started` after it"
-  - "25 integration tests against a real PostgreSQL 16, including the barrier claim race that pins `FOR UPDATE SKIP LOCKED` from Python, and two that kill a backend with `pg_terminate_backend`"
+  - "30 integration tests against a real PostgreSQL 16, including the barrier claim race that pins `FOR UPDATE SKIP LOCKED` from Python, three that kill a backend with `pg_terminate_backend`, and one that connects to a socket which accepts and never speaks"
 affects: [21-07 (reads last_stage, progress and last_error this writes), 22 (registers the handlers, adds DATABASE_URL to compose, and measures the pool)]
 
 tech-stack:
@@ -35,6 +35,9 @@ tech-stack:
     - "An exception type as the contract: three endings a handler can choose, so the one that needs a special response cannot be reached by accident"
     - "Never assert in a context manager's `finally` -- it REPLACES the exception already propagating and hides the real failure behind a teardown symptom"
     - "Tag each connection with an `application_name`, so `pg_stat_activity` says which is which and a test can kill exactly one"
+    - "Tie a free pass to the condition that makes it free: an ending that neither consumes an attempt nor delays a retry must be reachable only where something else bounds it"
+    - "A test for an unbounded loop must be bounded BY CONSTRUCTION -- the handler counts its own calls and changes behaviour at a cap, so the assertion fails instead of the clock"
+    - "Give every connect a `connect_timeout`: a refused connection fails fast and a DROPPED one blocks, and the timeout is what turns a silence into an error a policy can act on"
 
 key-files:
   created:
@@ -44,13 +47,16 @@ key-files:
     - services/workers/tests/isolation/test_job_worker_runtime.py
   modified:
     - services/workers/workers/jobs/__init__.py
+    - services/workers/workers/jobs/transitions.py
+    - services/workers/workers/db/tenant.py
+    - .planning/phases/21-ingestion-job-infrastructure/21-07-PLAN.md
     - .planning/ROADMAP.md
     - .planning/STATE.md
     - .planning/ISSUES.md
 
 key-decisions:
-  - "THREE ENDINGS FOR A HANDLER, and the type is the contract: `return` means done (`complete`), `raise Unfinished` means stopped part-way (`defer`, attempt handed back), anything else means failed (`fail`). The first cut had two, folded shutdown into `should_abort()` and left the rest to a docstring; PR #42's review reproduced a Phase-22-shaped handler stopping after `clone` and being written `state=completed last_stage=parse sync_state=synced`, and ruled against it. `should_abort()` is now lease-only, `is_shutting_down()` carries the other signal, and `defer` rather than `fail` means an operator's restarts cannot walk a healthy repository towards `dead`."
-  - "The loop RECONNECTS, with a bounded backoff, and gives up loudly. psycopg2 connections do not self-heal and the loop's was opened once outside the `while`: PR #42's review killed its backend and measured 44 identical errors in 15s with the next job never claimed and the process still alive, so no restart policy could fire. Ten attempts, 1s doubling to 30s, then `DatabaseUnavailable` out of `run` and exit 1 -- distinct from the entrypoint's 2, which means `this build is configured not to run`."
+  - "THREE ENDINGS FOR A HANDLER, and the type is the contract: `return` means done (`complete`), `raise Unfinished` means stopped part-way (`defer` DURING A SHUTDOWN, attempt handed back; `fail` at any other time -- the free pass is bounded to the one trigger that is self-limiting, after the second review measured 193 re-claims in 6 seconds past both of the phase's backstops), anything else means failed (`fail`). The first cut had two, folded shutdown into `should_abort()` and left the rest to a docstring; PR #42's review reproduced a Phase-22-shaped handler stopping after `clone` and being written `state=completed last_stage=parse sync_state=synced`, and ruled against it. `should_abort()` is now lease-only, `is_shutting_down()` carries the other signal, and `defer` rather than `fail` means an operator's restarts cannot walk a healthy repository towards `dead`."
+  - "The loop RECONNECTS from the FIRST connect onwards, with a bounded backoff and a `connect_timeout`, and gives up loudly. psycopg2 connections do not self-heal and the loop's was opened once outside the `while`: PR #42's review killed its backend and measured 44 identical errors in 15s with the next job never claimed and the process still alive, so no restart policy could fire. Ten attempts, 1s doubling to 30s, then `DatabaseUnavailable` out of `run` and exit 1 -- distinct from the entrypoint's 2, which means `this build is configured not to run`."
   - "The heartbeat GIVES UP on two rules and REOPENS in between. A single dropped connection is a blip and is reconnected in place, because giving up on the first `InterfaceError` would throw away minutes of ingest; but once a full lease has passed with no beat landing (or `MAX_HEARTBEAT_FAILURES` in a row) the lease has demonstrably expired, so the abort flag goes up. Without it the review measured a handler working on for the rest of its job on a lease somebody else already held."
   - "`max_job_duration` exists and defaults to **None**. A hung handler otherwise has its lease extended forever, so nothing can reclaim the job and that worker's sweeper never runs again either. The mechanism is built and tested; the NUMBER is deliberately not invented, because it is a multiple of a typical ingest and nothing has ingested end to end yet -- the same mistake 21-RESEARCH already made once with pool sizing."
   - "A dead worker is simulated with `heartbeat=30s` against a `lease=2s`, not with a test hook. A process that has died stops extending its lease; a heartbeat interval longer than the lease is indistinguishable from that, from the database's side, and it exercises the production code path rather than a second one that only tests run."
@@ -63,8 +69,8 @@ key-decisions:
 
 issues-created: []
 issues-closed: []
-review: "PR #42 -- CHANGES REQUESTED, three important findings, all reproduced against a real PostgreSQL 16 and all fixed here: a shutdown could write `completed` over unfinished work, `Worker.run` never reconnected, and the heartbeat never gave up. Five nits also applied. Two of the PR's claims were independently re-measured IN ITS FAVOUR (a row carrying both `suspended_at` and `uninstalled_at` behaves correctly; the heartbeat genuinely holds a long lease, 110 samples, minimum headroom 1.426s), and the M2 claim -- killed on the callback's call count, not on a row -- was verified accurate."
-duration: ~4h, plus ~3h applying PR #42's review
+review: "PR #42, TWO ROUNDS. Round 1 CHANGES REQUESTED: three important findings, all reproduced against a real PostgreSQL 16 and all fixed -- a shutdown could write `completed` over unfinished work, `Worker.run` never reconnected, and the heartbeat never gave up -- plus five minors and both nits. Round 2 APPROVE WITH NITS: the reviewer re-ran its own I1/I2/I3 reproductions rather than trusting the summary and confirmed all three, then found five more, all fixed here -- `Unfinished` could re-claim without bound (193 times in 6 seconds, past BOTH phase backstops), the FIRST connect bypassed the reconnect policy, no `connect_timeout` left the heartbeat give-up rules blind to a hang, `require_tenant` still carried the misleading message `_unscoped` had been fixed for, and `max_job_duration` was silent in both directions. Three of the PR's claims were independently re-measured IN ITS FAVOUR across the two rounds (the both-flags installation row; the heartbeat holding a long lease, 110 samples, minimum headroom 1.426s; and M2 killed on the callback's call count rather than on a row), and one summary claim was withdrawn as overstated."
+duration: ~4h, plus ~3h applying PR #42's first review and ~2h applying its second
 completed: 2026-09-16
 ---
 
@@ -263,6 +269,17 @@ So the heartbeat now does two things it did not:
   passed with no beat landing — or `MAX_HEARTBEAT_FAILURES` in a row, a
   backstop for a very long configured lease — the lease has demonstrably
   expired, so the abort flag goes up and the thread stops.
+- **⚠ Both rules are evaluated on EVERY beat, not only after an
+  exception.** The first cut put them in the `except`, which made them a
+  property of the control flow that happened to reach them rather than of
+  the elapsed time they are about. The reopen-in-place runs **inside** the
+  `try`, so a reopen that HANGS raises nothing, neither rule ran, and
+  `lease_lost` was never set — I3 one layer further in, found by the second
+  review.
+- **And every connect carries a `connect_timeout`,** which is what turns
+  that hang into an `OperationalError` the rules can already handle. The
+  two fixes are belt and braces for the same hole; see "What this plan does
+  NOT pin" for what the relocation alone can and cannot be tested for.
 
 Both halves are tested, and they pull in opposite directions, so both need
 a test: one dropped connection must **not** abort the handler, and a
@@ -276,6 +293,15 @@ worker's sweeper (same loop) would never run again either. **The default is
 `None`,** because the right number is a multiple of a typical ingest and
 nothing has ingested end to end yet. The mechanism is built and tested;
 Phase 22 picks the number.
+
+**⚠ And the absence is announced, which the first cut left silent.** The
+startup line now carries `max_job_duration=none|<n>s`, and an unset bound
+logs one WARNING: *"no upper bound on handler runtime; a hung handler will
+hold its lease indefinitely and stop this worker sweeping. Set
+max_job_duration."* The review's ruling, which this follows: not inventing
+the number is right — the same discipline that withdrew 21-RESEARCH's pool
+arithmetic — but it must not be silent, or Phase 22 can skip the hand-off
+step and never know the hazard shipped. A test reads both records.
 
 ## The loop's connection reconnects, and gives up loudly
 
@@ -293,8 +319,25 @@ job; the loop's was the connection that could not heal.
 - **Health is checked at the top of each iteration**, before `claim` or
   `sweep` is handed the connection, so the dead-connection path never
   reaches them.
+- **The FIRST connect goes through it too**, which the first cut missed:
+  `run` opened its connection above the `try`, outside `_ensure_live`, so
+  the ten-attempt backoff covered every connection except the one most
+  likely to fail. The compose `workers` service has no `depends_on`, so on
+  a stack restart this process starts before Postgres is ready **every
+  time**, and the old shape raised a bare `OperationalError` past `main`'s
+  `except DatabaseUnavailable` — a traceback instead of the one clean line
+  the code was written to give. The fix is `conn = None`: `_ensure_live`
+  already began `if conn is not None and not _is_dead(conn)` and the
+  `finally` already guarded `if conn is not None`, so it **deletes** a
+  special case.
 - **Reconnect is bounded:** `MAX_RECONNECT_ATTEMPTS = 10`, 1 s doubling to
   30 s.
+- **Every connect carries `connect_timeout = 5 s`.** A refused connection
+  fails at once — which is every case the tests and the review's probes
+  reached — but a path that DROPS instead (a firewall, a failing-over
+  proxy, a partitioned network) blocks inside `psycopg2.connect` for the OS
+  TCP timeout. See the heartbeat section: that silence was a hole in the
+  give-up rules, not a latency nit.
 - **Then it gives up loudly:** `DatabaseUnavailable` out of `run`, which
   `__main__` turns into **exit 1**. Distinct from the entrypoint's **2**,
   which means "this build is configured not to run" and which no restart
@@ -368,6 +411,38 @@ across an ingest's retries would walk a **healthy** repository to `dead` —
 the same shape `defer` exists to prevent for a suspended installation.
 `Unfinished` defers with a zero delay: the attempt comes back, nothing is
 written `completed`, and the replacement worker claims it immediately.
+
+### ⚠ And the free pass is bounded to the shutdown, which the first cut was not
+
+`defer(timedelta(0))` is the **only** ending that neither consumes an
+attempt nor moves `run_after`. PR #42's second review measured what that
+costs a handler that raises `Unfinished` for any other reason:
+
+```
+193 re-claims in 6 seconds | attempts pinned at 0 | sync_state pinned at syncing
+```
+
+**Both of the phase's backstops are bypassed.** `CLAIM_SQL`'s
+`attempts < max_attempts` never trips because the counter never rises, and
+`_SWEEP_SQL`'s `attempts >= max_attempts` never matches, so the sweeper can
+never dead-letter it. Nothing raises, so nothing pages anyone; it runs
+until a human notices.
+
+So the branch is tied to the thing that makes it free:
+
+```python
+if not stop.is_set():
+    self._fail(conn, job, exc)      # a handler bug: attempt + backoff
+    return
+defer(conn, job, self.worker_id, timedelta(0), reason)   # a shutdown
+```
+
+On the intended path nothing changes — a shutdown happens once per process
+and the loop exits immediately afterwards, so it was always self-limiting
+there. What is added is a floor under a handler that gets it wrong, and
+Phase 22's handler will carry `raise Unfinished(...)` behind a condition:
+misclassifying a clone precondition as "unfinished" rather than "failed" is
+an ordinary mistake to make.
 
 The repository is left at `syncing` (the handler had started, so
 `mark_started` projected it, and `defer` writes no projection). That is
@@ -492,7 +567,25 @@ repository. Without it, mutation **M13** (the heartbeat says nothing)
 survives. This is 21-05's lesson applied: a rule stated in a docstring is
 not a rule until one test reads the thing the docstring is about.
 
-### The six the review added
+### The five the SECOND review added
+
+| Test | What it pins |
+|---|---|
+| `unfinished_outside_a_shutdown_fails_rather_than_re_claiming_forever` | the bound: one call, `attempts == 1`, `run_after` pushed out, and still one call 1.5 s later |
+| `an_unreachable_database_is_retried_and_then_gives_up_with_exit_1` | the first connect goes through the policy — three retries logged, `DatabaseUnavailable`, and `main()` returning 1 |
+| `a_connect_that_hangs_times_out_instead_of_blocking_forever` | `connect_timeout`, against a socket that accepts and never speaks |
+| `an_unset_max_job_duration_is_announced_rather_than_silent` | the WARNING and the startup line, read as `LogRecord`s, in both directions |
+| `require_tenant_says_a_dead_connection_is_dead` | the message an operator reads on every terminal write |
+
+**⚠ How the spin test is bounded, because a test for a spin must not
+spin.** The handler counts its calls and switches to a plain `Exception`
+after 25, which fails the job and ends the loop whatever the runtime does.
+So the unfixed code — and mutation M24 — makes it FAIL in about a second
+rather than hang. It also carries the one fixed `sleep` in the file, and
+the docstring says why: every other wait is for something to happen, and
+this one asserts that nothing does, which has no deadline to poll against.
+
+### The six the FIRST review added
 
 | Test | What it pins |
 |---|---|
@@ -545,9 +638,9 @@ rows appeared".
 
 ## Mutation results
 
-**23 mutations, 23 killed, no survivors** — the original fourteen re-run
-against the revised code, plus nine for the guards PR #42's review added.
-Each was applied to a COPY of
+**28 mutations, 28 killed, one deliberate survivor** — fourteen from the
+first cut, nine for the guards PR #42's first review added, and five more
+for its second. Each was applied to a COPY of
 `services/workers` plus `services/backend/migrations` — the conftest
 resolves migrations at `parents[3]`, so the copy is `<scratch>/workers`
 beside `<scratch>/backend/migrations`. The harness rebuilds the copy from
@@ -555,7 +648,7 @@ the committed worktree before every run, asserts the pattern matched
 **exactly once**, and asserts the mutated text is present **and** the
 original absent afterwards. The committed tree was never mutated.
 
-Baseline on the copy: **70 passed** (25 runtime + 45 transitions).
+Baseline on the copy: **75 passed** (30 runtime + 45 transitions).
 
 ### The plan's four
 
@@ -595,6 +688,23 @@ Baseline on the copy: **70 passed** (25 runtime + 45 transitions).
 | M22 | the progress fields are written raw | **Killed: 1** — `progress_fields_are_redacted_before_they_reach_the_column` |
 | M23 | `_sanitize_progress` leaves dict **keys** alone | **Killed: 1** — the same test. A redaction with a hole in it is worse than none, because it gets trusted |
 
+### The five the SECOND review added
+
+| # | Mutation | Result |
+|---|---|---|
+| M24 | `Unfinished` always defers, shutdown or not | **Killed: 1** — `unfinished_outside_a_shutdown_fails_rather_than_re_claiming_forever`, in about a second, because the test is bounded by construction |
+| M25 | the first connect bypasses the reconnect policy | **Killed: 1** — `an_unreachable_database_is_retried_and_then_gives_up_with_exit_1` |
+| M26 | no `connect_timeout` | **Killed: 1** — `a_connect_that_hangs_times_out_instead_of_blocking_forever`, on its deadline rather than by hanging |
+| M27 | nothing warns when `max_job_duration` is unset | **Killed: 1** — `an_unset_max_job_duration_is_announced_rather_than_silent` |
+| M28 | `require_tenant` keeps the misleading message | **Killed: 1** — `require_tenant_says_a_dead_connection_is_dead`. The 45 transition tests all still passed under it, so nothing else depended on the wording |
+
+**And one deliberate survivor, recorded rather than explained away.**
+Moving the heartbeat's give-up rules back into the `except` survives the
+whole suite, because with `connect_timeout` in place every way a beat can
+fail now raises — so the two placements are behaviourally identical. The
+only non-raising failure left blocks inside `cur.execute`, where the
+top-of-loop check cannot run either. See "What this plan does NOT pin".
+
 Two of the re-run fourteen now kill more than they did, which is worth
 recording because it says the new tests overlap the old invariants rather
 than sitting beside them: **M6** (the heartbeat sharing the loop's
@@ -610,6 +720,40 @@ could observe the connection split), M11 (nothing could observe `syncing`)
 and M13 (nothing read a log record). Each was a test that was right about
 what it asserted and wrong about what its fixtures could distinguish —
 21-04's and 21-05's finding, twice more.
+
+## Two rulings recorded rather than acted on
+
+Both were questions this plan asked the review, and both answers are "leave
+it" — with reasons stronger than the ones the summary had.
+
+### `sync_state = 'syncing'` after an `Unfinished` deferral stays. **Do not make `defer` project.**
+
+1. **On the intended path the state is accurate, not stale.** The job is
+   claimable that instant and another worker resumes it. Projecting
+   `pending` would flicker the UI `syncing → pending → syncing` inside a
+   second, which is strictly worse than leaving it alone.
+2. **Changing `defer` would break the path it was designed for.** 21-05
+   made it projection-free deliberately, and the suspended-installation
+   deferral depends on that — it must not show `syncing` for an hour of
+   waiting. Making it project would mean branching on whether
+   `mark_started` had run, which puts new state into a statement 21-05
+   froze and PR #41 reviewed. Too much blast radius for a cosmetic gain.
+3. **The question that actually matters is bounded elsewhere.** "How long
+   can `syncing` persist with no progress" is answered by the `Unfinished`
+   bound above plus the lease, not by the projection.
+
+**⚠ THE CONSEQUENCE FOR 21-07 AND PHASE 23, in one sentence:
+`sync_state = 'syncing'` is not evidence of a live worker.** The evidence
+is on the job row — `state`, `lease_expires_at`, `updated_at`, `attempts` —
+and both the endpoint and the UI have to handle that already, because a
+crashed worker produces the identical shape and always has. If Phase 23
+wants a "stalled" badge, the predicate is `lease_expires_at < NOW()`, which
+is the one `CLAIM_SQL` and `_SWEEP_SQL` already use.
+
+### `max_job_duration = None` stays, with the logging above.
+
+Shipping the mechanism without a number is right; shipping it silently was
+not. See the heartbeat section.
 
 ## Three claims the review re-measured, and two came out the other way
 
@@ -663,12 +807,17 @@ be discovered.
   hung handler used to pause that worker's sweeper *forever*, which is the
   half PR #42's review named and which is no longer true once a duration is
   set.
-- **`DatabaseUnavailable`'s exit path is tested one level down, not end to
-  end.** `_ensure_live`'s reconnect is proven by killing a real backend;
-  the give-up branch after ten failed attempts, and `__main__` turning it
-  into exit 1, are not — that would mean holding a database down for the
-  full backoff (about a minute) inside a test. The branch is three lines
-  and the alternative was a minute of sleeping per run.
+- **The heartbeat's give-up rules moved out of the `except`, and that move
+  alone is not separately killable.** With `connect_timeout` in place every
+  way a beat can fail now RAISES, so the relocated rules and the old ones
+  are behaviourally identical — the mutation that puts them back survives,
+  deliberately. The only non-raising failure left is a beat that BLOCKS
+  (a row lock on `ingestion_jobs`, say), and that blocks inside
+  `cur.execute`, so the top-of-loop check cannot run either: what would fix
+  *that* is a `statement_timeout` on the heartbeat connection, which is
+  named here as a Phase 22 candidate rather than added. The relocation is
+  defence in depth against a future non-raising path, and it is recorded as
+  such rather than claimed as covered.
 
 ## Deviations from the plan
 
@@ -701,7 +850,7 @@ be discovered.
    the heartbeat giving up, `max_job_duration`, and the progress
    redaction. Ten of the thirteen exist because a mutation would otherwise
    have survived.
-6. **The mutation count is 23, not 4.** The extras
+6. **The mutation count is 28, not 4.** The extras
    follow 21-02's, 21-03's and 21-05's practice, and several found real
    gaps -- see the mutation table.
 7. **`REGISTRY` and the runtime types are exported from `workers.jobs`.**
@@ -711,16 +860,29 @@ be discovered.
 8. **`max_job_duration` is a new constructor parameter the plan does not
    mention** (PR #42's n2), defaulting to `None` so nothing changes until
    Phase 22 sets it.
-9. **`transitions.py` gained four lines**, which is the one file outside
-   this plan's list that changed: `_unscoped`'s precondition now
-   distinguishes a DEAD connection (`transaction_status` `UNKNOWN`) from a
-   connection that is mid-transaction, and raises `InterfaceError` telling
-   the caller to reconnect. Nothing else in 21-05's module moved, and no
-   statement changed.
+9. **Two files outside this plan's list gained the same four lines**, and
+   nothing else in either moved: `transitions.py`'s `_unscoped` and
+   `db/tenant.py`'s `require_tenant` now distinguish a DEAD connection
+   (`transaction_status` `UNKNOWN`) from one that is mid-transaction, and
+   raise `InterfaceError` telling the caller to reconnect. No statement
+   changed in either, and `require_tenant`'s behaviour is unchanged for
+   every connection that is not dead. The second file was the second
+   review's m4: every terminal write goes through `require_tenant`, so a
+   mid-job death was still printing the old message.
+10. **`connect_timeout` and the `Unfinished` condition are not in the plan
+   either** (the second review's m1 and m3), nor is `max_job_duration`'s
+   logging (m5). Each is recorded above with the measurement that produced
+   it.
+11. **`21-07-PLAN.md` gained one bullet**, carrying forward the ruling that
+   `sync_state = 'syncing'` is not evidence of a live worker. It is a
+   documentation obligation this plan created and 21-07 discharges.
 
 ## The Phase 22 hand-off
 
-Three things, and the first two are what make the entrypoint start.
+**Five things**, and the first two are what make the entrypoint start.
+Items 3 and 4 are the two that most need reading as a checklist: item 3 is
+the whole of the mitigation for the hung-handler hazard, and item 4 is the
+contract a handler has to be written against.
 
 1. **Register the handlers.**
    ```python
@@ -768,15 +930,15 @@ the completion transaction removes torn writes, not duplicated work
 
 | Check | Command | Result |
 |---|---|---|
-| Workers, CI's environment | from `services/workers`: `REDIS_URL=redis://localhost:63796/15 OPENAI_API_KEY=sk-test-dummy pytest tests/ workers/ -q`, **no `DATABASE_URL`**, no reachable `.env` (only `.env.example`), a fresh venv built from `requirements.txt` | **279 passed**, 0 failed, 0 skipped (19 pre-existing `utcnow` deprecation warnings). `main` is 254, so this plan adds **25** |
-| This plan's tests alone | `pytest tests/isolation/test_job_worker_runtime.py -q` | **25 passed** |
-| Repeated — the flake check | the same command, **5 consecutive runs** | 25 passed every time: 31.79 s, 30.42 s, 33.59 s, 32.37 s, 31.70 s. **No flakes** |
-| Under load | this file plus `test_job_transitions.py` in one session, while a second pytest session and its own container ran concurrently | **70 passed in 38.65 s**, and the concurrent session's full suite passed 279 at the same time |
+| Workers, CI's environment | from `services/workers`: `REDIS_URL=redis://localhost:63796/15 OPENAI_API_KEY=sk-test-dummy pytest tests/ workers/ -q`, **no `DATABASE_URL`**, no reachable `.env` (only `.env.example`), a fresh venv built from `requirements.txt` | **284 passed**, 0 failed, 0 skipped (19 pre-existing `utcnow` deprecation warnings). `main` is 254, so this plan adds **30** |
+| This plan's tests alone | `pytest tests/isolation/test_job_worker_runtime.py -q` | **30 passed** |
+| Repeated — the flake check | the same command, **5 consecutive runs** | 30 passed every time: 50.61 s, 50.54 s, 50.32 s, 53.63 s, 50.89 s. **No flakes** |
+| Under load | this file plus `test_job_transitions.py` in one session, while a second pytest session and its own container ran concurrently | **75 passed in 57.12 s**, and the concurrent session's full suite passed 284 at the same time |
 | The claim race | inside that file: 8 threads, own connections, one `threading.Barrier`, **5 rounds** on a warm pool | exactly one claim and `attempts == 1` in every round, and the winning thread's id is the row's `lease_owner` |
-| Mutations | **23**, on a copy, each proven present in the file before the run | **23 killed, 0 survivors.** Baseline on the copy: 70 passed |
+| Mutations | **28**, on a copy, each proven present in the file before the run | **28 killed, 1 deliberate survivor.** Baseline on the copy: 75 passed |
 | Entrypoint | `python -m workers` from `services/workers`, with and without `DATABASE_URL` | exit **2** both times, with the handler message and no DSN message |
 | Backend | `git diff --stat RAG-Doc/main..HEAD -- services/backend` | **empty.** No Go file and no migration, so `go test` was not run and the shared harness container was not rebuilt |
-| `transitions.py` | `git diff RAG-Doc/main..HEAD -- services/workers/workers/jobs/transitions.py` | four lines: `_unscoped`'s precondition now tells a DEAD connection from one mid-transaction. No statement changed |
+| `transitions.py` and `db/tenant.py` | `git diff RAG-Doc/main..HEAD` on each | the same four lines in each: the precondition now tells a DEAD connection from one mid-transaction. No statement changed in either |
 | Compose and Dockerfile | `git diff --stat RAG-Doc/main..HEAD -- docker-compose.yml services/workers/Dockerfile` | **empty.** The existing `CMD ["python", "-m", "workers"]` now resolves, and exits 2 until Phase 22 |
 | Lint | `flake8` on the four new and changed files | clean (the repo has pre-existing findings elsewhere; none is in this diff) |
 | CI isolation scanner | `python scripts/ci/check-isolation-tests.py --base-ref RAG-Doc/main --head-ref HEAD --json` | `{"missing": [], "skipped": [], "covered": []}` — no route line changed |
