@@ -137,7 +137,7 @@ Plans:
 - [x] 21-03: Go producer — `pkg/jobs` `Enqueue` (per-row upsert) and `SupersedeLive`; `POST /api/repositories` enqueues on connect and supersedes on relink; barrier race test
 - [x] 21-04: Webhook producers — push, installation_repositories added/removed and installation deleted go through `pkg/jobs`; the bulk-add race is tested
 - [x] 21-05: Python consumer transitions — claim, complete (rerun follow-up, in-transaction results), fail (capped jittered backoff, dead-letter), sweeper, run resolution, `sync_state` projection; every terminal write fenced on the lease
-- [ ] 21-06: Worker runtime — heartbeat with supersede abort, sweeper, graceful shutdown, `python -m workers` that refuses to start until Phase 22 registers handlers; claim-race and lease-expiry → dead-letter tests
+- [x] 21-06: Worker runtime — heartbeat with supersede abort, sweeper, graceful shutdown, `python -m workers` that refuses to start until Phase 22 registers handlers; claim-race and lease-expiry → dead-letter tests
 - [ ] 21-07: `GET /api/admin/jobs/{id}` — any member of the job's organization, explicit organization filter, deliberate isolation test; ISS-016 close-out and docs
 
 ### Phase 22: Repository Clone → Ingestion Orchestration

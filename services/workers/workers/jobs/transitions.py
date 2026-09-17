@@ -134,7 +134,8 @@ from datetime import timedelta
 from typing import Any, Callable, Iterator, Optional
 from uuid import UUID, uuid4
 
-from psycopg2.extensions import TRANSACTION_STATUS_IDLE
+import psycopg2
+from psycopg2.extensions import TRANSACTION_STATUS_IDLE, TRANSACTION_STATUS_UNKNOWN
 from psycopg2.extras import RealDictCursor
 
 from workers.db import require_tenant
@@ -636,7 +637,23 @@ def _unscoped(conn: Any, cursor_factory: Optional[Any] = None) -> Iterator[Any]:
     coin flip (silently empty, or 22P02 on a connection that has committed
     a `SET LOCAL`).
     """
-    if conn.info.transaction_status != TRANSACTION_STATUS_IDLE:
+    status = conn.info.transaction_status
+    if status == TRANSACTION_STATUS_UNKNOWN:
+        # ⚠ NOT A TRANSACTION PROBLEM, AND SAYING SO SENDS THE READER TO THE
+        # WRONG FILE. `UNKNOWN` is what psycopg2 reports for a connection
+        # whose BACKEND IS GONE -- a Postgres restart, a failover, a
+        # `pg_terminate_backend`, an idle-connection reaper in front of the
+        # database. PR #42's review reproduced the old message here: 44
+        # identical lines about `with conn:` not nesting, for a connection
+        # that had simply died. The caller's answer is to reconnect, not to
+        # commit something.
+        raise psycopg2.InterfaceError(
+            "the connection is no longer usable (transaction_status is "
+            "UNKNOWN, which means the server closed it -- a restart, a "
+            "failover or an idle-connection reaper). Reconnect; there is "
+            "no transaction here to commit or roll back."
+        )
+    if status != TRANSACTION_STATUS_IDLE:
         raise RuntimeError(
             "an unscoped job transaction must be entered on an idle "
             "connection; psycopg2's `with conn:` idiom does not nest, so "

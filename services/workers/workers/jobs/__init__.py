@@ -7,11 +7,25 @@ terminal write is fenced on the lease AND on `state = 'running'`, and that
 completing before re-enqueueing is an ordering rule whose violation raises
 nothing at all.
 
-21-06 adds `runtime.py` (the loop, the heartbeat, the sweeper's schedule)
-and `workers/__main__.py` on top of this.
+`workers.jobs.runtime` is the process: the loop, the heartbeat, the
+sweeper's schedule and the claim-time installation check. It DRIVES the
+transitions and reimplements none of them. `workers.jobs.handlers` is the
+registry it runs, empty until Phase 22, and `workers/__main__.py` refuses
+to start while it is -- so nothing claims a real job before there is
+something that can do it.
 """
 
 from workers.jobs.backoff import next_run_after_delay
+from workers.jobs.handlers import REGISTRY
+from workers.jobs.runtime import (
+    DatabaseUnavailable,
+    Handler,
+    JobContext,
+    Unfinished,
+    UnknownJobType,
+    Worker,
+    WriteResults,
+)
 from workers.jobs.transitions import (
     Job,
     LeaseLost,
@@ -29,8 +43,16 @@ from workers.jobs.transitions import (
 )
 
 __all__ = [
+    "DatabaseUnavailable",
+    "Handler",
     "Job",
+    "JobContext",
     "LeaseLost",
+    "REGISTRY",
+    "Unfinished",
+    "UnknownJobType",
+    "Worker",
+    "WriteResults",
     "abandon",
     "attach_ingestion_run",
     "claim",
