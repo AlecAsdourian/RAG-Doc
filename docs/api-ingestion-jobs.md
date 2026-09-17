@@ -203,7 +203,21 @@ and `attempts`. The predicate for *stalled* is
 state = 'running' AND (lease_expires_at IS NULL OR lease_expires_at < NOW())
 ```
 
-which is exactly the reclaimable predicate `claimSQL` and the sweeper use.
+which is character-for-character the **`running`-with-a-dead-lease branch
+that `claimSQL` and the sweeper share**.
+
+**⚠ `stalled` does NOT mean "it will be picked up again".** That branch is
+only half of each statement: *reclaimable* is this predicate **plus**
+`attempts < max_attempts`, and the sweeper's dead-letter condition is this
+predicate **plus** `attempts >= max_attempts`. They partition on a column
+this expression does not read. So a stalled job at
+`attempts >= max_attempts` is not waiting for a worker — the claim refuses
+it and the next sweep writes `dead`. **Compare `attempts` with
+`max_attempts` to tell the two apart**, and do not render "retrying shortly"
+off `stalled` alone. (Measured on PR #43's review: `state = 'running'`,
+`attempts = 5`, `max_attempts = 5`, lease expired → `stalled: true`, and the
+job is one sweep from `dead`.)
+
 **The `lease_expires_at IS NULL` half is not decoration:** `NULL < NOW()` is
 NULL rather than true, so a version without it reports a null-lease row
 healthy — and that row is invisible to a naive liveness check while still
@@ -236,7 +250,7 @@ every other tenant-scoped route.
   "run_after": "2026-09-16T18:04:11.201Z",   // the backoff target
   "lease_expires_at": "2026-09-16T18:09:11.201Z",  // null unless leased
   "stalled": false,                  // see the rule above
-  "last_stage": "parse",             // clone|parse|embed|store, or null
+  "last_stage": "parse",             // conventionally clone|parse|embed|store
   "progress": { "files_parsed": 12 },// whatever the handler reported, or null
   "needs_rerun": false,
   "last_error": "clone failed: exited 128",  // redacted; null if none
@@ -254,7 +268,10 @@ the repositories API returns one — a connect logs the job id server-side and
 its response carries only the repository. So this endpoint is usable by
 anything that already holds an id, and not by a UI starting from a repository.
 Phase 23 needs either a `job_id` on the repository response or a
-list-by-repository endpoint; neither is built.
+list-by-repository endpoint; neither is built. **Filed as ISS-034**, because
+choosing between the two is an API-contract decision with its own doc, test
+and isolation surface — not something to settle in the plan that shipped the
+reader.
 
 ### What it never returns, and why
 
@@ -267,9 +284,21 @@ list-by-repository endpoint; neither is built.
 to return because the worker redacted them before they reached the column:
 NUL bytes stripped, GitHub tokens (all six prefixes), fine-grained PATs,
 OpenAI keys, JWTs and PEM private-key blocks replaced, then capped at 2,000
-characters — values, nested values and dictionary **keys** alike. A git
-commit SHA is deliberately *not* redacted, because it is the useful half of
-those messages.
+characters — values, nested values and dictionary **keys** alike.
+
+**Two shapes are deliberately NOT redacted, and this is the endpoint that
+makes that a trade rather than a detail**, because it puts the column on the
+wire to any member of the organization with no role gate:
+
+| Shape | Why it is left alone | What it costs |
+|---|---|---|
+| a bare 40-hex run | it is indistinguishable from a **git commit SHA**, which is the useful half of a clone or checkout failure — redacting it would blind this endpoint to *which commit* failed | the GitHub App **client secret** has the same shape. Not reachable today: no worker holds it, and `grep` for `client_secret` over `services/workers` finds nothing |
+| a generic `://user:password@` DSN arm | psycopg2's connection errors do not quote the password, the clone-URL case is already covered by the `ghs_` arm, and a generic arm would blank the visible half of a credential-free URL for nothing | a credential arriving in a DSN shape from some future source would pass through |
+
+Both were declined in 21-05 with those reasons recorded beside the pattern.
+**Whoever gives a worker either value has to revisit them** — the cost of
+widening before a path exists is one regular expression; the cost of widening
+afterwards is whatever was written to the column in between.
 
 ### One 404 for every miss
 
@@ -418,7 +447,10 @@ ordering is deliberate: the compose `workers` service has no `DATABASE_URL`,
 so reading configuration first would kill the container complaining about a
 missing DSN, which is a true statement about the wrong problem.
 
-Five things turn it on.
+**Five things turn it on**, and this list is the authority: `ROADMAP.md` and
+`workers/__main__.py` point here rather than keeping counts of their own,
+because three files with three different lists is the failure mode
+`21-CONTEXT.md` opens by naming.
 
 1. **Register the handlers.**
    ```python

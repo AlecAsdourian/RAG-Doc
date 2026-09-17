@@ -4,6 +4,20 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 ## Open Enhancements
 
+### ISS-034: Nothing hands a UI a job id, so the job-status endpoint is unreachable from a repository
+
+- **Discovered:** 2026-09-17, by the reviewer session on PR #43 (21-07), which ruled that deferring it is correct and that it needs a **number** rather than living only in doc prose.
+- **Type:** API surface / Frontend blocker
+- **Priority:** LOW today, **BLOCKING for 23-03.** Nothing claims a job before Phase 22, so the endpoint is inert; the moment Phase 23 wants a progress UI it is the first wall.
+- **What is missing:** `GET /api/admin/jobs/{id}` (21-07) reads one job by id, and **no API response anywhere returns a job id.** `POST /api/repositories` logs `job_id` server-side (`repositories.go:819`) and its response body carries only the repository; `GET /api/repositories` and `GET /api/repositories/{id}` return the `Repository` object, which has no job field. So the endpoint is usable by anything that already holds an id — a log line, a support query — and not by a UI starting from a repository, which is every UI.
+- **Where the prose already says this, and why that was not enough:** `docs/api-ingestion-jobs.md` (under the response shape), `docs/api-repositories.md`'s "Not in this API yet", and `21-07-SUMMARY.md`. Every other deferred item this phase produced got a number (ISS-023, ISS-027, ISS-033); this one lived only in prose, which is the one place `consider-issues` will never look.
+- **Two candidate shapes, and choosing between them is the work:**
+  1. **A `job_id` (or a small `current_job` object) on the repository response.** Cheapest for the obvious UI, and it forces a definition of *current*: the live job, or the last terminal one when there is none? A repository with a `dead` job and no live one is exactly the case a user needs to see.
+  2. **`GET /api/repositories/{id}/jobs`**, a short list. Answers history as well as status, which `RepoSettingsPage` ("real sync history", 23-03) wants anyway, and keeps the repository response stable.
+- **Why it was NOT settled in 21-07:** it is an API-contract decision with its own documentation, tests and isolation surface — and `ingestion_jobs` has no row-level security, so *any* new reader of it needs a deliberately written isolation test for the same reason 21-07's did, and the CI gate will not ask for one if it is a `GET`. 21-07's five deviations were kept small on purpose; this would have been a sixth and the largest.
+- **One thing whichever shape wins must carry:** `sync_state = 'syncing'` is not evidence of a live worker, and `stalled` is not evidence of a retry. See `docs/api-ingestion-jobs.md`.
+- **Owner:** Phase 23 (23-03), or Phase 22 if the repository API is open for another reason first.
+
 ### ISS-033: The webhook producers do not check `uninstalled_at`, so a push racing an uninstall queues a job under a dead installation
 
 - **Discovered:** 2026-09-16, by the reviewer session on PR #40 (21-04), with a concrete race and file:line evidence.

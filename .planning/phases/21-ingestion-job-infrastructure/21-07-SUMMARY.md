@@ -62,10 +62,10 @@ key-decisions:
   - "The read runs inside `InTenantTx` although `ingestion_jobs` has no RLS. Not because the table needs it, but because `every tenant handler opens a tenant transaction` is a rule a reader can check at a glance; an exception would have to be re-justified by everyone who meets it."
   - "21-05's deferred nit is BUILT, not declined. `claimSQL`/`sweepSQL` in a request handler now fails a test rather than contradicting a docstring. It reads code and not comments, it asserts its own premises, and mutation M10 — the claim pasted into `jobs.go` — kills it. The honest framing is in the file: a text scan over one directory, the cheap half of a rule whose expensive half is the reasoning in `doc.go`."
 
-issues-created: []
+issues-created: [ISS-034]
 issues-closed: [ISS-016]
-review: "pending"
-duration: ~4h
+review: "PR #43 — APPROVE WITH NITS, no critical and no important findings. The reviewer re-ran M1, M1a, M3, M4, M5 and M10 rather than taking the table on trust, could not construct a cross-tenant read by any route it tried, confirmed the three misses are byte-identical with no timing oracle, and re-ran all nine ISS-016 tests confirming each exercises what its citation claims. It also diffed the `stalled` expression character by character against `claimSQL`, `sweepSQL` and both Python statements — identical — and ruled deviation 2 an IMPROVEMENT: following the plan's own bullet literally would have shipped the bug M4 catches. Four minors and two nits applied here; nit 5 recorded as a strength assessment rather than a change."
+duration: ~4h, plus ~1h applying PR #43's review
 completed: 2026-09-16
 ---
 
@@ -168,9 +168,22 @@ row** and never from the projection:
 
 Three things about that expression are load-bearing.
 
-- **It is the same predicate `claimSQL` and `_SWEEP_SQL` use.** If it
+- **It is character-for-character the `running`-with-a-dead-lease branch
+  `claimSQL` and `_SWEEP_SQL` share** — PR #43's review diffed it against all
+  four statements (both Go, both Python) and found them identical. If it
   disagreed with them, a job could read "healthy" while the sweeper was about
   to dead-letter it.
+- **⚠ That branch is not "reclaimable", and the docs said it was.** PR #43's
+  review found the wording and measured the consequence: both statements add
+  a condition on `attempts` that this expression does not read — the claim
+  wants `attempts < max_attempts`, the sweeper wants
+  `attempts >= max_attempts` — so a `running` job at `attempts = 5`,
+  `max_attempts = 5` with an expired lease returns `stalled: true` while the
+  claim refuses it and the next sweep writes `dead`. **The flag is right; the
+  sentence describing it was not**, and a Phase 23 UI reading it would have
+  said "waiting to be retried" about a job one sweep from death. Corrected in
+  `docs/api-ingestion-jobs.md`, in `jobs.go`'s own comment, and in ROADMAP's
+  23-03 entry, each saying to compare `attempts` with `max_attempts`.
 - **The `lease_expires_at IS NULL` half is not decoration.** `NULL < NOW()`
   is NULL rather than true, so `lease_expires_at < NOW()` alone calls a
   null-lease row healthy — and that row is exactly the strand 21-RESEARCH's
@@ -266,7 +279,7 @@ the guard test both pass.
 | M2 | a malformed id answers 400 instead of the shared 404 | **Killed: 2** — `Scenario2` (the byte-identical comparison) and `Scenario3` |
 | M3 | the handler's own organization guard is removed | **Killed: 1** — `Scenario5`, and **only** that one. `Scenario4` correctly survives: the middleware still refuses, which is why the handler needs its own test |
 | M4 | `stalled` drops the `lease_expires_at IS NULL` half | **Killed: 1** — `ARunningJobWithANullLeaseReadsAsStalled` |
-| M5 | `stalled` is read from the `sync_state` projection instead of the job row | **Killed: 4** — including both crashed-worker cases. 21-06's ruling, as a mutation |
+| M5 | `stalled` is read from the `sync_state` projection instead of the job row — **spelling run: `(SELECT r.sync_state <> 'syncing' FROM repositories r WHERE r.id = ingestion_jobs.repository_id) AS stalled`** | **Killed: 4** — including both crashed-worker cases. 21-06's ruling, as a mutation. ⚠ The kill count depends on the spelling; see below |
 | M6 | the route is registered as `/api/admin/jobs/{id}` **inside** the `/api` block | **Killed: 9** — the double-prefix mistake the plan warned about |
 | M7 | `lease_owner` is added back to the response | **Killed: 1** — `Scenario1`, on the key set |
 | M8 | `payload` is added back to the response | **Killed: 1** — `Scenario1`, on the key set |
@@ -291,6 +304,23 @@ and to have proven nothing at all. The faithful form is the neutered one —
 `AND $2::text IS NOT NULL`, the same shape 21-05's mutations A and S2–S6 use
 — which keeps the arity and is killed by `Scenario2` **alone**. Both are
 recorded, because the difference between them is the whole lesson.
+
+### M5's kill count depends on the spelling, and the spelling is now recorded
+
+PR #43's review could not reproduce M5's "Killed: 4" and was right not to be
+able to. Two spellings of the same idea kill different sets:
+
+| Spelling | Killed |
+|---|---|
+| **the one run here**: `(SELECT r.sync_state <> 'syncing' …) AS stalled` — "the projection says syncing, so it must be alive" | **4** — `Scenario1` plus three of Scenario 7's leaves, because `orgA.RepoID`'s projection is `pending`, which inverts to `stalled: true` on a job with a live lease |
+| the review's: `(SELECT r.sync_state = 'syncing' …) AS stalled` | **1 leaf + its parent** — `AJobDeferredPartWayThroughAShutdownReadsAsQueued`. The two genuinely-stalled cases pass, because there the projection happens to agree |
+
+**Killed either way, no survivor**, and the second is the more interesting
+result: a wrong implementation that *agrees with the right one on the cases
+you first think of* is exactly what 21-06's fixture findings were about. The
+spelling is recorded because M1-vs-M1a is this plan's whole mutation lesson,
+and a kill count with no statement attached is the same omission one level
+down.
 
 ## ISS-016 is closed, on evidence re-run before any of this existed
 
@@ -389,6 +419,44 @@ container `rag-doc-isolation-tests` was left on the real schema.
    `needs_rerun` yet", and two "*from 21-05*, the worker is to …" futures. The
    plan asks to *check* that page; checking it found them.
 
+## What PR #43's review changed
+
+**APPROVE WITH NITS: no critical and no important findings.** The reviewer
+re-ran M1, M1a, M3, M4, M5 and M10 rather than taking the table on trust,
+tried to construct a cross-tenant read by five routes and could not, confirmed
+the three ways to miss are byte-identical with **no timing oracle** (the two
+that matter take the identical code path to the identical `pgx.ErrNoRows`;
+only the malformed case returns before the round trip, and that is a
+distinction the caller already knows), and re-ran all nine ISS-016 tests
+confirming each exercises what its citation claims. It diffed the `stalled`
+expression character by character against `claimSQL`, `sweepSQL` and both
+Python statements — identical — and called deviation 2 an **improvement**:
+following the plan's own bullet literally would have shipped the bug M4
+exists to catch.
+
+Four minors and two nits were applied.
+
+| Finding | Applied |
+|---|---|
+| **1 (minor)** — "exactly the reclaimable predicate" is not exact, and the inexactness has a UI consequence: a `running` job at `attempts = max_attempts` with an expired lease reads `stalled: true` while the claim refuses it and the next sweep writes `dead` | The sentence is corrected in `docs/api-ingestion-jobs.md`, in `jobs.go`'s own struct comment, and in ROADMAP's 23-03 entry, each saying to compare `attempts` with `max_attempts`. The **flag is unchanged** — it was right |
+| **2 (minor)** — three files, three counts of how many steps turn the worker on (doc **five**, ROADMAP **four**, `__main__.py` **three**) | The doc is now stated as the authority; ROADMAP keeps **no count** and links `#the-phase-22-hand-off`; `__main__.py`'s docstring keeps only the **two** that lift its own refusal and points at the doc for the rest. Exactly the failure mode `21-CONTEXT.md` opens by naming |
+| **3 (minor)** — the job-id gap lived only in prose, where `consider-issues` will never surface it | Filed as **ISS-034** with the two candidate shapes; referenced from ROADMAP's 23-03 and from both API docs. The reviewer agreed with the ruling to **defer** rather than build it here |
+| **4 (minor)** — 21-05's two deliberately-declined redaction arms missing from the roll-up, in the plan that puts `last_error` on the wire | Both added, with the trade rather than only the upside: the bare-40-hex arm (git commit SHA — **and the App client secret has that shape**) and the generic `://user:password@` arm. Reachability today is nil, measured by the reviewer's grep |
+| **6 (nit)** — M5's kill count did not reproduce | The exact spelling run here is recorded, next to the review's, with both kill sets. Killed either way; no survivor |
+| **7 (nit)** — `last_stage` documented as an enum but unconstrained free text | Documented as **advisory** in the doc and the struct comment, with the reason it is not constrained. **No `CHECK` added** — that is a migration, and this plan ships none |
+
+**Nit 5 was recorded rather than acted on**, as the reviewer framed it: the
+claim/sweep gate fired on a verbatim paste and passed on the same SQL
+reformatted, so it is strong against the only way this SQL realistically
+reaches `pkg/api` and weak against deliberate evasion. The docstring already
+states all three limits, and Go closes the rename vector. Carried into the
+gap list above rather than papered over.
+
+**Nothing in the review required a behaviour change.** The only non-comment
+edits in this round are documentation and planning files; `jobs.go` changed in
+its comments alone, and `git diff` confirms no statement, no route and no test
+assertion moved.
+
 ---
 
 # The phase close-out
@@ -468,10 +536,13 @@ precondition as "unfinished" is an ordinary mistake to make.
 - **A `statement_timeout` on the heartbeat connection** (21-06) — named as a
   candidate, not added. It is the only thing that would cover a beat that
   *blocks* rather than raises.
-- **A way to find a repository's job id** (this plan). Nothing returns one;
-  Phase 23 needs a `job_id` on the repository response or a
-  list-by-repository endpoint, and Phase 22 is where the repository API is
-  next likely to be open.
+- **A way to find a repository's job id** — **ISS-034**, filed on PR #43's
+  review. Nothing returns one; Phase 23 needs a `job_id` on the repository
+  response or `GET /api/repositories/{id}/jobs`, and Phase 22 is where the
+  repository API is next likely to be open. ⚠ Whichever shape wins needs a
+  **deliberately written isolation test** for the same reason this endpoint
+  did: it is a second reader of a table with no row-level security, and a
+  `GET` passes the CI gate untested.
 
 ### Two questions Phase 22 does NOT need to re-open
 
@@ -555,6 +626,24 @@ it covered.**
   `githubWebhookEnvelope` is byte-identical to 20-05's, so the `push` and
   `installation_repositories` field names are still documentation-derived and
   not evidence.
+- **⚠ 21-05 DECLINED TWO REDACTION ARMS, AND THIS IS THE PLAN THAT MAKES
+  THAT A TRADE.** `last_error` is now readable over HTTP by any member of the
+  organization with **no role gate**, so the shapes the redaction deliberately
+  lets through belong in this list rather than only in
+  `transitions.py`'s comment. (a) **A bare 40-hex run** is not redacted,
+  because it is indistinguishable from a **git commit SHA** — the useful half
+  of a clone or checkout failure, and blinding the endpoint to *which commit*
+  failed was judged the worse trade. **The GitHub App client secret has the
+  same shape.** (b) **A generic `://user:password@` DSN arm** is not there
+  either: psycopg2 does not quote the password in its connection errors, the
+  clone-URL case is covered by the `ghs_` arm, and a generic arm would blank
+  the visible half of a credential-free URL for nothing. **Reachability today
+  is nil** — PR #43's review grepped `services/workers` for `client_secret`
+  and found nothing, and no worker holds the value — which is why this is a
+  recorded gap and not a change. **Whoever gives a worker either value has to
+  revisit both arms**, and the cost of widening afterwards is whatever was
+  written to the column in between. The first cut of this summary carried the
+  *upside* of (a) without the trade, which is the half that matters here.
 - **21-05 — `FOR UPDATE SKIP LOCKED` was not pinned from Python** at the
   time, deliberately; 21-06's barrier test closed it.
 - **21-05 — `assert_no_older_claimable` carries its own copy of the claim
@@ -572,17 +661,41 @@ it covered.**
   is not asserted, and the sweeper pauses while its worker is busy (a
   property, not a gap — `max_job_duration` bounds the worst case once it is
   set).
-- **21-07 — the `claim`/`sweep` gate is a text scan over one directory.**
-  Blind to SQL assembled at run time, read from a file, or spelled
-  differently.
+- **21-07 — the `claim`/`sweep` gate is a text scan over one directory**, and
+  PR #43's review measured both sides of that. It pasted `claimSQL` verbatim
+  into `pkg/api/handlers/` and the gate fired on **two** independent needles;
+  it then changed two things in the same paste — a line break between
+  `FOR UPDATE` and `SKIP LOCKED`, and `max_attempts > attempts` for
+  `attempts < max_attempts` — and the gate **passed on semantically identical
+  SQL**. So: **strong against a copy-paste, which is the only way this SQL
+  realistically reaches `pkg/api`**, and weak against deliberate evasion,
+  run-time string assembly, or anything outside that directory. The rename and
+  constant-reference vectors are closed by Go rather than by the gate, since
+  both constants are unexported and live in an internal test file. Recorded,
+  not changed: the docstring already states all three limits.
+- **21-07 — `stalled` is the dead-lease branch, not "reclaimable".** It does
+  not read `attempts`, so it cannot distinguish a job a worker will pick up
+  from one the next sweep will dead-letter. Deliberate — the flag answers "is
+  anything working on this", and adding the attempt condition would make one
+  boolean answer two questions — but a consumer has to compare `attempts` with
+  `max_attempts` itself, and the docs now say so in three places.
+- **21-07 — `last_stage` is advisory, not an enum.** Migration 000014
+  declares it `TEXT` with `clone|parse|embed|store` in a comment and **no
+  `CHECK`**, and the worker writes whatever sanitised string a handler
+  reports. Safe (redacted and capped) but unconstrained, so a consumer
+  switching on four values needs a default branch. **Adding the `CHECK` was
+  considered and declined here**: it is a migration, and this plan ships none.
 - **21-07 — nothing returns a repository's job id**, so the endpoint is
   usable by anything holding one and not by a UI starting from a repository.
+  **Now filed as ISS-034** rather than living in doc prose, with the two
+  candidate shapes and the reason choosing between them is its own work.
 
 ### Issues open at the phase boundary
 
 | Issue | State at the close |
 |---|---|
 | **ISS-016** | **CLOSED here, on evidence.** Nine racing and guard tests re-run at `main` |
+| **ISS-034** | **FILED HERE** (2026-09-17, on PR #43's review). Nothing hands a UI a job id, so this endpoint is unreachable from a repository. Deferring it is the ruling — the endpoint is inert until Phase 22, and the choice between a `job_id` on the repository response and `GET /api/repositories/{id}/jobs` is an API-contract decision with its own isolation surface. Owner: 23-03 |
 | **ISS-023** | **OPEN by decision O1.** The state machine makes the retry possible; nothing exposes it. The pieces now exist — a `dead` job is outside the live set, and this endpoint can say why it died |
 | **ISS-012** | **OPEN.** This endpoint is now named in its affected surfaces, and it is the one route where a stale claim has no row-level security behind it |
 | **ISS-031** | **OPEN, with its current notes.** 21-01 recommended a CI check that applies migrations to a **seeded** database; it was never built. 000014 (DDL only) and 000015 (the `DO` block is the last statement) each dodged the hazard structurally, so the guard is still "the author read the comment" |

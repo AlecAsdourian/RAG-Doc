@@ -118,16 +118,32 @@ type IngestionJob struct {
 	// and Phase 23's UI gets the same rule.
 	//
 	// Stalled is computed in SQL, against the DATABASE clock, with the
-	// same predicate `claimSQL` and `_SWEEP_SQL` use — including the
-	// `lease_expires_at IS NULL` half, which is not decoration: `NULL <
-	// NOW()` is NULL rather than true, so a `running` row with a null lease
-	// would otherwise report itself healthy while being exactly the strand
-	// that clause was added to catch.
+	// `running`-with-a-dead-lease branch `claimSQL` and `_SWEEP_SQL` share
+	// — including the `lease_expires_at IS NULL` half, which is not
+	// decoration: `NULL < NOW()` is NULL rather than true, so a `running`
+	// row with a null lease would otherwise report itself healthy while
+	// being exactly the strand that clause was added to catch.
+	//
+	// ⚠ IT IS THAT BRANCH AND NOT "RECLAIMABLE". Both statements add a
+	// condition on `attempts` that this expression does not read: the claim
+	// wants `attempts < max_attempts` and the sweeper wants
+	// `attempts >= max_attempts`. So a stalled job at the cap is not
+	// waiting for a worker — the claim refuses it and the next sweep writes
+	// `dead`. A caller that wants "will be retried" compares `attempts`
+	// with `max_attempts` as well (PR #43's review measured the case).
 	LeaseExpiresAt *time.Time `json:"lease_expires_at"`
 	Stalled        bool       `json:"stalled"`
 
-	// LastStage is coarse resumability (clone|parse|embed|store), not a
-	// progress bar. Progress is whatever the handler reported, redacted.
+	// LastStage is coarse resumability, not a progress bar.
+	//
+	// Conventionally one of clone|parse|embed|store, and ADVISORY rather
+	// than an enum: migration 000014 declares it `TEXT` with those four
+	// values in a comment and no `CHECK`, and the worker writes whatever
+	// sanitised string a handler reports. A consumer switching on it needs
+	// a default branch. Constraining it is a migration, which this plan
+	// deliberately does not ship.
+	//
+	// Progress is whatever the handler reported, redacted.
 	LastStage *string         `json:"last_stage"`
 	Progress  json.RawMessage `json:"progress"`
 

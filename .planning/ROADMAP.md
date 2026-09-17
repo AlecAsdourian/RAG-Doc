@@ -150,11 +150,11 @@ O1, which is what let ISS-016 close cleanly.
 **Nothing claims a real job yet, on purpose.** `python -m workers` finds the
 handler registry empty and exits 2 before reading any configuration, so
 Phase 22 inherits a queue that is full of nothing and a worker that refuses
-to start. Turning it on is four steps, in `docs/api-ingestion-jobs.md`:
-register the two handlers, add `DATABASE_URL` to the compose `workers`
-service, set `max_job_duration` (it defaults to `None`, and an unset bound
-lets a hung handler hold its lease forever), and measure the pool — one job
-per process, two connections per busy worker.
+to start. **What turns it on is the list in
+`docs/api-ingestion-jobs.md#the-phase-22-hand-off`**, which is the authority —
+deliberately not restated here, because three files keeping their own counts
+of the same list is the failure mode `21-CONTEXT.md` opens by naming, and
+this entry was one of the three.
 
 ### Phase 22: Repository Clone → Ingestion Orchestration
 
@@ -179,7 +179,7 @@ Plans:
 Plans:
 - [ ] 23-01: Live data for repos + orgs — `useRepositories` and `OrgSelectPage` and `RepoSettingsPage` wired to real APIs; error/loading/empty states; inline-style→Tailwind for every touched component
 - [ ] 23-02: GitHub App install flow UI — post-org-creation prompt: "Install our GitHub App on your organization"; deep-link into GitHub install URL; post-install callback lands user back on repo-connect UI
-- [ ] 23-03: Repo connect + progress UI — "Connect a repository" flow, live indexing progress via SSE from Phase 22, error handling for stuck jobs; `RepoSettingsPage` shows real sync history
+- [ ] 23-03: Repo connect + progress UI — "Connect a repository" flow, live indexing progress via SSE from Phase 22, error handling for stuck jobs; `RepoSettingsPage` shows real sync history. **Blocked on ISS-034** until a repository's job id is reachable: `GET /api/admin/jobs/{id}` exists (21-07) but nothing hands a UI the id. **And "stuck" is `stalled` on the job row, never `sync_state = 'syncing'`** — with `attempts` compared against `max_attempts`, because a stalled job at the cap is heading for `dead`, not for a retry
 - [ ] 23-04: First-run onboarding — new user detection (no repos yet), guided flow (install App → connect repo → wait → guided first query with a sample question relevant to their repo); dismissible with "I'll do it later"
 - [ ] 23-05: Auth session polish — session expiry handling, sign-out flow, org switcher in top bar, unauthenticated redirect preserves intended destination
 

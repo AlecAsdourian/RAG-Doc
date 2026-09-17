@@ -307,11 +307,13 @@ is what a cross-tenant delete returns — the row is untouched.
 - **Why a sync failed, on *this* endpoint.** `sync_state` carries no reason.
   The job does — `last_error`, `last_stage`, `attempts`, `stalled` — through
   [`GET /api/admin/jobs/{id}`](api-ingestion-jobs.md#get-apiadminjobsid).
-- **A way to find a repository's job id.** Nothing in this API returns one:
-  a connect logs the job id server-side and the response carries only the
-  repository. Until a repository-to-job link exists, the job endpoint is
-  usable by anything that already has an id and not by a UI starting from a
-  repository. Phase 23 needs one of the two.
+- **A way to find a repository's job id** — **ISS-034**. Nothing in this API
+  returns one: a connect logs the job id server-side and the response carries
+  only the repository. Until a repository-to-job link exists, the job endpoint
+  is usable by anything that already has an id and not by a UI starting from a
+  repository. The issue carries the two candidate shapes — a `job_id` on this
+  response, or `GET /api/repositories/{id}/jobs` — and why choosing between
+  them is its own piece of work.
 - **Choosing a project.** Repositories connect to the organization's
   default project. Note that a repository connected before this API
   existed may sit in a different project — do not assume every repository
