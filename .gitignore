@@ -14,6 +14,13 @@ nul
 .env
 .env.local
 .env.*.local
+# Backups of .env files (e.g. services/backend/.env.bak-20260908) carry the
+# same secrets as the file they copy.
+.env.bak*
+
+# Private keys. The GitHub App's private key must live OUTSIDE the repository;
+# this rule is the backstop for when one is copied in by mistake.
+*.pem
 
 # Logs
 *.log
