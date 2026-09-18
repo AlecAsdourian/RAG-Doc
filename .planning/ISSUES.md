@@ -80,7 +80,7 @@ Enhancements discovered during execution. Not critical - address in future phase
   - The same seeded deployment-shape upgrade then reaches 15, clean, with both tenants backfilled.
   - The resulting schema is **identical** to the original path's: a 295-line catalog dump matches exactly, including `convalidated`.
   - **Editing an applied migration is acceptable only because nothing is deployed.** Databases that already recorded 14 keep their identical constraint.
-- **The rule for the class, which remains:** foreign keys on new tables go inside `CREATE TABLE`; never rely on the session's tenant; never set a sentinel tenant, because it makes validation pass vacuously. 22-01's seeded gate runs every migration after 10 in one session and fails if the class returns.
+- **The rule for the class, which remains:** foreign keys on new tables go inside `CREATE TABLE`; never rely on the session's tenant; never set a sentinel tenant, because it makes validation pass vacuously. 22-01's seeded gate migrates 10→12 separately (the seed needs version 12's `uninstalled_at`), then runs **every migration from 12 on in one session**, which is where the poison starts, and fails if the class returns. **Both 000013 and 000015 leave the setting at `''`** (measured by the fact-check), so a later `ALTER TABLE … ADD CONSTRAINT` in the same run fails with `22P02`. 22-02's key-move mutation is killed exactly that way.
 - **Rejected alternatives:**
   - lifting FORCE around the constraint, which briefly disables a guard;
   - `NULLIF`-tolerant policies, which are ISS-013's territory, broad, and silent;

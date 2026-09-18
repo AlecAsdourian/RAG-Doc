@@ -327,7 +327,10 @@ privileges on the partitions. Grants live outside migrations: both harnesses run
 `GRANT … ON ALL TABLES` after migrating, and production's grants belong to Phase
 24. A `REVOKE` in the migration would therefore be silently undone.
 Per-partition RLS is the guard, tested without depending on grants. The question
-is recorded for Phase 24's grant model.
+is recorded for Phase 24's grant model, **with the fact-check's addendum**: this
+closes the direct path only while grants **exclude `TRUNCATE`**, which
+row-level security does not govern. Both harnesses grant
+`SELECT, INSERT, UPDATE, DELETE` only.
 
 ### P3 — Tenancy on `chunks`, `symbols` and `symbol_edges` by composite foreign key
 
@@ -665,12 +668,14 @@ but four plans grew:
 - **22-05 maps mid-run installation changes and refused tokens onto Phase 21's
   endings, and changes the entrypoint test deliberately.**
 
-The Phase 22 estimate is now **~68–97 h**.
+The Phase 22 estimate is now **~69–98 h**. It was 68–97 before the final pass,
+whose 22-05 fixes (cumulative progress, merged heartbeat options, the
+misrouting marker) add about an hour.
 
 **This list is the authority for plan scope.** `ROADMAP.md` carries one line per
 plan and points here. `STATE.md` points here and keeps no copy.
 
-### Phase 22 — pgvector storage and the first real repository (~68–97 h)
+### Phase 22 — pgvector storage and the first real repository (~69–98 h)
 
 | Plan | Scope | Est. |
 |---|---|---|
@@ -678,7 +683,7 @@ plan and points here. `STATE.md` points here and keeps no copy.
 | **22-02** | **The partitioned `chunks` table, and every writer of it** (P1, P2, P3, P4, P7, P17). Migration `000017`:<br>(1) drop `retrievals_chunk_id_fkey`;<br>(2) create `symbols` (D1, with `archived_at`, RLS, the trigger and the tenant guarantee);<br>(3) drop `chunks` and recreate it partitioned by `HASH (organization_id)` `MODULUS 64`, with `organization_id`, the tenant guarantee (P3), `embedding vector(1536)`, `embedding_model` (P4) and a nullable `symbol_id` (P7); RLS, FORCE and the policy on the parent **and all 64 partitions**; `trg_assert_tenant`; the indexes.<br>Tests: the partition-RLS guard; the measured cross-tenant leak written as a test; `Subplans Removed`; a misfiled row rejected; cascades; the drift query.<br>**Every Go and Python writer of `chunks` moves in the same PR**, or CI goes red on `main`. That includes `PostgresWriter` writing each chunk with its vector (moved here from 22-03). The repository delete stays honest about feedback (P17). | 16–22 h |
 | **22-03** | **Retrieval on pgvector; Qdrant retired** (P4, P5, P6, P15). **First**, a complete Qdrant-era baseline: cached query vectors, per-leg and fused results, the Qdrant point set, and the exact top 50. **Then** the vector leg becomes SQL under RLS (`relaxed_order` with an exact re-sort, never across models); the keyword leg drops the latest-run filter; the tests run as the app role; the HNSW-eligibility proof and the **breadcrumb-index proof (owned here)** use measured plan shapes. The equivalence gate runs on the same database and vectors, under a rule committed first. **Only then** is Qdrant retired everywhere. | 14–20 h |
 | **22-04** | **Fetching a repository safely** (P10). The backend's internal listener and token route (one repository, `contents: read`, one hour, live lease only, byte-identical 404). The worker's archive fetcher at an exact SHA, with U6's caps (500 MB applied to both the download and the expansion, as the bomb guard), U7's deny-list, and the vendored, generated and binary filters. Hostile-archive tests with their premises asserted. Redaction tested against captured logs. The per-job directory lifecycle. The distinct `409` exceptions for suspended and uninstalled installations. **A measurement on the largest benchmark repository** (mealie, public, pinned). | 15–22 h |
-| **22-05** | **The `full_ingest` handler, and the worker switched on.** Stages `fetch → parse → embed → store`, with `store` reported before `write_results`. `write_results` replaces the repository's chunks inside `complete()`'s transaction. **The endings:**<br>• `Rejected` (a cap ends the job `dead` in one attempt);<br>• a mid-run suspension defers and a mid-run uninstall abandons, as at claim time;<br>• a refused token raises `LeaseLost`, so nothing is written.<br>`REGISTRY` gets both keys, and the entrypoint test is changed deliberately. P16's numbers, provisional. Compose's `workers` sits behind a profile, never with the App key. An end-to-end test as the app role. **The live proof: `AlecAsdourian/ES-SC-API-Navigator`** (the user approved it), in a scratch database, every process running as `rag_doc_app`. | 14–20 h |
+| **22-05** | **The `full_ingest` handler, and the worker switched on.** Stages `fetch → parse → embed → store`, with `store` reported before `write_results`. `write_results` replaces the repository's chunks inside `complete()`'s transaction. **The endings:**<br>• `Rejected` (a cap ends the job `dead` in one attempt);<br>• a mid-run suspension defers and a mid-run uninstall abandons, as at claim time;<br>• a refused token raises `LeaseLost`, so nothing is written.<br>`REGISTRY` gets both keys, and the entrypoint test is changed deliberately. P16's numbers, provisional. Compose's `workers` sits behind a profile, never with the App key. An end-to-end test as the app role. **The live proof: `AlecAsdourian/ES-SC-API-Navigator`** (the user approved it), in a scratch database, every process running as `rag_doc_app`. Final pass: cumulative `progress` on every report; the heartbeat's `statement_timeout` merged into the DSN's options, so its role cannot change; a misrouted internal API fails loudly; and the hour of `syncing` after a mid-run suspension is documented. | 15–21 h |
 
 **Phase 22 ends with a real GitHub repository indexed end to end**: connect →
 queue → worker → pgvector → search, under tenant isolation on both legs.
