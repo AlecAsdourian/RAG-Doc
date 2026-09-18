@@ -4,6 +4,19 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 ## Open Enhancements
 
+### ISS-035: The `make seed*` scripts have failed since migration 000009
+
+- **Discovered:** 2026-09-17, by the fact-check of the Phase 22 plans, measured at schema version 15.
+- **Type:** Developer tooling
+- **Priority:** LOW. Nothing runs them, which is why nobody noticed. But they are documented Make targets (`services/backend/Makefile`'s `seed`, `seed-lineage` and `seed-complete`), so they mislead.
+- **What is wrong:**
+  - `scripts/seed.sql`, `seed-lineage.sql` and `seed-complete.sql` all fail with `42501` from `trg_assert_tenant`. They write tenant-scoped tables without setting `app.current_tenant`.
+  - `seed.sql` is the other two's prerequisite.
+  - `seed-complete.sql` inserts no chunks: it writes `queries`, `retrievals` and `feedback`.
+  - After 22-02's migration 000017, `seed-lineage.sql`'s chunk inserts will also need `organization_id`, `embedding` and `embedding_model`.
+- **The fix, when someone needs seed data:** set each organization's tenant with `set_config('app.current_tenant', …, true)` inside a transaction per organization, as 000015 does, and add the new chunk columns. Otherwise delete the three scripts and their Make targets.
+- **Why not in Phase 22:** 22-02 is already the largest plan, and this is unrelated tooling that no plan depends on.
+
 ### ISS-034: Nothing hands a UI a job id, so the job-status endpoint is unreachable from a repository
 
 - **Discovered:** 2026-09-17, by the reviewer session on PR #43 (21-07), which ruled that deferring it is correct and that it needs a **number** rather than living only in doc prose.
@@ -54,7 +67,24 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 - **Discovered:** 2026-09-16, by the reviewer session on PR #37 (21-01). Independently reproduced there.
 - **Type:** Correctness / Operability
-- **Priority:** MEDIUM — latent. 21-02's migration is DDL only, so nothing is broken today; the phase adds five more migrations.
+- **Priority:** ~~MEDIUM — latent. 21-02's migration is DDL only, so nothing is broken today; the phase adds five more migrations.~~ **HIGH, and LIVE on `main` in the deployment shape. Corrected 2026-09-17.** The original "nothing is broken today" was wrong. It must be fixed before the first deploy, and 22-01 fixes it.
+- **Measured 2026-09-17, by the fact-check of the Phase 22 plans, then reproduced by the planner on a scratch `pgvector/pgvector:pg16`:**
+  - **Setup:** a database owned by a `NOSUPERUSER NOBYPASSRLS` role, migrated to 10, seeded with two tenants' rows, then **one** `migrate up`.
+  - **What happens:** 000013's loop leaves `app.current_tenant = ''`. `000014:158-161` then runs `ALTER TABLE ingestion_jobs ADD CONSTRAINT ingestion_jobs_repo_tenant_fk`, whose validation reads `repositories` through its policy under FORCE RLS as the owner and raises `22P02 invalid input syntax for type uuid: ""`.
+  - **Result:** `schema_migrations` is left at **14, dirty**.
+  - **A fresh session from 13 onward passes.**
+  - **A superuser owner passes the same upgrade (measured),** because superusers bypass RLS even under FORCE. So the compose database, whose migrations run as its superuser, and CI's empty databases do not see it. **Production will**, since it will not migrate as a superuser.
+  - The comment at `000014:150-155`, "foreign-key checks run with row-level security bypassed", is true of per-row checks and **not** of `ADD CONSTRAINT`'s validation.
+- **The fix, scheduled in 22-01 and measured to work:** declare `ingestion_jobs_repo_tenant_fk` inside 000014's `CREATE TABLE`.
+  - A new table has no rows to validate, so no validation query runs.
+  - The same seeded deployment-shape upgrade then reaches 15, clean, with both tenants backfilled.
+  - The resulting schema is **identical** to the original path's: a 295-line catalog dump matches exactly, including `convalidated`.
+  - **Editing an applied migration is acceptable only because nothing is deployed.** Databases that already recorded 14 keep their identical constraint.
+- **The rule for the class, which remains:** foreign keys on new tables go inside `CREATE TABLE`; never rely on the session's tenant; never set a sentinel tenant, because it makes validation pass vacuously. 22-01's seeded gate runs every migration after 10 in one session and fails if the class returns.
+- **Rejected alternatives:**
+  - lifting FORCE around the constraint, which briefly disables a guard;
+  - `NULLIF`-tolerant policies, which are ISS-013's territory, broad, and silent;
+  - one session per migration, which every runner would have to honour.
 - **What is wrong:** `000013`'s backfill sets `app.current_tenant` per organization with `set_config(..., true)`. That is the right call — it satisfies `trg_assert_tenant` and `FORCE ROW LEVEL SECURITY` without lifting either, and 000012's lift-FORCE pattern was measured raising 42501 here. But it leaves the migrating session with the **last organization's id** for the rest of that file, and `''` after it commits. This is ISS-013's hazard, now reachable from the migration path.
 - **The failure it sets up:** a later migration, applied **in the same run**, that does any DML against a table with row-level security. It sees one organization's rows and reports success, or raises `22P02 invalid input syntax for type uuid: ""` and leaves `schema_migrations` dirty. **It passes on CI's empty database and fails on a database with rows,** which is the direction that trains people badly.
 - **Why a comment is not enough:** the guard is four lines of comment in `000013`. Nothing fails if the next author doesn't read them, and nothing in CI applies migrations to a database that has rows.
