@@ -15,6 +15,7 @@ Enhancements discovered during execution. Not critical - address in future phase
   - `seed-complete.sql` inserts no chunks: it writes `queries`, `retrievals` and `feedback`.
   - After 22-02's migration 000017, `seed-lineage.sql`'s chunk inserts will also need `organization_id`, `embedding` and `embedding_model`.
 - **The fix, when someone needs seed data:** set each organization's tenant with `set_config('app.current_tenant', …, true)` inside a transaction per organization, as 000015 does, and add the new chunk columns. Otherwise delete the three scripts and their Make targets.
+- **A working example exists since 22-01:** `services/backend/pkg/testing/isolation/testdata/seed_at_000010.sql` seeds four organizations at schema version 10 in exactly that shape, as the unprivileged `rag_doc_app`. It is written for version 10, so it is a pattern to copy, not a drop-in replacement.
 - **Why not in Phase 22:** 22-02 is already the largest plan, and this is unrelated tooling that no plan depends on.
 
 ### ISS-034: Nothing hands a UI a job id, so the job-status endpoint is unreachable from a repository
@@ -68,6 +69,20 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Discovered:** 2026-09-16, by the reviewer session on PR #37 (21-01). Independently reproduced there.
 - **Type:** Correctness / Operability
 - **Priority:** ~~MEDIUM — latent. 21-02's migration is DDL only, so nothing is broken today; the phase adds five more migrations.~~ **HIGH, and LIVE on `main` in the deployment shape. Corrected 2026-09-17.** The original "nothing is broken today" was wrong. It must be fixed before the first deploy, and 22-01 fixes it.
+- **✅ FIXED FOR 13 → 14 IN 22-01 (2026-09-17, PR #48, in review), AND THE CLASS IS NOW GUARDED IN CI.** Evidence in `22-01-SUMMARY.md`.
+  - **The fix:** 000014 declares `ingestion_jobs_repo_tenant_fk` inside `CREATE TABLE`. With comments stripped, the SQL diff against `main` is that move and nothing else.
+  - **The gate:** `pkg/testing/isolation/migration_seeded_test.go`, `TestMigrationsApplyToASeededDatabase`. It runs in `go test ./...`, so in CI.
+    - It seeds four organizations at version 10, as `rag_doc_app` under each one's tenant.
+    - It uninstalls one installation at 12.
+    - It then runs **one** `up` to the newest version, as `rag_doc_owner` (`NOSUPERUSER NOBYPASSRLS`), in one session.
+    - It asserts 000013's, 000015's and 000016's outcomes as the superuser, and that every seeded row survived.
+    - It also asserts its own premises: who owns the database and every table, and that FORCE is on. A gate that silently ran as the superuser passes the unfixed 000014 (mutation M8b).
+  - **Failed before the fix,** on the commit that added the gate (`4a33b08`): `schema_migrations at 14 (dirty=true): SQLSTATE 22P02: migration failed: invalid input syntax for type uuid: ""`. The server log's `CONTEXT` is the foreign key's validation query, `SELECT fk."repository_id", fk."organization_id" FROM ONLY "public"."ingestion_jobs" fk LEFT OUTER JOIN ONLY "public"."repositories" pk …`.
+  - **Passes after the fix** (`5677cc1`), three runs, each on its own scratch database, none left behind. The one-session `up` takes about 85 ms.
+  - **The schema is identical:** 550 catalog lines match, `convalidated` included. The comparison tool is shown to catch a `NOT VALID` key.
+  - **000015 leaves `''` too, measured.** A probe `000017` adding a composite tenant key by `ALTER TABLE` failed the gate at 17, dirty, `22P02`; the same key declared inside `CREATE TABLE` passed (M9, M9b). So the rule below is enforced for every later migration, not only asserted.
+  - **The one hole, recorded:** a sentinel tenant set before an `ALTER TABLE … ADD CONSTRAINT` passes the gate vacuously (M3). Only review can catch that, and the rule forbids it.
+  - **What remains open is the GUC behaviour itself, not this failure.** 000013 and 000015 still leave the migrating session at `''` (ISS-013's mechanism), and after the first production deploy an applied migration can no longer be edited. Every later migration follows the rule, and the gate fails any that does not. Closing this entry is the planner's call at merge.
 - **Measured 2026-09-17, by the fact-check of the Phase 22 plans, then reproduced by the planner on a scratch `pgvector/pgvector:pg16`:**
   - **Setup:** a database owned by a `NOSUPERUSER NOBYPASSRLS` role, migrated to 10, seeded with two tenants' rows, then **one** `migrate up`.
   - **What happens:** 000013's loop leaves `app.current_tenant = ''`. `000014:158-161` then runs `ALTER TABLE ingestion_jobs ADD CONSTRAINT ingestion_jobs_repo_tenant_fk`, whose validation reads `repositories` through its policy under FORCE RLS as the owner and raises `22P02 invalid input syntax for type uuid: ""`.

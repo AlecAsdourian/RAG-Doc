@@ -1,0 +1,36 @@
+-- Phase 22-01: the `vector` extension (pgvector), which 22-02's `chunks`
+-- rebuild needs for `embedding vector(1536)` and its HNSW index.
+--
+-- ⚠ AN OPERATOR MUST CREATE THE EXTENSION BEFORE A NON-SUPERUSER MIGRATES.
+--
+-- `vector` is NOT a trusted extension (`pg_available_extension_versions`:
+-- superuser = t, trusted = f, pgvector 0.8.6 on PostgreSQL 16.15). Creating
+-- it takes a superuser, or the host's admin role where a managed provider
+-- has one (e.g. Cloud SQL's `cloudsqlsuperuser`). Measured 2026-09-17 on
+-- `pgvector/pgvector:pg16`, as a NOSUPERUSER table owner:
+--
+--   - extension ABSENT:  this statement fails with 42501,
+--                        `permission denied to create extension "vector"`,
+--                        HINT `Must be superuser to create this extension.`
+--   - extension PRESENT: a NOTICE, `extension "vector" already exists,
+--                        skipping`, and success.
+--
+-- So a plain `IF NOT EXISTS` is the whole migration. No `DO` guard is needed,
+-- and none is wanted: when the extension is missing, the privilege error is
+-- the precise message an operator needs. Both cases are pinned in
+-- pkg/testing/isolation: the seeded gate migrates through this file as a
+-- non-superuser owner with the extension pre-created, and
+-- TestMigration000016NeedsTheExtensionPreCreated pins the failure without it.
+--
+-- PRODUCTION (Phase 24):
+--   - create the extension once, as the admin role, before running `up`:
+--       CREATE EXTENSION IF NOT EXISTS vector;
+--   - ship pgvector 0.8.0 OR LATER. 22-03's vector leg depends on iterative
+--     index scans (`hnsw.iterative_scan`), which arrived in 0.8.0; without
+--     them a repository filter inside a tenant's partition returns short
+--     results (22-RESEARCH.md Q5).
+--
+-- Where the image comes from, why the test harness's reuse container was
+-- renamed with it, and the candidate hosts' pgvector versions:
+-- .planning/phases/22-repository-clone-ingestion/22-RESEARCH.md, Q2.
+CREATE EXTENSION IF NOT EXISTS vector;

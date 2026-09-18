@@ -69,6 +69,67 @@ docker exec testtgsd-postgres-1 psql -U coderag -d coderag \
   -c "ALTER USER coderag WITH PASSWORD 'coderag';"
 ```
 
+## The Postgres image
+
+Since 22-01, every Postgres this project starts is **`pgvector/pgvector:pg16`**,
+pinned by digest: PostgreSQL 16.15 with pgvector 0.8.6. The same reference
+is in four places, and they change together:
+
+- `docker-compose.yml`, the `postgres` service;
+- `services/backend/pkg/testing/isolation/container.go`, `postgresImage`;
+- `services/workers/tests/isolation/conftest.py`, `_POSTGRES_IMAGE`;
+- `.github/workflows/backend-ci.yml`, the `postgres` service.
+
+Migration `000016_enable_pgvector` creates the `vector` extension, so an
+image without pgvector fails at migration time, loudly.
+
+**The Go test harness's container was renamed with it**, to
+`rag-doc-isolation-tests-pgv16`. The harness reuses its container by name
+without checking the image, so under the old name a leftover
+`postgres:16-alpine` container would have been reused and 000016 would have
+failed. Change the name again whenever the image changes. The old
+`rag-doc-isolation-tests` container is no longer used; remove it when
+convenient (`docker rm -f rag-doc-isolation-tests`).
+
+**⚠ An existing compose volume needs a decision before you start it on the
+new image.** *[not verified]* The `postgres_data` volume was initialised by
+the Alpine image, which uses musl; the new image is Debian, which uses glibc.
+The two can sort text differently under the same locale name, so btree
+indexes on text columns built under one may be out of order under the other,
+and PostgreSQL does not warn about it. Two ways out; neither is done for you:
+
+- **Recreate the volume** (`docker compose down`, `docker volume rm
+  testtgsd_postgres_data`, then start and migrate again). Its data is harness
+  and benchmark data that can be re-created from pinned sources
+  (`22-CONTEXT.md` P1), and 22-02 rebuilds `chunks` from source anyway.
+- **Keep it and reindex** once, after the first start on the new image:
+  `REINDEX DATABASE coderag;` as `coderag`.
+
+**Creating the extension needs a superuser.** `vector` is not a trusted
+extension. Compose's migrations run as `coderag`, a superuser, so `up`
+creates it itself. A database owned by a **non-superuser** (the deployment
+shape) cannot: 000016 fails with `permission denied to create extension
+"vector"` (SQLSTATE 42501). An operator creates it once, before migrating:
+
+```sql
+-- as a superuser, or the host's admin role
+CREATE EXTENSION IF NOT EXISTS vector;
+```
+
+000016 is then a no-op for the owner (a NOTICE, and success). If a migration
+already failed on it, `schema_migrations` is left at 16, dirty: create the
+extension, `migrate force 15`, and run `up` again.
+`TestMigration000016NeedsTheExtensionPreCreated` pins both halves.
+
+**Large vector indexes need more shared memory than Docker gives by
+default.** Parallel index builds use `/dev/shm`, which Docker caps at 64 MB.
+Measured (22-RESEARCH.md Q2): a parallel HNSW build over 95,000 rows failed
+with `could not resize shared memory segment … No space left on device`; the
+same build with `max_parallel_maintenance_workers = 0` succeeded. Give the
+container more (`docker run --shm-size=1g`, or `shm_size: 1g` on a compose
+service) before building or `REINDEX`ing a large HNSW index. It does not
+matter for migrations, which create the index on an empty table.
+
 ## Apply migrations
 
 Migrations are golang-migrate format in `services/backend/migrations/`.
@@ -315,4 +376,4 @@ DATABASE_TEST_URL="postgres://isolation:isolation@localhost:<port>/isolation?ssl
   go test ./pkg/auth/...
 ```
 
-Find `<port>` with `docker port rag-doc-isolation-tests 5432`.
+Find `<port>` with `docker port rag-doc-isolation-tests-pgv16 5432`.
