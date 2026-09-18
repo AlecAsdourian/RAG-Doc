@@ -4,8 +4,12 @@
 **Domain:** the phase that writes the first real indexed rows — pgvector and
 partitioned `chunks` (D2), symbol identity (D1), graph edges (D3), tenancy (D5),
 retiring Qdrant, and then clone → ingest → incremental → progress on top.
-**Companion:** `22-CONTEXT.md` (the draft decisions, the proposed split, and the
-questions that are the user's to answer).
+**Companion:** `22-CONTEXT.md`, which holds the decisions, the split, and the
+user's answers to U1–U10. **All ten were answered on 2026-09-17**, taking every
+recommendation, and the decisions are locked there. The measured contradictions
+below are recorded as dated corrections in `.planning/v2-substrate/DECISIONS.md`.
+This file stays as it was researched: where it says "proposed" or "question Un",
+`22-CONTEXT.md` has the outcome.
 **Confidence:** HIGH on everything tagged *measured* — it was run against
 `pgvector/pgvector:pg16` scratch containers, the real migrations, the real test
 suites or the real chunker over the three benchmark corpora. MEDIUM on the
@@ -752,6 +756,10 @@ ignored, but **`*.pem`** (`key.pem`,
 untracked in the main checkout (the session's git status); one `git add -A`
 would commit them. Not Phase 22's job to fix, but Phase 22 is the phase that
 starts handling the key in more places.
+
+**Fixed on `main` by #46 (2026-09-17)**, which adds `.env.bak*` and `*.pem` to
+the root `.gitignore`. This branch was cut before #46 and does not touch
+`.gitignore`; the measurement above describes `11c3a56`.
 
 ---
 

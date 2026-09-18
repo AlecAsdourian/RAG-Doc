@@ -1,34 +1,223 @@
-# Phase 22: Repository Clone → Ingestion Orchestration — Context (DRAFT)
+# Phase 22: Repository Clone → Ingestion Orchestration — Context
 
-**Written:** 2026-09-17, as a research and scoping pass. **Nothing here is
-locked.** Every decision is marked **PROPOSED**; the user locks them, and the
-questions in [Open questions for the user](#open-questions-for-the-user) are the
-ones that are genuinely theirs.
-**Research:** `22-RESEARCH.md` in this directory — every claim below points at
-the question there that carries its evidence, and the evidence is tagged
-measured / read / verified source / inferred.
-**Not edited:** `ROADMAP.md` and `STATE.md`. The proposed roadmap change is
-[at the end of this file](#proposed-roadmap-change), for the user to approve
-first.
+**Written:** 2026-09-17 as a research and scoping pass (PR #45).
+**Locked:** 2026-09-17. The user answered all ten open questions (U1–U10) and
+took every recommendation. See [The user's answers](#the-users-answers-confirmed-2026-09-17).
+**Research:** `22-RESEARCH.md` in this directory. Every claim below points at the
+question there that carries its evidence, and that evidence is tagged measured,
+read, verified source or inferred.
+**Corrections to `.planning/v2-substrate/DECISIONS.md`:** eight, dated
+2026-09-17, written inline beside the text each one corrects. Each cites
+`22-RESEARCH.md`.
+
+> **How to read the status markers.**
+> **LOCKED 2026-09-17, U*n*** means settled by the user's answer to that question.
+> **LOCKED 2026-09-17, correction to D*n*** means recorded as a dated correction
+> in `DECISIONS.md`, at the direction that came with the answers. It was **not**
+> a U question. It is marked this way so that the difference stays visible.
+> **PROPOSED** means no answer covered it. Each one names who decides it and when.
+>
+> Do not re-litigate a LOCKED decision during execution without cause. If a
+> plan finds one impossible against the real system, revise the PLAN with a
+> REVISION NOTICE (the 19-03 pattern). Do not improvise.
 
 ## Objective
 
-Turn the queue Phase 21 built into indexed repositories: fetch a connected
-repository, parse it, embed it and store it — on the storage `DECISIONS.md`
-settled (pgvector, partitioned `chunks`, symbol identity, graph edges,
-trigger- or key-maintained tenancy) — then keep it current on every push, and
-report progress a UI can read.
+Turn the queue Phase 21 built into indexed repositories. That means fetching a
+connected repository, then parsing, embedding and storing it on the storage
+`DECISIONS.md` settled: pgvector, partitioned `chunks`, symbol identity, graph
+edges and key-guaranteed tenancy. After that, keep it current on every push,
+and report progress a UI can read.
 
-It is also the phase where D1–D5 stop being documents. Three of them needed
-correcting on contact with the real schema (`22-RESEARCH.md` Summary), and the
-corrections are folded into the proposals below.
+This is also the phase where D1–D5 stop being documents. Three of them needed
+correcting on contact with the real schema (`22-RESEARCH.md` Summary). The
+corrections are in `DECISIONS.md` and folded into the decisions below.
+
+**The work is split across two phases (U1, U2).** Phase 22 ends with one real
+repository indexed and searchable end to end. Phase 22.1 builds the foundations
+that do not block that: symbols, incremental updates, progress and the code
+graph. Retrieval-quality decisions run as a protocol-gated track after 22-03
+and before Phase 23 (U10).
+
+---
+
+## The user's answers (confirmed 2026-09-17)
+
+The questions below are recorded as they were put, with their options and
+costs, because the reasoning is what a later reader will want to challenge.
+Each answer names what it locks. The user took the recommendation every time.
+
+### U1 — Order: prove it end to end first, or lay every foundation first · CONFIRMED: A
+
+**Decision: end to end first.** Phase 22 ends with a real repository indexed and
+searchable. The foundations that do not block that move to Phase 22.1.
+**Locks:** [the split](#the-split--locked-2026-09-17-u1), P1, P13, and the
+timing half of P14 and P15.
+
+Think of building a house. You can put up one finished room first to prove the
+plumbing and wiring work, then build the rest. Or you can pour every foundation
+before any room goes up.
+
+- **A — vertical first (chosen).** One real repository is indexed end to end
+  after ~57–80 h. It costs ~2–4 h of rework later. The parts that have never run
+  for real (fetching, the worker's first job, pgvector with real data) fail early
+  if they are going to fail.
+- **B — foundation first.** Every stored shape is decided before any pipeline
+  code. No rework, but the first real ingest arrives ~14–20 h later.
+
+*Why A:* the untested half is the risky half. The "every decision before the
+first row" argument assumes re-ingesting is expensive. Until launch it costs
+about $0.09 and four minutes (`DECISIONS.md` now carries that as a correction).
+
+### U2 — What to call the second half · CONFIRMED: A
+
+**Decision: Phase 22 and Phase 22.1.** Nothing is renumbered. ISS-034,
+`docs/api-ingestion-jobs.md` and the roadmap all say "Phase 23" for the frontend,
+and they keep meaning it.
+
+- **A — 22 and 22.1 (chosen).**
+- **B — renumber 23 → 24 onward.** Cleaner numbers, but every existing
+  "Phase 23" reference would have to be found and changed (~1 h, and easy to
+  miss one).
+
+### U3 — The embedding model · CONFIRMED: A
+
+**Decision: keep `text-embedding-ada-002` through the storage move.**
+`text-embedding-3-small` is decided later on the benchmark, in the
+retrieval-quality track. The pass rule is **committed by the user before the
+deciding questions are written.** Every chunk records `embedding_model`, so the
+two changes stay separable.
+**Locks:** P4, and together with U10, P6.
+
+Every vector today comes from ada-002; the design comment says
+text-embedding-3-small. The two produce vectors of the same size, but they
+"speak different languages": you cannot mix them, and swapping one for the other
+is a retrieval change, which the user's rule says must be decided on the
+benchmark.
+
+- **A — keep ada-002, then decide 3-small under the protocol (chosen).** The
+  storage change is measured on its own first. Cost: ~6–10 h, almost all of it
+  writing 30 fresh blind questions, plus under $0.10 of embeddings.
+- **B — switch during the storage move.** It saves one re-ingest (~4 minutes),
+  but two changes land together and neither can be measured alone. It also
+  skips the protocol.
+- **C — stay on ada-002 indefinitely.** Nothing to do now. It costs five times as
+  much per token ($0.10 vs $0.02 per million), and OpenAI labels it an older
+  model.
+
+### U4 — Where the GitHub App's private key lives · CONFIRMED: A
+
+**Decision: the backend keeps the key.** The worker receives a **one-hour,
+one-repository, read-only** installation token, checked against the job's
+lease. The key never enters the process that parses untrusted code.
+**Locks:** P10 (its token half).
+
+The key is a master key: it can open every customer's repository. The worker
+needs to read one repository at a time.
+
+- **A — the backend mints a scoped token for the worker (chosen).** Like a hotel
+  front desk issuing a key card for one room for one night. It takes ~6–8 h more
+  than B, and adds an internal-only route that Phase 24's deployment must keep
+  private. The worker proves it is working on that repository with its job
+  lease, so no new shared secret is needed.
+- **B — mount the key into the worker too.** ~3–4 h and two new Python packages.
+  But every worker process, which is exactly the part that parses untrusted
+  customer code, would then hold the master key.
+
+### U5 — Git clone or GitHub's archive API · CONFIRMED: A
+
+**Decision: fetch the repository as an archive through the GitHub API, not
+`git clone`.** **Locks:** P10 (its fetch half).
+
+- **A — archive API (chosen).** No `git` in the worker image (measured: it has
+  none), no git attack surface, and the token goes in one header. Unknown: how
+  GitHub behaves on very large repositories, which 22-04 measures first.
+- **B — `git` clone.** Adds `git` to the image, along with git's history of
+  clone-time vulnerabilities. It gives more control over very large repositories.
+
+The two are equal effort (~2 h difference either way).
+
+### U6 — How big a repository v1 accepts · CONFIRMED: A
+
+**Decision:** archive **≤ 500 MB**, **≤ 20,000** indexable files, **≤ 1 MB** per
+file, **≤ 100,000** chunks. Above a hard cap the job ends `dead` with a plain
+reason. Oversized single files are skipped and counted. The caps are revisited
+after 22.1-05 measures real ingests.
+**Locks:** P10 (its caps).
+
+- **A — those numbers (chosen).** A 100,000-chunk repository is roughly an hour
+  of ingest and ~1.6 GB of storage.
+- **B — smaller**, e.g. 200 MB / 25,000 chunks. Faster and cheaper, but it turns
+  away some real customers.
+- **C — no caps in v1.** One large repository could hold a worker for hours and
+  fill the disk.
+
+### U7 — Secret-looking files inside customer repositories · CONFIRMED: A
+
+**Decision: skip a deny-list of secret-looking files** (`.env*`, `*.pem`,
+`*.key`, `id_rsa*` and similar), so they are neither sent to OpenAI nor made
+searchable. **Locks:** P10 (its filters).
+
+- **A — deny-list by file name (chosen).** ~1–2 h. It misses secrets pasted into
+  ordinary source files.
+- **B — A plus scanning file contents for secret patterns.** ~6–10 h. It catches
+  more, with false positives to tune.
+- **C — index everything.** No work, but it sends every committed secret to
+  OpenAI and makes it searchable by everyone in the organization.
+
+### U8 — Live progress: polling or streaming · CONFIRMED: A
+
+**Decision: the page polls the job row for v1.** There is no server push.
+**Locks:** P12.
+
+- **A — the page asks every few seconds (chosen).** The data already exists on
+  the job row. It costs ~0 h beyond ISS-034's 4–6 h.
+- **B — server push (SSE), as the roadmap sketched.** Smoother, but ~10–16 h
+  more: a message bus, a long-lived endpoint, reconnect logic and its own
+  isolation test. It can be added later without changing what the page receives.
+
+### U9 — The link between search logs and chunks · CONFIRMED: A
+
+**Decision: drop the foreign key from `retrievals` to `chunks` now.** Decide the
+shape when feedback ships. **Locks:** P17.
+
+`retrievals` (which search result was shown) points at a chunk, and `feedback`
+hangs off `retrievals`. Partitioning makes that link impossible as written
+(measured). Incremental updates would also delete the feedback every time a
+file changed. Nothing writes either table today (0 rows, and no code path does).
+
+- **A — drop the link now (chosen).** ~0.5 h. A logged result keeps a chunk id
+  that may later point at nothing.
+- **B — point results at the symbol instead of the chunk.** ~2–3 h. It survives
+  re-indexing, and feedback then follows the function rather than a snapshot of
+  its text.
+- **C — keep a link and add `organization_id` to `retrievals`.** ~3–4 h. It still
+  deletes feedback when a file changes, unless it nulls instead.
+
+### U10 — When the retrieval-quality decisions happen · CONFIRMED: A
+
+**Decision: a protocol-gated track after 22-03 and before Phase 23.** It includes
+adding a TypeScript benchmark corpus. **Locks:**
+[the retrieval-quality track](#the-retrieval-quality-track--locked-2026-09-17-u10),
+and together with U3, P6.
+
+Three things each need a protocol run with fresh blind questions: the chunker
+issues (duplicate class chunks, TypeScript barely parsing), the embedding model,
+and the ranking fixes. None of them blocks indexing; all of them affect answer
+quality.
+
+- **A — after 22-03, before Phase 23 (chosen).** ~36–58 h in total. The frontend
+  then shows answers from the chunker and model we mean to launch with.
+- **B — after launch.** Phase 23 comes sooner, but the quality gate `DESIGN.md` §9
+  calls "the real gate" slips past launch.
+- **C — only the chunker and model now, ranking later.** ~24–38 h now.
 
 ---
 
 ## What this phase inherits
 
 **From Phase 21**, the authority is `docs/api-ingestion-jobs.md#the-phase-22-hand-off`.
-Where each item lands in the proposed split:
+Where each item lands:
 
 | Hand-off item | Plan |
 |---|---|
@@ -43,7 +232,7 @@ Where each item lands in the proposed split:
 | Distinguish `incremental` from `full_ingest` | 22.1-02 |
 | `statement_timeout` on the heartbeat connection | 22-05 |
 | A way to find a repository's job id (ISS-034) | 22.1-03 |
-| Re-parent drift | **not re-opened** — 21-07 ruled it settled, and P3's composite key makes a chunk's tenant unable to drift at all |
+| Re-parent drift | **not re-opened.** 21-07 ruled it settled, and a composite tenant key (P3) would make a chunk's tenant unable to drift at all |
 
 **From `DECISIONS.md`**, every "Verification required in Phase 22" item:
 
@@ -51,510 +240,481 @@ Where each item lands in the proposed split:
 |---|---|---|
 | D1 | re-ingesting an unchanged commit gives identical `symbol_id`s | 22.1-01 |
 | D1 | adding an unrelated line does not change ids below it | 22.1-01 |
-| D1 | a re-export resolves to its leaf's id | **22.1-04** (moved — see P8) |
-| D2 | a multi-tenant recall test against exact search | 22.1-05 |
+| D1 | a re-export resolves to its leaf's id | **22.1-04** (moved; see P8) |
+| D2 | a multi-tenant recall test against exact search | 22.1-05 (with the 2026-09-17 correction on what it must seed) |
 | D2 | `EXPLAIN` shows `Subplans Removed` | 22-02 |
 | D3 | a traversal over a cyclic fixture terminates | 22.1-04 |
 | D3 | tier 2 upgrades tier 1 in place; tier 1 never downgrades tier 2 | 22-02 (the SQL rule, tested before tier 2 exists) |
-| D5 | cross-organization re-parent rejected | already built (000013, 21-01) |
-| D5 | a child row whose tenant disagrees with its repository is rejected at write | 22-02 |
-| D5 | a trigger-disabled bulk load does not leave drift, or is documented forbidden | 22-02 |
+| D5 | cross-organization re-parent is rejected | already built (000013, 21-01) |
+| D5 | a child row whose tenant disagrees with its repository is rejected at write time | 22-02 |
+| D5 | a trigger-disabled bulk load leaves no drift, or is documented as forbidden | 22-02 |
 | D5 | a drift-detection query runs in CI | 22-02 |
 | `REWORK.md` open item | `chunks.symbol_id`: one FK or a join table | P7 |
 
 ---
 
-## Proposed decisions
+## Decisions
 
-Each is **PROPOSED**. The reasoning is short here and long in `22-RESEARCH.md`.
+| | Decision | Status |
+|---|---|---|
+| P1 | drop and recreate `chunks`; re-ingest from source | **LOCKED** · U1 |
+| P2 | every partition gets its own row-level security | **LOCKED** · correction to D2 |
+| P3 | tenancy by composite foreign key rather than trigger | PROPOSED · user, at 22-02 plan approval |
+| P4 | record `embedding_model` on every chunk; ada-002 stays for now | **LOCKED** · U3 |
+| P5 | `hnsw.iterative_scan` is load-bearing | **LOCKED** · correction to D2 §5 |
+| P6 | both retrieval legs in Postgres; fusion and boosts stay in Python | **LOCKED** · U3 + U10 |
+| P7 | `symbols` unpartitioned; `chunks.symbol_id` one nullable FK | PROPOSED · user, at 22-02 plan approval |
+| P8 | symbol identity rules | PROPOSED · user, at 22.1-01 plan approval |
+| P9 | D3 reconciliation omits `edge_kind` | **LOCKED** · correction to D3 |
+| P10 | archive fetch, scoped token, caps, secret filter | **LOCKED** · U4, U5, U6, U7 |
+| P11 | incremental by content manifest | PROPOSED · user, at 22.1-02 plan approval |
+| P12 | progress by polling the job row; ISS-034 alongside | **LOCKED** · U8 |
+| P13 | the seeded-migration CI gate lands first | **LOCKED** · U1 |
+| P14 | `pgvector/pgvector:pg16` everywhere; the harness's reuse container renamed | **LOCKED** · U1 + D2 |
+| P15 | Qdrant leaves in the storage plans | **LOCKED** · U1 + D2 |
+| P16 | initial operating numbers | PROPOSED · set in 22-05's plan, replaced by 22.1-05's measurements |
+| P17 | drop `retrievals.chunk_id`'s foreign key | **LOCKED** · U9 |
 
 ### P1 — Drop and recreate `chunks`; re-ingest from source. No data migration.
 
-Every existing row is harness or benchmark data, re-creatable from pinned
-sources; no user data exists anywhere; and the existing rows' vectors live only
-in Qdrant, so D2's `embedding NOT NULL` could not be met by moving them anyway.
-Re-embedding everything costs about $0.09 and 3.5 minutes (RESEARCH Q1, Q4).
-The migration therefore carries **no DML**.
+**LOCKED 2026-09-17, U1.** Option A depends on this premise: re-ingestion is the
+path, and before launch it costs cents. The matching correction to
+`DECISIONS.md`'s opening says the same.
 
-### P2 — Every partition gets row-level security of its own.
+Every existing row is harness or benchmark data that can be re-created from
+pinned sources, and no user data exists anywhere. The existing rows' vectors
+also live only in Qdrant, so D2's `embedding NOT NULL` could not be met by
+moving them anyway. Re-embedding everything costs about $0.09 and 3.5 minutes
+(RESEARCH Q1, Q4). The migration therefore carries **no DML**.
 
-`ENABLE` and `FORCE ROW LEVEL SECURITY` and the `tenant_isolation` policy on
-**each of the 64 partitions**, not only the parent. Without it the app role read
-and **overwrote** another tenant's rows through the partition directly (RESEARCH
-Summary, item 1). Guarded by two tests: every partition carries RLS, FORCE and
-the policy; and a direct cross-tenant read and write through a partition returns
-nothing. `trg_assert_tenant` on the parent is inherited by the partitions
-(measured: 64 of 64) and stays.
+### P2 — Every partition gets row-level security of its own
 
-### P3 — Tenancy on `chunks`, `symbols` and `symbol_edges` by composite foreign key.
+**LOCKED 2026-09-17, correction to D2.** D2 already decided that RLS covers the
+vectors. This is what makes that true on a partitioned table.
 
-`FOREIGN KEY (repository_id, organization_id) REFERENCES repositories (id, organization_id)`
-— the 21-01/21-02 pattern, which makes a misfiled row unrepresentable rather
-than rejected (measured: the misfiled insert fails on the key). A `BEFORE INSERT`
-trigger stays optional, for a readable message, exactly as 21-02 kept one. This
-refines D5's "maintained by trigger": the codebase's own later precedent is
-stronger. The drift query joins through `repositories` and runs in CI.
+Enable and force row-level security, and create the `tenant_isolation` policy,
+on **each of the 64 partitions**, not only on the parent. Without it, the app
+role read and **overwrote** another tenant's rows by addressing the partition
+directly (RESEARCH Summary, item 1).
 
-### P4 — Record the embedding model on every chunk.
+Two tests guard it:
+- every partition carries RLS, FORCE and the policy;
+- a direct cross-tenant read and write through a partition returns nothing.
 
-`chunks.embedding_model TEXT NOT NULL`, written from the generator's model, and a
-retriever that refuses to compare a query embedded with one model against rows
+`trg_assert_tenant` on the parent is inherited by the partitions (measured: 64
+of 64) and stays.
+
+*Left to 22-02's plan:* whether to **also** revoke the app role's direct
+privileges on the partitions, as defence in depth. Grants through the parent
+still reach the rows.
+
+### P3 — Tenancy on `chunks`, `symbols` and `symbol_edges` by composite foreign key · PROPOSED
+
+**Who decides:** the user, when approving 22-02's plan. **Why it is not locked:**
+it refines D5's "maintained by trigger, everywhere", which is a locked decision,
+and no answer covered it.
+
+The key is `FOREIGN KEY (repository_id, organization_id) REFERENCES repositories (id, organization_id)`.
+This is the pattern 21-01 and 21-02 used, and it makes a misfiled row
+**unrepresentable** rather than rejected (measured: the misfiled insert fails on
+the key). A `BEFORE INSERT` trigger stays optional, for a readable error message,
+exactly as 21-02 kept one. The drift query joins through `repositories` and
+runs in CI.
+
+**If declined:** 22-02 uses D5's `BEFORE INSERT` trigger as written. Roughly equal
+cost. What is lost is the guarantee that holds even when a trigger is disabled.
+
+### P4 — Record the embedding model on every chunk
+
+**LOCKED 2026-09-17, U3.**
+
+Add `chunks.embedding_model TEXT NOT NULL`, written from the generator's model.
+The retriever **refuses** to compare a query embedded with one model against rows
 embedded with another. Two models at the same dimension produce vectors in
-different spaces, and mixing them fails silently. This is what lets the storage
-migration keep **ada-002** and the model question be decided on its own
-(RESEARCH Q3, question U3).
+different spaces, and mixing them fails silently (RESEARCH Q3). ada-002 stays
+through the storage move. `text-embedding-3-small` is decided in the
+retrieval-quality track, under a pass rule the user commits before the deciding
+questions are written.
 
-### P5 — `hnsw.iterative_scan = relaxed_order` is load-bearing, with a re-sort.
+When the semantic cache is repaired (ISS-021), its key must carry the model too.
 
-Every product query filters by repository inside the tenant's partition, and
-without iterative scan that filter produced short results in 16/20 and 20/20
-queries (RESEARCH Q5). Set it per transaction in the vector leg, re-sort the
-candidates by exact distance, and pass the query vector as a bound parameter so
-the HNSW index is eligible. This corrects `DECISIONS.md` §5's framing that
-iterative scan "is not the fix".
+### P5 — `hnsw.iterative_scan` is load-bearing
 
-### P6 — Both retrieval legs in Postgres under one tenant scope; fusion stays in Python.
+**LOCKED 2026-09-17, correction to D2 §5.**
 
-The vector leg becomes SQL under `require_tenant`; the keyword leg drops its
-latest-run filter (ISS-027); RRF and the booster keep running in Python so the
-migration changes **storage and nothing else**. A one-statement hybrid query was
-measured feasible under RLS with both legs pruned, and is recorded as a later
-latency option — moving fusion into SQL changes tie-breaking, which is a ranking
-change and belongs to the protocol.
+Every product query filters by repository inside the tenant's partition.
+Without iterative scan, that filter produced short results in 16 of 20 and 20 of
+20 queries (RESEARCH Q5). Set iterative scan per transaction in the vector leg.
+Pass the query vector as a bound parameter so the HNSW index is eligible, and
+make the final order exact distance.
 
-### P7 — `symbols` stays unpartitioned; `chunks.symbol_id` stays one nullable FK.
+*Left to 22-03's plan:* `relaxed_order` with a re-sort (a materialized CTE, or an
+over-fetch sorted in Python), or `strict_order`. The two measured the same
+recall; the plan picks one and tests the final order.
 
-Partitioning `symbols` would turn every foreign key into it — from `chunks`,
-`symbol_edges` and D4's `memory_anchors` — into a composite key, the same break
-measured for `retrievals`. `symbols` carries no vector index, so D2's runway
-argument does not apply to it. One nullable FK suffices because chunking is
-symbol-aligned where it matters: function and class chunks map one-to-one;
-`class_summary` → its class; `file_summary` and fixed-size chunks → the file's
-`module` symbol (P9), or `NULL`; a large function split into several chunks is
-many-to-one, which a chunk-side FK already supports. Closes `REWORK.md`'s open
-item by stating the limitation: a chunk spanning several symbols points at the
-module.
+### P6 — Both retrieval legs in Postgres under one tenant scope; fusion stays in Python
 
-### P8 — Mint symbol identities only at definition sites; never for an alias.
+**LOCKED 2026-09-17, U3 + U10.** Both answers keep the storage move separate
+from quality changes. This decision is the mechanism for that.
 
-A Go `type A = B`, a TypeScript `export { X as Y }` and a Python `Y = X` are
-recorded as `imports` edge candidates, not as symbols. With that rule a re-export
-cannot create a second identity, so **D1 emission does not wait for the D3
-resolver** — a refinement of D1's "cannot be sequenced apart". Resolving a *name*
-to its leaf still needs the import graph, so D1's third verification criterion
-moves to the D3 plan (RESEARCH Q6).
+- The vector leg becomes SQL under `require_tenant`.
+- The keyword leg drops its latest-run filter (ISS-027).
+- RRF and the booster keep running in Python, so the migration changes
+  **storage and nothing else**.
 
-Also part of D1, decided with the chunker work in 22.1-01:
+22-03 proves that with an equivalence check on the three corpora. The check
+expects one known difference: duplicate-content chunks gain the vectors they
+never had.
 
+A one-statement hybrid query was measured feasible under RLS, with both legs
+pruned to one partition. It is recorded as a later latency option. Moving
+fusion into SQL changes tie-breaking, which makes it a ranking change governed
+by the protocol.
+
+### P7 — `symbols` stays unpartitioned; `chunks.symbol_id` stays one nullable FK · PROPOSED
+
+**Who decides:** the user, when approving 22-02's plan. It closes `REWORK.md`'s
+open item, and no answer covered it.
+
+**Why not partition `symbols`:** partitioning it would turn every foreign key
+into it (from `chunks`, `symbol_edges` and D4's `memory_anchors`) into a composite
+key. That is the same break measured for `retrievals`. `symbols` carries no
+vector index, so D2's index-size argument does not apply to it.
+
+**Why one nullable FK is enough:** chunking is symbol-aligned where it matters.
+- function and class chunks map one-to-one;
+- a `class_summary` maps to its class;
+- `file_summary` and fixed-size chunks map to the file's `module` symbol (P8),
+  or to `NULL`;
+- a large function split into several chunks is many-to-one, which a chunk-side
+  FK already supports.
+
+The limitation, stated rather than hidden: a chunk spanning several symbols
+points at the module. **The alternative** is a `chunk_symbols` join table with
+its own RLS and key, ~3–5 h more.
+
+### P8 — Symbol identity rules · PROPOSED
+
+**Who decides:** the user, when approving 22.1-01's plan. `DECISIONS.md` now
+records the measured facts behind each rule; the rules themselves are that
+plan's to lock.
+
+- **Identities are minted only at definition sites, never for an alias.** A Go
+  `type A = B`, a TypeScript `export { X as Y }` and a Python `Y = X` become
+  `imports` edge candidates, not symbols. Under this rule a re-export cannot
+  create a second identity, so **D1 emission does not wait for the D3 resolver**
+  (D1 correction). Resolving a *name* to its leaf still needs the import graph,
+  so D1's third verification criterion moves to 22.1-04.
 - **`symbol_path` is the full ancestor chain**, never the four-level display
-  breadcrumb (`metadata_builder.py:80-82`);
-- **`kind`** maps from the parse: `function`, `method`, `class`, `type`, `const`,
-  `module`;
-- **`ordinal`** covers the four measured collision shapes, `@typing.overload`
-  added to D1's three;
-- **the span includes decorators and leading doc comments**, so `span_digest`
-  sees a route decorator or a doc comment change (measured: both are outside the
-  span today) — [open for execution] whether a doc-comment-only change should
-  mark an anchored memory `stale`;
-- **Go non-struct types and package-level constants become symbols without
-  becoming chunks**, so identity is complete without changing ranking;
-- **one `module` symbol per file**, the `from_symbol_id` for top-level code.
+  breadcrumb (`metadata_builder.py:80-82`).
+- **`kind`** maps from the parse: `function`, `method`, `class`, `type`,
+  `const`, `module`.
+- **`ordinal`** covers the four measured collision shapes. `@typing.overload`
+  joins D1's three (D1 correction).
+- **The span includes decorators and leading doc comments**, so `span_digest`
+  sees a route decorator or a doc comment change. Measured: both fall outside the
+  span today (D1/D4 correction). *Deferred to D4:* whether a change to a doc
+  comment alone should mark an anchored memory `stale`. Write the span rule so
+  either answer is possible.
+- **Go non-struct types and package-level constants become symbols, not chunks.**
+  Identity is then complete without changing ranking.
+- **Each file gets one `module` symbol**, the `from_symbol_id` for top-level code.
 
-### P9 — D3: omit `edge_kind` from the tier-2 reconciliation.
+### P9 — D3: omit `edge_kind` from the tier-2 reconciliation
 
-SCIP has no notion of a call (verified in `scip.proto`), so tier 1's `calls`
-and SCIP's classifications would disagree every time, not occasionally. Tier 1
-keeps its vocabulary and emits `calls` and `imports` first; tier 2 retires every
-unresolved tier-1 edge for `(organization_id, from_symbol_id, to_symbol_name)`
-in the transaction that inserts its own. Every graph query joins `symbols` and
-excludes archived rows (D1's stated requirement). Traversal uses `CYCLE`.
+**LOCKED 2026-09-17, correction to D3.** D3 left this choice to Phase 22 and
+named omission the safer default. SCIP has no notion of a call (verified in
+`scip.proto`), so the other option, one shared vocabulary, would cost the `calls`
+edge. 22.1-04's plan confirms this rather than choosing it.
 
-### P10 — Fetch through GitHub's tarball API, with a repository-scoped read-only token.
+- Tier 1 keeps its own vocabulary and emits `calls` and `imports` first.
+- Tier 2 retires every unresolved tier-1 edge for
+  `(organization_id, from_symbol_id, to_symbol_name)` in the transaction that
+  inserts its own edge.
+- Every graph query joins `symbols` and excludes archived rows, which D1 requires.
+- Traversal uses the `CYCLE` clause.
 
-No `git` in the worker image (measured: `python:3.11-slim` has none), the token
-in one request header, extraction with `tarfile`'s `data` filter, symlinks never
-followed, caps checked while streaming, a per-job temporary directory removed in
-`finally` and swept at worker start. The roadmap's "respect `.gitignore`" is
-replaced by filters for vendored, generated, binary, oversized and secret-looking
-files (U6, U7), because an archive holds only tracked files. Measure on the
-largest benchmark repository before relying on it: GitHub documents no size
-limit.
+### P10 — Fetch through GitHub's archive API with a scoped read-only token, caps and a secret filter
 
-### P11 — Incremental by content-addressed file manifest, not by commit diff.
+**LOCKED 2026-09-17: U4 (token), U5 (archive), U6 (caps), U7 (filters).**
 
-Per repository: `(file_path, content_sha256, indexer_version)`. Each job hashes
-the current tree, re-parses only added and changed files, deletes the chunks of
-changed and removed files, inserts the new ones, upserts-and-unarchives present
-symbols and archives vanished ones — all in `complete()`'s transaction.
-`full_ingest` is the same algorithm ignoring the manifest. It survives
-force-pushes and missed webhooks, which a commit diff (GitHub's compare API caps
-at 300 files) does not, and `indexer_version` lets a chunker fix roll out file
-by file after launch. Embeddings for unchanged chunk text are reused, keyed on
-the hash of the **embedded text and the model** (RESEARCH Q3, Q9).
+**Token (U4).**
+- The backend keeps the App private key and mints an installation token scoped
+  to **the one repository**, with `contents: read`. It lasts one hour.
+- It mints only for a worker that presents a job id and its `lease_owner` for a
+  job that is `running` under that lease. That is the same fence every terminal
+  write uses.
+- The route listens only internally and is never mounted on the public router.
+- *Residual risk, stated:* `ingestion_jobs` has no RLS, so a compromised worker
+  could ask for tokens for any **currently running** job. Those tokens are still
+  scoped, read-only and short-lived.
 
-### P12 — Progress by polling the job row; ISS-034 in the same plan.
+**Fetch (U5).**
+- `GET /repos/{owner}/{repo}/tarball/{ref}`, with the token in one request header.
+- Extract with `tarfile`'s `data` filter, into a per-job temporary directory.
+- Never follow symlinks.
+- Remove the directory in `finally`, and sweep stale ones at worker start.
+- Never log the redirect URL (RESEARCH Q8).
+- Measure on the largest benchmark repository first: GitHub documents no size
+  limit.
 
-The row already carries `last_stage`, `progress` and a computed `stalled`; a UI
-polls it every few seconds. SSE, Redis pub/sub and a streaming endpoint are
-deferred. The roadmap's v2 breadcrumb — a future graph worker "subscribing" to
-chunk events — is served better by what D3 persists in tables than by an
-ephemeral stream (RESEARCH Q10, question U8).
+**Caps (U6).** Archive ≤ 500 MB, ≤ 20,000 indexable files, ≤ 1 MB per file,
+≤ 100,000 chunks, all checked while streaming.
+- A hard cap ends the job `dead` with a plain reason.
+- An oversized single file is skipped and counted in `progress`.
 
-### P13 — The seeded-migration CI check lands first (ISS-031).
+**Filters (U7).** An archive holds only tracked files, so the roadmap's "respect
+`.gitignore`" is replaced by two filters:
+- a secret-looking deny-list (`.env*`, `*.pem`, `*.key`, `id_rsa*` and similar),
+  never sent to OpenAI and never stored;
+- vendored, generated and binary files, skipped.
 
-In the plan that swaps the image, before the storage migration. The compose
-database is itself a seeded database at migration 10, so taking it to 16 is the
-exact scenario ISS-031 describes (RESEARCH Q13).
+### P11 — Incremental by content-addressed file manifest, not by commit diff · PROPOSED
 
-### P14 — `pgvector/pgvector:pg16` everywhere, and rename the harness's reuse container.
+**Who decides:** the user, when approving 22.1-02's plan. No answer covered it.
+**The alternative** is GitHub's compare API, which returns at most 300 changed
+files (verified) and needs the previous commit to still exist.
 
-Compose, the Go harness, the Python conftest and `backend-ci.yml`'s service.
-The Go harness reuses its container by name without checking the image, so the
-name must change with it — `rag-doc-isolation-tests-pgv16` — or every developer
-machine fails on the first `CREATE EXTENSION`. Pin the image by digest in CI.
-Document `--shm-size` for large index builds.
+Keep a manifest per repository: `(file_path, content_sha256, indexer_version)`.
+Each job, inside `complete()`'s transaction:
+- hashes the current tree and re-parses only added and changed files;
+- deletes the chunks of changed and removed files and inserts the new ones;
+- upserts and un-archives the symbols still present, and archives the ones that
+  vanished.
 
-### P15 — Qdrant leaves in the storage plans, not after.
+`full_ingest` is the same algorithm with the manifest ignored. This survives
+force-pushes and missed webhooks. `indexer_version` lets a chunker fix roll out
+file by file after launch. Embeddings for unchanged chunk text are reused, keyed
+on a hash of the **embedded text plus the model** (RESEARCH Q3, Q9).
 
-`qdrant_writer.py`, the Qdrant path of `vector_retriever.py`, the compose
-service, `QDRANT_URL` in `api/main.py`, the harness's Qdrant-based clear and
-state checks, `qdrant-client`, and `pkg/vectordb` with its `go.mod` dependency
-(K2 — dead code regardless). Keeping both stores for any stretch is the
-consistency hazard D2 exists to remove.
+### P12 — Progress by polling the job row; ISS-034 in the same plan
 
-### P16 — Initial operating numbers, to be replaced by measurements.
+**LOCKED 2026-09-17, U8.**
 
-`max_job_duration` **2 hours** (about three times the extrapolated end-to-end
-time for a 50,000-chunk repository, under twice U6's proposed 100,000-chunk
-cap, and sixty times the largest benchmark). If U6 lands higher than that cap,
-this number moves with it.
-Heartbeat `statement_timeout` **15 seconds** (a quarter of the beat interval),
-with a test that blocks a beat on the job row's lock. **Two** worker processes
-(four connections) until 22.1-05 measures. All three are revisited in 22.1-05.
+The row already carries `last_stage`, `progress` and a computed `stalled`, and a
+UI polls it every few seconds. 22.1-03 documents the `progress` schema and
+settles ISS-034 with a deliberately written, mutation-checked isolation test.
+SSE, Redis pub/sub and any streaming endpoint are deferred.
+
+The roadmap's v2 breadcrumb imagined a future graph worker "subscribing" to chunk
+events. What D3 persists in tables serves that better than an ephemeral stream
+would.
+
+### P13 — The seeded-migration CI gate lands first (ISS-031)
+
+**LOCKED 2026-09-17, U1.** The approved 22-01 carries it.
+
+The gate lands in the plan that swaps the image, before the storage migration.
+The compose database is itself a seeded database at migration 10, so moving it to
+16 is exactly the scenario ISS-031 describes (RESEARCH Q13).
+
+### P14 — `pgvector/pgvector:pg16` everywhere, and the harness's reuse container renamed
+
+**LOCKED 2026-09-17, U1 + D2.** U1's approved 22-01 is this work; D2 chose pgvector.
+
+The image goes into compose, the Go harness, the Python conftest and
+`backend-ci.yml`'s service, pinned by digest in CI.
+
+The Go harness reuses its container **by name without checking the image**, so
+the name must change along with the image, or every developer machine fails on
+the first `CREATE EXTENSION`. Measured (RESEARCH Q2).
+
+Document `--shm-size` for large index builds. *Execution details for 22-01:* the
+exact container name and the digest.
+
+### P15 — Qdrant leaves in the storage plans, not after
+
+**LOCKED 2026-09-17, U1 + D2.** D2 decided Qdrant goes; U1's approved 22-02 and
+22-03 decide when.
+
+What goes:
+- `qdrant_writer.py`
+- the Qdrant path of `vector_retriever.py`
+- the compose service
+- `QDRANT_URL` in `api/main.py`
+- the harness's Qdrant-based clear and state checks
+- `qdrant-client`
+- `pkg/vectordb` and its `go.mod` dependency (K2: dead code in any case)
+
+Keeping both stores for any stretch is the consistency hazard D2 exists to remove.
+
+### P16 — Initial operating numbers · PROPOSED
+
+**Who decides:** 22-05's plan sets them, the reviewer checks them, and 22.1-05
+replaces them with measurements.
+
+- **`max_job_duration`: 2 hours.** That is about three times the extrapolated
+  end-to-end time for a 50,000-chunk repository, under twice that of U6's
+  100,000-chunk cap, and sixty times the largest benchmark.
+- **Heartbeat `statement_timeout`: 15 seconds**, a quarter of the beat interval,
+  with a test that blocks a beat on the job row's lock.
+- **Two worker processes** (four connections) until 22.1-05 measures.
+
+### P17 — Drop `retrievals.chunk_id`'s foreign key
+
+**LOCKED 2026-09-17, U9.**
+
+22-02 drops `retrievals_chunk_id_fkey` before rebuilding `chunks`. The column
+stays, so a logged result keeps the chunk id it was shown. `feedback`'s own
+foreign key to `retrievals` is unchanged. The shape of the link (to a symbol, or
+to a chunk with a tenant) is decided when feedback ships.
+
+**One consequence 22-02 must handle.** Today, deleting a repository cascades
+through `chunks` → `retrievals` → `feedback`, and `DELETE /api/repositories/{id}`
+reports `feedback_deleted` by counting through that chain before it deletes
+(`repositories.go:336-341`). Without the key, the cascade stops at `chunks`. The
+response would then report feedback it no longer deletes. 22-02 must either
+delete those `retrievals` rows explicitly in the same transaction, or change what
+the response claims. Both tables are empty today, so this is about the contract,
+not about data.
 
 ---
 
-## The proposed split
+## The split · LOCKED 2026-09-17, U1
 
-### Recommended: a vertical first slice (Option A)
-
-The dependency analysis (RESEARCH Q1) says only storage has to come before the
-pipeline — the handler writes chunks and vectors in the completion transaction,
+The dependency analysis (RESEARCH Q1) shows only storage has to come before the
+pipeline. The handler writes chunks and vectors in the completion transaction,
 which pgvector allows and Qdrant does not. Symbol emission, incremental ingest,
 progress and the graph resolver are not on the path to a first real repository.
+
 So the first phase ends with one real repository indexed end to end, and the
 second builds the substrate onto a pipeline already proven.
 
-#### Phase 22 — pgvector storage and the first real repository (~57–80 h)
+**This list is the authority for plan scope.** `ROADMAP.md` carries one line per
+plan and points here. `STATE.md` points here and keeps no copy.
+
+### Phase 22 — pgvector storage and the first real repository (~57–80 h)
 
 | Plan | Scope | Est. |
 |---|---|---|
-| **22-01** | **pgvector everywhere, and the seeded-migration gate.** Image swap in compose, both harnesses (reuse container renamed) and CI, pinned by digest; ISS-031's seeded-database migration check in `backend-ci.yml` (seed fixture covering every tenant table, applied at N−1, then `up`, then assertions); `--shm-size` documented. | 5–8 h |
-| **22-02** | **The storage migration.** `CREATE EXTENSION vector`; the `retrievals` FK per U9; `chunks` dropped and recreated partitioned by `HASH (organization_id)` `MODULUS 64` with `organization_id`, the composite tenant key (P3), `embedding vector(1536)`, `embedding_model` (P4), nullable `symbol_id`; RLS, FORCE and the policy on the parent **and all 64 partitions** (P2); `trg_assert_tenant`; indexes (HNSW, `organization_id`, `(repository_id, file_path)`, `content_hash`, keyword GIN with the breadcrumb expression matching the query); `symbols` (D1, with `archived_at`, RLS, trigger, composite key) and `symbol_edges` (D3, likewise); tests: partition-RLS guard, direct cross-tenant partition read and write refused, `Subplans Removed`, misfiled row rejected, drift query in CI, the D3 upgrade/no-downgrade SQL rule; `protectedTables` updated; `pkg/vectordb` deleted. | 12–16 h |
-| **22-03** | **Pipeline and retrieval on pgvector; Qdrant retired.** The writer takes a caller's cursor and writes chunk + vector rows (the `write_results` shape); every chunk gets its vector (the duplicate-hash gap closes); the vector leg becomes SQL (P5, P6); the keyword leg drops the latest-run filter; Qdrant removed from code, compose, API and harness (P15); the vector-leg isolation test that could never be written against Qdrant; **the equivalence check** — re-ingest the three corpora on pgvector with ada-002 and explain every rank that differs from the Qdrant-era run. | 14–20 h |
-| **22-04** | **Fetching a repository safely.** Per U4: the token broker (an internal-only backend route minting a one-hour, one-repository, `contents: read` token for the holder of a live lease) or the key mounted into the worker; the tarball fetcher (P10) with caps (U6) and filters (U7); hostile-archive fixtures (traversal, symlink out, oversized file, bomb); a redaction test pushing a realistic fetch failure through `sanitize_error`; temporary-directory lifecycle. | 14–20 h |
-| **22-05** | **The `full_ingest` handler and the worker switched on.** Stages `fetch → parse → embed → store` reported through `report_progress`; run resolved and attached; `write_results` deletes the repository's chunks and inserts, in `complete()`'s transaction; `Unfinished` only on shutdown; `REGISTRY` filled (both keys, `incremental` running the full path until 22.1-02); compose `workers` gets `DATABASE_URL`, the OpenAI key and the broker address; P16's numbers; an end-to-end test through the real worker against a fake GitHub serving an archive; **then a real repository connected through the development App, indexed, and answered from `/api/search`.** | 12–16 h |
+| **22-01** | **pgvector everywhere, and the seeded-migration gate** (P13, P14). Image swap in compose, both harnesses (reuse container renamed) and CI, pinned by digest. ISS-031's seeded-database migration check in `backend-ci.yml`: a seed fixture covering every tenant table, applied at N−1, then `up`, then assertions. `--shm-size` documented. | 5–8 h |
+| **22-02** | **The storage migration** (P1, P2, P3, P7, P17). Four parts:<br>(1) `CREATE EXTENSION vector`; drop `retrievals_chunk_id_fkey`.<br>(2) Drop `chunks` and recreate it partitioned by `HASH (organization_id)` `MODULUS 64`, with: `organization_id`; the tenant guarantee (P3); `embedding vector(1536)`; `embedding_model` (P4); a nullable `symbol_id`; RLS, FORCE and the policy on the parent **and all 64 partitions**; `trg_assert_tenant`; indexes (HNSW, `organization_id`, `(repository_id, file_path)`, `content_hash`, and keyword GIN whose breadcrumb expression matches the query).<br>(3) `symbols` (D1, with `archived_at`, RLS, the trigger and the tenant guarantee) and `symbol_edges` (D3, likewise).<br>(4) Tests: the partition-RLS guard; a direct cross-tenant partition read and write refused; `Subplans Removed`; a misfiled row rejected; the drift query in CI; D3's upgrade and no-downgrade SQL rule. Update `protectedTables`. Keep the repository delete honest about feedback now that the cascade stops at `chunks` (P17). Delete `pkg/vectordb`. | 12–16 h |
+| **22-03** | **Pipeline and retrieval on pgvector; Qdrant retired** (P5, P6, P15).<br>The writer takes the caller's cursor and writes chunk and vector rows (the `write_results` shape), and every chunk gets its vector. The vector leg becomes SQL; the keyword leg drops the latest-run filter. Qdrant is removed from the code, compose, the API and the harness.<br>Adds the vector-leg isolation test that could never be written against Qdrant, and **the equivalence check**: re-ingest the three corpora on pgvector with ada-002, and explain every rank that differs from the Qdrant-era run. | 14–20 h |
+| **22-04** | **Fetching a repository safely** (P10).<br>The backend's internal token route (one repository, `contents: read`, one hour, lease-checked). The archive fetcher, with U6's caps and U7's deny-list plus the vendored/generated/binary filters. Hostile-archive fixtures: traversal, a symlink pointing out, an oversized file, a decompression bomb. A redaction test that pushes a realistic fetch failure through `sanitize_error`. The temporary-directory lifecycle. | 14–20 h |
+| **22-05** | **The `full_ingest` handler, and the worker switched on.**<br>Stages `fetch → parse → embed → store`, reported through `report_progress`. The run is resolved and attached. `write_results` deletes the repository's chunks and inserts the new ones, inside `complete()`'s transaction. `Unfinished` is raised only on shutdown.<br>Fill `REGISTRY` with both keys; `incremental` runs the full path until 22.1-02. Compose's `workers` service gets `DATABASE_URL`, the OpenAI key and the token route's address — **never the App key**. P16's numbers.<br>An end-to-end test through the real worker, against a fake GitHub serving an archive. **Then a real repository is connected through the development App, indexed, and answered from `/api/search`.** | 12–16 h |
 
-**Phase 22 ends with a real GitHub repository indexed end to end** — connect →
-queue → worker → pgvector → search — under tenant isolation on both legs.
+**Phase 22 ends with a real GitHub repository indexed end to end**: connect →
+queue → worker → pgvector → search, under tenant isolation on both legs.
 
-#### Phase 22.1 — Symbols, incremental updates, progress and the code graph (~60–88 h)
+### Phase 22.1 — Symbols, incremental updates, progress and the code graph (~60–88 h)
 
 | Plan | Scope | Est. |
 |---|---|---|
-| **22.1-01** | **D1 symbol identity from the chunker** (P8): full-chain `symbol_path`, `kind`, `ordinal`, span with decorators and doc comments, `span_digest`, `module` symbols, Go non-struct types and constants as symbols, alias rule; upsert-and-unarchive; chunks linked to symbols; D1's first two verification criteria. Python and Go; TypeScript waits for U10. | 14–20 h |
-| **22.1-02** | **Incremental ingestion** (P11): the file manifest (a small migration), per-file delete-and-insert, symbol archival, embedding reuse, `incremental` distinct from `full_ingest`; tests for a force-push, a missed push and a file deleted and restored (D1's resurrection path). **Closes ISS-027.** | 12–16 h |
-| **22.1-03** | **Progress contract and ISS-034** (P12): a documented `progress` schema; the repository's current or last job reachable from the repository API (ISS-034's two shapes — decided in the plan); a deliberately written, mutation-checked isolation test, since `ingestion_jobs` has no RLS and the CI gate ignores `GET`s. | 6–10 h |
-| **22.1-04** | **D3 tier 1** (P9): call-site and import candidates from the parser; the resolver (imports plus scope matching) writing `symbol_edges` with `to_symbol_name` always set; the reconciliation rule; a `CYCLE`-safe traversal helper and a cyclic fixture; archived symbols excluded; D1's re-export criterion. | 20–30 h |
-| **22.1-05** | **D2's recall test and the operating numbers.** A multi-tenant, multi-repository recall test seeded with the benchmark corpora's **real** embeddings copied into synthetic tenants — at least one tenant large enough that the plan is HNSW (asserted), repositories filtered inside a partition, a partition shared by several tenants, exact baseline in the same scope, assertions on recall **and** on short results; per-stage ingest timings over the three corpora and one large public repository, full and incremental; pool size, `max_job_duration` and the OpenAI throughput ceiling set from them. | 8–12 h |
+| **22.1-01** | **D1 symbol identity from the chunker** (P8). Full-chain `symbol_path`, `kind`, `ordinal`, a span that includes decorators and doc comments, `span_digest`, `module` symbols, Go non-struct types and constants as symbols, and the alias rule. Upsert-and-unarchive. Chunks linked to symbols. D1's first two verification criteria. Python and Go only; TypeScript waits for the quality track's grammar decision. | 14–20 h |
+| **22.1-02** | **Incremental ingestion** (P11). The file manifest (a small migration), per-file delete-and-insert, symbol archival, embedding reuse, and `incremental` made distinct from `full_ingest`. Tests for a force-push, a missed push, and a file deleted then restored (D1's resurrection path). **Closes ISS-027.** | 12–16 h |
+| **22.1-03** | **The progress contract and ISS-034** (P12). A documented `progress` schema. The repository's current or last job made reachable from the repository API; ISS-034 offers two shapes and the plan chooses. A deliberately written, mutation-checked isolation test, because `ingestion_jobs` has no RLS and the CI gate ignores `GET`s. | 6–10 h |
+| **22.1-04** | **D3 tier 1** (P9). Call-site and import candidates from the parser. The resolver (imports plus scope matching) writes `symbol_edges` with `to_symbol_name` always set. The reconciliation rule. A `CYCLE`-safe traversal helper, tested on a cyclic fixture. Archived symbols excluded. D1's re-export criterion. | 20–30 h |
+| **22.1-05** | **D2's recall test and the operating numbers.**<br>A multi-tenant, multi-repository recall test, seeded with the benchmark corpora's **real** embeddings copied into synthetic tenants. It needs: at least one tenant large enough that the planner uses HNSW (asserted in the test); repositories filtered inside a partition; a partition shared by several tenants; an exact baseline in the same scope; and assertions on recall **and** on short results.<br>Per-stage ingest timings over the three corpora and one large public repository, both full and incremental. The pool size, `max_job_duration` and the OpenAI throughput ceiling are then set from those timings. | 8–12 h |
 
-### The alternative: the expected shape, foundation first (Option B)
+### The rejected alternative, kept for its reasoning: foundation first (U1 option B)
 
-Phase 22 = 22-01, 22-02, 22-03 **and 22.1-01** (every stored shape decided
-before any pipeline code); Phase 22.1 = fetch, the handler, incremental,
-progress, tier 1, the recall test.
+Option B put 22-01, 22-02, 22-03 **and 22.1-01** in Phase 22, so every stored
+shape would be decided before any pipeline code. Phase 22.1 would then hold fetch,
+the handler, incremental, progress, tier 1 and the recall test.
 
-| | A — vertical (recommended) | B — foundation first |
+| | A — vertical (chosen) | B — foundation first |
 |---|---|---|
-| First real repository indexed | end of Phase 22 | second plan of Phase 22.1 — **~14–20 h later** |
+| First real repository indexed | end of Phase 22 | second plan of Phase 22.1, **~14–20 h later** |
 | Rework | `write_results` touched again in 22.1-01 and 22.1-02: **~2–4 h** | none |
 | Real rows without symbol ids | yes, briefly; re-ingested in 22.1 for cents | never |
-| Where the risk surfaces | fetch, the worker's first real run and pgvector at scale surface first — the things never exercised end to end | identity work (well measured already, RESEARCH Q6) comes before the untested parts |
-
-Both build the same things in the same total time. A spends a few hours of
-rework to find out sooner whether the untested half works; B spends nothing on
-rework and finds out later. Question U1.
+| Where risk surfaces | fetch, the worker's first real run, and pgvector at scale surface first: the things never exercised end to end | identity work (already well measured, RESEARCH Q6) comes before the untested parts |
 
 ### What can run in parallel
 
-With one worker in the fleet, parallelism means **order flexibility**, not
-simultaneous work. Three tracks do not depend on each other and can be taken in
-whatever order review throughput allows: **storage** (22-02 → 22-03), **fetch**
-(22-04) and **identity** (22.1-01, offline parser work that can start as soon as
-22-01 lands). They converge at 22-05 and 22.1-02.
+With one worker in the fleet, parallelism means **freedom of order**, not work
+happening at the same time. Three tracks do not depend on each other and can be
+taken in whatever order review throughput allows:
+- **storage:** 22-02, then 22-03;
+- **fetch:** 22-04;
+- **identity:** 22.1-01, which is offline parser work and can start as soon as
+  22-01 lands.
 
-### The retrieval-quality track (protocol-gated, placement is U10)
+They converge at 22-05 and 22.1-02.
 
-Not a phase of its own in the recommendation unless the user wants one. Each
-item is a decision under `boost-defaults-protocol.md`'s method — rule committed
-before fresh blind questions exist — in this order, so each is measured on the
-chunks and vectors it will ship with:
+### The retrieval-quality track · LOCKED 2026-09-17, U10
+
+It runs **after 22-03** (so the storage equivalence check exists) and **before
+Phase 23**. It is not a phase of its own.
+
+Each item is decided using `boost-defaults-protocol.md`'s method: fresh blind
+questions, and a rule committed before they exist. They run in this order, so
+each is measured on the chunks and vectors it will ship with.
 
 | Decision | Needs first | Est. |
 |---|---|---|
 | Chunker: ISS-026 (class chunks without method bodies) | 22-03's equivalence check | 8–12 h |
-| Chunker: TypeScript grammar, **after adding a TS/JS benchmark corpus** — the benchmark has none | a TS corpus with blind questions | 10–16 h |
-| Embedding model (U3) | the chunker decisions | 6–10 h |
-| Ranking: ISS-024, 025, 028, 029 | the model decision | 12–20 h |
+| Chunker: TypeScript grammar, **after adding a TS/JS benchmark corpus** (the benchmark has none) | a TS corpus with blind questions | 10–16 h |
+| Embedding model (U3): `text-embedding-3-small` against ada-002, **under a pass rule the user commits before the questions are written** | the chunker decisions | 6–10 h |
+| Ranking: ISS-024, ISS-025, ISS-028, ISS-029 | the model decision | 12–20 h |
 
----
-
-## Open questions for the user
-
-Plain-language versions; the evidence is in `22-RESEARCH.md`.
-
-### U1 — Which order: prove it end to end first, or lay every foundation first?
-
-Think of it as building a house: either put up one finished room first to prove
-the plumbing and wiring work, then build the rest; or pour every foundation
-before any room goes up.
-
-- **A — vertical first (recommended).** One real repository indexed end to end
-  after ~57–80 h. Costs ~2–4 h of rework later. The parts that have never run for
-  real (fetching, the worker's first job, pgvector with real data) fail early if
-  they are going to fail.
-- **B — foundation first.** Every stored shape decided before any pipeline code.
-  No rework; the first real ingest arrives ~14–20 h later.
-
-*Why A:* the untested half is the risky half, and the "every decision before the
-first row" argument assumes re-ingesting is expensive — it is about $0.09 and
-four minutes until launch.
-
-### U2 — What to call the second half
-
-- **A — Phase 22 and Phase 22.1 (recommended).** Nothing renumbers. ISS-034,
-  `docs/api-ingestion-jobs.md` and the roadmap all say "Phase 23" for the
-  frontend and keep meaning it.
-- **B — renumber** 23 → 24 onward. Cleaner numbers; every existing "Phase 23"
-  reference has to be found and changed (~1 h, and easy to miss one).
-
-### U3 — The embedding model
-
-Today every vector comes from ada-002; the design comment says
-text-embedding-3-small. Same size, but they "speak different languages" — you
-cannot mix them, and swapping is a retrieval change, which your rule says must be
-decided on the benchmark.
-
-- **A — keep ada-002 through the storage move, then decide 3-small under the
-  protocol (recommended).** The storage change is measured on its own first.
-  Cost: ~6–10 h, almost all of it writing 30 fresh blind questions, plus under
-  $0.10 of embeddings. Needs you to fix the pass/fail rule before the questions
-  are written.
-- **B — switch during the storage move.** Saves one re-ingest (~4 minutes), but
-  two changes land together and neither can be measured alone — and it skips the
-  protocol.
-- **C — stay on ada-002.** Nothing to do now. It costs five times as much per
-  token ($0.10 vs $0.02 per million) and OpenAI labels it an older model.
-
-*Either way,* P4 records the model on every row so a mix-up is refused rather
-than silent.
-
-### U4 — Where the GitHub App's private key lives
-
-The key is a master key: it can open every customer's repository. The worker
-needs to read one repository at a time.
-
-- **A — the backend keeps the key and hands the worker a one-hour, one-repository,
-  read-only token (recommended).** Like a hotel front desk issuing a key card for
-  one room for one night. ~6–8 h more than B; adds an internal-only route that
-  Phase 24's deployment has to keep private. The worker proves it is working on
-  that repository with its job lease; no new shared secret.
-- **B — mount the key into the worker too.** ~3–4 h; two new Python packages. Every
-  worker process — the part that parses untrusted customer code — then holds the
-  master key.
-
-*Why A:* the worker is exactly the process a hostile repository gets to talk to.
-
-### U5 — Git clone or GitHub's download-archive API
-
-Proposed as P10 (the archive API) — listed here because it reverses the
-roadmap's "shallow clone" and you may prefer to overrule it.
-
-- **A — archive API (recommended).** No `git` in the worker image, no git attack
-  surface, token in one header. Unknown: how GitHub behaves on very large
-  repositories; the plan measures it first.
-- **B — `git` clone.** Adds `git` to the image and its clone-time CVE history;
-  more control over very large repositories.
-
-Equal effort (~2 h difference either way).
-
-### U6 — How big a repository v1 accepts
-
-Nothing today stops a 5 GB monorepo from being queued. Proposed caps, as a
-starting point: **archive ≤ 500 MB, ≤ 20,000 indexable files, ≤ 1 MB per file,
-≤ 100,000 chunks.** Above a hard cap the job ends `dead` with a plain reason;
-oversized single files are skipped and counted.
-
-- **A — those numbers (recommended)**, revisited after 22.1-05 measures real
-  ingests. A 100,000-chunk repository is roughly an hour of ingest and ~1.6 GB of
-  storage.
-- **B — smaller**, e.g. 200 MB / 25,000 chunks: faster, cheaper, turns away some
-  real customers.
-- **C — no caps in v1.** One large repository can hold a worker for hours and
-  fill the disk.
-
-This is a product call as much as a technical one.
-
-### U7 — Secret-looking files inside customer repositories
-
-People commit `.env` files and keys. Indexing them sends them to OpenAI and makes
-them searchable by everyone in the organization.
-
-- **A — skip a deny-list of obvious secret files** (`.env*`, `*.pem`, `*.key`,
-  `id_rsa*`, and similar) **(recommended).** ~1–2 h. Misses secrets pasted into
-  ordinary source files.
-- **B — A plus scanning file contents for secret patterns.** ~6–10 h; catches
-  more, with false positives to tune.
-- **C — index everything.** No work; the exposure above.
-
-### U8 — Live progress: polling or streaming
-
-- **A — the page asks every few seconds (recommended).** The data already exists
-  on the job row; ~0 h beyond ISS-034's 4–6 h.
-- **B — server push (SSE), as the roadmap sketched.** Smoother, ~10–16 h more:
-  a message bus, a long-lived endpoint, reconnect logic and its own isolation
-  test. Can be added later without changing what the page receives.
-
-### U9 — The link between search logs and chunks
-
-`retrievals` (which search result was shown) points at a chunk, and `feedback`
-hangs off `retrievals`. Partitioning makes that link impossible as written, and
-incremental updates would delete the feedback every time a file changed. Nothing
-writes either table today (0 rows; no code path).
-
-- **A — drop the link now; decide properly when feedback ships (recommended).**
-  ~0.5 h. Logged results keep a chunk id that may later point at nothing.
-- **B — point results at the symbol instead of the chunk.** ~2–3 h; survives
-  re-indexing; feedback then follows the function, not the text snapshot.
-- **C — keep a link with `organization_id` added to `retrievals`.** ~3–4 h;
-  still deletes feedback when a file changes unless it nulls instead.
-
-### U10 — When the retrieval-quality decisions happen
-
-The chunker issues (duplicate class chunks, TypeScript barely parsing), the
-embedding model and the ranking fixes each need a protocol run with fresh blind
-questions. None blocks indexing; all affect answer quality.
-
-- **A — a protocol-gated track after 22-03 and before Phase 23 (recommended)**,
-  ~36–58 h in total, including adding a TypeScript benchmark corpus. The frontend
-  then shows answers from the chunker and model we mean to launch with.
-- **B — after launch.** Phase 23 sooner; the quality gate `DESIGN.md` §9 calls
-  "the real gate" slips past launch.
-- **C — only the chunker and model now, ranking later.** ~24–38 h now.
+It can run alongside 22-04, 22-05 and Phase 22.1. Phase 23 waits for both.
 
 ---
 
 ## Boundaries
 
-**In scope:** everything in the two plan tables; the storage migration and its
-tests; retiring Qdrant; fetch, ingest, incremental, progress; D1's identity, D3's
-tier 1 and D2's recall test; the operating numbers.
+**In scope:**
+- everything in the two plan tables;
+- the storage migration and its tests;
+- retiring Qdrant;
+- fetch, ingest, incremental and progress;
+- D1's identity, D3's tier 1 and D2's recall test;
+- the operating numbers.
 
 **Not in scope:**
 
-- **Retrieval-quality changes** — the chunker, the model and ranking are decided
-  under the protocol (U10), not inside these plans. The storage migration's
+- **Retrieval-quality changes.** The chunker, the model and ranking are decided
+  in the track above, not inside these plans. The storage migration's
   equivalence check is not a quality decision and is in scope.
-- **SCIP tier 2** — customer CI upload, later (K3).
-- **D4's `memories` and `memory_anchors` tables** — later; only `span_digest`
-  is needed now, and it is in 22.1-01.
-- **ISS-023** (retrying a `dead` repository through the API) — stays with Phase 23.
-- **ISS-021** (the semantic cache) — unchanged; when it is repaired, its key must
-  include the embedding model (P4's logic applies to cached query vectors too).
-- **Single-statement hybrid fusion** — measured feasible, deferred (P6).
-- **SSE** — deferred (P12, U8).
+- **SCIP tier 2.** Customer CI upload, later (K3).
+- **D4's `memories` and `memory_anchors` tables.** Later. Only `span_digest` is
+  needed now, and it is in 22.1-01.
+- **ISS-023** (retrying a `dead` repository through the API). Stays with Phase 23.
+- **ISS-021** (the semantic cache). Unchanged. When it is repaired, its key must
+  include the embedding model (P4).
+- **Single-statement hybrid fusion.** Measured feasible, deferred (P6).
+- **SSE.** Deferred (P12, U8).
+- **The `feedback` link's final shape.** Decided when feedback ships (P17, U9).
 
 ---
 
 ## Corrections to the roadmap sketch
 
-1. **"Research: Unlikely"** — D1–D5 all land here and three needed correcting.
-2. **22-01 "shallow clone … respect `.gitignore`"** — an archive (P10); `.gitignore`
-   governs untracked files, so the rule protects nothing; tracked vendored,
-   generated, binary and secret files are what need filtering.
-3. **22-02 "Postgres + Qdrant writers"** — one store, one transaction (P15).
-4. **22-03 "diff previous commit vs new HEAD … delete removed files"** — a content
-   manifest (P11); removed files' chunks are deleted and their **symbols archived**.
-5. **22-04 "Redis pub/sub … SSE"** — polling (P12).
-6. **Phase 24** — drop "Qdrant persistence and snapshot strategy" and 24-04's
-   Qdrant snapshots; add pgvector availability on the chosen host,
-   `CREATE EXTENSION` privilege for the migration role, and container
-   `--shm-size`.
-7. **Phase 25-03** — drop "Qdrant down" from the runbook.
+1. **"Research: Unlikely."** D1–D5 all land in this phase, and three of them
+   needed correcting.
+2. **22-01, "shallow clone … respect `.gitignore`."** Replaced by an archive fetch
+   (P10). `.gitignore` governs untracked files, so the rule protected nothing.
+   Tracked vendored, generated, binary and secret-looking files are what need
+   filtering.
+3. **22-02, "Postgres + Qdrant writers."** One store and one transaction (P15).
+4. **22-03, "diff previous commit vs new HEAD … delete removed files."** A content
+   manifest (P11). Removed files' chunks are deleted and their **symbols archived**.
+5. **22-04, "Redis pub/sub … SSE."** Polling (P12).
+6. **Phase 23-03, "live indexing progress via SSE."** Polling the job row. 23-03
+   now also waits on 22.1-03, which carries ISS-034.
+7. **Phase 24.** Drop "Qdrant persistence and snapshot strategy" and 24-04's
+   Qdrant snapshots. Add: pgvector availability on the chosen host,
+   `CREATE EXTENSION` privilege for the migration role, container `--shm-size`,
+   and keeping the token route internal-only (U4).
+8. **Phase 25-03.** Drop "Qdrant down" from the runbook.
+
+All eight were applied to `ROADMAP.md` on 2026-09-17.
 
 ---
 
 ## Open questions for execution
 
-Technical, for the plans to settle; none needs the user.
+These are technical, for the plans to settle. None needs the user.
 
-- **Doc-comment-only changes and staleness.** P8 puts doc comments in the span,
-  so editing a comment changes `span_digest`. Whether that should make an anchored
-  memory `stale` is a D4 question; the span rule should be written so either
-  answer is possible.
-- **The tarball redirect URL.** Its private-repository link carries a short-lived
-  credential of its own [not verified]; confirm its shape and make sure nothing
-  logs it.
-- **`CREATE EXTENSION IF NOT EXISTS` on a host where the migration role is not a
-  superuser** — confirm on the Phase 24 host whether it skips the privilege check
-  when the extension already exists.
+- **The archive redirect URL.** For a private repository, the redirect link
+  carries a short-lived credential of its own [not verified]. 22-04 confirms its
+  shape and makes sure nothing logs it.
+- **`CREATE EXTENSION IF NOT EXISTS` when the migration role is not a superuser.**
+  Confirm on the Phase 24 host whether the privilege check is skipped when the
+  extension already exists.
 - **The breadcrumb GIN index.** The query's `COALESCE(breadcrumb, '')` does not
-  match the index expression; make them agree in 22-02 and prove it with
-  `EXPLAIN`.
+  match the index expression. 22-02 makes them agree and proves it with `EXPLAIN`.
 - **OpenAI throughput.** The key's tokens-per-minute limit may cap the pool
-  before Postgres does; 22.1-05 measures it.
-- **Re-sorting under `relaxed_order`.** Choose between a materialized CTE and an
-  over-fetch-then-sort in Python; test that the final order is by exact distance.
-
----
-
-## Proposed roadmap change
-
-For the user to approve before `ROADMAP.md` is edited. Written as it would
-appear there under Option A of U1 and U2.
-
-> ### Phase 22: pgvector Storage & the First Real Repository
->
-> **Goal:** Move vectors into Postgres under tenant isolation, retire Qdrant, and
-> index one real GitHub repository end to end through the Phase 21 queue.
-> **Depends on:** Phase 21
-> **Research:** Complete — `22-RESEARCH.md`; decisions proposed in `22-CONTEXT.md`
-> **Plans:** 5
->
-> - [ ] 22-01: pgvector image everywhere (compose, both harnesses with the reuse container renamed, CI) and ISS-031's seeded-migration gate
-> - [ ] 22-02: the storage migration — partitioned `chunks` with per-partition RLS and a composite tenant key, `embedding_model`, `symbols`, `symbol_edges`; `pkg/vectordb` deleted
-> - [ ] 22-03: pipeline and both retrieval legs on pgvector, iterative scan, Qdrant removed, the benchmark equivalence check
-> - [ ] 22-04: fetching a repository safely — scoped installation tokens, the archive fetcher, caps, filters, hostile-archive tests
-> - [ ] 22-05: the `full_ingest` handler, the worker switched on, a real repository indexed and searchable
->
-> ### Phase 22.1: Symbols, Incremental Updates, Progress & the Code Graph
->
-> **Goal:** Stable symbol identity, push-driven incremental ingest, a progress
-> contract a UI can poll, tier-1 graph edges, and D2's recall test.
-> **Depends on:** Phase 22
-> **Plans:** 5
->
-> - [ ] 22.1-01: D1 symbol identity from the chunker
-> - [ ] 22.1-02: incremental ingestion by file manifest; closes ISS-027
-> - [ ] 22.1-03: progress contract and ISS-034, with a deliberate isolation test
-> - [ ] 22.1-04: D3 tier 1 — candidates, resolver, reconciliation, cycle-safe traversal
-> - [ ] 22.1-05: the multi-tenant recall test and the measured operating numbers
->
-> **Retrieval-quality track (U10):** chunker (ISS-026; TypeScript after a TS
-> corpus exists), embedding model, ranking (ISS-024/025/028/029) — each decided
-> under `boost-defaults-protocol.md`'s method.
->
-> **Phase 24 research topics:** replace "Qdrant persistence and snapshot
-> strategy" with "pgvector availability and `CREATE EXTENSION` privilege on the
-> chosen host; container `--shm-size` for index builds". 24-04: drop the Qdrant
-> snapshot schedule. **Phase 25-03:** drop "Qdrant down".
+  before Postgres does. 22.1-05 measures it.
+- **Doc-comment-only changes and staleness.** This is a D4 question, recorded
+  under P8.
