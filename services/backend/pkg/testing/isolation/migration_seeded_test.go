@@ -36,7 +36,10 @@ package isolation
 //     are no rows to validate;
 //   - never rely on the session's tenant: a migration that needs one sets
 //     it itself, per organization, as 000015 does. 000013 AND 000015 both
-//     leave the setting at '' for whatever runs after them;
+//     leave the setting at '' for whatever runs after them. Measured with
+//     a probe: a 000017 adding a composite tenant key by ALTER TABLE failed
+//     this gate at 17, dirty, with 22P02; the same key declared inside
+//     CREATE TABLE passed (22-01-SUMMARY.md, mutations M9 and M9b);
 //   - NEVER make a validation pass by setting a sentinel tenant. Validation
 //     then sees zero rows and passes vacuously, and this gate CANNOT tell
 //     that apart from a real fix (22-01-SUMMARY.md records the mutation
@@ -167,13 +170,17 @@ func TestMigrationsApplyToASeededDatabase(t *testing.T) {
 	upStarted := time.Now()
 	if err := applyMigrations(db.OwnerDSN, dir); err != nil {
 		version, dirty := migrationVersion(t, super)
-		t.Fatalf("ISS-031 CLASS: migrating a seeded database from %d to %d as %s, in one "+
-			"session, failed and left schema_migrations at %d (dirty=%v): %s\n\n"+
-			"A migration validated a constraint or evaluated a row-level-security policy "+
-			"on a session whose app.current_tenant an earlier migration left at ''. "+
-			"Declare foreign keys inside CREATE TABLE, and never rely on the session's "+
-			"tenant. See this file's header and ISS-031.",
-			uninstallVersion, newest, DeploymentOwnerRole, version, dirty, describeMigrationError(err))
+		hint := ""
+		if sqlStateOf(err) == "22P02" {
+			hint = "\n\nTHE ISS-031 CLASS: a migration validated a constraint or evaluated " +
+				"a row-level-security policy on a session whose app.current_tenant an " +
+				"earlier migration left at ''. Declare foreign keys inside CREATE TABLE, " +
+				"and never rely on the session's tenant. See this file's header and ISS-031."
+		}
+		t.Fatalf("migrating a seeded database from %d to %d as %s, in one session, failed "+
+			"and left schema_migrations at %d (dirty=%v): %s%s",
+			uninstallVersion, newest, DeploymentOwnerRole, version, dirty,
+			describeMigrationError(err), hint)
 	}
 	upTook := time.Since(upStarted)
 
@@ -202,7 +209,7 @@ func TestMigrationsApplyToASeededDatabase(t *testing.T) {
 	t.Run("000015 queued each syncable repository once and stood the rest down", func(t *testing.T) {
 		require.Equal(t, len(seededRepoOutcomes), countOf(t, super,
 			`SELECT count(*) FROM repositories`),
-			"the seed holds a repository seededRepoOutcomes does not name")
+			"seededRepoOutcomes and the seed disagree about which repositories exist")
 
 		wantJobs := 0
 		for _, want := range seededRepoOutcomes {
