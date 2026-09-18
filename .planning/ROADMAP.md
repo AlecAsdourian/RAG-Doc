@@ -167,7 +167,13 @@ this entry was one of the three.
 - this phase ends with a real repository indexed and searchable;
 - the foundations that do not block that move to Phase 22.1.
 
-Scope per plan, estimates and every decision are in `22-CONTEXT.md`, which is the authority. The lines below are its one-line index.
+Scope per plan, estimates and every decision are in `22-CONTEXT.md`, which is the authority. The lines below are its one-line index. Five decisions stay **PROPOSED** until the plan that carries them is approved:
+- P3 and P7, in 22-02;
+- P16, in 22-05;
+- P8, in 22.1-01;
+- P11, in 22.1-02.
+
+Where a line below describes one of them, it describes the proposal.
 
 Plans:
 - [ ] 22-01: pgvector image everywhere — compose, both test harnesses (with the Go harness's reuse container renamed, because it reuses by name without checking the image), and CI. Plus ISS-031's seeded-migration CI gate, landed first.
