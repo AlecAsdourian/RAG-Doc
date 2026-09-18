@@ -11,7 +11,7 @@ None
 ## Milestones
 
 - 🟡 **v0.9 Initial Build** — Phases 1-16 (foundation shipped in prototype form; several phases deferred or superseded — see disposition table below)
-- 🚧 **v1.0 MVP** — Phases 17-25 (in progress — the first shippable version)
+- 🚧 **v1.0 MVP** — Phases 17-25, plus 22.1 inserted: ten phases (in progress — the first shippable version)
 - 📋 **v2.0 Memory Substrate** — Phases planned separately once v1.0 ships (GraphRAG + LangGraph agents + MCP server)
 
 ## v0.9 Initial Build — Disposition
@@ -156,30 +156,88 @@ deliberately not restated here, because three files keeping their own counts
 of the same list is the failure mode `21-CONTEXT.md` opens by naming, and
 this entry was one of the three.
 
-### Phase 22: Repository Clone → Ingestion Orchestration
+### Phase 22: pgvector Storage & the First Real Repository
 
-**Goal:** Actual repo clone into the existing chunking/embedding/storage pipeline, with real-time progress reporting to the frontend. Incremental updates on push events.
+**Goal:** Move the vectors into Postgres under tenant isolation, retire Qdrant, and index one real GitHub repository end to end through the Phase 21 queue: connect → queue → worker → pgvector → search.
 **Depends on:** Phase 21 (job infra)
-**Research:** Unlikely (ingestion pipeline exists; clone strategy is standard)
-**Plans:** TBD (target 4 plans)
+**Research:** Complete — `22-RESEARCH.md`; decisions locked in `22-CONTEXT.md` (2026-09-17, user answers U1–U10)
+**Plans:** 5 (not yet written)
+
+**What changed from the original sketch, and why.** The sketch said "Research: Unlikely". That was written before D1–D5, all of which land here. The research measured three contradictions in them, now recorded as dated corrections in `.planning/v2-substrate/DECISIONS.md`. The user split the work in two (U1):
+- this phase ends with a real repository indexed and searchable;
+- the foundations that do not block that move to Phase 22.1.
+
+Scope per plan, estimates and every decision are in `22-CONTEXT.md`, which is the authority. The lines below are its one-line index. Five decisions stay **PROPOSED** until the plan that carries them is approved:
+- P3 and P7, in 22-02;
+- P16, in 22-05;
+- P8, in 22.1-01;
+- P11, in 22.1-02.
+
+Where a line below describes one of them, it describes the proposal.
 
 Plans:
-- [ ] 22-01: Clone worker — shallow clone (`--depth 1`) into scratch dir, size cap enforcement, respect `.gitignore`, cleanup on completion/failure; secrets isolated (no credentials in logs)
-- [ ] 22-02: Full ingestion job — orchestrate clone → language detection → tree-sitter chunking → embedding batch → Postgres + Qdrant writers; wraps existing `IngestionPipeline` for a full repo
-- [ ] 22-03: Incremental ingestion — on push event, diff previous commit vs new HEAD, re-index only changed files by SHA; delete removed files from indexes
-- [ ] 22-04: Progress transport — job publishes progress events (files_parsed, chunks_embedded, current_file) to Redis pub/sub per job_id; SSE endpoint `GET /api/repositories/:id/sync-progress` streams to frontend. **v2 breadcrumb:** define chunk-level event payload so future graph-construction worker can subscribe to the same stream without pipeline changes
+- [ ] 22-01: pgvector image everywhere — compose, both test harnesses (with the Go harness's reuse container renamed, because it reuses by name without checking the image), and CI. Plus ISS-031's seeded-migration CI gate, landed first.
+- [ ] 22-02: the storage migration:
+  - `chunks` rebuilt, partitioned by organization, with **row-level security on every partition** (the parent's does not reach them);
+  - the tenant guarantee, `embedding vector(1536)` and `embedding_model`;
+  - the `symbols` and `symbol_edges` tables;
+  - `retrievals.chunk_id`'s foreign key dropped (U9);
+  - `pkg/vectordb` deleted.
+- [ ] 22-03: the pipeline and both retrieval legs on pgvector:
+  - `hnsw.iterative_scan` is load-bearing for the repository filter;
+  - fusion stays in Python;
+  - Qdrant removed from code, compose, the API and the harness;
+  - a benchmark equivalence check on ada-002.
+- [ ] 22-04: fetching a repository safely:
+  - the backend mints a one-hour, one-repository, read-only token, checked against the job lease — **the App key never enters the worker** (U4);
+  - an archive fetch through the GitHub API (U5);
+  - v1 caps (U6) and a secret-file deny-list (U7);
+  - hostile-archive tests.
+- [ ] 22-05: the `full_ingest` handler and the worker switched on (the Phase 21 hand-off in `docs/api-ingestion-jobs.md`). Ends with a real repository connected through the development App, indexed, and answered from `/api/search`.
+
+### Phase 22.1: Symbols, Incremental Updates, Progress & the Code Graph
+
+**Goal:** Stable symbol identity, push-driven incremental ingestion, a progress contract a UI can poll, tier-1 graph edges, and D2's multi-tenant recall test. All of it is built on the pipeline Phase 22 proved end to end.
+**Depends on:** Phase 22. 22.1-01 is offline parser work and can start once 22-01 lands.
+**Research:** Complete — `22-RESEARCH.md`; decisions locked in `22-CONTEXT.md` (same document as Phase 22; the name keeps every existing "Phase 23" reference correct, U2)
+**Plans:** 5 (not yet written)
+
+Plans:
+- [ ] 22.1-01: D1 symbol identity from the chunker:
+  - full-chain `symbol_path`, `kind` and `ordinal` (including `@typing.overload`);
+  - a span that includes decorators and doc comments;
+  - `module` symbols, and Go non-struct types and constants as symbols;
+  - ids minted only at definitions, never for aliases.
+- [ ] 22.1-02: incremental ingestion by content-addressed file manifest. Symbols are archived, never deleted. `incremental` becomes distinct from `full_ingest`. Closes ISS-027.
+- [ ] 22.1-03: the progress contract, by polling the job row (U8), and ISS-034. Includes a deliberately written, mutation-checked isolation test.
+- [ ] 22.1-04: D3 tier 1:
+  - call-site and import candidates, and the resolver;
+  - reconciliation without `edge_kind` (SCIP has no notion of a call);
+  - a `CYCLE`-safe traversal helper.
+- [ ] 22.1-05: D2's recall test, seeded with real embeddings and at least one tenant large enough to use HNSW, filtering by repository. Then the operating numbers, measured: pool size, `max_job_duration`, OpenAI throughput.
+
+### Retrieval-quality track (between 22-03 and Phase 23)
+
+**When:** after 22-03's equivalence check, and before Phase 23 (U10). It can run alongside 22-04, 22-05 and Phase 22.1. It is not a phase of its own.
+**Rule:** each item is decided under `services/workers/scripts/rag_benchmarks/boost-defaults-protocol.md`'s method: fresh blind questions, and a pass rule committed before the questions exist.
+**Estimate:** ~36–58 h in total. Order and costs are in `22-CONTEXT.md`.
+
+- [ ] Chunker: ISS-026 (class chunks without their method bodies)
+- [ ] Chunker: the TypeScript grammar, after adding a TS/JS benchmark corpus (the benchmark has none)
+- [ ] Embedding model: `text-embedding-3-small` against ada-002 (U3), under a pass rule the user commits before the deciding questions are written
+- [ ] Ranking: ISS-024, ISS-025, ISS-028, ISS-029
 
 ### Phase 23: Frontend Wiring & Onboarding UX
 
 **Goal:** Replace every mocked frontend surface with real data. Ship a first-run onboarding flow that walks a new user from "signed up" to "first successful query." Fix inline-style debt on every component touched.
-**Depends on:** Phases 19, 20, 22
+**Depends on:** Phases 19, 20, 22, 22.1 (23-03 needs 22.1-03's progress contract and ISS-034), and the retrieval-quality track (U10)
 **Research:** Unlikely (internal wiring against defined APIs)
 **Plans:** TBD (target 5 plans)
 
 Plans:
 - [ ] 23-01: Live data for repos + orgs — `useRepositories` and `OrgSelectPage` and `RepoSettingsPage` wired to real APIs; error/loading/empty states; inline-style→Tailwind for every touched component
 - [ ] 23-02: GitHub App install flow UI — post-org-creation prompt: "Install our GitHub App on your organization"; deep-link into GitHub install URL; post-install callback lands user back on repo-connect UI
-- [ ] 23-03: Repo connect + progress UI — "Connect a repository" flow, live indexing progress via SSE from Phase 22, error handling for stuck jobs; `RepoSettingsPage` shows real sync history. **Blocked on ISS-034** until a repository's job id is reachable: `GET /api/admin/jobs/{id}` exists (21-07) but nothing hands a UI the id. **And "stuck" is `stalled` on the job row, never `sync_state = 'syncing'`** — with `attempts` compared against `max_attempts`, because a stalled job at the cap is heading for `dead`, not for a retry
+- [ ] 23-03: Repo connect + progress UI — "Connect a repository" flow, live indexing progress **by polling the job row** (22.1-03; polling, not SSE, by decision U8), error handling for stuck jobs; `RepoSettingsPage` shows real sync history. **Blocked on ISS-034** (scheduled in 22.1-03) until a repository's job id is reachable: `GET /api/admin/jobs/{id}` exists (21-07) but nothing hands a UI the id. **And "stuck" is `stalled` on the job row, never `sync_state = 'syncing'`** — with `attempts` compared against `max_attempts`, because a stalled job at the cap is heading for `dead`, not for a retry
 - [ ] 23-04: First-run onboarding — new user detection (no repos yet), guided flow (install App → connect repo → wait → guided first query with a sample question relevant to their repo); dismissible with "I'll do it later"
 - [ ] 23-05: Auth session polish — session expiry handling, sign-out flow, org switcher in top bar, unauthenticated redirect preserves intended destination
 
@@ -188,14 +246,18 @@ Plans:
 **Goal:** Actually ship. Deploy target chosen and provisioned (staging + prod). CI/CD, secrets, TLS, backups. Per-org rate limits and cost caps so one abusive user can't drain the LLM budget.
 **Depends on:** Phase 18 (observability), Phase 23 (wired app)
 **Research:** Likely (deployment architecture)
-**Research topics:** Deployment target trade-offs (Fly.io / Railway / Render / Cloud Run / EKS / self-hosted), secrets management (Doppler / cloud-native / Vault), Postgres backup + PITR strategy per host, Qdrant persistence and snapshot strategy in prod, rate-limit implementation (middleware vs API gateway), cost tracking for OpenAI usage per tenant
+**Research topics:** Deployment target trade-offs (Fly.io / Railway / Render / Cloud Run / EKS / self-hosted), secrets management (Doppler / cloud-native / Vault), Postgres backup + PITR strategy per host, rate-limit implementation (middleware vs API gateway), cost tracking for OpenAI usage per tenant. **From Phase 22's research** (`22-RESEARCH.md` Q2, Q8), replacing "Qdrant persistence and snapshot strategy", since Qdrant is retired in 22-03:
+- pgvector availability and version on the chosen host (0.8.x is needed for iterative scans);
+- whether the migration role may `CREATE EXTENSION vector` (the extension is not trusted, so it needs a superuser or the host's admin role);
+- a container `--shm-size` large enough for HNSW index builds;
+- keeping 22-04's token route on an internal-only listener.
 **Plans:** TBD (target 5 plans)
 
 Plans:
 - [ ] 24-01: Deployment target chosen + staging deployed — decision recorded, infra-as-code where practical (Fly.toml / Railway config / Terraform), staging fully functional
 - [ ] 24-02: CI/CD pipeline — GitHub Actions: lint (golangci-lint, ruff, biome) → unit + integration tests → build → deploy to staging on merge, tag-triggered prod deploy
 - [ ] 24-03: Secrets, TLS, custom domain — no env files in prod, secrets manager integration, TLS via provider (Let's Encrypt or provider-managed), custom domain configured
-- [ ] 24-04: Backups + disaster recovery — Postgres PITR (per-host mechanism), Qdrant snapshot schedule + off-site copy, tested restore runbook, backup monitoring
+- [ ] 24-04: Backups + disaster recovery — Postgres PITR (per-host mechanism; vectors live in Postgres after Phase 22, so there is no separate vector-store snapshot), tested restore runbook, backup monitoring
 - [ ] 24-05: Rate limits + cost controls — per-org QPS limit on `/api/search` and `/api/chat/stream` (Redis-based token bucket), `usage_records` table tracking LLM/embedding cost per org per day, monthly per-org budget cap with hard cutoff + admin alert, public-signup abuse protection (captcha on signup, email domain rules if abuse observed)
 
 ### Phase 25: Launch Readiness & Ops
@@ -208,7 +270,7 @@ Plans:
 Plans:
 - [ ] 25-01: Public landing page — marketing site (can be a new route on the app or a separate marketing site), feature summary, sign-up CTA, screenshots or demo, product positioning aligned with memory-substrate north star
 - [ ] 25-02: Security review pass — run `security-review` skill against the entire v1.0 surface, address findings, third-party dependency audit (`go mod tidy`, `pip-audit`, `npm audit`), secret-scanning check on git history
-- [ ] 25-03: Incident runbook + ops docs — what to do when: LLM API down, Qdrant down, DB slow / running out of connections, cost cap exceeded, GitHub App deauthorized, stuck ingestion jobs; on-call handoff notes even if it's just you
+- [ ] 25-03: Incident runbook + ops docs — what to do when: LLM API down, DB slow / running out of connections, cost cap exceeded, GitHub App deauthorized, stuck ingestion jobs; on-call handoff notes even if it's just you
 - [ ] 25-04: User-facing + self-hosting docs — getting started guide, FAQ, limits, `docker-compose up` self-hosting doc that actually works standalone, API reference for the shipped endpoints
 
 ## Progress
@@ -231,12 +293,13 @@ Plans:
 | 14. AI Context Export | v0.9 | — | Superseded by v2.0 MCP server | - |
 | 15. Feedback & Analytics | v0.9 | — | Deferred to post-v1.0 | - |
 | 16. Multi-tenant & Deployment | v0.9 | — | Superseded by Phases 17, 24, 25 | - |
-| 17. Multi-tenant Isolation Foundation | v1.0 | 0/5 | Not started | - |
-| 18. Observability Foundation | v1.0 | 0/4 | Not started | - |
-| 19. Auth Wiring & Org Provisioning | v1.0 | 0/4 | Not started | - |
-| 20. Repository Integration Backend | v1.0 | 0/4 | Not started | - |
-| 21. Ingestion Job Infrastructure | v1.0 | 0/3 | Not started | - |
-| 22. Repository Clone → Ingestion Orchestration | v1.0 | 0/4 | Not started | - |
+| 17. Multi-tenant Isolation Foundation | v1.0 | 5/5 | Complete | 2026-09-06 |
+| 18. Observability Foundation | v1.0 | 0/4 | Deferred — deprioritized after 17 | - |
+| 19. Auth Wiring & Org Provisioning | v1.0 | 4/4 | Complete | 2026-09-08 |
+| 20. Repository Integration Backend | v1.0 | 5/5 | Complete | 2026-09-09 |
+| 21. Ingestion Job Infrastructure | v1.0 | 7/7 | Complete | 2026-09-16 |
+| 22. pgvector Storage & the First Real Repository | v1.0 | 0/5 | Researched, decisions locked; plans not written | - |
+| 22.1. Symbols, Incremental Updates, Progress & the Code Graph | v1.0 | 0/5 | Researched, decisions locked; plans not written | - |
 | 23. Frontend Wiring & Onboarding UX | v1.0 | 0/5 | Not started | - |
 | 24. Production Deployment & Cost Controls | v1.0 | 0/5 | Not started | - |
 | 25. Launch Readiness & Ops | v1.0 | 0/4 | Not started | - |
