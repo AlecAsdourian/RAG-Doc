@@ -69,7 +69,7 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Discovered:** 2026-09-16, by the reviewer session on PR #37 (21-01). Independently reproduced there.
 - **Type:** Correctness / Operability
 - **Priority:** ~~MEDIUM — latent. 21-02's migration is DDL only, so nothing is broken today; the phase adds five more migrations.~~ **HIGH, and LIVE on `main` in the deployment shape. Corrected 2026-09-17.** The original "nothing is broken today" was wrong. It must be fixed before the first deploy, and 22-01 fixes it.
-- **✅ FIXED FOR 13 → 14 IN 22-01 (2026-09-17, in review), AND THE CLASS IS NOW GUARDED IN CI.** Evidence in `22-01-SUMMARY.md`.
+- **✅ FIXED FOR 13 → 14 IN 22-01 (2026-09-17, PR #48, in review), AND THE CLASS IS NOW GUARDED IN CI.** Evidence in `22-01-SUMMARY.md`.
   - **The fix:** 000014 declares `ingestion_jobs_repo_tenant_fk` inside `CREATE TABLE`. With comments stripped, the SQL diff against `main` is that move and nothing else.
   - **The gate:** `pkg/testing/isolation/migration_seeded_test.go`, `TestMigrationsApplyToASeededDatabase`. It runs in `go test ./...`, so in CI.
     - It seeds four organizations at version 10, as `rag_doc_app` under each one's tenant.
