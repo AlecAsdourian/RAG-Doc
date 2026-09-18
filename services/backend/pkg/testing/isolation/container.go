@@ -20,9 +20,24 @@ import (
 const (
 	// containerName is the stable name used for testcontainers reuse. A single
 	// Postgres container is shared across every test package in the repo.
-	containerName = "rag-doc-isolation-tests"
+	//
+	// ⚠ CHANGE THE NAME WHENEVER postgresImage CHANGES. testcontainers-go
+	// v0.44.0's ReuseOrCreateContainer finds a container by NAME and uses it
+	// whatever its image (docker.go:1424-1441): there is no image
+	// comparison. Measured in 22-RESEARCH.md Q2: a leftover
+	// `postgres:16-alpine` container under the old name was reused by a
+	// harness asking for pgvector, and the first migration needing the
+	// extension failed with `extension "vector" is not available`. A new
+	// name means a stale container is simply not found. The old
+	// `rag-doc-isolation-tests` container is left on developer machines,
+	// unused; remove it by hand when convenient.
+	containerName = "rag-doc-isolation-tests-pgv16"
 
-	postgresImage = "postgres:16-alpine"
+	// postgresImage is pinned by digest, and the same reference appears in
+	// the Python conftest, backend-ci.yml and docker-compose.yml. PostgreSQL
+	// 16.15 with pgvector 0.8.6. Verified with
+	// `docker buildx imagetools inspect pgvector/pgvector:pg16` (22-01).
+	postgresImage = "pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b"
 	postgresDB    = "isolation"
 	postgresUser  = "isolation"
 	postgresPass  = "isolation"
@@ -86,10 +101,14 @@ func setupContainer(ctx context.Context) error {
 	// first time testcontainers' config initialises, which happens inside
 	// postgres.Run below, so setting it here is early enough.
 	//
-	// Consequence: containers named `rag-doc-isolation-tests` persist on the
+	// Consequence: the container named by containerName persists on the
 	// developer's Docker daemon until manually removed (`docker rm -f
-	// rag-doc-isolation-tests`). Data is idempotent (migrations skip
+	// rag-doc-isolation-tests-pgv16`). Data is idempotent (migrations skip
 	// already-applied ones) and per-test fixtures clean themselves up.
+	//
+	// ⚠ golang-migrate never re-applies a version it has recorded, so after
+	// EDITING a migration that this container has already applied, remove
+	// the container: reuse would keep the old schema.
 	if err := os.Setenv("TESTCONTAINERS_RYUK_DISABLED", "true"); err != nil {
 		return fmt.Errorf("set ryuk-disabled env: %w", err)
 	}
