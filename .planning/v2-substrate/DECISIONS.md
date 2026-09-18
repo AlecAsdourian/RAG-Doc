@@ -5,6 +5,12 @@
 > should sequence **five** decisions.
 
 **Status:** Revised 2026-09-10 after three review rounds.
+**Corrected 2026-09-17** against the real schema, by Phase 22's research. There
+are eight corrections, each dated, each citing
+`.planning/phases/22-repository-clone-ingestion/22-RESEARCH.md`, and each placed
+beside the text it corrects. Nothing was rewritten. Search for "Correction
+(2026-09-17" to find them all. Where a correction settles something, the locked
+decision is in `22-CONTEXT.md`.
 
 **Verification record.** Every schema here has been transcribed out of this
 document and executed against PostgreSQL 17. Round 3 added the cases the earlier
@@ -36,6 +42,21 @@ measurement in §5 of this document.
 > repository we have indexed.
 >
 > Everything else in `DESIGN.md` stays a proposal for the planner to sequence.
+
+**⚠ Correction (2026-09-17, measured in Phase 22's research, `22-RESEARCH.md`
+Q1 and Q4):** the urgency above is weaker than stated.
+
+Until launch, "every repository we have indexed" means harness and benchmark
+data. The compose database holds 4 repositories and 5,421 chunks, and **no
+user-authored rows at all**: zero queries, retrievals, feedback or users.
+Everything there can be re-created from pinned sources. Re-embedding all of it
+costs **about $0.09 on ada-002** and about 3.5 minutes of ingest.
+
+The decisions still matter, because after launch the cost is real. But they do
+not all have to land before the first real row. **What has to come first is the
+storage (D2)**, because the worker writes chunks and vectors in its completion
+transaction (`21-CONTEXT.md` L1). D1's emission and D3's resolver follow the
+first end-to-end ingest (the user's answer U1 in `22-CONTEXT.md`).
 
 ---
 
@@ -119,6 +140,26 @@ CREATE TABLE symbols (
 nullable because not every chunk belongs to a named symbol — file headers,
 prose in markdown, config blobs.
 
+**⚠ Correction (2026-09-17, measured, `22-RESEARCH.md` Q6), affecting D1 and
+D4:** two findings the schema above did not anticipate.
+
+1. **A fourth collision case: Python's `@typing.overload`.** Measured on mealie:
+   `UnitConverter.parse` appears three times and `PlaceholderKeyword.parse_value`
+   four times. These are overload stubs above their implementation, with the same
+   path and the same kind. `ordinal` separates them, with the limitation already
+   stated above: adding an overload above the implementation renumbers the
+   implementation. Across the benchmark corpora, 5 of 2,323 function and class
+   keys in mealie need `ordinal > 0`, and none do in miniflux or this repository.
+2. **Decorators and doc comments fall outside the span that `span_digest`
+   hashes.** The chunker starts a Python function at its `def` line, so a
+   `@router.get(...)` decorator on the line above is excluded. It also keeps Go
+   doc comments in metadata, outside the span. So a decorator change, such as a
+   route moving from `GET` to `POST`, leaves `span_digest` unchanged, and D4
+   would call an anchored memory *unaffected*. **The span used for identity and
+   for the digest must include decorators and leading doc comments.** That is
+   `22-CONTEXT.md` P8, locked when 22.1-01 is planned. Whether a change to a doc
+   comment alone should make a memory `stale` is left to D4.
+
 ### Why, and what changed the shape
 
 The plain argument is in `DESIGN.md` § R2: `content_hash` is a dedupe key and
@@ -158,6 +199,24 @@ it does, alias-heavy code produces multiple identities for one artifact — the
 precise failure EA-Graph warns about.
 
 Phase 22 must order them accordingly.
+
+**⚠ Correction (2026-09-17, `22-RESEARCH.md` Q6):** this dependency only holds
+if identities are minted for aliases, and the chunker mints them only for
+definitions.
+
+For scale, measured: mealie has 58 of 89 `__init__.py` files re-exporting, with
+168 relative-import lines. There are no Go type aliases at all in miniflux or in
+this repository's backend.
+
+**If ids are minted only at definition sites, and never for an alias
+declaration** (a Go `type A = B`, a TypeScript `export { X as Y }`, a Python
+`Y = X`), then a re-export cannot create a second identity. **D1's emission then
+does not need to wait for the D3 resolver.**
+
+Resolving a *name* to its leaf still needs the import graph. That is what D3's
+edges and D4's anchoring by name use. So the criterion "a re-export resolves to
+the same id as its leaf" (below) moves to the D3 tier-1 plan, 22.1-04. The rule
+is `22-CONTEXT.md` P8, locked when 22.1-01 is planned.
 
 ### Symbols are archived, not deleted
 
@@ -282,6 +341,42 @@ CREATE INDEX ON chunks (organization_id);   -- pgvector's own recommendation
 
 Session default: `hnsw.iterative_scan = relaxed_order`.
 
+**⚠ Correction (2026-09-17, measured, `22-RESEARCH.md` Summary item 1 and Q2):**
+**row-level security enabled and forced on the partitioned parent does not reach
+the partitions.**
+
+How it was measured: this DDL was transcribed onto the real schema at migration
+000015, on `pgvector/pgvector:pg16`. All 64 partitions showed
+`relrowsecurity = false`. Then, as the `NOSUPERUSER NOBYPASSRLS` app role:
+
+- with tenant A set, a `SELECT` on tenant B's partition returned B's row;
+- with tenant A set, an `UPDATE` on B's partition reported `UPDATE 1` and
+  overwrote B's row;
+- with no tenant set at all, the read still succeeded. Only a write was stopped,
+  by the inherited `trg_assert_tenant`.
+
+The parent's policy applies only to queries made through the parent. Both test
+harnesses grant `ON ALL TABLES`, which includes the partitions.
+
+**Every partition gets RLS enabled and forced, and the `tenant_isolation`
+policy.** Measured with that in place: B's partition shows 0 rows to A, the
+update matches 0 rows, and pruning still fires from the policy alone
+(`Subplans Removed: 63` on PostgreSQL 16). Locked as `22-CONTEXT.md` P2.
+
+**⚠ Correction (2026-09-17, measured, `22-RESEARCH.md` Summary item 2):** D2 is
+silent on the one foreign key that points **into** `chunks`:
+`retrievals.chunk_id REFERENCES chunks(id) ON DELETE CASCADE` (migration 000004).
+
+With the primary key `(organization_id, id)`, that key cannot be recreated. The
+error is `there is no unique constraint matching given keys for referenced
+table`: a unique key on a partitioned table must include the partition key, and
+`retrievals` has no `organization_id`. Nothing writes `retrievals` or `feedback`
+today (0 rows, and no code path).
+
+**The user decided (U9): drop the key now, and decide the shape of the link when
+feedback ships.** That is `22-CONTEXT.md` P17, which also notes the knock-on
+effect: `DELETE /api/repositories/{id}` would stop cascading to feedback.
+
 ### On `MODULUS 64`, and when it stops being right
 
 64 is chosen so that partition count stays bounded and planning time stays flat,
@@ -336,6 +431,32 @@ is the consistency hazard we are removing.
   one tenant every candidate passes the filter. This test is the regression
   guard; without it the decision's benefit is unverifiable.
 - `EXPLAIN` on the production query shape shows `Subplans Removed`.
+
+**⚠ Correction (2026-09-17, measured on synthetic vectors, `22-RESEARCH.md`
+Q5):** a recall test seeded with small tenants tests nothing about HNSW, because
+**small tenants get exact search.**
+
+- A 3,000-row tenant's query ran as a sequential scan of its partition plus a
+  sort, so its recall is 1.000 by construction.
+- A 50,000-row tenant's query used HNSW.
+- Absolute recall depends heavily on the data. The same table at the same size
+  gave 0.145 with uniform random vectors and 0.810 with clustered ones.
+
+So the test must:
+
+- seed **at least one tenant large enough that the planner uses HNSW, and assert
+  that it does**;
+- use **real embeddings** (the benchmark corpora's chunk vectors, copied into
+  synthetic tenants), not random ones;
+- **filter by repository** as the product does (see the §5 correction below);
+- include a partition shared by several tenants;
+- assert on short results as well as recall.
+
+It is scheduled as 22.1-05 (`22-CONTEXT.md`).
+
+The benchmark harness cannot stand in for this test. It puts every corpus under
+one organization, about 5,400 rows, and at that size the planner does exact
+search.
 
 ---
 
@@ -447,6 +568,25 @@ measured in review) and the phantom survives. Either the reconciliation omits
 `edge_kind`, accepting that it retires all tier-1 edges between that pair, or
 the tiers commit to one classification vocabulary. **Phase 22 must pick one and
 write it down**; omitting `edge_kind` is the safer default.
+
+**⚠ Correction (2026-09-17, verified against `scip.proto`, `22-RESEARCH.md`
+Q7):** the disagreement is **guaranteed**, not occasional, because **SCIP has no
+notion of a call.** Its `SymbolRole` values are `Definition, Import,
+WriteAccess, ReadAccess, Generated, Test, ForwardDefinition`. Its `Relationship`
+carries `is_reference, is_implementation, is_type_definition, is_definition`.
+So a vocabulary shared with tier 2 could not contain `calls`, and `calls` is the
+edge behind `who_calls`.
+
+**The reconciliation therefore omits `edge_kind`**, the default this paragraph
+already named:
+
+- the `DELETE` above drops its `AND edge_kind = $3` line;
+- tier 2 retires every unresolved tier-1 edge for
+  `(organization_id, from_symbol_id, to_symbol_name)`, in the same transaction
+  that inserts its own edge;
+- tier 1 keeps `calls`.
+
+Locked as `22-CONTEXT.md` P9.
 
 **Phase 22's chunk-level event payload widens now** to carry call-site and
 import candidates. Cheap — the parser already walks the tree — and it means the
@@ -609,6 +749,11 @@ fresh forever. Freshness remains the anchor's business.
 **Now (blocks D1's schema):** `symbols.span_digest` must exist and be a hash
 over the span, so anchors have something to compare against. That is already in
 D1.
+
+**⚠ See D1's 2026-09-17 correction on `span_digest`.** This is a pointer, not a
+separate correction. "A hash over the span" only works if the span includes
+decorators and leading doc comments, and today it does not
+(`22-RESEARCH.md` Q6).
 
 **Later:** the `memories` and `memory_anchors` tables themselves. Nothing in
 Phases 21–22 writes them.
@@ -838,6 +983,29 @@ Two things worth noting, one of them a correction to R-B:
   *not* appear at this selectivity. The failure presented purely as **silently
   worse results**, which is the more dangerous shape: a short result set is at
   least detectable.
+
+**⚠ Correction (2026-09-17, measured on synthetic vectors, `22-RESEARCH.md`
+Q5):** both notes above hold for the query this section measured, which filtered
+by tenant only. **The product's query also filters by repository.** Inside one
+tenant's partition, that is exactly the kind of selective filter this section
+exists to remove.
+
+Measured on `pgvector/pgvector:pg16`, with clustered 256-dimension vectors, one
+tenant, one partition, and each query restricted to one repository:
+
+| Repositories × rows | Default | `iterative_scan = relaxed_order` |
+|---|---|---|
+| 5 × 10,000 | recall@10 0.690, **16 of 20 queries short** | 0.835, none short |
+| 20 × 3,000 | recall@10 0.260, **20 of 20 queries short** | **1.000**, none short |
+
+So "iterative scan did not help here" and "the short-results symptom did not
+appear" are true only without the repository filter. **For that filter,
+iterative scan is the fix. It is load-bearing, not merely cheap.**
+
+Partitioning keeps its own justification, index-size runway. Iterative scan is
+what handles the repository filter. Locked as `22-CONTEXT.md` P5.
+
+The absolute numbers come from synthetic data; the pattern is the finding.
 
 ### ⚠ What this does NOT prove
 
