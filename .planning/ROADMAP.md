@@ -161,39 +161,38 @@ this entry was one of the three.
 **Goal:** Move the vectors into Postgres under tenant isolation, retire Qdrant, and index one real GitHub repository end to end through the Phase 21 queue: connect → queue → worker → pgvector → search.
 **Depends on:** Phase 21 (job infra)
 **Research:** Complete — `22-RESEARCH.md`; decisions locked in `22-CONTEXT.md` (2026-09-17, user answers U1–U10)
-**Plans:** 5 (not yet written)
+**Plans:** 5, written 2026-09-17 (`22-01-PLAN.md` … `22-05-PLAN.md`). Fact-checked and revised the same day. The user decided P3 and P7 (both as recommended) and approved 22-05's live repository. The plans await re-verification of the revised items.
 
 **What changed from the original sketch, and why.** The sketch said "Research: Unlikely". That was written before D1–D5, all of which land here. The research measured three contradictions in them, now recorded as dated corrections in `.planning/v2-substrate/DECISIONS.md`. The user split the work in two (U1):
 - this phase ends with a real repository indexed and searchable;
 - the foundations that do not block that move to Phase 22.1.
 
-Scope per plan, estimates and every decision are in `22-CONTEXT.md`, which is the authority. The lines below are its one-line index. Five decisions stay **PROPOSED** until the plan that carries them is approved:
-- P3 and P7, in 22-02;
-- P16, in 22-05;
+Scope per plan, estimates and every decision are in `22-CONTEXT.md`, which is the authority. The lines below are its one-line index. Three decisions stay **PROPOSED** until the plan that carries them is approved:
+- P16, in 22-05 (provisional);
 - P8, in 22.1-01;
 - P11, in 22.1-02.
 
 Where a line below describes one of them, it describes the proposal.
 
 Plans:
-- [ ] 22-01: pgvector image everywhere — compose, both test harnesses (with the Go harness's reuse container renamed, because it reuses by name without checking the image), and CI. Plus ISS-031's seeded-migration CI gate, landed first.
-- [ ] 22-02: the storage migration:
+- [ ] 22-01: pgvector image everywhere — compose, both test harnesses (with the Go harness's reuse container renamed, because it reuses by name without checking the image), and CI — proven by migration `000016_enable_pgvector`. **Fixes ISS-031**, which is live in the deployment shape, by declaring 000014's foreign key inside `CREATE TABLE`. A seeded-migration CI gate proves the fix: it seeds at migration 10, runs as a non-superuser owner, fails on `main` and passes after. Also deletes `pkg/vectordb` (moved here from 22-02).
+- [ ] 22-02: the partitioned `chunks` table, and every writer of it (migration `000017`):
   - `chunks` rebuilt, partitioned by organization, with **row-level security on every partition** (the parent's does not reach them);
   - the tenant guarantee, `embedding vector(1536)` and `embedding_model`;
-  - the `symbols` and `symbol_edges` tables;
-  - `retrievals.chunk_id`'s foreign key dropped (U9);
-  - `pkg/vectordb` deleted.
-- [ ] 22-03: the pipeline and both retrieval legs on pgvector:
+  - the `symbols` table (`symbol_edges` moved to 22.1-04);
+  - `retrievals.chunk_id`'s foreign key dropped (U9), with the repository delete kept honest;
+  - every Go and Python writer of `chunks` in the same PR, including `PostgresWriter` storing vectors (moved here from 22-03).
+- [ ] 22-03: both retrieval legs on pgvector, and Qdrant retired:
   - `hnsw.iterative_scan` is load-bearing for the repository filter;
   - fusion stays in Python;
-  - Qdrant removed from code, compose, the API and the harness;
-  - a benchmark equivalence check on ada-002.
+  - Qdrant removed from code, compose, dependencies and the harness;
+  - a benchmark equivalence gate on the same ada-002 vectors.
 - [ ] 22-04: fetching a repository safely:
   - the backend mints a one-hour, one-repository, read-only token, checked against the job lease — **the App key never enters the worker** (U4);
   - an archive fetch through the GitHub API (U5);
   - v1 caps (U6) and a secret-file deny-list (U7);
   - hostile-archive tests.
-- [ ] 22-05: the `full_ingest` handler and the worker switched on (the Phase 21 hand-off in `docs/api-ingestion-jobs.md`). Ends with a real repository connected through the development App, indexed, and answered from `/api/search`.
+- [ ] 22-05: the `full_ingest` handler and the worker switched on (the Phase 21 hand-off in `docs/api-ingestion-jobs.md`), with a fourth handler ending, `Rejected`, so a cap ends the job `dead` in one attempt (U6). Ends with `AlecAsdourian/ES-SC-API-Navigator` indexed from the development App into a scratch database and searched end to end.
 
 ### Phase 22.1: Symbols, Incremental Updates, Progress & the Code Graph
 
@@ -211,6 +210,7 @@ Plans:
 - [ ] 22.1-02: incremental ingestion by content-addressed file manifest. Symbols are archived, never deleted. `incremental` becomes distinct from `full_ingest`. Closes ISS-027.
 - [ ] 22.1-03: the progress contract, by polling the job row (U8), and ISS-034. Includes a deliberately written, mutation-checked isolation test.
 - [ ] 22.1-04: D3 tier 1:
+  - creates `symbol_edges` (moved here from 22-02), testing D3's upgrade and no-downgrade rule first;
   - call-site and import candidates, and the resolver;
   - reconciliation without `edge_kind` (SCIP has no notion of a call);
   - a `CYCLE`-safe traversal helper.
@@ -298,7 +298,7 @@ Plans:
 | 19. Auth Wiring & Org Provisioning | v1.0 | 4/4 | Complete | 2026-09-08 |
 | 20. Repository Integration Backend | v1.0 | 5/5 | Complete | 2026-09-09 |
 | 21. Ingestion Job Infrastructure | v1.0 | 7/7 | Complete | 2026-09-16 |
-| 22. pgvector Storage & the First Real Repository | v1.0 | 0/5 | Researched, decisions locked; plans not written | - |
+| 22. pgvector Storage & the First Real Repository | v1.0 | 0/5 | Planned, fact-checked and revised; awaiting re-verification | - |
 | 22.1. Symbols, Incremental Updates, Progress & the Code Graph | v1.0 | 0/5 | Researched, decisions locked; plans not written | - |
 | 23. Frontend Wiring & Onboarding UX | v1.0 | 0/5 | Not started | - |
 | 24. Production Deployment & Cost Controls | v1.0 | 0/5 | Not started | - |
