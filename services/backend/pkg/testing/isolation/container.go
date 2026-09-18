@@ -161,6 +161,20 @@ func setupContainer(ctx context.Context) error {
 // name — a fixed constant in a different range cannot.
 const appRoleSetupLockID = 0x7261_67646f_63 // "ragdoc"
 
+// appRoleGrants are the privileges the harness gives appRole in a database.
+// Grants are per-database and cover only the tables that exist when they
+// run, so a database migrated further afterwards needs them again: the
+// seeded-migration gate re-runs them at version 12. The Python conftest's
+// `_ensure_app_role` carries the same three.
+//
+// ⚠ NO TRUNCATE, deliberately. Row-level security does not govern it
+// (22-CONTEXT P2's addendum).
+var appRoleGrants = []string{
+	`GRANT USAGE ON SCHEMA public TO ` + appRole + `;`,
+	`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ` + appRole + `;`,
+	`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ` + appRole + `;`,
+}
+
 // ensureAppRole creates a non-superuser role and grants it the privileges
 // tests need. It is idempotent, so container reuse is safe.
 //
@@ -221,12 +235,10 @@ func ensureAppRole(ctx context.Context, dsn string) error {
 				CREATE ROLE ` + appRole + ` NOSUPERUSER NOBYPASSRLS INHERIT;
 			END IF;
 		END $$;`,
-		`GRANT USAGE ON SCHEMA public TO ` + appRole + `;`,
-		`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ` + appRole + `;`,
-		`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ` + appRole + `;`,
-		// Session-user (superuser) must be granted the role for SET ROLE to work.
-		`GRANT ` + appRole + ` TO ` + postgresUser + `;`,
 	}
+	stmts = append(stmts, appRoleGrants...)
+	// Session-user (superuser) must be granted the role for SET ROLE to work.
+	stmts = append(stmts, `GRANT `+appRole+` TO `+postgresUser+`;`)
 	for _, s := range stmts {
 		if _, err := tx.Exec(ctx, s); err != nil {
 			return fmt.Errorf("app role stmt failed: %s: %w", firstLine(s), err)
