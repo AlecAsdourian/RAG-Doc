@@ -17,6 +17,7 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Why it was NOT settled in 21-07:** it is an API-contract decision with its own documentation, tests and isolation surface — and `ingestion_jobs` has no row-level security, so *any* new reader of it needs a deliberately written isolation test for the same reason 21-07's did, and the CI gate will not ask for one if it is a `GET`. 21-07's five deviations were kept small on purpose; this would have been a sixth and the largest.
 - **One thing whichever shape wins must carry:** `sync_state = 'syncing'` is not evidence of a live worker, and `stalled` is not evidence of a retry. See `docs/api-ingestion-jobs.md`.
 - **Owner:** Phase 23 (23-03), or Phase 22 if the repository API is open for another reason first.
+- **Owner, as of 2026-09-17: 22.1-03**, together with the progress contract (`22-CONTEXT.md` P12, U8). 23-03 consumes it.
 
 ### ISS-033: The webhook producers do not check `uninstalled_at`, so a push racing an uninstall queues a job under a dead installation
 
@@ -61,6 +62,7 @@ Enhancements discovered during execution. Not critical - address in future phase
   1. **A CI check that applies every migration to a seeded database.** Catches this whole class, not just this instance — including the 000012-pattern bug that CI's empty database would also have passed. The larger change, and the one with value beyond this phase.
   2. **Make the backfill GUC-free:** lift `FORCE` and `DISABLE TRIGGER trg_assert_tenant` for one statement under the `ACCESS EXCLUSIVE` lock the migration already holds. The reviewer ran this: it backfilled every row and left `app.current_tenant` NULL. It trades the trap for a briefly disabled guard, which is what 21-01 deliberately avoided.
 - **Recommendation:** fix 1, before a later plan in this phase adds a migration with DML. Fix 2 only if fix 1 proves expensive.
+- **Scheduled 2026-09-17 in 22-01** (fix 1): a Go test seeds a fresh database at migration 10, the compose database's measured version, and runs `up` as a `NOSUPERUSER NOBYPASSRLS` owner, before 22-02's migration exists (`22-CONTEXT.md` P13).
 - **The migration this was filed in anticipation of has now shipped, and it complies by structure rather than by comment.** 21-04's `000015_backfill_ingestion_jobs` is the phase's first migration with DML. It sets `app.current_tenant` per organization in a `DO` block, exactly as `000013` does, and **the file ends with that block** — the only statements after it are comments, so there is no DML left to be poisoned by the tenant the loop leaves behind. It also sets the tenant itself rather than inheriting whatever `000013` left on the session, which is the other half of this issue's advice for a later migration in the same run. **That does not close this issue:** the guard is still that the author read the comment, and CI still applies migrations only to an empty database.
 - **Related:** ISS-013 (the same GUC behaviour, from the pooled-connection side).
 
