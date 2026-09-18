@@ -214,6 +214,24 @@ quality.
 
 ---
 
+## The user's answers at plan approval (confirmed 2026-09-17)
+
+These were asked once the Phase 22 plans were written (PR #47) and had been
+fact-checked. Each is recorded LOCKED here and in the plan that carries it.
+
+- **P3: the composite foreign key** (22-02). Its justification is corrected: the
+  key does **not** hold under `session_replication_role = replica`, so the
+  drift query stays load-bearing and trigger-disabled loads are forbidden. See
+  P3.
+- **P7: `symbols` unpartitioned, with one nullable `chunks.symbol_id`** (22-02).
+- **U6's 500 MB applies to both the downloaded bytes and the expanded bytes**
+  (22-04). The expanded cap is the decompression-bomb guard.
+- **22-05's live proof: `AlecAsdourian/ES-SC-API-Navigator` is approved.** The
+  approval covers sending its code to OpenAI's embedding API, **on a scratch
+  database only, never compose.**
+
+---
+
 ## What this phase inherits
 
 **From Phase 21**, the authority is `docs/api-ingestion-jobs.md#the-phase-22-hand-off`.
@@ -224,7 +242,7 @@ Where each item lands:
 | Register `full_ingest` and `incremental` | 22-05 |
 | `DATABASE_URL` for the compose `workers` service | 22-05 |
 | Set `max_job_duration` | 22-05 (initial), 22.1-05 (from measurements) |
-| Write handlers against the three endings | 22-05 |
+| Write handlers against the endings | 22-05, which adds `Rejected` and maps mid-run installation changes and refused tokens onto Phase 21's existing endings |
 | Measure the pool | 22.1-05 |
 | Wire the pipeline to runs (`resolve_ingestion_run` + `attach_ingestion_run`) | 22-05 |
 | Idempotent chunk writes per run (ISS-027) | 22-05 (full), 22.1-02 (incremental) |
@@ -232,7 +250,7 @@ Where each item lands:
 | Distinguish `incremental` from `full_ingest` | 22.1-02 |
 | `statement_timeout` on the heartbeat connection | 22-05 |
 | A way to find a repository's job id (ISS-034) | 22.1-03 |
-| Re-parent drift | **not re-opened.** 21-07 ruled it settled, and a composite tenant key (P3) would make a chunk's tenant unable to drift at all |
+| Re-parent drift | **not re-opened.** 21-07 ruled it settled. P3's composite key blocks drift on every normal write, but **not** under replica mode, so the drift query stays (P3's correction) |
 
 **From `DECISIONS.md`**, every "Verification required in Phase 22" item:
 
@@ -247,7 +265,7 @@ Where each item lands:
 | D3 | tier 2 upgrades tier 1 in place; tier 1 never downgrades tier 2 | 22.1-04 (the SQL rule, tested when `symbol_edges` is created; moved from 22-02) |
 | D5 | cross-organization re-parent is rejected | already built (000013, 21-01) |
 | D5 | a child row whose tenant disagrees with its repository is rejected at write time | 22-02 |
-| D5 | a trigger-disabled bulk load leaves no drift, or is documented as forbidden | 22-02 |
+| D5 | a trigger-disabled bulk load leaves no drift, or is documented as forbidden | 22-02: documented as forbidden in 000017's table comments. Still needed under P3, because replica mode bypasses the key (measured) |
 | D5 | a drift-detection query runs in CI | 22-02 |
 | `REWORK.md` open item | `chunks.symbol_id`: one FK or a join table | P7 |
 
@@ -259,11 +277,11 @@ Where each item lands:
 |---|---|---|
 | P1 | drop and recreate `chunks`; re-ingest from source | **LOCKED** · U1 |
 | P2 | every partition gets its own row-level security | **LOCKED** · correction to D2 |
-| P3 | tenancy by composite foreign key rather than trigger | PROPOSED · user, at 22-02 plan approval |
+| P3 | tenancy by composite foreign key rather than trigger | **LOCKED** · the user, at 22-02's approval (justification corrected) |
 | P4 | record `embedding_model` on every chunk; ada-002 stays for now | **LOCKED** · U3 |
 | P5 | `hnsw.iterative_scan` is load-bearing | **LOCKED** · correction to D2 §5 |
 | P6 | both retrieval legs in Postgres; fusion and boosts stay in Python | **LOCKED** · U3 + U10 |
-| P7 | `symbols` unpartitioned; `chunks.symbol_id` one nullable FK | PROPOSED · user, at 22-02 plan approval |
+| P7 | `symbols` unpartitioned; `chunks.symbol_id` one nullable FK | **LOCKED** · the user, at 22-02's approval |
 | P8 | symbol identity rules | PROPOSED · user, at 22.1-01 plan approval |
 | P9 | D3 reconciliation omits `edge_kind` | **LOCKED** · correction to D3 |
 | P10 | archive fetch, scoped token, caps, secret filter | **LOCKED** · U4, U5, U6, U7 |
@@ -304,25 +322,38 @@ Two tests guard it:
 `trg_assert_tenant` on the parent is inherited by the partitions (measured: 64
 of 64) and stays.
 
-*Left to 22-02's plan:* whether to **also** revoke the app role's direct
-privileges on the partitions, as defence in depth. Grants through the parent
-still reach the rows.
+*Decided in 22-02's plan:* **do not** also revoke the app role's direct
+privileges on the partitions. Grants live outside migrations: both harnesses run
+`GRANT … ON ALL TABLES` after migrating, and production's grants belong to Phase
+24. A `REVOKE` in the migration would therefore be silently undone.
+Per-partition RLS is the guard, tested without depending on grants. The question
+is recorded for Phase 24's grant model.
 
-### P3 — Tenancy on `chunks`, `symbols` and `symbol_edges` by composite foreign key · PROPOSED
+### P3 — Tenancy on `chunks`, `symbols` and `symbol_edges` by composite foreign key
 
-**Who decides:** the user, when approving 22-02's plan. **Why it is not locked:**
-it refines D5's "maintained by trigger, everywhere", which is a locked decision,
-and no answer covered it.
+**LOCKED 2026-09-17, by the user at 22-02's approval.** It refines D5's
+"maintained by trigger, everywhere".
 
 The key is `FOREIGN KEY (repository_id, organization_id) REFERENCES repositories (id, organization_id)`.
 This is the pattern 21-01 and 21-02 used, and it makes a misfiled row
-**unrepresentable** rather than rejected (measured: the misfiled insert fails on
-the key). A `BEFORE INSERT` trigger stays optional, for a readable error message,
-exactly as 21-02 kept one. The drift query joins through `repositories` and
-runs in CI.
+unrepresentable **while foreign-key triggers are enabled**. Measured: a misfiled
+insert fails with `23503`. No validating trigger is added; the constraint's name
+carries the message.
 
-**If declined:** 22-02 uses D5's `BEFORE INSERT` trigger as written. Roughly equal
-cost. What is lost is the guarantee that holds even when a trigger is disabled.
+**⚠ Correction, from the fact-check of 2026-09-17.** An earlier version said the
+key "holds even when a trigger is disabled". **That is false.** Foreign keys are
+enforced by triggers, and under `session_replication_role = replica` a misfiled
+chunk inserted cleanly past the key (measured). This repository uses replica
+mode in `pkg/auth/testing.go:54-60`. So:
+- D5's "a trigger-disabled bulk load leaves no drift, or is documented as
+  forbidden" **still applies**, and 000017's table comment forbids such loads;
+- **the drift query stays load-bearing** under this option, exactly as under
+  the trigger alternative. It runs in CI;
+- 22-02 pins the replica-mode acceptance as a test, so the wrong claim is not
+  re-derived.
+
+**The alternative the user did not choose:** D5's `BEFORE INSERT` validating
+trigger. About equal cost, and the same drift requirement.
 
 ### P4 — Record the embedding model on every chunk
 
@@ -371,10 +402,11 @@ pruned to one partition. It is recorded as a later latency option. Moving
 fusion into SQL changes tie-breaking, which makes it a ranking change governed
 by the protocol.
 
-### P7 — `symbols` stays unpartitioned; `chunks.symbol_id` stays one nullable FK · PROPOSED
+### P7 — `symbols` stays unpartitioned; `chunks.symbol_id` stays one nullable FK
 
-**Who decides:** the user, when approving 22-02's plan. It closes `REWORK.md`'s
-open item, and no answer covered it.
+**LOCKED 2026-09-17, by the user at 22-02's approval.** It closes `REWORK.md`'s
+open item. 22-02 also indexes `chunks.symbol_id` (partial, `WHERE symbol_id IS
+NOT NULL`), so `ON DELETE SET NULL` does not scan every partition.
 
 **Why not partition `symbols`:** partitioning it would turn every foreign key
 into it (from `chunks`, `symbol_edges` and D4's `memory_anchors`) into a composite
@@ -455,13 +487,20 @@ edge. 22.1-04's plan confirms this rather than choosing it.
 - Never follow symlinks.
 - Remove the directory in `finally`, and sweep stale ones at worker start.
 - Never log the redirect URL (RESEARCH Q8).
-- Measure on the largest benchmark repository first: GitHub documents no size
-  limit.
+- Measure on the largest benchmark repository first, because GitHub documents
+  no size limit. **22-04 does this**, on the public mealie repository at its
+  pinned commit.
 
 **Caps (U6).** Archive ≤ 500 MB, ≤ 20,000 indexable files, ≤ 1 MB per file,
-≤ 100,000 chunks, all checked while streaming.
-- A hard cap ends the job `dead` with a plain reason.
+≤ 100,000 chunks, all checked while streaming. **The 500 MB applies to both the
+downloaded bytes and the expanded bytes; the user locked this on 2026-09-17.**
+The expanded cap is the decompression-bomb guard.
+- A hard cap ends the job `dead` with a plain reason. This needs a new runtime
+  ending, `Rejected`, built in 22-05.
 - An oversized single file is skipped and counted in `progress`.
+- **An installation suspended or uninstalled mid-run is not a cap.** It takes
+  Phase 21's claim-time endings: defer 60 minutes with the attempt handed back,
+  or abandon. It never ends `dead` (22-05, fact-check c1).
 
 **Filters (U7).** An archive holds only tracked files, so the roadmap's "respect
 `.gitignore`" is replaced by two filters:
@@ -505,8 +544,18 @@ would.
 **LOCKED 2026-09-17, U1.** The approved 22-01 carries it.
 
 The gate lands in the plan that swaps the image, before the storage migration.
-The compose database is itself a seeded database at migration 10, so moving it to
-16 is exactly the scenario ISS-031 describes (RESEARCH Q13).
+
+**Revised 2026-09-17 after the fact-check.** ISS-031 turned out to be live, not
+latent.
+- **Measured:** a non-superuser-owned database, seeded at 10 and migrated in one
+  session, fails at 000014 with `22P02` and is left dirty.
+- **Measured:** a **superuser**-owned database (the compose shape) passes the
+  same upgrade.
+
+So 22-01 also **fixes** it. It declares 000014's foreign key inside
+`CREATE TABLE`, which was measured to leave the schema identical, and the gate
+proves the fix: it fails on `main` and passes after. The reasoning and the
+rejected alternatives are in 22-01.
 
 ### P14 — `pgvector/pgvector:pg16` everywhere, and the harness's reuse container renamed
 
@@ -536,6 +585,15 @@ What goes:
 - `qdrant-client`
 - `pkg/vectordb` and its `go.mod` dependency (K2: dead code in any case). This
   one is deleted in 22-01, since the plans were written.
+
+**The transition, stated.** Between 22-02 and 22-03, the pipeline writes each
+vector to **both** Postgres and Qdrant. That departs from "keeping both is the
+hazard", and it is deliberate and bounded:
+- nothing reads the Postgres vectors yet;
+- nothing runs in production;
+- it is what 22-03's equivalence gate needs, the same vectors in both stores.
+
+22-03 retires Qdrant only after the gate passes.
 
 Keeping both stores for any stretch is the consistency hazard D2 exists to remove.
 
@@ -569,6 +627,10 @@ delete those `retrievals` rows explicitly in the same transaction, or change wha
 the response claims. Both tables are empty today, so this is about the contract,
 not about data.
 
+**Decided in 22-02: delete explicitly, with the count's predicate.** The existing
+cascade test already catches a missing delete. 22-02's `down` restores the key
+`NOT VALID`, so rolling back never fails on, or destroys, dangling retrievals.
+
 ---
 
 ## The split · LOCKED 2026-09-17, U1
@@ -592,20 +654,31 @@ second builds the substrate onto a pipeline already proven.
 - **22-05 gained a fourth handler ending, `Rejected`.** U6's "ends `dead`" needs
   it.
 
-The Phase 22 estimate is now ~60–87 h.
+**Revised again 2026-09-17, after the fact-check.** No plan boundaries moved,
+but four plans grew:
+- **22-01 fixes ISS-031** (000014's foreign key declared inline) and proves the
+  fix with the gate.
+- **22-03 records a complete Qdrant baseline before switching the read path,**
+  and retires Qdrant only after the gate. It also owns the breadcrumb-index
+  proof.
+- **22-04 measures the largest benchmark repository.**
+- **22-05 maps mid-run installation changes and refused tokens onto Phase 21's
+  endings, and changes the entrypoint test deliberately.**
+
+The Phase 22 estimate is now **~68–97 h**.
 
 **This list is the authority for plan scope.** `ROADMAP.md` carries one line per
 plan and points here. `STATE.md` points here and keeps no copy.
 
-### Phase 22 — pgvector storage and the first real repository (~60–87 h)
+### Phase 22 — pgvector storage and the first real repository (~68–97 h)
 
 | Plan | Scope | Est. |
 |---|---|---|
-| **22-01** | **pgvector everywhere, and the seeded-migration gate** (P13, P14). Migration `000016_enable_pgvector`, guarded so a non-superuser owner never calls `CREATE EXTENSION`. The image swap in compose, both harnesses (reuse container renamed) and CI, pinned by digest. ISS-031's gate: a Go test that seeds a fresh database at **migration 10** (the compose database's measured version), runs `up` as a `NOSUPERUSER NOBYPASSRLS` owner, and asserts each later migration's effect. `--shm-size` documented. **Deletes `pkg/vectordb`** (moved here from 22-02). | 6–9 h |
+| **22-01** | **pgvector everywhere, ISS-031 fixed, and the seeded-migration gate** (P13, P14). Migration `000016_enable_pgvector`, a plain `CREATE EXTENSION IF NOT EXISTS vector` (measured: a non-superuser passes only when the extension exists). **ISS-031's fix:** `000014`'s foreign key declared inside `CREATE TABLE`, which was measured to give an identical schema. The image swap in compose, both harnesses (reuse container renamed) and CI, pinned by digest. The gate, in a scratch database: seeded at **10**, seeded further at 12, then one `up` as a `NOSUPERUSER NOBYPASSRLS` owner. It fails on `main` and passes after. **Deletes `pkg/vectordb`.** | 9–13 h |
 | **22-02** | **The partitioned `chunks` table, and every writer of it** (P1, P2, P3, P4, P7, P17). Migration `000017`:<br>(1) drop `retrievals_chunk_id_fkey`;<br>(2) create `symbols` (D1, with `archived_at`, RLS, the trigger and the tenant guarantee);<br>(3) drop `chunks` and recreate it partitioned by `HASH (organization_id)` `MODULUS 64`, with `organization_id`, the tenant guarantee (P3), `embedding vector(1536)`, `embedding_model` (P4) and a nullable `symbol_id` (P7); RLS, FORCE and the policy on the parent **and all 64 partitions**; `trg_assert_tenant`; the indexes.<br>Tests: the partition-RLS guard; the measured cross-tenant leak written as a test; `Subplans Removed`; a misfiled row rejected; cascades; the drift query.<br>**Every Go and Python writer of `chunks` moves in the same PR**, or CI goes red on `main`. That includes `PostgresWriter` writing each chunk with its vector (moved here from 22-03). The repository delete stays honest about feedback (P17). | 16–22 h |
-| **22-03** | **Retrieval on pgvector; Qdrant retired** (P4, P5, P6, P15). The vector leg becomes SQL under RLS, with `relaxed_order` and an exact re-sort, and never compares across models. The keyword leg drops the latest-run filter. Qdrant is removed from the pipeline, code, compose, dependencies and the harness, and the harness gains a compose guard. The vector-leg isolation test. **The equivalence gate:** the same ada-002 vectors are read through Qdrant and through pgvector, under a rule fixed in the plan. | 12–18 h |
-| **22-04** | **Fetching a repository safely** (P10). The backend's internal listener and token route (one repository, `contents: read`, one hour, live lease only, byte-identical 404). The worker's archive fetcher at an exact SHA, with U6's caps (500 MB applied to both the download and the expansion, as the bomb guard), U7's deny-list, and the vendored, generated and binary filters. Hostile-archive tests with their premises asserted. Redaction tested against captured logs. The per-job directory lifecycle. | 14–20 h |
-| **22-05** | **The `full_ingest` handler, and the worker switched on.** Stages `fetch → parse → embed → store`. The run is resolved and attached. `write_results` replaces the repository's chunks inside `complete()`'s transaction. **A new fourth ending, `Rejected`**, so a cap ends the job `dead` in one attempt (U6). `REGISTRY` gets both keys. P16's numbers, provisional. Compose's `workers` service, never with the App key. An end-to-end test through the real worker, with fakes at the network edges. **The live proof: `AlecAsdourian/ES-SC-API-Navigator`**, indexed from the development App into a scratch database and searched through the RAG API's `/search`. | 12–18 h |
+| **22-03** | **Retrieval on pgvector; Qdrant retired** (P4, P5, P6, P15). **First**, a complete Qdrant-era baseline: cached query vectors, per-leg and fused results, the Qdrant point set, and the exact top 50. **Then** the vector leg becomes SQL under RLS (`relaxed_order` with an exact re-sort, never across models); the keyword leg drops the latest-run filter; the tests run as the app role; the HNSW-eligibility proof and the **breadcrumb-index proof (owned here)** use measured plan shapes. The equivalence gate runs on the same database and vectors, under a rule committed first. **Only then** is Qdrant retired everywhere. | 14–20 h |
+| **22-04** | **Fetching a repository safely** (P10). The backend's internal listener and token route (one repository, `contents: read`, one hour, live lease only, byte-identical 404). The worker's archive fetcher at an exact SHA, with U6's caps (500 MB applied to both the download and the expansion, as the bomb guard), U7's deny-list, and the vendored, generated and binary filters. Hostile-archive tests with their premises asserted. Redaction tested against captured logs. The per-job directory lifecycle. The distinct `409` exceptions for suspended and uninstalled installations. **A measurement on the largest benchmark repository** (mealie, public, pinned). | 15–22 h |
+| **22-05** | **The `full_ingest` handler, and the worker switched on.** Stages `fetch → parse → embed → store`, with `store` reported before `write_results`. `write_results` replaces the repository's chunks inside `complete()`'s transaction. **The endings:**<br>• `Rejected` (a cap ends the job `dead` in one attempt);<br>• a mid-run suspension defers and a mid-run uninstall abandons, as at claim time;<br>• a refused token raises `LeaseLost`, so nothing is written.<br>`REGISTRY` gets both keys, and the entrypoint test is changed deliberately. P16's numbers, provisional. Compose's `workers` sits behind a profile, never with the App key. An end-to-end test as the app role. **The live proof: `AlecAsdourian/ES-SC-API-Navigator`** (the user approved it), in a scratch database, every process running as `rag_doc_app`. | 14–20 h |
 
 **Phase 22 ends with a real GitHub repository indexed end to end**: connect →
 queue → worker → pgvector → search, under tenant isolation on both legs.
@@ -720,14 +793,27 @@ All eight were applied to `ROADMAP.md` on 2026-09-17.
 
 These are technical, for the plans to settle. None needs the user.
 
-- **The archive redirect URL.** For a private repository, the redirect link
-  carries a short-lived credential of its own [not verified]. 22-04 confirms its
-  shape and makes sure nothing logs it.
-- **`CREATE EXTENSION IF NOT EXISTS` when the migration role is not a superuser.**
-  Confirm on the Phase 24 host whether the privilege check is skipped when the
-  extension already exists.
-- **The breadcrumb GIN index.** The query's `COALESCE(breadcrumb, '')` does not
-  match the index expression. 22-02 makes them agree and proves it with `EXPLAIN`.
+- **The archive redirect URL.** Whether a private repository's redirect link
+  carries a credential of its own is **not verified**. 22-04 records a public
+  repository's link and 22-05 a private one's, both by query-parameter **names**
+  only, and nothing logs either.
+- **`CREATE EXTENSION IF NOT EXISTS` as a non-superuser: answered, measured
+  2026-09-17.**
+  - With the extension present: a NOTICE, and success.
+  - With it absent: `permission denied … Must be superuser`.
+
+  So production's operator creates it once. 22-01 tests both cases. The
+  remaining Phase 24 check is only whether the chosen host lets its admin role
+  create it.
+- **The breadcrumb GIN index.** 000006 indexed the bare column; the query uses
+  `COALESCE(breadcrumb, '')`. 22-02 creates the matching index, and **22-03 owns
+  the proof**, using a plan shape measured to tell a match from a mismatch.
+- **Whether ada-002 returns identical vectors across calls.** Not verified.
+  22-03 sidesteps it by caching query vectors once.
+- **Qdrant's `full_scan_threshold` behaviour.** Not verified. 22-03's gate
+  measures the Qdrant leg against exact search instead of assuming it.
+- **Host port 5434** is compose's mapping, and today it is bound by another
+  project's container (`brickt-1239-pg`). No plan may assume it is ours.
 - **OpenAI throughput.** The key's tokens-per-minute limit may cap the pool
   before Postgres does. 22.1-05 measures it.
 - **Doc-comment-only changes and staleness.** This is a D4 question, recorded
