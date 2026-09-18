@@ -244,7 +244,7 @@ Where each item lands:
 | D2 | a multi-tenant recall test against exact search | 22.1-05 (with the 2026-09-17 correction on what it must seed) |
 | D2 | `EXPLAIN` shows `Subplans Removed` | 22-02 |
 | D3 | a traversal over a cyclic fixture terminates | 22.1-04 |
-| D3 | tier 2 upgrades tier 1 in place; tier 1 never downgrades tier 2 | 22-02 (the SQL rule, tested before tier 2 exists) |
+| D3 | tier 2 upgrades tier 1 in place; tier 1 never downgrades tier 2 | 22.1-04 (the SQL rule, tested when `symbol_edges` is created; moved from 22-02) |
 | D5 | cross-organization re-parent is rejected | already built (000013, 21-01) |
 | D5 | a child row whose tenant disagrees with its repository is rejected at write time | 22-02 |
 | D5 | a trigger-disabled bulk load leaves no drift, or is documented as forbidden | 22-02 |
@@ -534,7 +534,8 @@ What goes:
 - `QDRANT_URL` in `api/main.py`
 - the harness's Qdrant-based clear and state checks
 - `qdrant-client`
-- `pkg/vectordb` and its `go.mod` dependency (K2: dead code in any case)
+- `pkg/vectordb` and its `go.mod` dependency (K2: dead code in any case). This
+  one is deleted in 22-01, since the plans were written.
 
 Keeping both stores for any stretch is the consistency hazard D2 exists to remove.
 
@@ -580,18 +581,31 @@ progress and the graph resolver are not on the path to a first real repository.
 So the first phase ends with one real repository indexed end to end, and the
 second builds the substrate onto a pipeline already proven.
 
+**Revised 2026-09-17, when the plans were written.** Four boundaries moved:
+- **`symbol_edges` moved from 22-02 to 22.1-04.** Nothing in Phase 22 writes it,
+  22-02 is already the largest migration, and its reconciliation rule is better
+  tested beside its writer.
+- **Deleting `pkg/vectordb` moved from 22-02 to 22-01.** It is Go-only dead code
+  (K2).
+- **`PostgresWriter` writing vectors moved from 22-03 to 22-02.** The new table
+  requires them, so the migration and every writer must land in one PR.
+- **22-05 gained a fourth handler ending, `Rejected`.** U6's "ends `dead`" needs
+  it.
+
+The Phase 22 estimate is now ~60–87 h.
+
 **This list is the authority for plan scope.** `ROADMAP.md` carries one line per
 plan and points here. `STATE.md` points here and keeps no copy.
 
-### Phase 22 — pgvector storage and the first real repository (~57–80 h)
+### Phase 22 — pgvector storage and the first real repository (~60–87 h)
 
 | Plan | Scope | Est. |
 |---|---|---|
-| **22-01** | **pgvector everywhere, and the seeded-migration gate** (P13, P14). Image swap in compose, both harnesses (reuse container renamed) and CI, pinned by digest. ISS-031's seeded-database migration check in `backend-ci.yml`: a seed fixture covering every tenant table, applied at N−1, then `up`, then assertions. `--shm-size` documented. | 5–8 h |
-| **22-02** | **The storage migration** (P1, P2, P3, P7, P17). Four parts:<br>(1) `CREATE EXTENSION vector`; drop `retrievals_chunk_id_fkey`.<br>(2) Drop `chunks` and recreate it partitioned by `HASH (organization_id)` `MODULUS 64`, with: `organization_id`; the tenant guarantee (P3); `embedding vector(1536)`; `embedding_model` (P4); a nullable `symbol_id`; RLS, FORCE and the policy on the parent **and all 64 partitions**; `trg_assert_tenant`; indexes (HNSW, `organization_id`, `(repository_id, file_path)`, `content_hash`, and keyword GIN whose breadcrumb expression matches the query).<br>(3) `symbols` (D1, with `archived_at`, RLS, the trigger and the tenant guarantee) and `symbol_edges` (D3, likewise).<br>(4) Tests: the partition-RLS guard; a direct cross-tenant partition read and write refused; `Subplans Removed`; a misfiled row rejected; the drift query in CI; D3's upgrade and no-downgrade SQL rule. Update `protectedTables`. Keep the repository delete honest about feedback now that the cascade stops at `chunks` (P17). Delete `pkg/vectordb`. | 12–16 h |
-| **22-03** | **Pipeline and retrieval on pgvector; Qdrant retired** (P5, P6, P15).<br>The writer takes the caller's cursor and writes chunk and vector rows (the `write_results` shape), and every chunk gets its vector. The vector leg becomes SQL; the keyword leg drops the latest-run filter. Qdrant is removed from the code, compose, the API and the harness.<br>Adds the vector-leg isolation test that could never be written against Qdrant, and **the equivalence check**: re-ingest the three corpora on pgvector with ada-002, and explain every rank that differs from the Qdrant-era run. | 14–20 h |
-| **22-04** | **Fetching a repository safely** (P10).<br>The backend's internal token route (one repository, `contents: read`, one hour, lease-checked). The archive fetcher, with U6's caps and U7's deny-list plus the vendored/generated/binary filters. Hostile-archive fixtures: traversal, a symlink pointing out, an oversized file, a decompression bomb. A redaction test that pushes a realistic fetch failure through `sanitize_error`. The temporary-directory lifecycle. | 14–20 h |
-| **22-05** | **The `full_ingest` handler, and the worker switched on.**<br>Stages `fetch → parse → embed → store`, reported through `report_progress`. The run is resolved and attached. `write_results` deletes the repository's chunks and inserts the new ones, inside `complete()`'s transaction. `Unfinished` is raised only on shutdown.<br>Fill `REGISTRY` with both keys; `incremental` runs the full path until 22.1-02. Compose's `workers` service gets `DATABASE_URL`, the OpenAI key and the token route's address — **never the App key**. P16's numbers.<br>An end-to-end test through the real worker, against a fake GitHub serving an archive. **Then a real repository is connected through the development App, indexed, and answered from `/api/search`.** | 12–16 h |
+| **22-01** | **pgvector everywhere, and the seeded-migration gate** (P13, P14). Migration `000016_enable_pgvector`, guarded so a non-superuser owner never calls `CREATE EXTENSION`. The image swap in compose, both harnesses (reuse container renamed) and CI, pinned by digest. ISS-031's gate: a Go test that seeds a fresh database at **migration 10** (the compose database's measured version), runs `up` as a `NOSUPERUSER NOBYPASSRLS` owner, and asserts each later migration's effect. `--shm-size` documented. **Deletes `pkg/vectordb`** (moved here from 22-02). | 6–9 h |
+| **22-02** | **The partitioned `chunks` table, and every writer of it** (P1, P2, P3, P4, P7, P17). Migration `000017`:<br>(1) drop `retrievals_chunk_id_fkey`;<br>(2) create `symbols` (D1, with `archived_at`, RLS, the trigger and the tenant guarantee);<br>(3) drop `chunks` and recreate it partitioned by `HASH (organization_id)` `MODULUS 64`, with `organization_id`, the tenant guarantee (P3), `embedding vector(1536)`, `embedding_model` (P4) and a nullable `symbol_id` (P7); RLS, FORCE and the policy on the parent **and all 64 partitions**; `trg_assert_tenant`; the indexes.<br>Tests: the partition-RLS guard; the measured cross-tenant leak written as a test; `Subplans Removed`; a misfiled row rejected; cascades; the drift query.<br>**Every Go and Python writer of `chunks` moves in the same PR**, or CI goes red on `main`. That includes `PostgresWriter` writing each chunk with its vector (moved here from 22-03). The repository delete stays honest about feedback (P17). | 16–22 h |
+| **22-03** | **Retrieval on pgvector; Qdrant retired** (P4, P5, P6, P15). The vector leg becomes SQL under RLS, with `relaxed_order` and an exact re-sort, and never compares across models. The keyword leg drops the latest-run filter. Qdrant is removed from the pipeline, code, compose, dependencies and the harness, and the harness gains a compose guard. The vector-leg isolation test. **The equivalence gate:** the same ada-002 vectors are read through Qdrant and through pgvector, under a rule fixed in the plan. | 12–18 h |
+| **22-04** | **Fetching a repository safely** (P10). The backend's internal listener and token route (one repository, `contents: read`, one hour, live lease only, byte-identical 404). The worker's archive fetcher at an exact SHA, with U6's caps (500 MB applied to both the download and the expansion, as the bomb guard), U7's deny-list, and the vendored, generated and binary filters. Hostile-archive tests with their premises asserted. Redaction tested against captured logs. The per-job directory lifecycle. | 14–20 h |
+| **22-05** | **The `full_ingest` handler, and the worker switched on.** Stages `fetch → parse → embed → store`. The run is resolved and attached. `write_results` replaces the repository's chunks inside `complete()`'s transaction. **A new fourth ending, `Rejected`**, so a cap ends the job `dead` in one attempt (U6). `REGISTRY` gets both keys. P16's numbers, provisional. Compose's `workers` service, never with the App key. An end-to-end test through the real worker, with fakes at the network edges. **The live proof: `AlecAsdourian/ES-SC-API-Navigator`**, indexed from the development App into a scratch database and searched through the RAG API's `/search`. | 12–18 h |
 
 **Phase 22 ends with a real GitHub repository indexed end to end**: connect →
 queue → worker → pgvector → search, under tenant isolation on both legs.
@@ -603,7 +617,7 @@ queue → worker → pgvector → search, under tenant isolation on both legs.
 | **22.1-01** | **D1 symbol identity from the chunker** (P8). Full-chain `symbol_path`, `kind`, `ordinal`, a span that includes decorators and doc comments, `span_digest`, `module` symbols, Go non-struct types and constants as symbols, and the alias rule. Upsert-and-unarchive. Chunks linked to symbols. D1's first two verification criteria. Python and Go only; TypeScript waits for the quality track's grammar decision. | 14–20 h |
 | **22.1-02** | **Incremental ingestion** (P11). The file manifest (a small migration), per-file delete-and-insert, symbol archival, embedding reuse, and `incremental` made distinct from `full_ingest`. Tests for a force-push, a missed push, and a file deleted then restored (D1's resurrection path). **Closes ISS-027.** | 12–16 h |
 | **22.1-03** | **The progress contract and ISS-034** (P12). A documented `progress` schema. The repository's current or last job made reachable from the repository API; ISS-034 offers two shapes and the plan chooses. A deliberately written, mutation-checked isolation test, because `ingestion_jobs` has no RLS and the CI gate ignores `GET`s. | 6–10 h |
-| **22.1-04** | **D3 tier 1** (P9). Call-site and import candidates from the parser. The resolver (imports plus scope matching) writes `symbol_edges` with `to_symbol_name` always set. The reconciliation rule. A `CYCLE`-safe traversal helper, tested on a cyclic fixture. Archived symbols excluded. D1's re-export criterion. | 20–30 h |
+| **22.1-04** | **D3 tier 1** (P9). **Creates `symbol_edges`** (D3's DDL; moved here from 22-02), testing D3's upgrade and no-downgrade SQL rule first. Call-site and import candidates from the parser. The resolver (imports plus scope matching) writes `symbol_edges` with `to_symbol_name` always set. The reconciliation rule. A `CYCLE`-safe traversal helper, tested on a cyclic fixture. Archived symbols excluded. D1's re-export criterion. | 20–30 h |
 | **22.1-05** | **D2's recall test and the operating numbers.**<br>A multi-tenant, multi-repository recall test, seeded with the benchmark corpora's **real** embeddings copied into synthetic tenants. It needs: at least one tenant large enough that the planner uses HNSW (asserted in the test); repositories filtered inside a partition; a partition shared by several tenants; an exact baseline in the same scope; and assertions on recall **and** on short results.<br>Per-stage ingest timings over the three corpora and one large public repository, both full and incremental. The pool size, `max_job_duration` and the OpenAI throughput ceiling are then set from those timings. | 8–12 h |
 
 ### The rejected alternative, kept for its reasoning: foundation first (U1 option B)
