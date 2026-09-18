@@ -588,7 +588,7 @@ func migrateEmptyInDeploymentShape(t *testing.T, pool *pgxpool.Pool, dir string)
 // name: their names embed OIDs, which differ between any two databases.
 var catalogQueries = []struct{ section, sql string }{
 	{"constraint", `
-		SELECT conrelid::regclass::text, conname, contype, pg_get_constraintdef(oid),
+		SELECT conrelid::regclass::text, conname, contype::text, pg_get_constraintdef(oid),
 		       convalidated, condeferrable, condeferred
 		FROM pg_constraint WHERE connamespace = 'public'::regnamespace
 		ORDER BY 1, 2`},
@@ -601,12 +601,12 @@ var catalogQueries = []struct{ section, sql string }{
 		FROM information_schema.columns WHERE table_schema = 'public'
 		ORDER BY 1, 2`},
 	{"trigger", `
-		SELECT tgrelid::regclass::text, tgname, pg_get_triggerdef(oid), tgenabled
+		SELECT tgrelid::regclass::text, tgname, pg_get_triggerdef(oid), tgenabled::text
 		FROM pg_trigger WHERE NOT tgisinternal
 		ORDER BY 1, 2`},
 	{"internal trigger", `
-		SELECT t.tgrelid::regclass::text, c.conname, t.tgfoid::regproc::text, t.tgtype,
-		       t.tgenabled, t.tgdeferrable, t.tginitdeferred
+		SELECT t.tgrelid::regclass::text, c.conname, t.tgfoid::regproc::text, t.tgtype::text,
+		       t.tgenabled::text, t.tgdeferrable, t.tginitdeferred
 		FROM pg_trigger t JOIN pg_constraint c ON c.oid = t.tgconstraint
 		WHERE t.tgisinternal
 		ORDER BY 1, 2, 3, 4`},
@@ -615,7 +615,7 @@ var catalogQueries = []struct{ section, sql string }{
 		FROM pg_policies WHERE schemaname = 'public'
 		ORDER BY 1, 2`},
 	{"relation", `
-		SELECT relname, relkind, relrowsecurity, relforcerowsecurity,
+		SELECT relname, relkind::text, relrowsecurity, relforcerowsecurity,
 		       pg_get_userbyid(relowner), obj_description(oid, 'pg_class')
 		FROM pg_class WHERE relnamespace = 'public'::regnamespace
 		ORDER BY 1`},
@@ -625,9 +625,13 @@ var catalogQueries = []struct{ section, sql string }{
 		WHERE c.relnamespace = 'public'::regnamespace AND a.attnum > 0
 		  AND col_description(c.oid, a.attnum) IS NOT NULL
 		ORDER BY 1, 2`},
+	// A function body keeps the line endings of the file that created it, so
+	// a Windows checkout (CRLF) and `git show` output (LF) differ here with no
+	// difference in the schema. Measured in 22-01; carriage returns are
+	// stripped before hashing.
 	{"function", `
 		SELECT p.proname, pg_get_function_identity_arguments(p.oid),
-		       md5(pg_get_functiondef(p.oid))
+		       md5(replace(pg_get_functiondef(p.oid), E'\r', ''))
 		FROM pg_proc p
 		WHERE p.pronamespace = 'public'::regnamespace AND p.prokind IN ('f', 'p')
 		ORDER BY 1, 2`},
