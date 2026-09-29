@@ -46,9 +46,11 @@ def main():
     # Sample files from this project
     project_root = Path(__file__).parent.parent.parent.parent
     sample_files = [
+        # pkg/vectordb/client.go was the Go sample until 22-01 deleted the
+        # package; the GitHub App client is the Go file of similar size.
         (
-            "services/backend/pkg/vectordb/client.go",
-            project_root / "services/backend/pkg/vectordb/client.go",
+            "services/backend/pkg/github/client.go",
+            project_root / "services/backend/pkg/github/client.go",
             "go"
         ),
         (

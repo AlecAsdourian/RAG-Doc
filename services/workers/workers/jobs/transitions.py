@@ -7,7 +7,8 @@ two halves share one thing, and it is the point of the design: **the SQL**.
 Every statement below that also exists in Go was lifted from
 `pkg/jobs/schema_test.go` and `pkg/jobs/producer.go` as they stand on
 `main`, with `$n` rewritten to psycopg2's `%s`. 21-02 ran each of them
-against `postgres:16-alpine`, the version we deploy.
+against PostgreSQL 16 (`postgres:16-alpine` at the time; since 22-01 the
+image is `pgvector/pgvector:pg16`, still PostgreSQL 16).
 
 PR #41's review diffed all seven mechanically and **six are byte-identical**
 once `$n` is rewritten: `completeSQL`, `claimSQL`, `sweepSQL`, `failSQL`,
