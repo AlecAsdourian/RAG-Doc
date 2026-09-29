@@ -25,6 +25,10 @@ openai>=1.0.0
 tiktoken>=0.5.0
 tenacity>=8.2.0
 
+# HTTP client for the repository fetcher (workers.fetch, 22-04). Explicit,
+# because until then it arrived only as openai's dependency.
+httpx>=0.28.0
+
 # Database clients
 psycopg2-binary>=2.9.0
 qdrant-client>=1.7.0

@@ -1,0 +1,652 @@
+"""Hostile archives against the extractor and the walk (22-04).
+
+EVERY ARCHIVE IS ASSERTED TO CONTAIN ITS HOSTILE MEMBER before it is fed to
+the extractor, by listing it with `tarfile`. An archive that silently lost
+its symlink when it was built tests nothing (Phase 21's lesson: ask what
+the fixture cannot distinguish). And after every run, NOTHING may exist
+outside `dest/`: the test lists the whole temporary directory.
+
+The guards under test, and the mutation each case kills (recorded in
+22-04-SUMMARY.md):
+
+- the header check (type, path, top-level directory, size) and
+  `filter="data"` -- each holds alone, both removed lets traversal through;
+- the expanded-bytes counter -- the bomb guard;
+- the name filters before writing -- a secret never lands on disk;
+- `os.walk(followlinks=False)` and `lstat` -- the walk never follows a
+  link that somehow exists on disk.
+
+Symlink-on-disk cases need `os.symlink`, which Windows grants only with a
+privilege this machine does not have; they skip there and run in CI.
+"""
+
+from __future__ import annotations
+
+import gzip
+import io
+import os
+import tarfile
+import uuid
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+
+import pytest
+
+from workers.fetch import (
+    DEFAULT_LIMITS,
+    FetchRejected,
+    Limits,
+    collect_tree,
+    extract_archive,
+    job_directory,
+)
+
+MB = 1024 * 1024
+TOP = "acme-widgets-0123456789ab"
+SECRET = "AKIA-SENTINEL-MUST-NOT-BE-INDEXED"
+
+
+def _symlinks_available() -> bool:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        target = os.path.join(d, "t")
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write("x")
+        try:
+            os.symlink(target, os.path.join(d, "l"))
+        except (OSError, NotImplementedError):
+            return False
+    return True
+
+
+SYMLINKS = _symlinks_available()
+needs_symlinks = pytest.mark.skipif(not SYMLINKS, reason="os.symlink needs a privilege this host lacks")
+
+
+# ---------------------------------------------------------------------
+# Building archives
+# ---------------------------------------------------------------------
+
+
+class Member:
+    """One tar member to write. `kind` is tarfile's type byte."""
+
+    def __init__(
+        self,
+        name: str,
+        data: bytes = b"",
+        kind: bytes = tarfile.REGTYPE,
+        linkname: str = "",
+        size: Optional[int] = None,
+    ) -> None:
+        self.name = name
+        self.data = data
+        self.kind = kind
+        self.linkname = linkname
+        self.size = size
+
+
+def build(members: Iterable[Member]) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for m in members:
+            info = tarfile.TarInfo(m.name)
+            info.type = m.kind
+            info.linkname = m.linkname
+            if m.kind == tarfile.REGTYPE:
+                info.size = len(m.data) if m.size is None else m.size
+                tar.addfile(info, io.BytesIO(m.data))
+            else:
+                tar.addfile(info)
+    return buf.getvalue()
+
+
+def regular(rel: str, data: bytes = b"print('ok')\n") -> Member:
+    return Member(f"{TOP}/{rel}", data)
+
+
+def listing(archive: str) -> Dict[str, tarfile.TarInfo]:
+    with tarfile.open(archive, mode="r:gz") as tar:
+        return {m.name: m for m in tar.getmembers()}
+
+
+def write(tmp_path, data: bytes) -> str:
+    path = os.path.join(str(tmp_path), "archive.tar.gz")
+    with open(path, "wb") as fh:
+        fh.write(data)
+    return path
+
+
+def run(tmp_path, archive: str, limits: Limits = DEFAULT_LIMITS):
+    dest = os.path.join(str(tmp_path), "dest")
+    stats = extract_archive(archive, dest, limits)
+    files, walk_skipped = collect_tree(dest, limits)
+    return stats, files, walk_skipped, dest
+
+
+def everything_under(root: str) -> List[str]:
+    """Every file, link or special entry under root, relative, POSIX style."""
+    found: List[str] = []
+    for current, dirs, names in os.walk(root, followlinks=False):
+        for d in list(dirs):
+            if os.path.islink(os.path.join(current, d)):
+                found.append(os.path.relpath(os.path.join(current, d), root).replace(os.sep, "/") + "@")
+                dirs.remove(d)
+        for n in names:
+            found.append(os.path.relpath(os.path.join(current, n), root).replace(os.sep, "/"))
+    return sorted(found)
+
+
+def assert_nothing_outside_dest(tmp_path, extra_allowed: Sequence[str] = ()) -> None:
+    """Only the archive and dest/ may exist under tmp_path."""
+    for entry in everything_under(str(tmp_path)):
+        assert entry == "archive.tar.gz" or entry.startswith("dest/") or entry in extra_allowed, (
+            f"{entry} landed outside dest/"
+        )
+    parent = os.path.dirname(str(tmp_path))
+    assert not os.path.lexists(os.path.join(parent, "escape.py"))
+    assert not os.path.lexists(os.path.join(str(tmp_path), "escape.py"))
+
+
+# ---------------------------------------------------------------------
+# A benign archive, first: the fixture can distinguish good from bad
+# ---------------------------------------------------------------------
+
+
+def test_a_benign_archive_is_extracted_under_its_stripped_top_level(tmp_path) -> None:
+    archive = write(
+        tmp_path,
+        build(
+            [
+                Member(TOP, kind=tarfile.DIRTYPE),
+                Member(f"{TOP}/src", kind=tarfile.DIRTYPE),
+                regular("src/a.py", b"print(1)\n"),
+                regular("README.md", b"# hi\n"),
+                regular("pkg/b.go", b"package b\n"),
+            ]
+        ),
+    )
+    stats, files, walk_skipped, dest = run(tmp_path, archive)
+    assert stats.top_level == TOP
+    assert stats.files_written == 3
+    assert stats.members_seen == 5
+    assert [(f.path, f.language) for f in files] == [
+        ("README.md", "markdown"),
+        ("pkg/b.go", "go"),
+        ("src/a.py", "python"),
+    ]
+    assert files[2].content == "print(1)\n"
+    assert walk_skipped == {}
+    assert everything_under(dest) == ["README.md", "pkg/b.go", "src/a.py"]
+    assert_nothing_outside_dest(tmp_path)
+
+
+# ---------------------------------------------------------------------
+# Traversal and absolute paths
+# ---------------------------------------------------------------------
+
+
+def test_dot_dot_traversal_is_refused(tmp_path) -> None:
+    archive = write(tmp_path, build([regular("src/a.py"), Member(f"{TOP}/../escape.py", b"escaped\n")]))
+    members = listing(archive)
+    assert f"{TOP}/../escape.py" in members, "premise: the hostile member is in the archive"
+    assert members[f"{TOP}/../escape.py"].isreg()
+
+    stats, files, _, dest = run(tmp_path, archive)
+    assert stats.skipped.get("unsafe_path") == 1
+    assert [f.path for f in files] == ["src/a.py"]
+    assert everything_under(dest) == ["src/a.py"]
+    assert_nothing_outside_dest(tmp_path)
+
+
+def test_dot_dot_traversal_without_a_top_level_directory_is_refused(tmp_path) -> None:
+    archive = write(tmp_path, build([regular("src/a.py"), Member("../escape.py", b"escaped\n")]))
+    assert "../escape.py" in listing(archive)
+
+    stats, files, _, dest = run(tmp_path, archive)
+    assert stats.skipped.get("unsafe_path") == 1
+    assert everything_under(dest) == ["src/a.py"]
+    assert_nothing_outside_dest(tmp_path)
+
+
+def test_an_absolute_path_is_refused(tmp_path) -> None:
+    archive = write(tmp_path, build([regular("src/a.py"), Member("/etc/abs.py", b"abs\n")]))
+    assert "/etc/abs.py" in listing(archive), "premise"
+
+    stats, files, _, dest = run(tmp_path, archive)
+    assert stats.skipped.get("unsafe_path") == 1
+    assert everything_under(dest) == ["src/a.py"]
+    assert not os.path.exists(os.path.join(dest, "etc", "abs.py"))
+    assert_nothing_outside_dest(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        f"{TOP}\\..\\escape.py",  # a backslash separator
+        "C:/escape.py",  # a drive letter
+        f"{TOP}/./escape.py",  # a dot component
+        f"{TOP}//escape.py",  # an empty component
+        f"{TOP}/sub/../../escape.py",  # traversal from a subdirectory
+    ],
+)
+def test_other_unsafe_spellings_are_refused(tmp_path, name: str) -> None:
+    archive = write(tmp_path, build([regular("src/a.py"), Member(name, b"x\n")]))
+    assert name in listing(archive), "premise"
+
+    stats, files, _, dest = run(tmp_path, archive)
+    assert stats.skipped.get("unsafe_path") == 1, stats.skipped
+    assert everything_under(dest) == ["src/a.py"]
+    assert_nothing_outside_dest(tmp_path)
+
+
+def test_a_second_top_level_directory_is_refused(tmp_path) -> None:
+    # GitHub's archives have exactly one. A member under another top-level
+    # name is not from the archive we asked for.
+    archive = write(tmp_path, build([regular("src/a.py"), Member("other-top/src/b.py", b"x\n")]))
+    stats, files, _, dest = run(tmp_path, archive)
+    assert stats.skipped.get("unexpected_top_level") == 1
+    assert everything_under(dest) == ["src/a.py"]
+
+
+# ---------------------------------------------------------------------
+# Links and special files
+# ---------------------------------------------------------------------
+
+
+def test_a_symlink_to_an_absolute_path_is_skipped(tmp_path) -> None:
+    archive = write(
+        tmp_path,
+        build(
+            [
+                regular("src/a.py"),
+                Member(f"{TOP}/link.py", kind=tarfile.SYMTYPE, linkname="/etc/passwd"),
+            ]
+        ),
+    )
+    member = listing(archive)[f"{TOP}/link.py"]
+    assert member.issym() and member.linkname == "/etc/passwd", "premise"
+
+    stats, files, _, dest = run(tmp_path, archive)
+    assert stats.skipped.get("symlink") == 1
+    assert [f.path for f in files] == ["src/a.py"]
+    assert everything_under(dest) == ["src/a.py"]
+    assert not os.path.lexists(os.path.join(dest, "link.py"))
+
+
+def test_a_symlink_to_dot_dot_is_skipped(tmp_path) -> None:
+    archive = write(
+        tmp_path,
+        build([regular("src/a.py"), Member(f"{TOP}/up", kind=tarfile.SYMTYPE, linkname="..")]),
+    )
+    member = listing(archive)[f"{TOP}/up"]
+    assert member.issym() and member.linkname == "..", "premise"
+
+    stats, _, _, dest = run(tmp_path, archive)
+    assert stats.skipped.get("symlink") == 1
+    assert everything_under(dest) == ["src/a.py"]
+
+
+def test_a_symlink_inside_the_tree_is_skipped_too(tmp_path) -> None:
+    # The `data` filter ALLOWS a link that stays inside the destination;
+    # the type check is what keeps it out. Sibling links are legitimate in
+    # repositories, and they are still never followed.
+    archive = write(
+        tmp_path,
+        build([regular("src/a.py"), Member(f"{TOP}/alias.py", kind=tarfile.SYMTYPE, linkname="src/a.py")]),
+    )
+    assert listing(archive)[f"{TOP}/alias.py"].issym(), "premise"
+
+    stats, files, _, dest = run(tmp_path, archive)
+    assert stats.skipped.get("symlink") == 1
+    assert [f.path for f in files] == ["src/a.py"]
+    assert everything_under(dest) == ["src/a.py"]
+
+
+def test_a_hardlink_to_a_path_outside_is_skipped(tmp_path) -> None:
+    archive = write(
+        tmp_path,
+        build(
+            [
+                regular("src/a.py"),
+                Member(f"{TOP}/hard.py", kind=tarfile.LNKTYPE, linkname="../../outside.py"),
+            ]
+        ),
+    )
+    member = listing(archive)[f"{TOP}/hard.py"]
+    assert member.islnk() and member.linkname == "../../outside.py", "premise"
+
+    stats, files, _, dest = run(tmp_path, archive)
+    assert stats.skipped.get("hardlink") == 1
+    assert everything_under(dest) == ["src/a.py"]
+    assert_nothing_outside_dest(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "kind, label",
+    [(tarfile.FIFOTYPE, "fifo"), (tarfile.CHRTYPE, "chr"), (tarfile.BLKTYPE, "blk")],
+)
+def test_special_entries_are_skipped(tmp_path, kind: bytes, label: str) -> None:
+    archive = write(tmp_path, build([regular("src/a.py"), Member(f"{TOP}/dev-{label}", kind=kind)]))
+    member = listing(archive)[f"{TOP}/dev-{label}"]
+    assert member.type == kind and not member.isreg(), "premise"
+
+    stats, _, _, dest = run(tmp_path, archive)
+    assert stats.skipped.get("special") == 1
+    assert everything_under(dest) == ["src/a.py"]
+
+
+# ---------------------------------------------------------------------
+# Sizes and bombs
+# ---------------------------------------------------------------------
+
+
+def test_a_two_megabyte_file_is_skipped_and_counted(tmp_path) -> None:
+    big = b"# " + b"x" * (2 * MB)
+    archive = write(tmp_path, build([regular("src/a.py"), regular("src/big.py", big)]))
+    assert listing(archive)[f"{TOP}/src/big.py"].size == len(big), "premise"
+
+    stats, files, _, dest = run(tmp_path, archive)
+    assert stats.skipped.get("oversize_file") == 1
+    assert [f.path for f in files] == ["src/a.py"]
+    assert everything_under(dest) == ["src/a.py"], "the oversize file must not be written at all"
+
+
+def test_a_file_exactly_at_the_cap_is_kept(tmp_path) -> None:
+    exact = b"x" * MB
+    archive = write(tmp_path, build([regular("src/exact.py", exact)]))
+    stats, files, _, _ = run(tmp_path, archive)
+    assert stats.files_written == 1
+    assert len(files[0].content) == MB
+
+
+def test_a_decompression_bomb_is_rejected_within_one_member_of_the_cap(tmp_path) -> None:
+    # Ten members of 400 KB of zeros: a few KB compressed, 4 MB expanded.
+    # With the expansion cap at 1 MB the extractor must stop while reading
+    # the third member, not after reading all ten.
+    member_size = 400 * 1024
+    archive = write(
+        tmp_path,
+        build([regular(f"src/z{i}.py", b"\x00" * member_size) for i in range(10)]),
+    )
+    assert os.path.getsize(archive) < 64 * 1024, "premise: the archive is small on disk"
+    assert len(listing(archive)) == 10, "premise: ten members"
+
+    limits = Limits(max_expanded_bytes=1 * MB)
+    dest = os.path.join(str(tmp_path), "dest")
+    with pytest.raises(FetchRejected) as raised:
+        extract_archive(archive, dest, limits)
+    assert "expands past" in raised.value.reason
+    assert 0 < raised.value.members_seen <= 4, (
+        f"stopped after {raised.value.members_seen} members; must be within one member of "
+        f"the cap ({MB // member_size} members), not after reading all ten"
+    )
+    written = everything_under(dest)
+    assert len(written) <= 3, written
+
+
+def test_the_expansion_cap_counts_the_whole_tar_stream_not_only_payloads(tmp_path) -> None:
+    # A header bomb: many zero-byte members. Their payload is 0 bytes but
+    # the tar stream is 512 bytes of header each, and that is what fills a
+    # disk with inodes and a CPU with parsing. 4,000 empty files = 2 MB of
+    # headers against a 1 MB cap.
+    archive = write(tmp_path, build([Member(f"{TOP}/assets/{i}.bin", b"") for i in range(4000)]))
+    limits = Limits(max_expanded_bytes=1 * MB)
+    with pytest.raises(FetchRejected) as raised:
+        extract_archive(archive, os.path.join(str(tmp_path), "dest"), limits)
+    assert raised.value.members_seen < 4000
+
+
+def test_more_than_twenty_thousand_indexable_files_is_rejected_at_the_cap(tmp_path) -> None:
+    # 20,001 indexable files, then a hundred more the extractor must never
+    # reach: `members_seen` proves it stopped at the cap, not at the end.
+    cap = DEFAULT_LIMITS.max_indexable_files
+    archive = write(
+        tmp_path,
+        build([Member(f"{TOP}/src/f{i}.py", b"#\n") for i in range(cap + 1 + 100)]),
+    )
+    with pytest.raises(FetchRejected) as raised:
+        extract_archive(archive, os.path.join(str(tmp_path), "dest"), DEFAULT_LIMITS)
+    assert raised.value.reason == f"more than {cap} indexable files"
+    assert raised.value.members_seen == cap + 1
+
+
+def test_exactly_twenty_thousand_indexable_files_is_allowed(tmp_path) -> None:
+    limits = Limits(max_indexable_files=50)
+    archive = write(tmp_path, build([Member(f"{TOP}/src/f{i}.py", b"#\n") for i in range(50)]))
+    stats, files, _, _ = run(tmp_path, archive, limits)
+    assert stats.files_written == 50
+    assert len(files) == 50
+
+
+def test_the_walk_applies_the_file_cap_too(tmp_path) -> None:
+    # Files planted on disk beside what the extractor wrote are judged by
+    # the walk, which caps independently.
+    dest = os.path.join(str(tmp_path), "dest")
+    os.makedirs(os.path.join(dest, "src"))
+    for i in range(6):
+        with open(os.path.join(dest, "src", f"p{i}.py"), "w", encoding="utf-8") as fh:
+            fh.write("#\n")
+    with pytest.raises(FetchRejected):
+        collect_tree(dest, Limits(max_indexable_files=5))
+
+
+# ---------------------------------------------------------------------
+# Secrets, vendored, binary, encodings
+# ---------------------------------------------------------------------
+
+
+def test_secret_looking_files_beside_real_code_are_never_returned_or_written(tmp_path) -> None:
+    archive = write(
+        tmp_path,
+        build(
+            [
+                regular("src/a.py"),
+                regular(".env", f"AWS_SECRET={SECRET}\n".encode()),
+                regular("deploy/id_rsa", f"-----BEGIN OPENSSH PRIVATE KEY-----\n{SECRET}\n".encode()),
+                regular("certs/server.pem", f"-----BEGIN PRIVATE KEY-----\n{SECRET}\n".encode()),
+            ]
+        ),
+    )
+    members = listing(archive)
+    for name in (f"{TOP}/.env", f"{TOP}/deploy/id_rsa", f"{TOP}/certs/server.pem"):
+        assert name in members and members[name].isreg(), f"premise: {name}"
+
+    stats, files, walk_skipped, dest = run(tmp_path, archive)
+    assert stats.skipped.get("secret") == 3
+    assert [f.path for f in files] == ["src/a.py"]
+    assert all(SECRET not in f.content for f in files)
+    assert everything_under(dest) == ["src/a.py"], "a secret-looking file must never touch the disk"
+    # And the counts carry no paths.
+    assert all(isinstance(v, int) for v in stats.skipped.values())
+    assert "id_rsa" not in repr(stats.skipped) and ".env" not in repr(stats.skipped)
+
+
+def test_a_secret_planted_on_disk_is_still_refused_by_the_walk(tmp_path) -> None:
+    dest = os.path.join(str(tmp_path), "dest")
+    os.makedirs(dest)
+    with open(os.path.join(dest, ".env"), "w", encoding="utf-8") as fh:
+        fh.write(SECRET)
+    with open(os.path.join(dest, "a.py"), "w", encoding="utf-8") as fh:
+        fh.write("#\n")
+    files, skipped = collect_tree(dest)
+    assert [f.path for f in files] == ["a.py"]
+    assert skipped == {"secret": 1}
+
+
+def test_vendored_generated_and_lockfiles_are_skipped_and_counted(tmp_path) -> None:
+    archive = write(
+        tmp_path,
+        build(
+            [
+                regular("src/a.py"),
+                regular("vendor/lib/x.go", b"package x\n"),
+                regular("node_modules/left-pad/index.js", b"x\n"),
+                regular("web/app.min.js", b"x\n"),
+                regular("api/schema_pb2.py", b"x\n"),
+                regular("package-lock.json", b"{}\n"),
+                regular("go.sum", b"\n"),
+                regular("assets/logo.png", b"\x89PNG"),
+            ]
+        ),
+    )
+    stats, files, _, dest = run(tmp_path, archive)
+    assert [f.path for f in files] == ["src/a.py"]
+    assert stats.skipped == {"vendored": 2, "generated": 2, "lockfile": 2, "unsupported": 1}
+    assert everything_under(dest) == ["src/a.py"]
+
+
+def test_a_generated_go_file_is_skipped_by_its_header(tmp_path) -> None:
+    generated = b"// Code generated by protoc-gen-go. DO NOT EDIT.\npackage pb\n"
+    archive = write(tmp_path, build([regular("pkg/gen.go", generated), regular("pkg/real.go", b"package pkg\n")]))
+    _, files, walk_skipped, _ = run(tmp_path, archive)
+    assert [f.path for f in files] == ["pkg/real.go"]
+    assert walk_skipped == {"generated": 1}
+
+
+def test_a_binary_py_file_is_skipped(tmp_path) -> None:
+    binary = b"#!/usr/bin/python\n" + b"\x00\x01\x02\xff" * 100
+    archive = write(tmp_path, build([regular("src/a.py"), regular("src/blob.py", binary)]))
+    assert listing(archive)[f"{TOP}/src/blob.py"].size == len(binary), "premise"
+
+    _, files, walk_skipped, _ = run(tmp_path, archive)
+    assert [f.path for f in files] == ["src/a.py"]
+    assert walk_skipped == {"binary": 1}
+
+
+def test_a_nul_after_the_first_eight_kilobytes_is_not_binary(tmp_path) -> None:
+    text_then_nul = b"# " + b"a" * 9000 + b"\x00"
+    archive = write(tmp_path, build([regular("src/late.py", text_then_nul)]))
+    _, files, walk_skipped, _ = run(tmp_path, archive)
+    # It is not called binary on the NUL alone, but it is not valid UTF-8
+    # text either: the NUL decodes, so the file is returned.
+    assert [f.path for f in files] == ["src/late.py"]
+
+
+def test_non_utf8_content_is_skipped(tmp_path) -> None:
+    latin1 = "# caf\xe9 na\xefve\n".encode("latin-1")
+    archive = write(tmp_path, build([regular("src/a.py"), regular("src/latin.py", latin1)]))
+    _, files, walk_skipped, _ = run(tmp_path, archive)
+    assert [f.path for f in files] == ["src/a.py"]
+    assert walk_skipped == {"non_utf8": 1}
+
+
+def test_a_utf8_bom_is_stripped(tmp_path) -> None:
+    archive = write(tmp_path, build([regular("src/bom.py", "\ufeffprint(1)\n".encode("utf-8"))]))
+    _, files, _, _ = run(tmp_path, archive)
+    assert files[0].content == "print(1)\n"
+
+
+# ---------------------------------------------------------------------
+# The walk never follows a link that exists on disk
+# ---------------------------------------------------------------------
+
+
+@needs_symlinks
+def test_the_walk_skips_a_file_symlink_planted_on_disk(tmp_path) -> None:
+    outside = os.path.join(str(tmp_path), "outside.py")
+    with open(outside, "w", encoding="utf-8") as fh:
+        fh.write(SECRET)
+    dest = os.path.join(str(tmp_path), "dest")
+    os.makedirs(dest)
+    os.symlink(outside, os.path.join(dest, "link.py"))
+    with open(os.path.join(dest, "a.py"), "w", encoding="utf-8") as fh:
+        fh.write("#\n")
+    assert os.path.islink(os.path.join(dest, "link.py")), "premise"
+
+    files, skipped = collect_tree(dest)
+    assert [f.path for f in files] == ["a.py"]
+    assert skipped == {"link": 1}
+    assert all(SECRET not in f.content for f in files)
+
+
+@needs_symlinks
+def test_the_walk_does_not_descend_a_directory_symlink(tmp_path) -> None:
+    outside_dir = os.path.join(str(tmp_path), "outside")
+    os.makedirs(outside_dir)
+    with open(os.path.join(outside_dir, "secret.py"), "w", encoding="utf-8") as fh:
+        fh.write(SECRET)
+    dest = os.path.join(str(tmp_path), "dest")
+    os.makedirs(dest)
+    os.symlink(outside_dir, os.path.join(dest, "linked"), target_is_directory=True)
+    with open(os.path.join(dest, "a.py"), "w", encoding="utf-8") as fh:
+        fh.write("#\n")
+    assert os.path.islink(os.path.join(dest, "linked")), "premise"
+
+    files, _ = collect_tree(dest)
+    assert [f.path for f in files] == ["a.py"]
+    assert all(SECRET not in f.content for f in files)
+
+
+# ---------------------------------------------------------------------
+# The property alone, for the defence-in-depth matrix
+# ---------------------------------------------------------------------
+#
+# The tests above assert the property AND the accounting (which skip
+# reason was counted). These assert the PROPERTY ONLY -- nothing hostile
+# lands, nothing hostile is returned -- so that the mutation table in
+# 22-04-SUMMARY.md can say cleanly: with the header check alone removed, or
+# `filter="data"` alone removed, these still pass; with both removed, the
+# traversal one fails. The accounting tests fail earlier, on the reason.
+
+
+class TestNothingHostileLands:
+    def _run(self, tmp_path, members: List[Member]):
+        archive = write(tmp_path, build([regular("src/a.py")] + members))
+        assert len(listing(archive)) == 1 + len(members), "premise"
+        _, files, _, dest = run(tmp_path, archive)
+        assert [f.path for f in files] == ["src/a.py"]
+        assert everything_under(dest) == ["src/a.py"]
+        assert_nothing_outside_dest(tmp_path)
+
+    def test_dot_dot_traversal(self, tmp_path) -> None:
+        self._run(tmp_path, [Member(f"{TOP}/../escape.py", b"escaped\n")])
+
+    def test_absolute_path(self, tmp_path) -> None:
+        self._run(tmp_path, [Member("/etc/abs.py", b"abs\n")])
+
+    def test_symlink_to_absolute_path(self, tmp_path) -> None:
+        self._run(tmp_path, [Member(f"{TOP}/link.py", kind=tarfile.SYMTYPE, linkname="/etc/passwd")])
+
+    def test_symlink_to_dot_dot(self, tmp_path) -> None:
+        self._run(tmp_path, [Member(f"{TOP}/up.py", kind=tarfile.SYMTYPE, linkname="../../outside.py")])
+
+    def test_hardlink_outside(self, tmp_path) -> None:
+        self._run(tmp_path, [Member(f"{TOP}/hard.py", kind=tarfile.LNKTYPE, linkname="../../outside.py")])
+
+
+# ---------------------------------------------------------------------
+# The job directory
+# ---------------------------------------------------------------------
+
+
+def test_job_directory_requires_a_uuid(tmp_path) -> None:
+    with pytest.raises(ValueError):
+        job_directory(str(tmp_path), "../escape")
+    with pytest.raises(ValueError):
+        job_directory(str(tmp_path), "not-a-uuid")
+    path = job_directory(str(tmp_path), str(uuid.uuid4()).upper())
+    assert os.path.isdir(path)
+    assert os.path.basename(path) == os.path.basename(path).lower(), "canonical spelling"
+    assert os.path.dirname(path) == str(tmp_path)
+
+
+def test_job_directory_starts_fresh(tmp_path) -> None:
+    job = str(uuid.uuid4())
+    first = job_directory(str(tmp_path), job)
+    with open(os.path.join(first, "leftover"), "w", encoding="utf-8") as fh:
+        fh.write("x")
+    second = job_directory(str(tmp_path), job)
+    assert first == second
+    assert os.listdir(second) == []
+
+
+def test_gzip_stream_is_read_through_the_counter(tmp_path) -> None:
+    # The counted expansion is the tar stream: for a tiny archive that is
+    # tarfile's 10 KB record, more than the 1-byte payload and less than
+    # the 1 MB cap.
+    archive = write(tmp_path, build([regular("src/a.py", b"#")]))
+    stats, _, _, _ = run(tmp_path, archive)
+    assert stats.payload_bytes == 1
+    assert 1 < stats.expanded_bytes <= 64 * 1024
+    assert gzip.open(archive).read()  # the file is a real gzip stream
