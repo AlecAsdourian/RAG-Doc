@@ -74,6 +74,14 @@ expectation matches exactly one file, and benchmark corpora match paths exactly.
 USAGE
     cd services/workers
 
+    # A scratch database, never compose's: --ingest and --clear refuse port 5434
+    # (compose's mapping, and the default DATABASE_URL) unless --allow-compose is
+    # passed deliberately. Migrate the scratch database and create rag_doc_app
+    # the way tests/isolation/conftest.py does; --measure then runs as that role
+    # with `?options=-c%20role%3Drag_doc_app` on the DSN.
+    export DATABASE_URL=postgresql://user:pass@127.0.0.1:<scratch-port>/db
+    export OPENAI_API_KEY=sk-...
+
     # this repository
     ./venv/Scripts/python.exe scripts/rag_quality_harness.py --clear --ingest
     ./venv/Scripts/python.exe scripts/rag_quality_harness.py --measure --set tuning
@@ -134,8 +142,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
-from urllib.parse import urlparse
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 from uuid import UUID, uuid5
 
 import psycopg2
@@ -144,11 +151,14 @@ from psycopg2.extensions import parse_dsn
 
 load_dotenv()
 sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent / "rag_benchmarks"))
 
+from scoring import path_matches, ranks, symbol_matches  # noqa: E402
 from workers.chunker.semantic_chunker import SemanticChunker  # noqa: E402
 from workers.db import require_tenant  # noqa: E402
 from workers.pipeline.ingestion_pipeline import IngestionPipeline  # noqa: E402
 from workers.retrieval.query_engine import QueryEngine  # noqa: E402
+from workers.retrieval.vector_retriever import vector_literal  # noqa: E402
 
 # The default is compose's Postgres. --ingest and --clear refuse it without
 # --allow-compose (refuse_compose below); --measure only reads.
@@ -423,14 +433,6 @@ def collect_files(corpus: Corpus):
     return out
 
 
-def path_matches(corpus: Corpus, expected: str, actual: str) -> bool:
-    return actual == expected if corpus.exact_paths else expected in actual
-
-
-def symbol_matches(symbol: str, breadcrumb: Optional[str]) -> bool:
-    return bool(breadcrumb) and (breadcrumb == symbol or breadcrumb.endswith("." + symbol))
-
-
 def do_check(corpus: Corpus) -> None:
     """Check a corpus's questions offline: no database, no OpenAI, no retrieval.
 
@@ -444,7 +446,7 @@ def do_check(corpus: Corpus) -> None:
     fails = warns = 0
     for q in corpus.questions:
         qid = q["id"]
-        matching = [p for p in files if path_matches(corpus, q["path"], p)]
+        matching = [p for p in files if path_matches(corpus.exact_paths, q["path"], p)]
         if not matching:
             print(f"  FAIL {qid}: no corpus file matches {q['path']}")
             fails += 1
@@ -576,33 +578,80 @@ EXACT_SQL = """
 """
 
 
-def dsn_port(dsn: str) -> Optional[int]:
-    """The Postgres port a DSN (URL or key=value form) points at; 5432 when unstated."""
+class UnknownTarget(ValueError):
+    """The DSN does not say where it connects, so the guard cannot decide by port."""
+
+
+def dsn_port(dsn: str, env: Optional[Mapping[str, str]] = None) -> int:
+    """The Postgres port the harness would connect to.
+
+    libpq fills in what the DSN omits from its environment, so a port-less DSN
+    connects to `PGPORT` when that is set (5432 otherwise), and a port-less DSN
+    with `PGPORT=5434` IS compose's Postgres. `PGHOST` does the same for the
+    host and is reported for context, never decided on: the guard decides by
+    port alone. Raises UnknownTarget when the port cannot be known from the
+    DSN and the environment: a `service=` DSN or a `PGSERVICE` filling in the
+    port from a service file this guard does not read, or a multi-host DSN,
+    which names more than one place to write to.
+    """
+    env = os.environ if env is None else env
     try:
         parsed = parse_dsn(dsn)
-    except psycopg2.ProgrammingError:
-        return urlparse(dsn).port
+    except psycopg2.ProgrammingError as exc:
+        raise UnknownTarget(f"DATABASE_URL could not be parsed as a DSN ({type(exc).__name__})") from exc
+    if "," in str(parsed.get("host", "")) or "," in str(parsed.get("port", "")):
+        raise UnknownTarget("DATABASE_URL names more than one host; the harness writes to one scratch database")
+    if parsed.get("service"):
+        raise UnknownTarget(
+            "DATABASE_URL uses service=, so its port comes from a service file this guard does not read; "
+            "put the host and port in DATABASE_URL"
+        )
     port = parsed.get("port")
-    return int(port) if port else 5432
+    if port:
+        return int(port)
+    if env.get("PGSERVICE"):
+        raise UnknownTarget(
+            "DATABASE_URL states no port and PGSERVICE is set, so libpq would take the port from a service "
+            "file this guard does not read; put the port in DATABASE_URL"
+        )
+    if env.get("PGPORT"):
+        try:
+            return int(env["PGPORT"])
+        except ValueError as exc:
+            raise UnknownTarget("PGPORT is not a number") from exc
+    return 5432
 
 
-def compose_targets(pg_dsn: str) -> List[str]:
-    """Which of compose's stores the configuration points at, by port."""
-    targets = []
-    if dsn_port(pg_dsn) == COMPOSE_POSTGRES_PORT:
-        targets.append(f"Postgres on port {COMPOSE_POSTGRES_PORT}")
-    return targets
+def compose_targets(pg_dsn: str, env: Optional[Mapping[str, str]] = None) -> List[str]:
+    """Which of compose's stores the configuration points at, by port, and how the port was found."""
+    env = os.environ if env is None else env
+    port = dsn_port(pg_dsn, env)
+    if port != COMPOSE_POSTGRES_PORT:
+        return []
+    stated = bool(parse_dsn(pg_dsn).get("port"))
+    where = "" if stated else f" (DATABASE_URL states no port; PGPORT={env.get('PGPORT')}"
+    if not stated and env.get("PGHOST") and not parse_dsn(pg_dsn).get("host"):
+        where += f", PGHOST={env.get('PGHOST')}"
+    where += "" if stated else ")"
+    return [f"Postgres on port {COMPOSE_POSTGRES_PORT}{where}"]
 
 
-def refuse_compose(action: str, pg_dsn: str, allow_compose: bool) -> None:
+def refuse_compose(action: str, pg_dsn: str, allow_compose: bool,
+                   env: Optional[Mapping[str, str]] = None) -> None:
     """--ingest and --clear write; on compose's port they refuse unless told otherwise.
 
     Runs before anything is touched. Port 5434 is docker-compose.yml's Postgres
     mapping, and on a developer machine it may be bound by another project's
     container entirely; a scratch container on a free port is what the
-    benchmark should use.
+    benchmark should use. A DSN whose target cannot be known (service files,
+    several hosts) is refused whatever the flag says: --allow-compose means
+    "compose, deliberately", not "somewhere, deliberately". No message echoes
+    the DSN, which carries a password.
     """
-    targets = compose_targets(pg_dsn)
+    try:
+        targets = compose_targets(pg_dsn, env)
+    except UnknownTarget as exc:
+        sys.exit(f"--{action} refused: {exc}.")
     if targets and not allow_compose:
         sys.exit(
             f"--{action} refused: {' and '.join(targets)}: compose's (docker-compose.yml), "
@@ -616,11 +665,6 @@ def vector_sha256(vector: Sequence[float]) -> str:
     refuses two runs whose hashes differ, since different vectors make every
     comparison meaningless."""
     return hashlib.sha256(json.dumps(list(vector), separators=(",", ":")).encode("ascii")).hexdigest()
-
-
-def vector_literal(vector: Sequence[float]) -> str:
-    """pgvector's text input form, as PostgresWriter sends vectors: `[x,y,z]`."""
-    return "[" + ",".join(repr(float(x)) for x in vector) + "]"
 
 
 class QueryVectors:
@@ -886,6 +930,9 @@ def do_measure(corpus: Corpus, set_name: str, top_k: int, boost_config=None,
             "record": "run", "corpus": corpus.name, "commit": corpus.commit,
             "repository_id": str(corpus.repository_id), "organization_id": str(ORG),
             "set": set_name, "top_k": top_k, "boost_config": boost_config,
+            # How a result's path is matched to a question's (scoring.py), so a
+            # record's ranks can be recomputed from its final list.
+            "exact_paths": corpus.exact_paths,
             "harness_commit": harness_commit(),
             "recorded_at": datetime.now(timezone.utc).isoformat(),
             "vector_backend": "pgvector",
@@ -928,12 +975,9 @@ def do_measure(corpus: Corpus, set_name: str, top_k: int, boost_config=None,
             continue
         results = res.get("results", [])
         row["top_hit"] = results[0].get("file_path", "") if results else "(no results)"
-        in_file = [path_matches(corpus, q["path"], r.get("file_path", "")) for r in results]
-        row["file_rank"] = next((i for i, hit in enumerate(in_file, 1) if hit), None)
-        if row["symbol"]:
-            row["symbol_rank"] = next(
-                (i for i, (hit, r) in enumerate(zip(in_file, results), 1)
-                 if hit and symbol_matches(row["symbol"], r.get("breadcrumb"))), None)
+        # scoring.py's rule, the same one compare_runs.py recomputes a record's
+        # ranks with from its recorded final list.
+        row["file_rank"], row["symbol_rank"] = ranks(corpus.exact_paths, q["path"], row["symbol"], results)
         rows.append(row)
         if recorder is not None:
             recorder.write(json.dumps({

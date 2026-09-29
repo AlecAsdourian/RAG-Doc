@@ -202,22 +202,31 @@ class TestTrace:
         engine.vector_retriever.search.return_value = [_hit("b", vector_score=0.9), _hit("c", vector_score=0.8)]
 
     def test_trace_none_changes_nothing(self, engine):
+        """The response is the same with no trace, with trace=None and with a trace
+        being recorded: recording is a side channel, never a change of result."""
         self._seed(engine)
 
-        without = _query(engine)
-        explicit = engine.query(
-            query_text="how does the parser work",
-            organization_id=uuid4(),
-            repository_id=uuid4(),
-            top_k=5,
-            trace=None,
-        )
+        def query(**kwargs):
+            return engine.query(
+                query_text="how does the parser work",
+                organization_id=uuid4(),
+                repository_id=uuid4(),
+                top_k=5,
+                **kwargs,
+            )
 
-        for response in (without, explicit):
+        without = _query(engine)
+        explicit = query(trace=None)
+        recorded_trace = {}
+        recorded = query(trace=recorded_trace)
+
+        for response in (without, explicit, recorded):
             response["metadata"].pop("duration_ms")
             response.pop("organization_id")
             response.pop("repository_id")
         assert explicit == without
+        assert recorded == without, "recording a trace must not change the response"
+        assert list(recorded_trace) == ["fts", "vector", "fused", "boosted", "top"]
         assert [r["chunk_id"] for r in without["results"]] == ["b", "a", "c"]
         assert "trace" not in without and "trace" not in without["metadata"]
 

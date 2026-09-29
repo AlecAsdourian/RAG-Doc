@@ -43,6 +43,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
+_HERE = str(Path(__file__).resolve().parent)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+from scoring import ranks  # noqa: E402  (the harness's own scoring rule, one module)
+
 RRF_K = 60  # rrf_fusion.py's constant; the recomputation must match it
 DEFAULT_CORPORA = ("self", "miniflux", "mealie")
 CLASSES = ("a", "b", "c", "UNEXPLAINED")
@@ -207,8 +212,19 @@ def _find(records_dir: Path, name: str) -> Path:
     raise FileNotFoundError(f"{records_dir / name} (or .gz) does not exist")
 
 
+REQUIRED_QUESTION_KEYS = (
+    "id", "set", "path", "symbol", "file_rank", "symbol_rank", "query_vector_sha256", "trace", "error",
+)
+TRACE_STAGES = ("fts", "vector", "fused", "boosted", "top")
+
+
 def load_run(path: Path) -> Tuple[dict, Dict[str, dict]]:
-    """A --record file: the run header and its question records by id."""
+    """A --record file: the run header and its question records by id.
+
+    Raises ValueError (which main reports as REFUSED) for a file with no header,
+    a question recorded twice (the second could silently replace the first and
+    hide a difference), or a record missing what the comparison reads.
+    """
     header: Optional[dict] = None
     questions: Dict[str, dict] = {}
     with _open_text(path) as fh:
@@ -218,11 +234,29 @@ def load_run(path: Path) -> Tuple[dict, Dict[str, dict]]:
                 continue
             obj = json.loads(line)
             if obj.get("record") == "run":
+                if header is not None:
+                    raise ValueError(f"{path}: two run headers; not one run")
                 header = obj
             elif obj.get("record") == "question":
+                missing = [key for key in REQUIRED_QUESTION_KEYS if key not in obj]
+                if missing:
+                    raise ValueError(
+                        f"{path}: question record {obj.get('id')!r} lacks {missing}; not a complete measurement"
+                    )
+                if not obj.get("error"):
+                    trace = obj["trace"]
+                    stages = [s for s in TRACE_STAGES if not isinstance(trace, dict) or s not in trace]
+                    if stages:
+                        raise ValueError(f"{path}: question {obj['id']}: the trace lacks {stages}")
+                if obj["id"] in questions:
+                    raise ValueError(
+                        f"{path}: question {obj['id']} is recorded twice; refusing to pick one"
+                    )
                 questions[obj["id"]] = obj
     if header is None:
         raise ValueError(f"{path}: no run header")
+    if not questions:
+        raise ValueError(f"{path}: no question records")
     return header, questions
 
 
@@ -241,6 +275,21 @@ class CorpusRuns:
     qdrant_ids: Set[str]
     qdrant_meta: dict
     exact: dict
+    notes: List[str]
+
+
+def exact_paths_of(header: dict, notes: List[str], side: str) -> bool:
+    """How the run matched paths. Recorded since PR #53's review; for an older
+    record the harness's own rule is assumed and said so, and a wrong
+    assumption is refused by the rank recomputation, never passed."""
+    if isinstance(header.get("exact_paths"), bool):
+        return header["exact_paths"]
+    assumed = header.get("corpus") != "self"
+    notes.append(
+        f"{header.get('corpus')}: the {side} header records no exact_paths; assumed {assumed} "
+        "(the harness's rule: self matches by substring, benchmark corpora exactly)"
+    )
+    return assumed
 
 
 def refusals(runs: CorpusRuns) -> List[str]:
@@ -254,34 +303,112 @@ def refusals(runs: CorpusRuns) -> List[str]:
             f"{runs.name}: the runs hold different questions "
             f"(baseline only: {only_b[:5]}; candidate only: {only_c[:5]})"
         )
+    exact_questions = runs.exact.get("questions", {})
     for qid in sorted(set(b) & set(c)):
         hb, hc = b[qid].get("query_vector_sha256"), c[qid].get("query_vector_sha256")
         if not hb or not hc or hb != hc:
             problems.append(f"{runs.name}: {qid}: query-vector hash differs ({hb} vs {hc})")
-        if hb and qid in runs.exact.get("questions", {}):
-            he = runs.exact["questions"][qid].get("query_vector_sha256")
-            if he != hb:
-                problems.append(f"{runs.name}: {qid}: the exact list used a different query vector ({he})")
+        if qid not in exact_questions:
+            problems.append(f"{runs.name}: {qid}: no exact list was recorded for it")
+        elif hb and exact_questions[qid].get("query_vector_sha256") != hb:
+            problems.append(
+                f"{runs.name}: {qid}: the exact list used a different query vector "
+                f"({exact_questions[qid].get('query_vector_sha256')})"
+            )
         for side, rec in (("baseline", b[qid]), ("candidate", c[qid])):
             if rec.get("error"):
                 problems.append(f"{runs.name}: {qid}: the {side} query failed ({rec['error'][:60]}); a failed query is not a measurement")
-    for key in ("corpus", "set", "top_k", "boost_config"):
+    for key in ("corpus", "set", "top_k", "boost_config", "repository_id", "embedding_model"):
         if runs.baseline_header.get(key) != runs.candidate_header.get(key):
             problems.append(
                 f"{runs.name}: the runs differ in {key}: "
                 f"{runs.baseline_header.get(key)!r} vs {runs.candidate_header.get(key)!r}"
             )
-    for side, header in (("baseline", runs.baseline_header), ("candidate", runs.candidate_header)):
-        for name, identity in (header.get("connections") or {}).items():
-            if identity.get("rolsuper") or identity.get("rolbypassrls"):
+    # The recorded ranks must be what the recorded final list gives under the
+    # harness's own scoring rule: a rank edited by hand, with the trace left
+    # alone, is refused rather than classified (reviewer A, PR #53).
+    for side, header, records in (
+        ("baseline", runs.baseline_header, b),
+        ("candidate", runs.candidate_header, c),
+    ):
+        exact_paths = exact_paths_of(header, runs.notes, side)
+        for qid, rec in sorted(records.items()):
+            if rec.get("error"):
+                continue
+            expected = ranks(exact_paths, rec["path"], rec.get("symbol"), rec["trace"]["top"])
+            recorded = (rec["file_rank"], rec.get("symbol_rank"))
+            if expected != recorded:
                 problems.append(
-                    f"{runs.name}: the {side} run's {name} connection was {identity.get('current_user')} "
-                    f"(rolsuper={identity.get('rolsuper')}, rolbypassrls={identity.get('rolbypassrls')}); "
-                    "a superuser bypasses row-level security, so that measurement proves nothing"
+                    f"{runs.name}: {qid}: the {side} record's ranks {recorded} are not what its final list "
+                    f"gives {expected}; the record is inconsistent with itself"
                 )
+    for side, header in (("baseline", runs.baseline_header), ("candidate", runs.candidate_header)):
+        problems.extend(f"{runs.name}: the {side} run {p}" for p in connection_problems(header))
+    problems.extend(f"{runs.name}: the exact list {p}" for p in exact_list_problems(runs.exact, runs.baseline_header))
+    if not runs.qdrant_ids:
+        problems.append(
+            f"{runs.name}: the Qdrant point set is empty; class (a) and class (b) cannot be decided"
+        )
     if runs.qdrant_meta.get("repository_id") and runs.baseline_header.get("repository_id"):
         if runs.qdrant_meta["repository_id"] != runs.baseline_header["repository_id"]:
             problems.append(f"{runs.name}: the Qdrant point set is for another repository")
+    return problems
+
+
+def exact_list_problems(exact: dict, header: dict) -> List[str]:
+    """The exact list is the ground truth for class (b), so it is held to the same
+    standard as a run: measured as a role row-level security applies to, with
+    the run's model, on the run's repository (reviewer A, PR #53)."""
+    problems = []
+    identity = exact.get("connection")
+    if not isinstance(identity, dict) or not all(
+        isinstance(identity.get(key), bool) for key in ("rolsuper", "rolbypassrls")
+    ):
+        problems.append("does not state the rolsuper and rolbypassrls of the connection that produced it")
+    elif identity["rolsuper"] or identity["rolbypassrls"]:
+        problems.append(
+            f"was produced by {identity.get('current_user')} (rolsuper={identity['rolsuper']}, "
+            f"rolbypassrls={identity['rolbypassrls']}), which bypasses row-level security"
+        )
+    if not exact.get("model") or not header.get("embedding_model"):
+        problems.append("or the run does not state its embedding model")
+    elif exact["model"] != header["embedding_model"]:
+        problems.append(f"was computed for model {exact['model']!r}, the run for {header['embedding_model']!r}")
+    if not exact.get("repository_id") or not header.get("repository_id"):
+        problems.append("or the run does not state its repository")
+    elif exact["repository_id"] != header["repository_id"]:
+        problems.append("is for another repository")
+    return problems
+
+
+def connection_problems(header: dict) -> List[str]:
+    """Why a run header's measuring connections cannot be trusted, if they cannot.
+
+    A run that records no connection, or one whose identity lacks `rolsuper` or
+    `rolbypassrls`, is refused like a superuser run: the role every read ran as
+    is unknown, and a superuser bypasses row-level security. A pgvector run must
+    record both legs' connections; a Qdrant-era run has only the keyword leg's.
+    """
+    connections = header.get("connections")
+    if not isinstance(connections, dict) or not connections:
+        return ["records no measuring connection, so the role its reads ran as is unknown"]
+    problems = []
+    required = ["fts"] + (["vector"] if header.get("vector_backend") == "pgvector" else [])
+    for name in required:
+        if name not in connections:
+            problems.append(f"records no {name} connection")
+    for name, identity in connections.items():
+        if not isinstance(identity, dict) or not all(
+            isinstance(identity.get(key), bool) for key in ("rolsuper", "rolbypassrls")
+        ):
+            problems.append(f"'s {name} connection does not state rolsuper and rolbypassrls")
+            continue
+        if identity["rolsuper"] or identity["rolbypassrls"]:
+            problems.append(
+                f"'s {name} connection was {identity.get('current_user')} "
+                f"(rolsuper={identity['rolsuper']}, rolbypassrls={identity['rolbypassrls']}); "
+                "a superuser bypasses row-level security, so that measurement proves nothing"
+            )
     return problems
 
 
@@ -304,6 +431,11 @@ def _fused(record: dict) -> Ranking:
 
 def _boosted(record: dict) -> Ranking:
     return Ranking(((e["chunk_id"], e["boosted_score"]) for e in record["trace"]["boosted"]), "boosted")
+
+
+def _top(record: dict) -> Ranking:
+    """The final list the ranks were taken from, with its (boosted) scores."""
+    return Ranking(((e["chunk_id"], e["score"]) for e in record["trace"]["top"]), "boosted")
 
 
 def _exact_ranking(exact_entry: dict) -> Ranking:
@@ -387,9 +519,19 @@ def classify(b: dict, c: dict, qdrant_ids: Set[str], exact_entry: Optional[dict]
 
         ok_f, why_f = positions_tied(_fused(b), _fused(c), is_tied_pair)
         ok_b, why_b = positions_tied(_boosted(b), _boosted(c), is_tied_pair)
-        if ok_f and ok_b:
+        # (c) needs the final lists themselves to differ, and to differ only by
+        # tied chunks crossing: agreeing legs with identical final lists cannot
+        # give different ranks, and an untied crossing is no tie (reviewer A).
+        TB, TC = _top(b), _top(c)
+        if [e.chunk_id for e in TB.entries] == [e.chunk_id for e in TC.entries]:
+            return "UNEXPLAINED", "the final lists are identical, yet the ranks differ"
+        ok_t, why_t = positions_tied(TB, TC, is_tied_pair)
+        if ok_f and ok_b and ok_t:
             return "c", "the legs agree; tied chunks are ordered differently and the top-k cut fell between them"
-        return "UNEXPLAINED", f"the legs agree but the fused or boosted lists differ beyond tied chunks ({why_f or why_b})"
+        return "UNEXPLAINED", (
+            "the legs agree but the fused, boosted or final lists differ beyond tied chunks "
+            f"({why_f or why_b or why_t})"
+        )
 
     # 3. (a): only chunks with no Qdrant point entered
     stripped = VC.restrict(qdrant_ids)
@@ -492,8 +634,16 @@ def load_corpus(records_dir: Path, name: str, baseline_prefix: str, candidate_pr
     bh, b = load_run(_find(records_dir, f"{baseline_prefix}-{name}.jsonl"))
     ch, c = load_run(_find(records_dir, f"{candidate_prefix}-{name}.jsonl"))
     qdrant = load_json(_find(records_dir, f"qdrant_ids-{name}.json"))
+    ids = qdrant.get("ids")
+    if not isinstance(ids, list) or not ids:
+        raise ValueError(
+            f"qdrant_ids-{name}.json holds no point ids; with an empty set every chunk would count as "
+            "having no point and class (b) would be trivially available, so the comparison is refused"
+        )
+    if "count" in qdrant and qdrant["count"] != len(ids):
+        raise ValueError(f"qdrant_ids-{name}.json: count {qdrant['count']} does not match its {len(ids)} ids")
     exact = load_json(_find(records_dir, f"exact-{name}.json"))
-    return CorpusRuns(name, bh, b, ch, c, set(qdrant.get("ids", [])), qdrant, exact)
+    return CorpusRuns(name, bh, b, ch, c, set(ids), qdrant, exact, notes=[])
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -519,6 +669,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         for p in problems:
             print(f"  - {p}")
         return 2
+    for runs in all_runs:
+        for note in runs.notes:
+            print(f"note: {note}")
 
     table: List[dict] = []
     infos: Dict[str, dict] = {}

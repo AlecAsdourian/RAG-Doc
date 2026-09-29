@@ -91,6 +91,10 @@ def _record(
     }
 
 
+APP_ROLE = {"current_user": "rag_doc_app", "session_user": "isolation", "rolsuper": False, "rolbypassrls": False}
+MODEL = "text-embedding-ada-002"
+
+
 def _header(backend: str) -> dict:
     return {
         "record": "run",
@@ -100,10 +104,10 @@ def _header(backend: str) -> dict:
         "set": "all",
         "top_k": TOP_K,
         "boost_config": None,
+        "exact_paths": True,
+        "embedding_model": MODEL,
         "vector_backend": backend,
-        "connections": {
-            "fts": {"current_user": "rag_doc_app", "session_user": "isolation", "rolsuper": False, "rolbypassrls": False}
-        },
+        "connections": {"fts": dict(APP_ROLE), **({"vector": dict(APP_ROLE)} if backend == "pgvector" else {})},
     }
 
 
@@ -111,6 +115,8 @@ def _exact(question_ids: Dict[str, List[Tuple[str, float]]], hashes: Dict[str, s
     return {
         "corpus": "toy",
         "repository_id": "repo-1",
+        "model": MODEL,
+        "connection": dict(APP_ROLE),
         "questions": {
             qid: {
                 "query_vector_sha256": hashes.get(qid, "0" * 64),
@@ -255,6 +261,244 @@ def test_a_superuser_measurement_is_refused(tmp_path, capsys):
     assert "bypasses row-level security" in out and "VERDICT" not in out
 
 
+def test_a_duplicated_question_record_is_refused(tmp_path, capsys):
+    """A second record for the same id must not silently replace the first.
+
+    Reviewer B reproduced the hole: a second `q-a` baseline record that agreed
+    with the candidate made the (a) row vanish, exit 0, PASS.
+    """
+    baseline, candidate, exact = _cases()
+    agreeing = next(r for r in candidate if r["id"] == "q-a")
+    baseline.append(dict(agreeing))
+    _write(tmp_path, baseline, candidate, exact)
+
+    code = compare_runs.main(["--records", str(tmp_path), "--corpora", "toy"])
+    out = capsys.readouterr().out
+
+    assert code == 2, out
+    assert "REFUSED" in out and "q-a is recorded twice" in out
+    assert "VERDICT" not in out
+
+
+@pytest.mark.parametrize("connections", [None, {}, {"vector": {"current_user": "rag_doc_app", "session_user": "isolation", "rolsuper": False, "rolbypassrls": False}}, {"fts": {"current_user": "rag_doc_app"}}])
+def test_a_run_whose_measuring_role_is_unknown_is_refused(tmp_path, capsys, connections):
+    """No connections, an empty map, a map without the keyword leg's, or an identity
+    that does not state rolsuper and rolbypassrls: the role is unknown, so refused."""
+    baseline, candidate, exact = _cases()
+    _write(tmp_path, baseline, candidate, exact)
+    path = tmp_path / "baseline-toy.jsonl"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    header = json.loads(lines[0])
+    if connections is None:
+        del header["connections"]
+    else:
+        header["connections"] = connections
+    path.write_text("\n".join([json.dumps(header), *lines[1:]]) + "\n", encoding="utf-8")
+
+    code = compare_runs.main(["--records", str(tmp_path), "--corpora", "toy"])
+    out = capsys.readouterr().out
+
+    assert code == 2, out
+    assert "REFUSED" in out and "VERDICT" not in out
+    assert "connection" in out
+
+
+def test_a_pgvector_run_must_record_the_vector_legs_connection(tmp_path, capsys):
+    baseline, candidate, exact = _cases()
+    _write(tmp_path, baseline, candidate, exact)
+    path = tmp_path / "pgvector-toy.jsonl"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    header = json.loads(lines[0])
+    assert header["vector_backend"] == "pgvector" and "vector" in header["connections"]
+    del header["connections"]["vector"]
+    path.write_text("\n".join([json.dumps(header), *lines[1:]]) + "\n", encoding="utf-8")
+
+    code = compare_runs.main(["--records", str(tmp_path), "--corpora", "toy"])
+    out = capsys.readouterr().out
+
+    assert code == 2, out
+    assert "records no vector connection" in out
+
+
+# The exact list is the ground truth for class (b), so it is held to the same
+# standard as a run (reviewer A, PR #53).
+
+
+@pytest.mark.parametrize("damage", ["superuser", "no-connection", "other-model", "no-model", "other-repository"])
+def test_an_exact_list_that_cannot_be_trusted_is_refused(tmp_path, capsys, damage):
+    baseline, candidate, exact = _cases()
+    if damage == "superuser":
+        exact["connection"]["rolsuper"] = True
+    elif damage == "no-connection":
+        del exact["connection"]
+    elif damage == "other-model":
+        exact["model"] = "text-embedding-3-small"
+    elif damage == "no-model":
+        del exact["model"]
+    else:
+        exact["repository_id"] = "repo-2"
+    _write(tmp_path, baseline, candidate, exact)
+
+    code = compare_runs.main(["--records", str(tmp_path), "--corpora", "toy"])
+    out = capsys.readouterr().out
+
+    assert code == 2, out
+    assert "REFUSED" in out and "the exact list" in out and "VERDICT" not in out
+
+
+def test_a_question_with_no_exact_list_is_refused(tmp_path, capsys):
+    baseline, candidate, exact = _cases()
+    del exact["questions"]["q-b"]
+    _write(tmp_path, baseline, candidate, exact)
+
+    code = compare_runs.main(["--records", str(tmp_path), "--corpora", "toy"])
+    out = capsys.readouterr().out
+
+    assert code == 2, out
+    assert "q-b: no exact list" in out
+
+
+# A record's ranks must be what its own final list gives (reviewer A, PR #53).
+
+
+@pytest.mark.parametrize("tamper", ["file_rank", "symbol_rank"])
+def test_a_rank_edited_without_its_final_list_is_refused_not_classified(tmp_path, capsys, tamper):
+    """Reviewer A's reproduction: a candidate file_rank changed from 1 to 2 with the
+    trace untouched came out (c), PASS, exit 0. Now the record is inconsistent
+    with itself and the comparison is refused."""
+    baseline, candidate, exact = _cases()
+    target = next(r for r in candidate if r["id"] == "q-same")
+    assert target["file_rank"] == 1
+    if tamper == "file_rank":
+        target["file_rank"] = 2
+    else:
+        target["symbol"] = "B"
+        for r in baseline:
+            if r["id"] == "q-same":
+                r["symbol"] = "B"
+        target["symbol_rank"] = 1  # the toy breadcrumbs are empty, so the true symbol rank is None
+    _write(tmp_path, baseline, candidate, exact)
+
+    code = compare_runs.main(["--records", str(tmp_path), "--corpora", "toy"])
+    out = capsys.readouterr().out
+
+    assert code == 2, out
+    assert "REFUSED" in out and "q-same" in out and "inconsistent with itself" in out
+    assert "VERDICT" not in out and "(c)" not in out
+
+
+def test_a_real_tied_swap_in_the_final_list_is_class_c(tmp_path, capsys):
+    """B and C tie in the vector leg; the stores order them differently, the
+    top-2 cut falls between them, and both records' ranks follow from their
+    own final lists."""
+    baseline, candidate, exact = _cases()
+    keep = {"q-c", "q-same"}
+    baseline = [r for r in baseline if r["id"] in keep]
+    candidate = [r for r in candidate if r["id"] in keep]
+    tied_b = next(r for r in baseline if r["id"] == "q-c")
+    tied_c = next(r for r in candidate if r["id"] == "q-c")
+    assert [e["chunk_id"] for e in tied_b["trace"]["top"]] != [e["chunk_id"] for e in tied_c["trace"]["top"]]
+    _write(tmp_path, baseline, candidate, exact)
+
+    code = compare_runs.main(["--records", str(tmp_path), "--corpora", "toy"])
+    out = capsys.readouterr().out
+
+    assert code == 0, out
+    assert _class_of(out, "q-c") == "c"
+    assert "(c)=1   UNEXPLAINED=0" in out
+
+
+def test_an_untied_swap_in_the_final_list_is_unexplained(tmp_path, capsys):
+    """The legs agree, but the candidate's final list has two chunks with
+    distinguishable scores in the other order (its ranks consistent with that
+    list): no tie explains it."""
+    baseline, candidate, exact = _cases()
+    keep = {"q-same"}
+    baseline = [r for r in baseline if r["id"] in keep]
+    candidate = [r for r in candidate if r["id"] in keep]
+    target = candidate[0]
+    boosted = target["trace"]["boosted"]
+    assert boosted[0]["boosted_score"] > boosted[1]["boosted_score"] + 1e-6, "the swap must be untied"
+    boosted[0], boosted[1] = boosted[1], boosted[0]
+    top = target["trace"]["top"]
+    top[0], top[1] = top[1], top[0]
+    target["file_rank"] = 2  # what the swapped final list gives (B is now second)
+    _write(tmp_path, baseline, candidate, exact)
+
+    code = compare_runs.main(["--records", str(tmp_path), "--corpora", "toy"])
+    out = capsys.readouterr().out
+
+    assert code == 1, out
+    assert _class_of(out, "q-same") == "UNEXPLAINED"
+
+
+def test_a_missing_exact_paths_is_assumed_by_corpus_and_said_so(tmp_path, capsys):
+    """Records from before PR #53's review carry no exact_paths; the harness's
+    rule is assumed, printed, and a wrong assumption is refused by the rank
+    recomputation."""
+    baseline, candidate, exact = _cases()
+    keep = {"q-same"}
+    baseline = [r for r in baseline if r["id"] in keep]
+    candidate = [r for r in candidate if r["id"] in keep]
+    _write(tmp_path, baseline, candidate, exact)
+    for name in ("baseline-toy.jsonl", "pgvector-toy.jsonl"):
+        path = tmp_path / name
+        lines = path.read_text(encoding="utf-8").splitlines()
+        header = json.loads(lines[0])
+        del header["exact_paths"]
+        path.write_text("\n".join([json.dumps(header), *lines[1:]]) + "\n", encoding="utf-8")
+
+    code = compare_runs.main(["--records", str(tmp_path), "--corpora", "toy"])
+    out = capsys.readouterr().out
+
+    assert code == 0, out
+    assert "note: toy: the baseline header records no exact_paths; assumed True" in out
+
+
+@pytest.mark.parametrize("shape", ["empty", "missing", "count-mismatch"])
+def test_an_empty_or_inconsistent_qdrant_point_set_is_refused(tmp_path, capsys, shape):
+    """With no point ids every chunk would count as pointless and class (b) would
+    be trivially available (reviewer B saw the fixture's (a) come out (b), exit 0)."""
+    baseline, candidate, exact = _cases()
+    _write(tmp_path, baseline, candidate, exact)
+    path = tmp_path / "qdrant_ids-toy.json"
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    if shape == "empty":
+        doc["ids"] = []
+    elif shape == "missing":
+        del doc["ids"]
+    else:
+        doc["count"] = len(doc["ids"]) + 1
+    path.write_text(json.dumps(doc), encoding="utf-8")
+
+    code = compare_runs.main(["--records", str(tmp_path), "--corpora", "toy"])
+    out = capsys.readouterr().out
+
+    assert code == 2, out
+    assert "REFUSED" in out and "qdrant_ids-toy.json" in out and "VERDICT" not in out
+
+
+@pytest.mark.parametrize("damage", ["no-trace", "no-file_rank", "trace-without-boosted", "no-hash"])
+def test_an_incomplete_record_is_refused_rather_than_crashing(tmp_path, capsys, damage):
+    baseline, candidate, exact = _cases()
+    target = next(r for r in candidate if r["id"] == "q-same")
+    if damage == "no-trace":
+        del target["trace"]
+    elif damage == "no-file_rank":
+        del target["file_rank"]
+    elif damage == "trace-without-boosted":
+        del target["trace"]["boosted"]
+    else:
+        del target["query_vector_sha256"]
+    _write(tmp_path, baseline, candidate, exact)
+
+    code = compare_runs.main(["--records", str(tmp_path), "--corpora", "toy"])
+    out = capsys.readouterr().out
+
+    assert code == 2, out
+    assert "REFUSED" in out and "q-same" in out and "VERDICT" not in out
+
+
 def test_a_failed_query_is_refused_as_not_a_measurement(tmp_path, capsys):
     baseline, candidate, exact = _cases()
     for rec in baseline:
@@ -317,6 +561,24 @@ class TestRankingAgreement:
             self._r([("A", 0.9)], "fts"), self._r([("A", 0.8)], "fts"), scores_comparable=True
         )
         assert not ok and "score differs" in why
+
+
+def test_the_judge_scores_with_the_harnesss_own_rule():
+    """scoring.py is one module: the harness records ranks with it and the judge
+    recomputes them with the same object, so the two cannot drift."""
+    import importlib.util
+
+    harness_path = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "rag_quality_harness.py"
+    spec = importlib.util.spec_from_file_location("rag_quality_harness_for_scoring", harness_path)
+    harness = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(harness)
+
+    assert harness.ranks is compare_runs.ranks
+    results = [{"file_path": "pkg/a.go", "breadcrumb": "A.Run"}, {"file_path": "pkg/b.go", "breadcrumb": "B.Run"}]
+    assert compare_runs.ranks(True, "pkg/b.go", "Run", results) == (2, 2)
+    assert compare_runs.ranks(True, "pkg/b.go", "Other", results) == (2, None)
+    assert compare_runs.ranks(False, "pkg/", None, results) == (1, None)
+    assert compare_runs.ranks(True, "pkg/", None, results) == (None, None)
 
 
 def test_rrf_matches_the_fusion_module():
