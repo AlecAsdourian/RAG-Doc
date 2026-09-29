@@ -100,13 +100,50 @@ type cachedToken struct {
 	expiresAt time.Time
 }
 
+// Option adjusts a Client at construction.
+type Option func(*Client)
+
+// WithBaseURL points every API call at another host.
+//
+// Two callers: a test standing up a fake GitHub with httptest, which is
+// how pkg/internalapi proves what the mint request's body carries without
+// touching the real App; and, one day, a GitHub Enterprise host. Nothing
+// in production sets it today.
+func WithBaseURL(baseURL string) Option {
+	return func(c *Client) {
+		c.baseURL = strings.TrimRight(baseURL, "/")
+	}
+}
+
+// NewClientFromEnv builds the client from GITHUB_APP_ID and
+// GITHUB_APP_PRIVATE_KEY_PATH, or reports that there is nothing to build.
+//
+// (nil, nil) means the App is not configured — the degraded shape every
+// test and most dev checkouts have, in which repository connection, the
+// webhook receiver and the internal repository-token route are all
+// unavailable and say so. An error means the credentials ARE set and
+// cannot be used, which is not degraded-and-continue: a deployment that
+// has credentials but cannot use them should refuse to start rather than
+// fail at the first repository connect (19-01).
+//
+// Since 22-04 this is called once, in main.go, and the one client is
+// handed to both listeners. It used to be built inside the public router,
+// where the internal listener could not reach it.
+func NewClientFromEnv() (*Client, error) {
+	appID, keyPath := os.Getenv("GITHUB_APP_ID"), os.Getenv("GITHUB_APP_PRIVATE_KEY_PATH")
+	if appID == "" || keyPath == "" {
+		return nil, nil
+	}
+	return NewClient(appID, keyPath)
+}
+
 // NewClient loads the App private key and returns a client.
 //
 // Fails at construction on a missing or malformed key rather than at the
 // first request — the 19-01 fail-closed pattern. A deployment with bad
 // credentials should not start and then break the first time someone
 // connects a repository.
-func NewClient(appID, privateKeyPath string) (*Client, error) {
+func NewClient(appID, privateKeyPath string, opts ...Option) (*Client, error) {
 	if strings.TrimSpace(appID) == "" {
 		return nil, errors.New("github: app id is empty; set GITHUB_APP_ID")
 	}
@@ -130,7 +167,7 @@ func NewClient(appID, privateKeyPath string) (*Client, error) {
 			privateKeyPath, err)
 	}
 
-	return &Client{
+	c := &Client{
 		appID:        appID,
 		privateKey:   key,
 		baseURL:      defaultBaseURL,
@@ -152,7 +189,11 @@ func NewClient(appID, privateKeyPath string) (*Client, error) {
 		},
 		tokens:    make(map[int64]cachedToken),
 		mintLocks: make(map[int64]*sync.Mutex),
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c, nil
 }
 
 func parseRSAPrivateKey(pemBytes []byte) (*rsa.PrivateKey, error) {
@@ -280,6 +321,144 @@ func (c *Client) InstallationToken(ctx context.Context, installationID int64) (s
 	c.mu.Unlock()
 
 	return out.Token, nil
+}
+
+// ScopedToken is an installation token narrowed to ONE repository with
+// `contents: read`, and what that repository is called right now.
+//
+// It is what the worker fetches with (22-04, decision P10 / U4): the App
+// private key stays in this process, and the process that parses untrusted
+// code holds a credential good for one repository, read-only, for an hour.
+//
+// The token is excluded from JSON and from %v on purpose. The one place it
+// belongs on the wire is pkg/internalapi's response, which copies it into
+// its own struct explicitly; anything that logs or marshals this value by
+// accident gets the repository name and the expiry, not the credential.
+type ScopedToken struct {
+	Token     string    `json:"-"`
+	ExpiresAt time.Time `json:"expires_at"`
+
+	// FullName and DefaultBranch come from a lookup made WITH the new
+	// token, so they are current even after a rename and they prove the
+	// token reaches the repository before the worker is handed it.
+	FullName      string `json:"full_name"`
+	DefaultBranch string `json:"default_branch"`
+	Private       bool   `json:"private"`
+}
+
+// String renders the token without the token. fmt's %v and %s call it.
+func (t ScopedToken) String() string {
+	return fmt.Sprintf("ScopedToken{%s expires %s}", t.FullName, t.ExpiresAt.UTC().Format(time.RFC3339))
+}
+
+// GoString covers %#v, which bypasses String.
+func (t ScopedToken) GoString() string { return t.String() }
+
+// RepositoryToken mints an installation token scoped to one repository
+// with `contents: read`, and proves it reaches that repository.
+//
+// NO CACHE, unlike InstallationToken, and that is the point rather than an
+// omission: a job asks once per run, and a cached scoped token outliving
+// its job is exactly the credential lifetime U4 exists to avoid. The
+// caller is pkg/internalapi, which mints only for the holder of a live
+// lease; the token then lives for GitHub's hour and no longer.
+//
+// The request body is what narrows the token (22-RESEARCH Q8, verified
+// against GitHub's documentation): `repository_ids` with the one id, and a
+// `permissions` object. GitHub returns the repositories and permissions
+// the token actually carries, and both are checked here rather than
+// trusted, because a token minted wider than asked for is precisely the
+// failure this function exists to rule out. The checks fail closed: a
+// response that does not list exactly the requested repository, or whose
+// `contents` permission is anything but `read`, is an error. GitHub always
+// adds `metadata: read`, so that one is allowed. 22-05's live proof is
+// what validates this reading of the contract against the real API.
+//
+// Then `GET /repositories/{id}` WITH THE NEW TOKEN — by numeric id, which
+// survives a rename — returns the current full name and default branch.
+// The worker needs both, and a token that cannot read the repository's
+// metadata cannot read its archive either, so failing here fails early.
+func (c *Client) RepositoryToken(ctx context.Context, installationID, githubRepoID int64) (ScopedToken, error) {
+	if githubRepoID <= 0 {
+		return ScopedToken{}, fmt.Errorf("github: repository id %d is not a GitHub repository id", githubRepoID)
+	}
+
+	appJWT, err := c.AppJWT()
+	if err != nil {
+		return ScopedToken{}, err
+	}
+
+	body := map[string]any{
+		"repository_ids": []int64{githubRepoID},
+		"permissions":    map[string]string{"contents": "read"},
+	}
+	var out struct {
+		Token        string            `json:"token"`
+		ExpiresAt    time.Time         `json:"expires_at"`
+		Permissions  map[string]string `json:"permissions"`
+		Repositories []struct {
+			ID int64 `json:"id"`
+		} `json:"repositories"`
+	}
+	endpoint := fmt.Sprintf("%s/app/installations/%d/access_tokens", c.baseURL, installationID)
+	if err := c.doJSON(ctx, http.MethodPost, endpoint, appJWT, body, &out); err != nil {
+		return ScopedToken{}, fmt.Errorf(
+			"github: mint repository token for installation %d repository %d: %w",
+			installationID, githubRepoID, err)
+	}
+	if out.Token == "" {
+		return ScopedToken{}, fmt.Errorf(
+			"github: installation %d returned an empty token for repository %d",
+			installationID, githubRepoID)
+	}
+	if out.ExpiresAt.IsZero() {
+		return ScopedToken{}, fmt.Errorf(
+			"github: installation %d returned a repository token with no expires_at", installationID)
+	}
+
+	// The scope, as GitHub reports it. Fail closed on anything wider than
+	// what was asked for.
+	if len(out.Repositories) != 1 || out.Repositories[0].ID != githubRepoID {
+		return ScopedToken{}, fmt.Errorf(
+			"github: installation %d returned a token whose scope is not the one repository %d "+
+				"(%d repositories listed); refusing to hand it out",
+			installationID, githubRepoID, len(out.Repositories))
+	}
+	if got := out.Permissions["contents"]; got != "read" {
+		return ScopedToken{}, fmt.Errorf(
+			"github: installation %d returned a token with contents=%q, not read; refusing to hand it out",
+			installationID, got)
+	}
+	for name, level := range out.Permissions {
+		if name != "contents" && name != "metadata" {
+			return ScopedToken{}, fmt.Errorf(
+				"github: installation %d returned a token carrying %s=%s beyond contents:read; "+
+					"refusing to hand it out", installationID, name, level)
+		}
+	}
+
+	var repo Repository
+	lookup := fmt.Sprintf("%s/repositories/%d", c.baseURL, githubRepoID)
+	if err := c.do(ctx, http.MethodGet, lookup, out.Token, &repo); err != nil {
+		return ScopedToken{}, fmt.Errorf(
+			"github: repository %d is not reachable with its scoped token: %w", githubRepoID, err)
+	}
+	if repo.ID != githubRepoID {
+		return ScopedToken{}, fmt.Errorf(
+			"github: asked for repository %d and was answered about %d", githubRepoID, repo.ID)
+	}
+	if repo.FullName == "" || repo.DefaultBranch == "" {
+		return ScopedToken{}, fmt.Errorf(
+			"github: repository %d has no full_name or default_branch in its metadata", githubRepoID)
+	}
+
+	return ScopedToken{
+		Token:         out.Token,
+		ExpiresAt:     out.ExpiresAt,
+		FullName:      repo.FullName,
+		DefaultBranch: repo.DefaultBranch,
+		Private:       repo.Private,
+	}, nil
 }
 
 // Installation is what GitHub reports about an App installation.
@@ -569,13 +748,35 @@ func (c *Client) userHasInstallation(
 		maxPages*100, installationID)
 }
 
-// do issues an authenticated request and decodes a JSON response.
+// do issues an authenticated request with no body and decodes a JSON
+// response.
 //
 // No retries. Phase 24 owns rate limiting, and a naive retry against
 // GitHub's budget is worse than none — a 403 from a secondary rate limit
 // answered with an immediate retry is how an App gets throttled harder.
 func (c *Client) do(ctx context.Context, method, url, bearer string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(nil))
+	return c.request(ctx, method, url, bearer, nil, out)
+}
+
+// doJSON is do with a JSON request body.
+//
+// It exists because RepositoryToken has to SEND something — the
+// `repository_ids` and `permissions` that narrow the token — and do sends
+// nothing. Both go through request below, so there is exactly one place
+// where a response body becomes an error string and exactly one
+// redaction on that path. A second copy of that code is a second place
+// for a credential to leak from.
+func (c *Client) doJSON(ctx context.Context, method, url, bearer string, body, out any) error {
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("encode request body: %w", err)
+	}
+	return c.request(ctx, method, url, bearer, encoded, out)
+}
+
+// request is the one HTTP path. A nil body sends no body.
+func (c *Client) request(ctx context.Context, method, url, bearer string, body []byte, out any) error {
+	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}
@@ -583,6 +784,9 @@ func (c *Client) do(ctx context.Context, method, url, bearer string, out any) er
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	req.Header.Set("User-Agent", "rag-doc")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
