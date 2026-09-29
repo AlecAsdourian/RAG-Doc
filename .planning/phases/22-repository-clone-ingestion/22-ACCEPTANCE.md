@@ -36,11 +36,18 @@ before/after runs; the audit killing the sentinel and the `ALTER TABLE` forms.
 partitions carry RLS, FORCE, the scalar policy and `trg_assert_tenant`. As the app
 role under tenant A, addressing tenant B's partition by name reads nothing,
 changes nothing and cannot insert. A chunk whose organization disagrees with its
-repository's is refused by the composite key (`23503`) **with the trigger
+repository's is refused by the composite key (`23503`) **with the tenant trigger
 disabled**. TRUNCATE is granted to no role. The drift query runs in CI and
 detects manufactured drift, including a chunk citing another tenant's run or
 symbol. *Evidence:* `chunks_partition_test.go`, the gate's 000017 assertions, the
-drift self-tests. *Advanced by 22-02.*
+drift self-tests. *Met by 22-02 (`68a3af2`).*
+*Corrected 2026-09-29, from PR #49's worker note:* "with the trigger disabled"
+means `trg_assert_tenant`. With **foreign-key** triggers disabled, or under
+`session_replication_role = replica`, a misfiled row is accepted and only the
+drift query catches it — the limit is pinned by
+`TestChunksPartition_TheSingleColumnKeysCarryNoTenancy` and the replica pin, and
+stated in `docs/isolation.md`. The single-column `ingestion_run_id` and
+`symbol_id` keys carry no tenancy at all until ISS-036 (22.1-01).
 
 **A4 — Every writer of `chunks` is honest about tenancy and vectors.** Each
 supplies `organization_id`, the vector and `embedding_model`. `PostgresWriter`
