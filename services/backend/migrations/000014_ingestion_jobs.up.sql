@@ -187,21 +187,57 @@ CREATE UNIQUE INDEX idx_ingestion_jobs_one_live_per_repo
 -- recorded version, so a database that already applied 000014 keeps the
 -- constraint it has, and 22-01 measured that constraint identical to this
 -- one: the two paths' catalogs match, `convalidated` included. Only
--- databases below 14 take the new path. After the first production
--- deploy that escape is gone, and the class has to be handled by each
--- migration as it is written. Hence the rule:
+-- databases below 14 take the new path. A database the OLD form left at
+-- 14, dirty (only ephemeral ones can be: the fact-check's, the planner's)
+-- holds no `ingestion_jobs` table at all, because the whole file rolled
+-- back. Recover it with `migrate force 13` and then `up`. NEVER `force
+-- 14`: it records a table that does not exist, and 000015 then fails on
+-- it with 42P01 (both measured in 22-01). After the first production
+-- deploy the escape of editing this file is gone, and the class has to be
+-- handled by each migration as it is written. Hence the rule:
 --
---   - declare foreign keys on new tables INSIDE CREATE TABLE;
---   - never rely on the session's tenant. A migration that needs one sets
---     it itself, per organization, as 000015 does. 000013 and 000015 both
---     leave it at '' for whatever runs after them in the same session;
---   - never make a validation pass by setting a sentinel tenant (a valid
---     id no organization has). It makes the validation see zero rows and
---     pass vacuously, and no test can tell that from a real fix.
+--   - A key on a NEW table goes INSIDE CREATE TABLE. No rows, no
+--     validation query.
+--   - A key on an EXISTING table, for a column the migration ADDS: add
+--     the key BEFORE any tenant is set in the file, while the column is
+--     still NULL, and fill the column afterwards under each organization's
+--     own tenant. The validation has nothing to check (a row with a NULL
+--     key column is skipped), and every value the backfill writes is
+--     checked per row with row-level security bypassed. 000013 has this
+--     shape since 22-01. The same key added AFTER its loop validated under
+--     the last organization's tenant and passed a backfill that filed one
+--     organization's repositories under another (ISS-031, MX13); above the
+--     loop, that backfill fails at 13 with 23503.
+--   - A key over data ALREADY THERE, on a table with forced row-level
+--     security: the owner's validation is filtered whatever the tenant.
+--     NULL (a fresh session) sees no rows and marks the key valid over rows
+--     that violate it (measured in 22-01: eight violating rows, version 18
+--     clean, `convalidated = true`); an organization's id sees that
+--     organization's rows; '' fails with 22P02. There is no tenant to set
+--     that makes it correct. Lift FORCE for that one statement, as 000012
+--     does for its backfill, before any tenant is set: the owner then reads
+--     every row (measured: the same key over the same eight rows fails with
+--     23503), and ALTER TABLE's ACCESS EXCLUSIVE lock closes the window
+--     until the transaction ends.
+--   - Never rely on the tenant an earlier loop left behind, and never set
+--     a sentinel tenant (a valid id no organization has) to make a
+--     validation pass. It makes the validation see zero rows and pass
+--     vacuously.
 --
--- pkg/testing/isolation/migration_seeded_test.go enforces the first two:
--- it migrates a seeded database from version 10 as a non-superuser owner,
--- in one session, and it failed on the ALTER TABLE form of this key.
+-- WHAT pkg/testing/isolation/migration_seeded_test.go CAN SEE OF THIS. It
+-- migrates a seeded database from version 10 as a non-superuser owner, in
+-- one session from 12 on:
+--   - the '' this file's predecessor inherited from 000013 made the ALTER
+--     TABLE form of this key fail there with 22P02. That half is loud only
+--     because 13 and 15 run inside its one session;
+--   - its tenant audit fails any ALTER TABLE that leaves a foreign key
+--     validated under a non-empty tenant, or on a forced-RLS table with
+--     rows to check, in any version. That catches a sentinel, the 000013
+--     instance above and the fresh-session case, and it does not depend on
+--     the session. The FORCE-lifted form is not flagged: FORCE is off at
+--     that moment, which is the point of it.
+-- It cannot see DML that inherits a tenant beyond what 000013's and
+-- 000015's outcome assertions cover, nor a validating trigger's reads.
 
 -- =====================================================================
 -- 5. The message

@@ -22,7 +22,8 @@ Last activity: 2026-09-17. **22-01 executed, in review (PR #48).**
   - A probe 000017 with the `ALTER TABLE` form fails it too.
   - A sentinel tenant passes it vacuously. That is a recorded survivor, forbidden by the rule.
 - **Also:** the operator precondition for the untrusted extension is pinned, and `pkg/vectordb` is deleted.
-- **Not touched:** the compose volume. `docs/local-development.md` gives the user the choice between recreating it and `REINDEX` (Alpine to Debian).
+- **Not touched:** the compose volume. `docs/local-development.md` gives the user the choice between recreating it and `REINDEX` (Alpine to Debian). PR #48's review verified the collation hazard on a throwaway volume.
+- **PR #48's review (CHANGES REQUESTED, one important finding) applied 2026-09-29.** The gate could not see a foreign key validated under a real tenant, and committed 000013 already ran one after its loop. The user chose the fullest option: the gate now audits every `ALTER TABLE` (a key validated under a tenant, or through forced RLS with rows to check, fails it, in any version), and 000013's key moved ahead of its loop, so the review's MX13 mutation fails at 13 with `23503` instead of reaching 16 clean. The rule gained an answer for keys on existing tables. The three claims that overstated the gate are corrected; the sentinel survivor (M3) is now killed.
 
 Previously, 2026-09-17. **Phase 22 planned:** `22-01-PLAN.md` to `22-05-PLAN.md`, fact-checked and revised; P3 and P7 are decided. Four scope boundaries moved while the plans were written; `22-CONTEXT.md` records them under the split.
 

@@ -61,10 +61,17 @@ package isolation
 //     column is still NULL has nothing to check, so neither is flagged: a
 //     new-column key added BEFORE a backfill loop (000013's shape since
 //     22-01) passes, while the same key added AFTER the loop is flagged by
-//     both (a) and (b). SET NOT NULL, CHECK and UNIQUE validations scan the
-//     heap directly and are not subject to row-level security (SET NOT NULL
-//     measured by 21-01, CHECK and UNIQUE by 22-01's review pass), so they
-//     are deliberately not the audit's business.
+//     both (a) and (b). A key over existing data added with FORCE lifted
+//     for that statement (000012's pattern, the rule's answer for that
+//     case) is not flagged either: FORCE is off at that moment, which is
+//     the point, and the validation then reads every row (measured: eight
+//     violating rows fail it with 23503 where the FORCE-on form passed).
+//     SET NOT NULL, CHECK and UNIQUE validations scan the heap directly and
+//     are not subject to row-level security, so they are deliberately not
+//     the audit's business (measured: on the poisoned session, a violating
+//     CHECK failed with 23514 and a violating UNIQUE with 23505, where a
+//     policy-filtered read would have raised 22P02 or seen nothing; SET
+//     NOT NULL by 21-01).
 //     No version is exempt. Before 22-01's review, committed 000013
 //     validated repositories_project_org_fkey after its loop, under the last
 //     organization's tenant, and the audit flags exactly that (M10). An

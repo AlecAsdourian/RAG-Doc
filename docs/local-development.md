@@ -91,19 +91,33 @@ failed. Change the name again whenever the image changes. The old
 `rag-doc-isolation-tests` container is no longer used; remove it when
 convenient (`docker rm -f rag-doc-isolation-tests`).
 
-**⚠ An existing compose volume needs a decision before you start it on the
-new image.** *[not verified]* The `postgres_data` volume was initialised by
-the Alpine image, which uses musl; the new image is Debian, which uses glibc.
-The two can sort text differently under the same locale name, so btree
-indexes on text columns built under one may be out of order under the other,
-and PostgreSQL does not warn about it. Two ways out; neither is done for you:
+**⚠ An existing compose volume needs a `REINDEX` before anything uses it on
+the new image.** The `postgres_data` volume was initialised by the Alpine
+image, which uses musl; the new image is Debian, which uses glibc. The same
+locale name (`en_US.utf8`, the libc provider) sorts text differently under
+the two, so btree indexes on text columns built under one are out of order
+under the other. **Measured by PR #48's review on a throwaway volume:** a
+text index built on `postgres:16-alpine` sorted `A | B | Z | _x | a` there
+and `a | A | a b` under the pgvector image; the data directory started fine
+under the new image; nothing in the startup log warned; and
+`bt_index_check` reported `item order invariant violated`. `REINDEX
+DATABASE` fixed it and amcheck was clean afterwards. Two ways out; neither
+is done for you:
 
 - **Recreate the volume** (`docker compose down`, `docker volume rm
   testtgsd_postgres_data`, then start and migrate again). Its data is harness
   and benchmark data that can be re-created from pinned sources
   (`22-CONTEXT.md` P1), and 22-02 rebuilds `chunks` from source anyway.
-- **Keep it and reindex** once, after the first start on the new image:
-  `REINDEX DATABASE coderag;` as `coderag`.
+- **Keep it and reindex** once, after the first start on the new image and
+  **before starting the backend or the workers against it**:
+  `REINDEX DATABASE coderag;` as `coderag`. To see the damage first, or to
+  prove it gone afterwards, check a text index with amcheck:
+
+  ```sql
+  CREATE EXTENSION IF NOT EXISTS amcheck;
+  SELECT bt_index_check('organizations_slug_key'::regclass, true);
+  -- an error names the index; no output means it is in order
+  ```
 
 **Creating the extension needs a superuser.** `vector` is not a trusted
 extension. Compose's migrations run as `coderag`, a superuser, so `up`
@@ -117,9 +131,22 @@ CREATE EXTENSION IF NOT EXISTS vector;
 ```
 
 000016 is then a no-op for the owner (a NOTICE, and success). If a migration
-already failed on it, `schema_migrations` is left at 16, dirty: create the
-extension, `migrate force 15`, and run `up` again.
-`TestMigration000016NeedsTheExtensionPreCreated` pins both halves.
+already failed on it, `schema_migrations` is left at 16, dirty; see the
+table below. `TestMigration000016NeedsTheExtensionPreCreated` pins both
+halves, and the recoveries.
+
+**Recovering a dirty version.** golang-migrate records the target version
+as dirty *before* it runs a file, and a failed file rolls back whole, so a
+dirty record says which file failed and nothing about what the database
+holds. `up` then refuses with `Dirty database version N. Fix and force
+version.` Fix the cause, `force` the version the database *actually has*,
+and run `up` again. The three cases 22-01 measured:
+
+| Left at | Cause | What the database holds | Recovery |
+|---|---|---|---|
+| 14, dirty | the pre-22-01 000014 on a non-superuser-owned database with rows (ISS-031); only ephemeral databases can be here | no `ingestion_jobs` table | `force 13`, then `up`. **Never `force 14`:** it records a table that does not exist, and 000015 then fails on it (`42P01 relation "public.ingestion_jobs" does not exist`) |
+| 16, dirty | 000016 as a non-superuser owner, extension absent | no extension | create the extension as a superuser, `force 15`, then `up` |
+| 15, dirty, after a `down` | 000016's down as a non-superuser owner (`must be owner of extension vector`) | the extension **still installed** | either `force 16`, which abandons the rollback and matches what the database holds, or drop the extension as a superuser and `force 15` |
 
 **Large vector indexes need more shared memory than Docker gives by
 default.** Parallel index builds use `/dev/shm`, which Docker caps at 64 MB.
