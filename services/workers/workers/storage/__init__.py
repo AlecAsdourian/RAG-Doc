@@ -1,6 +1,5 @@
-"""Storage package for persisting chunks and embeddings."""
+"""Storage package for persisting chunks and their embeddings, in Postgres."""
 
 from .postgres_writer import PostgresWriter
-from .qdrant_writer import QdrantWriter
 
-__all__ = ["PostgresWriter", "QdrantWriter"]
+__all__ = ["PostgresWriter"]

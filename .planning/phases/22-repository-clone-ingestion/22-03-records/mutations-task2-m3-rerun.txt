@@ -1,0 +1,13 @@
+tree before: 0 changed files (expect 0)
+[M3-breadcrumb-expression-bare] fts_retriever.py: original 1->0, mutated 0->1  LANDED
+        Bitmap Index Scan on the COALESCE index, and the bare `breadcrumb`
+        expression falls back to a Seq Scan. The index is identified by its
+        assert BREADCRUMB_TSVECTOR in FTS_SEARCH_SQL, "the keyword leg must be composed from the constant"
+            assert rolsuper is True, "this proof runs as the superuser, so no policy predicate is in the plan"
+            match = re.search(r"Bitmap Index Scan on (\S+)", plans["matching"])
+>           assert match, plans["matching"]
+E           AssertionError: Seq Scan on chunks_p0
+E               Filter: (to_tsvector('english'::regconfig, breadcrumb) @@ '''x'''::tsquery)
+E           assert None
+1 failed, 10 deselected in 9.64s
+restored: 0 changed files (expect 0)

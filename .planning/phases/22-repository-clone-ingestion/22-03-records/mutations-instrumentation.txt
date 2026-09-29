@@ -1,0 +1,71 @@
+tree before: 0 changed files (expect 0)
+
+################ G1-compose-guard-neutered ################
+[G1-compose-guard-neutered] rag_quality_harness.py: original 1->0, mutated 0->1  LANDED
+E       Failed: DID NOT RAISE SystemExit
+E       Failed: DID NOT RAISE SystemExit
+E       Failed: DID NOT RAISE SystemExit
+3 failed, 3 passed, 7 deselected in 0.87s
+restored: 0 changed files (expect 0)
+
+################ C1-classification-neutered ################
+[C1-classification-neutered] compare_runs.py: original 1->0, mutated 0->1  LANDED
+E       AssertionError: assert 'UNEXPLAINED' == 'a'
+E         
+E         - a
+E         + UNEXPLAINED
+tests\test_compare_runs.py:198: AssertionError
+E       AssertionError: corpus   id         set      file         symbol       class       note
+E         ---------------------------------------------------------------------------------------------------------------
+E         toy      q-a        tuning   #2->MISS     -            UNEXPLAINED the legs agree but the fused or boosted lists differ beyond tied chunks (different lengths)
+E         toy      q-b        holdout  MISS->#2     -            UNEXPLAINED the legs agree but the fused or boosted lists differ beyond tied chunks (C and B swapped without being tied)
+E         toy      q-c        confirm  MISS->#2     -            c           the legs agree; tied chunks are ordered differently and the top-k cut fell between them
+E         ---------------------------------------------------------------------------------------------------------------
+E         differing questions: 3   (a)=0   (b)=0   (c)=1   UNEXPLAINED=2
+restored: 0 changed files (expect 0)
+
+################ C2-hash-refusal-neutered ################
+[C2-hash-refusal-neutered] compare_runs.py: original 1->0, mutated 0->1  LANDED
+E       AssertionError: corpus   id         set      file         symbol       class       note
+E         ---------------------------------------------------------------------------------------------------------------
+E         toy      q-a        tuning   #2->MISS     -            a           1 chunk(s) with no Qdrant point entered the pgvector top 50; the rest agrees
+E         toy      q-b        holdout  MISS->#2     -            b           the Qdrant leg differs from exact search (a chunk on one side only is not in that side's tie group at the cut); the pgvector leg matches it
+E         toy      q-c        confirm  MISS->#2     -            c           the legs agree; tied chunks are ordered differently and the top-k cut fell between them
+E         toy      q-u        tuning   #2->MISS     -            UNEXPLAINED the pgvector leg differs from exact search (B and C are in the other order and not tied); vector legs: B and C are in the other order and not tied
+E         ---------------------------------------------------------------------------------------------------------------
+E         differing questions: 4   (a)=1   (b)=1   (c)=1   UNEXPLAINED=1
+E         
+E         Aggregates, reported and not judged (recall@k = found/questions, rank-1, MRR):
+E         corpus    set      side      file recall  file #1  file MRR  sym recall  sym #1  sym MRR 
+E         toy       confirm  qdrant    0/1         0        0.000     0/0        0       0.000   
+restored: 0 changed files (expect 0)
+
+################ T1-trace-boosted-before-sort ################
+[T1-trace-boosted-before-sort] query_engine.py: original 1->0, mutated 1->2  NOT LANDED
+mutation did not land; aborting
+
+################ T2-trace-recorded-when-none ################
+[T2-trace-recorded-when-none] query_engine.py: original 1->0, mutated 0->1  LANDED
+                leg ignored it. A value raises ValueError rather than being
+            RetrievalError: If keyword (FTS) or vector search raises. It names
+                the failed retriever(s) and chains the original exception. No
+            raise ValueError(
+        # If either retriever fails, the whole query fails with RetrievalError
+        #   query depends on what just failed.
+                except Exception as e:  # re-raised below as RetrievalError
+                    f"{RETRIEVER_LABELS[name]} failed: organization_id={organization_id}, "
+            raise RetrievalError(failures) from next(iter(failures.values()))
+E           TypeError: 'NoneType' object does not support item assignment
+workers\retrieval\query_engine.py:251: TypeError
+_ TestQueryEngineRetrieverFailure.test_a_retriever_that_finds_nothing_has_not_failed _
+restored: 0 changed files (expect 0)
+
+M0: committed code:
+38 passed in 0.67s
+tree after: 0 changed files (expect 0)
+
+################ T1-trace-boosted-before-sort (re-run with a unique anchor) ################
+[T1-trace-boosted-before-sort] query_engine.py: original 1->0, mutated 0->1  LANDED
+E       TypeError: '<' not supported between instances of 'NoneType' and 'NoneType'
+1 failed, 2 passed, 9 deselected in 0.73s
+restored: 0 changed files (expect 0)

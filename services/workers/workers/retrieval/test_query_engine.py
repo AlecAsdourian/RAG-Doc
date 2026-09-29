@@ -7,8 +7,8 @@ nothing and returned 0 results, so `/search` answered 200 with nothing and
 `/chat` answered "I don't have enough information". Now any retriever failure
 raises RetrievalError, and no partial result is assembled.
 
-The engine is built with both retriever classes patched, so these tests need no
-Postgres, Qdrant or OpenAI.
+The engine is built with both retriever classes and the embedding generator
+patched, so these tests need no Postgres or OpenAI.
 """
 
 import logging
@@ -24,13 +24,14 @@ from workers.retrieval.query_engine import QueryEngine
 SENTINEL = "sk-SENTINEL-must-not-leak"
 
 
-def _hit(chunk_id: str) -> dict:
+def _hit(chunk_id: str, **scores) -> dict:
     return {
         "chunk_id": chunk_id,
         "file_path": f"pkg/{chunk_id}.go",
         "breadcrumb": "",
         "chunk_type": "function",
         "content_preview": f"func {chunk_id}() {{}}",
+        **scores,
     }
 
 
@@ -50,10 +51,9 @@ def _enriched(results, organization_id, repository_id):
 def engine():
     with patch("workers.retrieval.query_engine.FTSRetriever"), patch(
         "workers.retrieval.query_engine.VectorRetriever"
-    ):
+    ), patch("workers.retrieval.query_engine.EmbeddingGenerator"):
         engine = QueryEngine(
             postgres_conn="postgresql://unused.invalid/unused",
-            qdrant_url="http://unused.invalid:6333",
             openai_api_key="unused",
             boost_config={},
         )
@@ -150,6 +150,135 @@ class TestQueryEngineRetrieverFailure:
         result = _query(engine)
 
         assert result["results"] == []
+
+    def test_both_legs_receive_the_tenant(self, engine):
+        """The vector leg runs under the same tenant scope as the keyword leg (22-03)."""
+        engine.fts_retriever.search.return_value = []
+        engine.vector_retriever.search.return_value = []
+        organization_id, repository_id = uuid4(), uuid4()
+
+        engine.query(
+            query_text="how does the parser work",
+            organization_id=organization_id,
+            repository_id=repository_id,
+        )
+
+        for retriever in (engine.fts_retriever, engine.vector_retriever):
+            retriever.search.assert_called_once_with(
+                query="how does the parser work",
+                organization_id=organization_id,
+                repository_id=repository_id,
+                limit=50,
+            )
+
+    def test_a_run_id_is_refused_rather_than_half_applied(self, engine):
+        """Search is not run-scoped (ISS-027). Before 22-03 only the keyword leg
+        honoured run_id, so a caller asking for a run got two legs that disagreed."""
+        engine.fts_retriever.search.return_value = []
+        engine.vector_retriever.search.return_value = []
+
+        with pytest.raises(ValueError, match="run_id is not supported"):
+            engine.query(
+                query_text="how does the parser work",
+                organization_id=uuid4(),
+                repository_id=uuid4(),
+                run_id=uuid4(),
+            )
+        engine.fts_retriever.search.assert_not_called()
+        engine.vector_retriever.search.assert_not_called()
+
+
+class TestTrace:
+    """`trace=` records every stage from inside the real pipeline (22-03).
+
+    The harness's `--record` feeds the storage-move equivalence gate from it,
+    so the trace must be the pipeline's own numbers in the pipeline's own
+    order, and its absence must change nothing.
+    """
+
+    @staticmethod
+    def _seed(engine):
+        engine.fts_retriever.search.return_value = [_hit("a", fts_score=0.5), _hit("b", fts_score=0.25)]
+        engine.vector_retriever.search.return_value = [_hit("b", vector_score=0.9), _hit("c", vector_score=0.8)]
+
+    def test_trace_none_changes_nothing(self, engine):
+        """The response is the same with no trace, with trace=None and with a trace
+        being recorded: recording is a side channel, never a change of result."""
+        self._seed(engine)
+
+        def query(**kwargs):
+            return engine.query(
+                query_text="how does the parser work",
+                organization_id=uuid4(),
+                repository_id=uuid4(),
+                top_k=5,
+                **kwargs,
+            )
+
+        without = _query(engine)
+        explicit = query(trace=None)
+        recorded_trace = {}
+        recorded = query(trace=recorded_trace)
+
+        for response in (without, explicit, recorded):
+            response["metadata"].pop("duration_ms")
+            response.pop("organization_id")
+            response.pop("repository_id")
+        assert explicit == without
+        assert recorded == without, "recording a trace must not change the response"
+        assert list(recorded_trace) == ["fts", "vector", "fused", "boosted", "top"]
+        assert [r["chunk_id"] for r in without["results"]] == ["b", "a", "c"]
+        assert "trace" not in without and "trace" not in without["metadata"]
+
+    def test_trace_records_every_stage_in_pipeline_order(self, engine):
+        self._seed(engine)
+        trace = {}
+
+        result = engine.query(
+            query_text="how does the parser work",
+            organization_id=uuid4(),
+            repository_id=uuid4(),
+            top_k=2,
+            trace=trace,
+        )
+
+        assert list(trace) == ["fts", "vector", "fused", "boosted", "top"]
+        # The legs, as the retrievers returned them, with their scores.
+        assert [(e["chunk_id"], e["score"]) for e in trace["fts"]] == [("a", 0.5), ("b", 0.25)]
+        assert [(e["chunk_id"], e["score"]) for e in trace["vector"]] == [("b", 0.9), ("c", 0.8)]
+        assert trace["fts"][0]["file_path"] == "pkg/a.go"
+        # Fusion: b is in both legs (1/62 + 1/61), a is fts #1 (1/61), c is vector #2 (1/62).
+        assert [e["chunk_id"] for e in trace["fused"]] == ["b", "a", "c"]
+        assert [e["rrf_score"] for e in trace["fused"]] == [1 / 62 + 1 / 61, 1 / 61, 1 / 62]
+        assert trace["fused"][0]["sources"] == ["fts", "vector"]
+        # Boosted, in the final sorted order, is what the top_k cut is taken from.
+        assert [e["chunk_id"] for e in trace["boosted"]] == ["b", "a", "c"]
+        boosted_scores = [e["boosted_score"] for e in trace["boosted"]]
+        assert boosted_scores == sorted(boosted_scores, reverse=True)
+        for entry in trace["boosted"]:
+            assert entry["boosted_score"] == entry["rrf_score"] * entry["boost_multiplier"]
+        # `top` is the enriched top_k, and its scores are the response's.
+        assert [e["chunk_id"] for e in trace["top"]] == ["b", "a"]
+        assert [e["chunk_id"] for e in result["results"]] == ["b", "a"]
+        assert [e["score"] for e in trace["top"]] == [r["score"] for r in result["results"]]
+        assert [e["score"] for e in trace["top"]] == boosted_scores[:2]
+
+    def test_trace_holds_copies_not_the_pipeline_objects(self, engine):
+        self._seed(engine)
+        trace = {}
+
+        result = engine.query(
+            query_text="how does the parser work",
+            organization_id=uuid4(),
+            repository_id=uuid4(),
+            top_k=5,
+            trace=trace,
+        )
+        trace["boosted"][0]["boosted_score"] = -1.0
+        trace["top"][0]["chunk_id"] = "tampered"
+
+        assert result["results"][0]["chunk_id"] == "b"
+        assert result["results"][0]["score"] > 0
 
 
 class TestRetrievalError:

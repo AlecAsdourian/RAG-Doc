@@ -12,31 +12,25 @@ class TestIngestionPipeline:
     """Test pipeline orchestration."""
 
     @patch("workers.pipeline.ingestion_pipeline.PostgresWriter")
-    @patch("workers.pipeline.ingestion_pipeline.QdrantWriter")
     @patch("workers.pipeline.ingestion_pipeline.EmbeddingGenerator")
     @patch("workers.pipeline.ingestion_pipeline.SemanticChunker")
-    def test_pipeline_initialization(
-        self, mock_chunker, mock_embedgen, mock_qdrant, mock_postgres
-    ):
-        """Test pipeline initializes all components."""
+    def test_pipeline_initialization(self, mock_chunker, mock_embedgen, mock_postgres):
+        """Test pipeline initializes all components, and only these."""
         pipeline = IngestionPipeline(
             postgres_conn="postgresql://test",
-            qdrant_url="http://test:6333",
             openai_api_key="test-key",
         )
 
         assert pipeline.chunker is not None
         assert pipeline.embedding_gen is not None
         assert pipeline.postgres is not None
-        assert pipeline.qdrant is not None
+        # 22-03: vectors live in Postgres; there is no second store.
+        assert not hasattr(pipeline, "qdrant")
 
     @patch("workers.pipeline.ingestion_pipeline.PostgresWriter")
-    @patch("workers.pipeline.ingestion_pipeline.QdrantWriter")
     @patch("workers.pipeline.ingestion_pipeline.EmbeddingGenerator")
     @patch("workers.pipeline.ingestion_pipeline.SemanticChunker")
-    def test_process_files_success(
-        self, mock_chunker_class, mock_embedgen_class, mock_qdrant_class, mock_postgres_class
-    ):
+    def test_process_files_success(self, mock_chunker_class, mock_embedgen_class, mock_postgres_class):
         """Test successful file processing."""
         # The pipeline hashes chunk content itself, so the mocked stores must be
         # keyed by the real hashes of the mock chunks' real content.
@@ -53,10 +47,6 @@ class TestIngestionPipeline:
             hash2: uuid4(),
         }
         mock_postgres_class.return_value = mock_postgres
-
-        mock_qdrant = Mock()
-        mock_qdrant.upsert_embeddings.return_value = 2
-        mock_qdrant_class.return_value = mock_qdrant
 
         embeddings = {
             hash1: [0.1] * 1536,
@@ -122,24 +112,22 @@ class TestIngestionPipeline:
         assert kwargs["embeddings"] is embeddings
         assert kwargs["embedding_model"] == "mock-embedding-model-7"
 
-        # P15's transition: Qdrant still receives the same vectors until
-        # 22-03 retires it.
-        mock_qdrant.upsert_embeddings.assert_called_once()
+        # The run is completed with the chunk count, and Postgres is the only
+        # store that was written.
+        mock_postgres.complete_ingestion_run.assert_called_once_with(
+            organization_id, mock_postgres.create_ingestion_run.return_value, 2
+        )
 
     @patch("workers.pipeline.ingestion_pipeline.PostgresWriter")
-    @patch("workers.pipeline.ingestion_pipeline.QdrantWriter")
     @patch("workers.pipeline.ingestion_pipeline.EmbeddingGenerator")
     @patch("workers.pipeline.ingestion_pipeline.SemanticChunker")
-    def test_process_files_empty(
-        self, mock_chunker_class, mock_embedgen_class, mock_qdrant_class, mock_postgres_class
-    ):
+    def test_process_files_empty(self, mock_chunker_class, mock_embedgen_class, mock_postgres_class):
         """Test handling of files with no chunks."""
         # Setup mocks
         mock_postgres = Mock()
         mock_postgres.create_ingestion_run.return_value = uuid4()
         mock_postgres_class.return_value = mock_postgres
 
-        mock_qdrant_class.return_value = Mock()
         mock_embedgen_class.return_value = Mock()
 
         mock_chunker = Mock()

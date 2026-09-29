@@ -30,9 +30,9 @@ async def lifespan(app: FastAPI):
     """
     logger.info("RAG API starting up...")
 
-    # Load configuration from environment
+    # Load configuration from environment. Vectors live in Postgres (22-03);
+    # there is no vector-store URL.
     postgres_conn = os.getenv("DATABASE_URL")
-    qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
     openai_api_key = os.getenv("OPENAI_API_KEY")
     redis_url = os.getenv("REDIS_URL")
 
@@ -40,7 +40,7 @@ async def lifespan(app: FastAPI):
     app.state.query_engine = None
     app.state.answer_generator = None
 
-    if postgres_conn and qdrant_url and openai_api_key:
+    if postgres_conn and openai_api_key:
         try:
             from workers.retrieval.query_engine import QueryEngine
             from workers.generation.answer_generator import AnswerGenerator
@@ -48,7 +48,6 @@ async def lifespan(app: FastAPI):
             # Initialize QueryEngine
             query_engine = QueryEngine(
                 postgres_conn=postgres_conn,
-                qdrant_url=qdrant_url,
                 openai_api_key=openai_api_key,
             )
             app.state.query_engine = query_engine
@@ -61,9 +60,14 @@ async def lifespan(app: FastAPI):
                 try:
                     from workers.generation.semantic_cache import SemanticCache
 
+                    # STILL BROKEN, DELIBERATELY (ISS-021). SemanticCache takes
+                    # (redis_url, embedding_generator, ...); this call has passed
+                    # the wrong arguments since Phase 05, the TypeError is
+                    # swallowed just below, and the cache has never run. 22-03
+                    # removed only the `qdrant_url` argument, with Qdrant. The
+                    # repair is ISS-021's own change, made in order, not here.
                     semantic_cache = SemanticCache(
                         redis_url=redis_url,
-                        qdrant_url=qdrant_url,
                         openai_api_key=openai_api_key,
                     )
                     logger.info("SemanticCache initialized")

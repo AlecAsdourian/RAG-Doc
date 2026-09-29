@@ -27,5 +27,4 @@ tenacity>=8.2.0
 
 # Database clients
 psycopg2-binary>=2.9.0
-qdrant-client>=1.7.0
 redis[hiredis]>=5.0.0

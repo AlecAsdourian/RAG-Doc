@@ -25,7 +25,6 @@ print("="*70)
 print("\n[*] Initializing components...")
 query_engine = QueryEngine(
     postgres_conn=os.getenv("DATABASE_URL"),
-    qdrant_url=os.getenv("QDRANT_URL"),
     openai_api_key=os.getenv("OPENAI_API_KEY")
 )
 

@@ -87,6 +87,24 @@ def db_conn(test_db_container: PostgresContainer) -> Iterator:
 
 
 @pytest.fixture
+def app_dsn(test_db_container) -> str:
+    """The container DSN, forced onto the NOSUPERUSER app role.
+
+    For code that opens its OWN connections from a DSN: a `Worker`, a
+    `QueryEngine`, a retriever. There is no cursor for a fixture to `SET
+    ROLE` on, so the role goes in the DSN's `options`, and that parameter is
+    load-bearing: connecting as the container superuser instead would bypass
+    row-level security even with FORCE, and every tenant assertion built on
+    it would pass for the wrong reason. Tests assert their connection's
+    `rolsuper = false` and `rolbypassrls = false` rather than trusting this.
+
+    Lifted from tests/isolation/test_job_worker_runtime.py in 22-03, when the
+    read path's isolation tests started building a QueryEngine from a DSN.
+    """
+    return f"{_psycopg2_dsn(test_db_container)}?options=-c%20role%3D{_APP_ROLE}"
+
+
+@pytest.fixture
 def with_two_orgs(db_conn) -> Iterator[Tuple[TestOrg, TestOrg]]:
     """Create two independent test tenants; clean both up on teardown."""
     org_a = create_org(db_conn, "iso-a")

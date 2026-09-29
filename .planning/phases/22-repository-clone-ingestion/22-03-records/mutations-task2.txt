@@ -1,0 +1,64 @@
+tree before: 0 changed files (expect 0)
+
+################ M1-model-predicate-neutered ################
+[M1-model-predicate-neutered] vector_retriever.py: original 1->0, mutated 0->1  LANDED
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+        assert distances[refused_id] < distances[kept_id], "the premise: the other model's chunk is nearer"
+            _assert_app_role(engine.vector_retriever.conn)
+>       assert [r["chunk_id"] for r in results] == [kept_id], results
+E       AssertionError: [{'chunk_id': '51e62e96-5b67-426f-9fdf-03d6156efb60', 'file_path': 'probe.md', 'breadcrumb': '', 'chunk_type': 'doc', ...hunk_id': '0e003bff-41e1-4423-b86c-8d9d5af1204f', 'file_path': 'probe.md', 'breadcrumb': '', 'chunk_type': 'doc', ...}]
+E       assert ['51e62e96-5b...8d9d5af1204f'] == ['0e003bff-41...8d9d5af1204f']
+E         
+E         At index 0 diff: '51e62e96-5b67-426f-9fdf-03d6156efb60' != '0e003bff-41e1-4423-b86c-8d9d5af1204f'
+E         Left contains one more item: '0e003bff-41e1-4423-b86c-8d9d5af1204f'
+E         Use -v to get more diff
+tests\isolation\test_query_engine_isolation.py:256: AssertionError
+1 failed, 10 deselected in 13.78s
+restored: 0 changed files (expect 0)
+
+################ M2-iterative-scan-removed ################
+[M2-iterative-scan-removed] vector_retriever.py: original 1->0, mutated 1->1  LANDED
+ 1 file changed, 1 deletion(-)
+            assert len(results) == 1
+>           assert seen == ["relaxed_order"], seen
+E           AssertionError: ['off']
+E           assert ['off'] == ['relaxed_order']
+E             
+E             At index 0 diff: 'off' != 'relaxed_order'
+E             Use -v to get more diff
+tests\isolation\test_query_engine_isolation.py:292: AssertionError
+1 failed, 10 deselected in 14.47s
+restored: 0 changed files (expect 0)
+
+################ M3-breadcrumb-expression-bare ################
+[M3-breadcrumb-expression-bare] fts_retriever.py: original 1->0, mutated 0->1  LANDED
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+        Bitmap Index Scan on the COALESCE index, and the bare `breadcrumb`
+        expression falls back to a Seq Scan. The index is identified by its
+        assert BREADCRUMB_TSVECTOR in FTS_SEARCH_SQL, "the keyword leg must be composed from the constant"
+>       assert mismatched != BREADCRUMB_TSVECTOR
+E       assert "to_tsvector('english', breadcrumb)" != "to_tsvector('english', breadcrumb)"
+tests\isolation\test_query_engine_isolation.py:382: AssertionError
+1 failed, 10 deselected in 15.01s
+restored: 0 changed files (expect 0)
+
+################ M4-require-tenant-bypassed-in-vector-leg ################
+[M4-require-tenant-bypassed-in-vector-leg] vector_retriever.py: original 1->0, mutated 0->1  LANDED
+ 1 file changed, 1 insertion(+), 3 deletions(-)
+        # The premise, with RLS bypassed: B's chunk really is the nearer one.
+        assert distances[b_id] < distances[a_id], distances
+        assert distances[b_id] < 1e-6
+            _assert_app_role(engine.vector_retriever.conn)
+>           assert [r["chunk_id"] for r in results] == [a_id], results
+E           AssertionError: []
+E           assert [] == ['c9a23c74-ab...3ffd17ed05e2']
+E             
+E             Right contains one more item: 'c9a23c74-ab07-496c-9033-3ffd17ed05e2'
+E             Use -v to get more diff
+tests\isolation\test_query_engine_isolation.py:209: AssertionError
+1 failed, 10 deselected in 15.53s
+restored: 0 changed files (expect 0)
+
+M0: committed code, the whole module:
+11 passed in 19.28s
+tree after: 0 changed files (expect 0)
