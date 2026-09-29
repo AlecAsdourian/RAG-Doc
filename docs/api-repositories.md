@@ -257,17 +257,30 @@ as they were given to you.
 
 **This deletes ingested data, and it is not reversible.**
 
-The database cascade:
+What goes:
 
 ```
-repositories ─┬─> ingestion_runs ─> chunks
-              └─> chunks ─> retrievals ─> feedback
+repositories ─┬─> ingestion_runs ─> chunks        (database cascade)
+              ├─> chunks, symbols                  (database cascade)
+              └─> retrievals ─> feedback           (retrievals deleted by the
+                                                    handler; feedback cascades)
 ```
 
 So removing a repository removes everything derived from it — including
 **`feedback` the user wrote** on answers that cited its chunks, which is
 the one thing here that re-ingesting cannot bring back. `queries`
 survive; only the retrievals pointing at this repository's chunks go.
+
+Since migration 000017 the `retrievals` step is the handler's own
+statement, not a cascade: `chunks` is partitioned by organization and
+`retrievals.chunk_id` can no longer carry a foreign key to it, so the
+handler deletes the retrievals that cite the repository's chunks in the
+same transaction, using the same predicate as the `feedback_deleted`
+count. **The limit:** only retrievals whose chunk **still exists** are
+found. A retrieval whose chunk an earlier re-index already replaced is not
+reachable through any chunk, so it and its feedback survive this delete.
+How search logs should link to code that gets re-indexed is decided when
+feedback ships; today nothing writes `retrievals` or `feedback`.
 
 That is intended, not incidental: a repository whose contents stayed
 searchable after being disconnected would be the wrong answer for a

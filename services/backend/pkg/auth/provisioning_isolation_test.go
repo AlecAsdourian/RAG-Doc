@@ -59,11 +59,8 @@ func TestProvisioningIsolation_NewTenantIsWalledOff(t *testing.T) {
 				).Scan(&runID); err != nil {
 					return err
 				}
-				_, err := tx.Exec(ctx,
-					`INSERT INTO chunks (ingestion_run_id, repository_id, file_path,
-					     start_line, end_line, content, content_hash)
-					 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-					runID, orgA.RepoID, "secret.md", 1, 2, "orgA private marmalade", "h-prov-iso")
+				_, err := tx.Exec(ctx, isolation.TestChunkInsertSQL,
+					orgA.ID, runID, orgA.RepoID, "secret.md", 1, 2, "orgA private marmalade", "h-prov-iso")
 				return err
 			},
 			func(tx pgx.Tx) (bool, error) {

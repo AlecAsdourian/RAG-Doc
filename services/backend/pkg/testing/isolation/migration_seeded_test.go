@@ -137,6 +137,7 @@ import (
 
 	"github.com/golang-migrate/migrate/v4/database"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 )
@@ -155,6 +156,25 @@ const (
 	seedVersion      = 10 // the version the fixture's columns belong to
 	uninstallVersion = 12 // `github_installations.uninstalled_at` arrives here
 	pgvectorVersion  = 16 // 000016_enable_pgvector
+
+	// partitionedChunksVersion is 000017_partitioned_chunks (22-02), the
+	// first migration written under ISS-031's rule: it drops and recreates
+	// `chunks` partitioned by organization, with row-level security on every
+	// partition, every foreign key inside its CREATE TABLE, and no DML.
+	partitionedChunksVersion = 17
+	chunksPartitionCount     = 64
+
+	// The seed's retrieval -> feedback chain, and the chunk it cited, which
+	// 000017 drops out from under it (P17, U9).
+	seededRetrievalID = "80000000-0000-4000-8000-000000000a01"
+	seededFeedbackID  = "90000000-0000-4000-8000-000000000a01"
+	seededCitedChunk  = "60000000-0000-4000-8000-00000000a401"
+
+	// Alpha's surviving run and repository, and bravo's repository, for the
+	// deployment-shape write after the up (testdata/seed_at_000010.sql).
+	seededAlphaRun        = "50000000-0000-4000-8000-0000000000a4"
+	seededAlphaSyncedRepo = "40000000-0000-4000-8000-0000000000a4"
+	seededBravoSyncedRepo = "40000000-0000-4000-8000-0000000000b3"
 
 	// The installation the gate uninstalls at version 12, and its tenant
 	// (testdata/seed_at_000010.sql, organization "alpha").
@@ -201,8 +221,8 @@ func TestMigrationsApplyToASeededDatabase(t *testing.T) {
 
 	dir := gateMigrationsDir(t)
 	newest := newestMigrationVersion(t, dir)
-	require.GreaterOrEqual(t, newest, uint(pgvectorVersion),
-		"the gate expects at least 000016 in %s", dir)
+	require.GreaterOrEqual(t, newest, uint(partitionedChunksVersion),
+		"the gate expects at least 000017 in %s", dir)
 
 	// 1 to 5: the deployment shape, seeded at 10 and again at 12.
 	db, super := seedDeploymentShape(t, pool, dir)
@@ -331,9 +351,149 @@ func TestMigrationsApplyToASeededDatabase(t *testing.T) {
 		t.Logf("vector %s", version)
 	})
 
-	// `chunks` is excluded: 22-02's 000017 drops and recreates it (P1), and
-	// adds its own assertions here, including that the seeded retrievals and
-	// feedback survive it with a dangling chunk_id (P17).
+	// 000017 (22-02), in the deployment shape: the owner ran it in the one
+	// poisoned session, so every foreign key it declares had to be inside a
+	// CREATE TABLE (the audit and the '' half above would have caught an
+	// ALTER TABLE form; the mutation table in 22-02-SUMMARY.md shows both).
+	t.Run("000017 dropped chunks and its rows, and recreated it partitioned (P1)", func(t *testing.T) {
+		var kind string
+		require.NoError(t, super.QueryRow(ctx,
+			`SELECT relkind::text FROM pg_class WHERE oid = 'public.chunks'::regclass`).Scan(&kind))
+		require.Equal(t, "p", kind, "chunks is a partitioned table")
+		require.Zero(t, countOf(t, super, `SELECT count(*) FROM chunks`),
+			"no DML: the seeded chunks are gone, not migrated")
+	})
+
+	t.Run("000017 put row-level security on every partition, in the deployment shape (P2)", func(t *testing.T) {
+		rows, err := super.Query(ctx, `
+			SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity, pg_get_userbyid(c.relowner),
+			       (SELECT count(*) FROM pg_policy p WHERE p.polrelid = c.oid AND p.polname = 'tenant_isolation'),
+			       (SELECT count(*) FROM pg_trigger t WHERE t.tgrelid = c.oid AND t.tgname = 'trg_assert_tenant')
+			FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+			WHERE i.inhparent = 'public.chunks'::regclass ORDER BY c.relname`)
+		require.NoError(t, err)
+		type partition struct {
+			name       string
+			rls, force bool
+			owner      string
+			policies   int64
+			triggers   int64
+		}
+		partitions, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (partition, error) {
+			var p partition
+			err := row.Scan(&p.name, &p.rls, &p.force, &p.owner, &p.policies, &p.triggers)
+			return p, err
+		})
+		require.NoError(t, err)
+		require.Len(t, partitions, chunksPartitionCount)
+		for _, p := range partitions {
+			require.Truef(t, p.rls, "%s: row-level security enabled", p.name)
+			require.Truef(t, p.force, "%s: row-level security forced", p.name)
+			require.Equalf(t, DeploymentOwnerRole, p.owner, "%s: owned by the migrating owner", p.name)
+			require.EqualValuesf(t, 1, p.policies, "%s: carries tenant_isolation itself", p.name)
+			require.EqualValuesf(t, 1, p.triggers, "%s: carries trg_assert_tenant itself", p.name)
+		}
+		// And the parent's policy is the scalar one, on every partition too.
+		require.Equal(t, 1, countOf(t, super, `
+			SELECT count(DISTINCT qual) FROM pg_policies
+			WHERE schemaname = 'public' AND tablename LIKE 'chunks%' AND policyname = 'tenant_isolation'`),
+			"one policy expression across the parent and its partitions")
+		require.Equal(t, chunksPartitionCount+1, countOf(t, super, `
+			SELECT count(*) FROM pg_policies
+			WHERE schemaname = 'public' AND tablename LIKE 'chunks%' AND policyname = 'tenant_isolation'
+			  AND qual NOT LIKE '%EXISTS%' AND qual LIKE '%organization_id = %'`),
+			"the policy is scalar equality on organization_id, parent and partitions")
+	})
+
+	t.Run("000017 created symbols (P7) with the tenant key inside CREATE TABLE", func(t *testing.T) {
+		var rls, force bool
+		require.NoError(t, super.QueryRow(ctx,
+			`SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE oid = 'public.symbols'::regclass`,
+		).Scan(&rls, &force))
+		require.True(t, rls && force)
+		for _, key := range []string{"symbols.symbols_repo_tenant_fk", "chunks.chunks_repo_tenant_fk"} {
+			var validated bool
+			table, name, _ := strings.Cut(key, ".")
+			require.NoError(t, super.QueryRow(ctx,
+				`SELECT convalidated FROM pg_constraint WHERE conrelid = $1::regclass AND conname = $2`,
+				table, name).Scan(&validated), "%s must exist", key)
+			require.True(t, validated, "%s is validated", key)
+		}
+	})
+
+	t.Run("000017 dropped retrievals_chunk_id_fkey and left the seeded retrieval and feedback dangling (P17)", func(t *testing.T) {
+		require.Zero(t, countOf(t, super,
+			`SELECT count(*) FROM pg_constraint WHERE conrelid = 'retrievals'::regclass AND conname = 'retrievals_chunk_id_fkey'`))
+		var citedChunk string
+		require.NoError(t, super.QueryRow(ctx,
+			`SELECT chunk_id::text FROM retrievals WHERE id = $1`, seededRetrievalID).Scan(&citedChunk),
+			"the seeded retrieval survived")
+		require.Equal(t, seededCitedChunk, citedChunk, "it still names the chunk it was shown")
+		require.Zero(t, countOf(t, super, `SELECT count(*) FROM chunks WHERE id = $1`, seededCitedChunk),
+			"which no longer exists: the id dangles by decision (U9)")
+		require.Equal(t, 1, countOf(t, super, `SELECT count(*) FROM feedback WHERE id = $1`, seededFeedbackID),
+			"the user's feedback on it survived")
+	})
+
+	// The one write in the deployment shape (PR #49's review, nit 7): the
+	// tables are the owner's, FORCE applies to the owner, and the
+	// application role writes through them. Per-row foreign-key checks run
+	// with row-level security bypassed, which is why a correct insert works
+	// at all here (the referenced repository is invisible to the owner's
+	// policy), and why the tenant key can refuse a misfiled one.
+	t.Run("000017: the application role writes a chunk in the deployment shape, and a misfiled one is refused", func(t *testing.T) {
+		// The grants at 12 covered the tables that existed then; the
+		// harnesses re-grant after migrating, and so does this.
+		grantAppRoleIn(t, super)
+		conn, err := pgx.Connect(ctx, db.SuperuserDSN)
+		require.NoError(t, err)
+		defer func() { _ = conn.Close(ctx) }()
+		switchToAppRole(t, conn)
+
+		tx, err := conn.Begin(ctx)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback(ctx) }()
+		_, err = tx.Exec(ctx, `SELECT set_config('app.current_tenant', $1, true)`, uninstalledTenantID)
+		require.NoError(t, err)
+
+		var chunkID, partition string
+		require.NoError(t, tx.QueryRow(ctx, TestChunkInsertSQL,
+			uninstalledTenantID, seededAlphaRun, seededAlphaSyncedRepo,
+			"deploy.go", 1, 1, "written in the deployment shape", "h-deploy",
+		).Scan(&chunkID), "as rag_doc_app, a chunk of alpha's own repository")
+		require.NoError(t, tx.QueryRow(ctx,
+			`SELECT tableoid::regclass::text FROM chunks WHERE id = $1`, chunkID).Scan(&partition))
+		require.Regexp(t, `^chunks_p[0-9]+$`, partition, "routed to a partition, and readable back under the tenant")
+
+		_, err = tx.Exec(ctx, `SAVEPOINT misfiled`)
+		require.NoError(t, err)
+		_, err = tx.Exec(ctx, TestChunkInsertSQL,
+			uninstalledTenantID, seededAlphaRun, seededBravoSyncedRepo,
+			"misfiled.go", 1, 1, "alpha citing bravo's repository", "h-misfiled")
+		require.Error(t, err)
+		var pgErr *pgconn.PgError
+		require.True(t, errors.As(err, &pgErr), "%T: %v", err, err)
+		require.Equal(t, "23503", pgErr.Code, "message: %s", pgErr.Message)
+		require.Equal(t, "chunks_repo_tenant_fk", pgErr.ConstraintName)
+		_, err = tx.Exec(ctx, `ROLLBACK TO SAVEPOINT misfiled`)
+		require.NoError(t, err)
+
+		_, err = tx.Exec(ctx, `INSERT INTO symbols
+			   (id, organization_id, repository_id, file_path, symbol_path, kind,
+			    start_line, end_line, span_digest, first_seen_commit, last_seen_commit)
+			 VALUES (gen_random_uuid(), $1, $2, 'deploy.go', 'deploy', 'module', 1, 1, 'sha-deploy', 'c1', 'c1')`,
+			uninstalledTenantID, seededAlphaSyncedRepo)
+		require.NoError(t, err, "as rag_doc_app, a symbol of alpha's own repository")
+		require.NoError(t, tx.Commit(ctx))
+
+		require.Equal(t, 1, countOf(t, super, `SELECT count(*) FROM chunks`), "the one committed chunk, read as the superuser")
+		drifted, err := CheckChunkTenantDrift(ctx, super)
+		require.NoError(t, err)
+		require.Empty(t, drifted)
+	})
+
+	// `chunks` is excluded: 000017 drops and recreates it (P1), which the
+	// subtests above assert directly.
 	t.Run("every seeded row outside chunks survived", func(t *testing.T) {
 		after := snapshotSeededRows(t, super)
 		for _, table := range sortedKeys(before) {
@@ -443,6 +603,11 @@ func TestMigration000016NeedsTheExtensionPreCreated(t *testing.T) {
 //   - with FORCE lifted on `repositories` for that one statement, passes,
 //     with FORCE back on, nothing flagged and the key validated.
 //
+// The probe migrations are numbered from the newest committed migration IN
+// THE DIRECTORY, read at run time, so they always run after the real ones
+// and never collide with the next one to land. (A constant here collided
+// twice: 000017 with 22-02's migration, then 000018 with 22-03's.)
+//
 // ISS-031's first instance was this shape: `ingestion_jobs` had no policy
 // and `repositories` did. Lifting FORCE on the key's own table alone changes
 // nothing here, because it has no policy to lift.
@@ -450,7 +615,7 @@ func TestForeignKeyValidationReadsTheReferencedTable(t *testing.T) {
 	ctx := context.Background()
 	pool := SetupTestDB(t)
 
-	// 000017: the probe table, filled under each organization's tenant with
+	// The first probe: a table filled under each organization's tenant with
 	// that organization's pairs, so every row is correct by construction.
 	const fill = `
 CREATE TABLE probe_children (
@@ -484,17 +649,20 @@ END $$;
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			newest := newestMigrationVersion(t, migrationsDir())
+			probeFill, probeKey := newest+1, newest+2
 			dir := probeMigrationsDir(t, map[string]string{
-				"000017_probe_fill.up.sql":   fill,
-				"000017_probe_fill.down.sql": "DROP TABLE probe_children;",
-				"000018_probe_key.up.sql":    c.migration,
-				"000018_probe_key.down.sql":  "ALTER TABLE probe_children DROP CONSTRAINT probe_children_repo_tenant_fk;",
+				fmt.Sprintf("%06d_probe_fill.up.sql", probeFill):   fill,
+				fmt.Sprintf("%06d_probe_fill.down.sql", probeFill): "DROP TABLE probe_children;",
+				fmt.Sprintf("%06d_probe_key.up.sql", probeKey):     c.migration,
+				fmt.Sprintf("%06d_probe_key.down.sql", probeKey):   "ALTER TABLE probe_children DROP CONSTRAINT probe_children_repo_tenant_fk;",
 			})
 			db, super := seedDeploymentShape(t, pool, dir)
 			forcedBefore := forcedRowLevelSecurityTables(t, super)
 
-			// One session to 17, as the gate would run it.
-			require.NoError(t, applyMigrationsTo(db.OwnerDSN, dir, 17))
+			// One session through the committed migrations to the fill, as
+			// the gate would run it.
+			require.NoError(t, applyMigrationsTo(db.OwnerDSN, dir, probeFill))
 			require.Equal(t, 8, countOf(t, super, `SELECT count(*) FROM probe_children`),
 				"premise: one pair per seeded repository")
 			require.Zero(t, countOf(t, super, `
@@ -503,18 +671,18 @@ END $$;
 				                  WHERE r.id = p.repository_id AND r.organization_id = p.organization_id)`),
 				"premise: every pair is correct, read as the superuser")
 
-			// A FRESH session for 18: its own migrate instance, tenant NULL.
-			err := applyMigrationsTo(db.OwnerDSN, dir, 18)
+			// A FRESH session for the key: its own migrate instance, tenant NULL.
+			err := applyMigrationsTo(db.OwnerDSN, dir, probeKey)
 			version, dirty := migrationVersion(t, super)
 			if c.wantState != "" {
 				require.Error(t, err, "the validation read repositories through its policy and saw nothing")
 				require.Equal(t, c.wantState, sqlStateOf(err), describeMigrationError(err))
-				require.Equal(t, int64(18), version)
+				require.Equal(t, int64(probeKey), version)
 				require.True(t, dirty)
 				t.Logf("%s: %s", c.name, describeMigrationError(err))
 			} else {
 				require.NoError(t, err, "with FORCE lifted on repositories the validation read every pair")
-				require.Equal(t, int64(18), version)
+				require.Equal(t, int64(probeKey), version)
 				require.False(t, dirty)
 				var validated bool
 				require.NoError(t, super.QueryRow(ctx,

@@ -26,7 +26,12 @@ class EmbeddingGenerator:
 
         Args:
             api_key: OpenAI API key (defaults to OPENAI_API_KEY env var)
-            model: Embedding model name
+            model: Embedding model name. Public as `self.model`: every
+                chunk row records the model that produced its vector
+                (migration 000017, 22-CONTEXT P4), and writers read the
+                name from the generator that made the vectors rather than
+                restating it. It stays text-embedding-ada-002 through the
+                storage move (U3).
             batch_size: Number of chunks to process per API call
             max_tokens_per_chunk: Maximum tokens per chunk (for cost control)
         """
@@ -38,6 +43,7 @@ class EmbeddingGenerator:
                     "or pass api_key parameter."
                 )
 
+        self.model = model
         self.client = OpenAIEmbeddingClient(api_key=api_key, model=model)
         self.batch_size = batch_size
         self.max_tokens_per_chunk = max_tokens_per_chunk

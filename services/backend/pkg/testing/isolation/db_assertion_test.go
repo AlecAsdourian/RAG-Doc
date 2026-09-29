@@ -68,10 +68,25 @@ var protectedTables = []struct {
 		[]any{uuid.NewString(), strings.Repeat("a", 40), "main", "completed"},
 	},
 	{
+		// Since 000017 (22-02) the row names its tenant and carries a vector
+		// and a model; the parent is partitioned by organization_id, so the
+		// trigger that fires is the clone on the partition the row is routed
+		// to, and its message names chunks_pNN. requireTenantViolation's
+		// Contains(table) still matches; the partition-specific check is in
+		// TestDBAssertion_TriggerFiresOnInsertWithoutTenant below.
 		"chunks",
-		`INSERT INTO chunks (ingestion_run_id, repository_id, file_path, start_line, end_line, content, content_hash)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		[]any{uuid.NewString(), uuid.NewString(), "x.md", 1, 10, "content", "hash"},
+		isolation.TestChunkInsertSQL,
+		[]any{uuid.NewString(), uuid.NewString(), uuid.NewString(), "x.md", 1, 10, "content", "hash"},
+	},
+	{
+		// Added by migration 000017 (22-02): D1's symbols, unpartitioned (P7),
+		// with the same trigger and the scalar tenant policy.
+		"symbols",
+		`INSERT INTO symbols
+		   (id, organization_id, repository_id, file_path, symbol_path, kind,
+		    start_line, end_line, span_digest, first_seen_commit, last_seen_commit)
+		 VALUES ($1, $2, $3, 'x.go', 'x', 'function', 1, 2, 'sha', 'c1', 'c1')`,
+		[]any{uuid.NewString(), uuid.NewString(), uuid.NewString()},
 	},
 	{
 		"queries",
@@ -114,6 +129,16 @@ func TestDBAssertion_TriggerFiresOnInsertWithoutTenant(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := pool.Exec(ctx, tc.insertSQL, tc.insertArgs...)
 			requireTenantViolation(t, err, "INSERT", tc.name)
+			if tc.name == "chunks" {
+				// 42501 must come from the PARTITION's cloned trigger, first:
+				// before the tenant key (23503, the parents do not exist)
+				// and before the partition's own policy (also 42501, but
+				// worded "violates row-level security policy").
+				var pgErr *pgconn.PgError
+				require.True(t, errors.As(err, &pgErr))
+				require.Regexp(t, `on chunks_p[0-9]+`, pgErr.Message,
+					"the trigger that fired is the clone on the partition the row was routed to")
+			}
 		})
 	}
 }
@@ -217,11 +242,19 @@ func TestDBAssertion_TriggerAllowsMutationsWhenTenantSet(t *testing.T) {
 		).Scan(&runID))
 
 		var chunkID string
-		require.NoError(t, tx.QueryRow(ctx,
-			`INSERT INTO chunks (ingestion_run_id, repository_id, file_path, start_line, end_line, content, content_hash)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-			runID, orgA.RepoID, "y.md", 1, 5, "body", "h-1",
+		require.NoError(t, tx.QueryRow(ctx, isolation.TestChunkInsertSQL,
+			orgA.ID, runID, orgA.RepoID, "y.md", 1, 5, "body", "h-1",
 		).Scan(&chunkID))
+
+		// 000017: symbols takes the same shape of write.
+		_, err = tx.Exec(ctx,
+			`INSERT INTO symbols
+			   (id, organization_id, repository_id, file_path, symbol_path, kind,
+			    start_line, end_line, span_digest, first_seen_commit, last_seen_commit)
+			 VALUES ($1, $2, $3, 'y.md', 'y', 'module', 1, 5, 'sha-y', 'c1', 'c1')`,
+			uuid.NewString(), orgA.ID, orgA.RepoID,
+		)
+		require.NoError(t, err)
 
 		var queryID string
 		require.NoError(t, tx.QueryRow(ctx,
@@ -346,10 +379,8 @@ func insertOneChunk(t *testing.T, pool *pgxpool.Pool, org *isolation.TestOrg) st
 	).Scan(&runID))
 
 	var chunkID string
-	require.NoError(t, tx.QueryRow(ctx,
-		`INSERT INTO chunks (ingestion_run_id, repository_id, file_path, start_line, end_line, content, content_hash)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-		runID, org.RepoID, "z.md", 1, 3, "committed", "h-committed",
+	require.NoError(t, tx.QueryRow(ctx, isolation.TestChunkInsertSQL,
+		org.ID, runID, org.RepoID, "z.md", 1, 3, "committed", "h-committed",
 	).Scan(&chunkID))
 	require.NoError(t, tx.Commit(ctx))
 	return chunkID
@@ -376,9 +407,16 @@ func requireTenantViolation(t *testing.T, err error, op, table string) {
 // for why both are acceptable on UPDATE/DELETE.
 //
 // The message-shape assertions matter: they pin the error to one of the
-// two known isolation paths (trigger raise, or RLS ''::uuid cast on the
-// empty-string GUC). An unrelated 42501 or 22P02 from some future bug
-// would fail here rather than silently satisfy the test.
+// two known isolation paths (the trigger's raise, or RLS casting the
+// empty-string GUC to uuid). An unrelated 42501 or 22P02 from some future
+// bug would fail here rather than silently satisfy the test.
+//
+// (This doc comment once spelled the cast out with two apostrophes. gofmt
+// rewrites a pair of apostrophes, and a pair of backquotes, in a DOC
+// comment into curly quotes, measured on go1.25, and the right curly quote
+// is a byte cp1252 cannot decode, which crashed the isolation scanner on
+// Windows. Body comments are left alone; a doc comment must not carry
+// either pair, so this one names them instead of writing them.)
 func requireIsolationRefusal(t *testing.T, err error) {
 	t.Helper()
 	require.Error(t, err)

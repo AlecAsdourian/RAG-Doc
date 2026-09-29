@@ -256,10 +256,8 @@ func insertSearchChunk(t *testing.T, pool *pgxpool.Pool, org *isolation.TestOrg,
 	).Scan(&runID))
 
 	var chunkID string
-	require.NoError(t, tx.QueryRow(ctx,
-		`INSERT INTO chunks (ingestion_run_id, repository_id, file_path, start_line, end_line, content, content_hash)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-		runID, org.RepoID, "recipes/entry.md", 1, 10, content, fmt.Sprintf("h-%x", len(content)),
+	require.NoError(t, tx.QueryRow(ctx, isolation.TestChunkInsertSQL,
+		org.ID, runID, org.RepoID, "recipes/entry.md", 1, 10, content, fmt.Sprintf("h-%x", len(content)),
 	).Scan(&chunkID))
 
 	require.NoError(t, tx.Commit(ctx))

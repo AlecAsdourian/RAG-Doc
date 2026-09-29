@@ -761,7 +761,18 @@ def run_diff(base: str, head: str, repo_root: Path) -> str:
         "*.go",
         "*.py",
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    # Decode the diff as UTF-8 on every platform. Without `encoding`, Python
+    # uses the locale's codec, which on Windows is cp1252: a UTF-8 byte
+    # sequence with 0x9d in it (a curly quote in a comment, PR #49) made the
+    # reader thread raise UnicodeDecodeError, `result.stdout` came back None,
+    # and the scanner died on `.splitlines()` instead of reporting. Git
+    # emits the diff as the files' bytes, and every source file here is
+    # UTF-8; `errors="replace"` keeps a stray byte in a comment from taking
+    # the gate down, at the cost of one replacement character nobody
+    # matches on.
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False
+    )
     if result.returncode != 0 and not result.stdout:
         print(f"git diff failed: {result.stderr}", file=sys.stderr)
         sys.exit(2)

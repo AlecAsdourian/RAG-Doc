@@ -69,7 +69,7 @@ func TestFixtures_AssertNoCrossTenantLeak_CatchesLeak(t *testing.T) {
 
 		err := CheckCrossTenantLeak(ctx, pool, orgA.ID, orgB.ID,
 			func(tx pgx.Tx) error {
-				return insertOneChunk(ctx, tx, orgA.RepoID, "leak-A")
+				return insertOneChunk(ctx, tx, orgA.ID, orgA.RepoID, "leak-A")
 			},
 			func(tx pgx.Tx) (bool, error) {
 				// Escalate to the superuser session so RLS no longer applies —
@@ -104,7 +104,7 @@ func TestFixtures_AssertNoCrossTenantLeak_PassesOnIsolation(t *testing.T) {
 
 		err := CheckCrossTenantLeak(ctx, pool, orgA.ID, orgB.ID,
 			func(tx pgx.Tx) error {
-				return insertOneChunk(ctx, tx, orgA.RepoID, "no-leak-A")
+				return insertOneChunk(ctx, tx, orgA.ID, orgA.RepoID, "no-leak-A")
 			},
 			func(tx pgx.Tx) (bool, error) {
 				var count int
@@ -174,11 +174,8 @@ func TestCleanupOrg_RemovesAllRows(t *testing.T) {
 		 VALUES ($1, 'abc', 'main', 'completed') RETURNING id`,
 		org.RepoID,
 	).Scan(&runID))
-	_, err = tx.Exec(ctx,
-		`INSERT INTO chunks
-		   (ingestion_run_id, repository_id, file_path, start_line, end_line, content, content_hash)
-		 VALUES ($1, $2, 'x.txt', 1, 1, 'x', 'xh')`,
-		runID, org.RepoID,
+	_, err = tx.Exec(ctx, TestChunkInsertSQL,
+		org.ID, runID, org.RepoID, "x.txt", 1, 1, "x", "xh",
 	)
 	require.NoError(t, err)
 	require.NoError(t, tx.Commit(ctx))
@@ -212,8 +209,10 @@ func TestCleanupOrg_RemovesAllRows(t *testing.T) {
 }
 
 // insertOneChunk writes a single chunk row into the repo, creating a scaffold
-// ingestion_run beforehand. It is used by the leak self-tests.
-func insertOneChunk(ctx context.Context, tx pgx.Tx, repoID, marker string) error {
+// ingestion_run beforehand. It is used by the leak self-tests. Since 000017
+// the row names its tenant (nothing fills organization_id in), and carries
+// the fixed test vector and model.
+func insertOneChunk(ctx context.Context, tx pgx.Tx, orgID, repoID, marker string) error {
 	var runID string
 	if err := tx.QueryRow(ctx,
 		`INSERT INTO ingestion_runs (repository_id, commit_sha, branch, status)
@@ -222,11 +221,8 @@ func insertOneChunk(ctx context.Context, tx pgx.Tx, repoID, marker string) error
 	).Scan(&runID); err != nil {
 		return err
 	}
-	_, err := tx.Exec(ctx,
-		`INSERT INTO chunks
-		   (ingestion_run_id, repository_id, file_path, start_line, end_line, content, content_hash)
-		 VALUES ($1, $2, 'x.txt', 1, 1, $3, $4)`,
-		runID, repoID, marker, marker+"-hash",
+	_, err := tx.Exec(ctx, TestChunkInsertSQL,
+		orgID, runID, repoID, "x.txt", 1, 1, marker, marker+"-hash",
 	)
 	return err
 }

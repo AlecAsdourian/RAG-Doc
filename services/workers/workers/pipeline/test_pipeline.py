@@ -58,12 +58,16 @@ class TestIngestionPipeline:
         mock_qdrant.upsert_embeddings.return_value = 2
         mock_qdrant_class.return_value = mock_qdrant
 
-        mock_embedgen = Mock()
-        mock_embedgen.generate_embeddings_for_chunks.return_value = {
+        embeddings = {
             hash1: [0.1] * 1536,
             hash2: [0.2] * 1536,
         }
+        mock_embedgen = Mock()
+        mock_embedgen.generate_embeddings_for_chunks.return_value = embeddings
         mock_embedgen._prepare_text_for_embedding.return_value = "test"
+        # A name no real generator has: the pipeline must pass the
+        # GENERATOR'S model through, not restate a default (22-CONTEXT P4).
+        mock_embedgen.model = "mock-embedding-model-7"
         mock_embedgen_class.return_value = mock_embedgen
 
         # Mock chunks
@@ -102,6 +106,25 @@ class TestIngestionPipeline:
         assert stats["files_processed"] == 1
         assert stats["chunks_created"] == 2
         assert stats["embeddings_generated"] == 2
+
+        # Migration 000017: the chunks reach Postgres WITH their vectors and
+        # the model that produced them, taken from the generator. The
+        # arguments, not just the call: a pipeline that dropped the map or
+        # hard-coded the model would still return "success".
+        mock_postgres.insert_chunks.assert_called_once()
+        args, kwargs = mock_postgres.insert_chunks.call_args
+        assert args == (
+            organization_id,
+            [mock_chunk1, mock_chunk2],
+            mock_postgres.create_ingestion_run.return_value,
+            repository_id,
+        )
+        assert kwargs["embeddings"] is embeddings
+        assert kwargs["embedding_model"] == "mock-embedding-model-7"
+
+        # P15's transition: Qdrant still receives the same vectors until
+        # 22-03 retires it.
+        mock_qdrant.upsert_embeddings.assert_called_once()
 
     @patch("workers.pipeline.ingestion_pipeline.PostgresWriter")
     @patch("workers.pipeline.ingestion_pipeline.QdrantWriter")

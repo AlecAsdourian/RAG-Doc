@@ -44,7 +44,16 @@ def require_tenant(
     Usage:
 
         with require_tenant(conn, org_id) as cur:
-            cur.execute("INSERT INTO chunks (...) VALUES (...)", (...,))
+            # Since migration 000017 a chunk names its tenant (nothing fills
+            # organization_id in) and carries its vector and the model that
+            # produced it; see PostgresWriter.insert_chunks for the full list.
+            cur.execute(
+                "INSERT INTO chunks (organization_id, ingestion_run_id, repository_id, "
+                "file_path, start_line, end_line, content, content_hash, "
+                "embedding, embedding_model) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s)",
+                (org_id, run_id, repo_id, path, 1, 12, text, sha, "[0.1,...]", model),
+            )
 
         with require_tenant(conn, org_id, cursor_factory=RealDictCursor) as cur:
             cur.execute("SELECT ...")
