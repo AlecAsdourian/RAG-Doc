@@ -239,4 +239,89 @@ first. The baseline never set either; the read path was Qdrant's.
 
 ## The candidate and the verdict
 
-*(filled in after the pgvector run and `compare_runs.py`)*
+Recorded 2026-09-29, on the read path of `f946240` (both legs in Postgres)
+with the harness of `4fd8f80`, against **the same scratch database** (nothing
+written to it since the ingest) and **the same `vecs.json`**: every log line
+says `0 embedded now`. The command, per corpus, as `rag_doc_app`:
+
+```
+DATABASE_URL="…?options=-c role=rag_doc_app" python scripts/rag_quality_harness.py \
+    --corpus <c> --corpora-dir <path> --measure --set all \
+    --query-vectors vecs.json --record pgvector-<c>.jsonl
+python scripts/rag_benchmarks/compare_runs.py --records <dir>
+```
+
+Every candidate header says `vector_backend: pgvector`, and now records
+**two** measuring connections, the keyword leg's and the vector leg's, both
+`current_user = rag_doc_app`, `rolsuper = false`, `rolbypassrls = false`.
+The session-level `hnsw.iterative_scan` reads `off` (the server default: the
+retriever sets it `LOCAL`, inside its transaction, which
+`test_iterative_scan_is_set_inside_the_retrievers_own_transaction` reads).
+`hnsw.ef_search` is 40, the default. 130 records, 0 errors, 130 hashes
+identical to the baseline's.
+
+**`compare_runs.py`, exit code 0. Its output, verbatim
+(`22-03-records/compare_runs.txt`):**
+
+```
+corpus   id         set      file         symbol       class       note
+---------------------------------------------------------------------------------------------------------------
+(no question differs in file rank or symbol rank)
+---------------------------------------------------------------------------------------------------------------
+differing questions: 0   (a)=0   (b)=0   (c)=0   UNEXPLAINED=0
+
+Aggregates, reported and not judged (recall@k = found/questions, rank-1, MRR):
+corpus    set      side      file recall  file #1  file MRR  sym recall  sym #1  sym MRR 
+self      holdout  qdrant    12/15        7        0.633     0/0        0       0.000   
+self      tuning   qdrant    20/25        14       0.649     0/0        0       0.000   
+self      holdout  pgvector  12/15        7        0.633     0/0        0       0.000   
+self      tuning   pgvector  20/25        14       0.649     0/0        0       0.000   
+miniflux  confirm  qdrant    10/15        6        0.494     8/15       3       0.319   
+miniflux  holdout  qdrant    11/15        5        0.489     11/15       5       0.478   
+miniflux  tuning   qdrant    9/15        6        0.483     6/15       3       0.263   
+miniflux  confirm  pgvector  10/15        6        0.494     8/15       3       0.319   
+miniflux  holdout  pgvector  11/15        5        0.489     11/15       5       0.478   
+miniflux  tuning   pgvector  9/15        6        0.483     6/15       3       0.263   
+mealie    confirm  qdrant    14/15        7        0.629     10/15       4       0.376   
+mealie    holdout  qdrant    11/15        5        0.489     6/15       2       0.239   
+mealie    tuning   qdrant    8/15        3        0.307     8/15       3       0.290   
+mealie    confirm  pgvector  14/15        7        0.629     10/15       4       0.376   
+mealie    holdout  pgvector  11/15        5        0.489     6/15       2       0.239   
+mealie    tuning   pgvector  8/15        3        0.307     8/15       3       0.290   
+
+For information only:
+  self: 40/40 questions with fully agreeing boosted rankings; max |delta similarity| over 2000 chunk scores both legs returned = 4.66e-07; chunks without a Qdrant point: 0 (534 in Postgres, 534 points)
+  miniflux: 39/45 questions with fully agreeing boosted rankings; max |delta similarity| over 2243 chunk scores both legs returned = 4.85e-07; chunks without a Qdrant point: 12 (2134 in Postgres, 2122 points)
+  mealie: 25/45 questions with fully agreeing boosted rankings; max |delta similarity| over 2152 chunk scores both legs returned = 6.03e-07; chunks without a Qdrant point: 80 (2816 in Postgres, 2736 points)
+
+VERDICT: PASS (0 UNEXPLAINED)
+```
+
+**The verdict: PASS.** Not one of the 130 questions changed its file rank or
+its symbol rank, so no class had to explain anything, and every aggregate is
+identical under the two read paths. The rule's classes stayed in the
+definition, unused.
+
+**What the information lines add, read and not judged.**
+- The Qdrant score and the pgvector score of the same chunk for the same
+  query differ by at most **6.0e-07** across 6,395 pairs, three orders of
+  magnitude inside the 1e-5 tolerance and exactly the float32-accumulation
+  difference the review predicted; the ranks they induce agreed everywhere.
+- The **full** boosted rankings (all ~50–100 chunks, scores compared) agree
+  on 40/40 `self`, 39/45 miniflux and 25/45 mealie questions. The 6 and 20
+  that differ are the questions whose vector top 50 now contains
+  duplicate-content chunks that had no Qdrant point (class (a)'s
+  mechanism), which shifted ranks below the top-5 cut without reaching it.
+  That is the one difference P6 said to expect, seen where it was expected.
+- On this data the planner ran the pgvector leg as **exact search**: the
+  recorded plans are a Bitmap Heap Scan through the repository btree
+  (`self`, miniflux) or a Seq Scan (mealie), each `Subplans Removed: 63`,
+  never the HNSW index. So the gate measured the storage move, not HNSW
+  recall; HNSW eligibility is `test_the_hnsw_index_can_serve_the_vector_leg`'s
+  proof, and the plan at production size is 22.1-05's recall test. Qdrant,
+  for its part, searched with `full_scan_threshold: 10000` on collections
+  of 534–2,736 points, that is, exactly; the ranks say so.
+
+**Both containers were removed after this was recorded**, as the plan
+directs; the database they held is reproducible from the ingest command and
+the pinned corpus commits, and the records are committed.

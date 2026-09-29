@@ -379,7 +379,6 @@ def test_the_breadcrumb_gin_index_serves_the_keyword_legs_expression(superuser_d
     """
     assert BREADCRUMB_TSVECTOR in FTS_SEARCH_SQL, "the keyword leg must be composed from the constant"
     mismatched = "to_tsvector('english', breadcrumb)"
-    assert mismatched != BREADCRUMB_TSVECTOR
 
     conn = psycopg2.connect(superuser_dsn)
     try:
@@ -413,6 +412,9 @@ def test_the_breadcrumb_gin_index_serves_the_keyword_legs_expression(superuser_d
     indexdef = row[0]
     assert "USING gin" in indexdef and "COALESCE(breadcrumb" in indexdef, indexdef
     assert "Seq Scan" in plans["mismatched"] and "Bitmap Index Scan" not in plans["mismatched"], plans["mismatched"]
+    # The premise of the mismatched half, checked last so that a retriever
+    # whose constant IS the bare expression fails above, on its Seq Scan.
+    assert mismatched != BREADCRUMB_TSVECTOR
 
 
 # ---------------------------------------------------------------------------
