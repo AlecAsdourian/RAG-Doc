@@ -93,22 +93,52 @@ RE-INDEXING NEEDS --clear (ISS-027). Earlier runs' vectors stay searchable, so
 --ingest refuses a corpus that is already indexed unless --clear comes with it.
 --clear deletes that corpus's Qdrant points and ingestion runs, and nothing else.
 
+--ingest AND --clear REFUSE COMPOSE'S STORES. DATABASE_URL defaults to compose's
+Postgres on port 5434 and QDRANT_URL to compose's Qdrant on 6333, and neither is
+a scratch store: the harness writes and deletes. Both flags exit before touching
+anything when the configured port is compose's, unless --allow-compose is passed
+deliberately (22-03).
+
+RECORDING A RUN FOR THE STORAGE-MOVE EQUIVALENCE GATE (22-03). The gate compares
+retrieval over the same chunks and the same query vectors under two read paths,
+so a recorded run needs more than final ranks:
+
+    --query-vectors FILE   question id -> its ada-002 vector. A missing question
+                           is embedded ONCE and written back; every run reads the
+                           file, so both sides of the gate ask the same vector.
+    --record FILE.jsonl    per question: QueryEngine's trace (both legs, fused,
+                           boosted, top), the ranks, the SHA-256 of the query
+                           vector used, and the measuring connection's role
+                           (rolsuper and rolbypassrls must be false). Refuses a
+                           superuser connection.
+    --exact FILE           the exact-search reference: each question's nearest
+                           chunks by cosine distance with index scans off, from
+                           the cached vector, plus every chunk tied with the 50th.
+    --qdrant-ids FILE      every point Qdrant holds for the corpus (Task 1 only).
+
+    scripts/rag_benchmarks/compare_runs.py judges two recorded runs under the
+    rule in .planning/phases/22-repository-clone-ingestion/22-03-equivalence.md.
+
 Ingestion costs OpenAI credits; measurement is cheap and re-runnable.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from urllib.parse import urlparse
 from uuid import UUID, uuid5
 
 import psycopg2
 from dotenv import load_dotenv
+from psycopg2.extensions import parse_dsn
 from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, FilterSelector, MatchValue
 
@@ -120,8 +150,12 @@ from workers.db import require_tenant  # noqa: E402
 from workers.pipeline.ingestion_pipeline import IngestionPipeline  # noqa: E402
 from workers.retrieval.query_engine import QueryEngine  # noqa: E402
 
-PG = os.getenv("DATABASE_URL", "postgresql://coderag:coderag@127.0.0.1:5434/coderag")
-QDRANT = os.getenv("QDRANT_URL", "http://localhost:6333")
+# The defaults are compose's stores. --ingest and --clear refuse them without
+# --allow-compose (refuse_compose below); --measure only reads.
+DEFAULT_PG = "postgresql://coderag:coderag@127.0.0.1:5434/coderag"
+DEFAULT_QDRANT = "http://localhost:6333"
+PG = os.getenv("DATABASE_URL", DEFAULT_PG)
+QDRANT = os.getenv("QDRANT_URL", DEFAULT_QDRANT)
 OPENAI = os.getenv("OPENAI_API_KEY")
 QDRANT_COLLECTION = "code_embeddings"  # QdrantWriter's default
 
@@ -520,6 +554,305 @@ def do_ingest(corpus: Corpus) -> None:
         sys.exit(f"FAILED: {stats.get('error')}")
 
 
+# ---------------------------------------------------------------------------
+# 22-03: the storage-move equivalence gate. Added BEFORE the Qdrant-era
+# baseline was recorded, so both sides of the gate are measured by the same
+# code. Everything here is measurement, not retrieval: the guard that keeps
+# writes off compose, the cached query vectors, the pin that makes the engine
+# use them, the identity of the measuring connection, the exact-search
+# reference and the Qdrant point set.
+# ---------------------------------------------------------------------------
+
+COMPOSE_POSTGRES_PORT = 5434
+COMPOSE_QDRANT_PORT = 6333
+EXACT_LIMIT = 50
+# Rows past the 50th are fetched so that every chunk tied with the 50th (within
+# the vector tolerance 22-03-equivalence.md fixes) is recorded too.
+EXACT_TAIL = 150
+EXACT_TIE_TOLERANCE = 1e-5
+IDENTITY_SQL = (
+    "SELECT current_user, session_user, rolsuper, rolbypassrls "
+    "FROM pg_roles WHERE rolname = current_user"
+)
+# The exact-search reference. Deliberately its own statement, not the
+# retriever's: it is the ground truth the retriever's vector leg is judged
+# against, run with every index scan disabled.
+EXACT_SQL = """
+    SELECT id::text AS chunk_id, embedding <=> %(q)s::vector AS distance
+    FROM chunks
+    WHERE repository_id = %(repo)s AND embedding_model = %(model)s
+    ORDER BY embedding <=> %(q)s::vector, id
+    LIMIT %(limit)s
+"""
+
+
+def dsn_port(dsn: str) -> Optional[int]:
+    """The Postgres port a DSN (URL or key=value form) points at; 5432 when unstated."""
+    try:
+        parsed = parse_dsn(dsn)
+    except psycopg2.ProgrammingError:
+        return urlparse(dsn).port
+    port = parsed.get("port")
+    return int(port) if port else 5432
+
+
+def compose_targets(pg_dsn: str, qdrant_url: str) -> List[str]:
+    """Which of compose's stores the configuration points at, by port."""
+    targets = []
+    if dsn_port(pg_dsn) == COMPOSE_POSTGRES_PORT:
+        targets.append(f"Postgres on port {COMPOSE_POSTGRES_PORT}")
+    if urlparse(qdrant_url).port == COMPOSE_QDRANT_PORT:
+        targets.append(f"Qdrant on port {COMPOSE_QDRANT_PORT}")
+    return targets
+
+
+def refuse_compose(action: str, pg_dsn: str, qdrant_url: str, allow_compose: bool) -> None:
+    """--ingest and --clear write; on compose's ports they refuse unless told otherwise.
+
+    Runs before anything is touched. Port 5434 is docker-compose.yml's Postgres
+    mapping and 6333 its Qdrant, and on a developer machine those ports may be
+    bound by another project's container entirely; a scratch container on a
+    free port is what the benchmark should use.
+    """
+    targets = compose_targets(pg_dsn, qdrant_url)
+    if targets and not allow_compose:
+        sys.exit(
+            f"--{action} refused: {' and '.join(targets)} is compose's (docker-compose.yml), "
+            "not a scratch store. Point DATABASE_URL/QDRANT_URL at a scratch container, "
+            "or pass --allow-compose to write to compose deliberately."
+        )
+
+
+def vector_sha256(vector: Sequence[float]) -> str:
+    """SHA-256 of the vector's JSON float list. Recorded per question; compare_runs.py
+    refuses two runs whose hashes differ, since different vectors make every
+    comparison meaningless."""
+    return hashlib.sha256(json.dumps(list(vector), separators=(",", ":")).encode("ascii")).hexdigest()
+
+
+def vector_literal(vector: Sequence[float]) -> str:
+    """pgvector's text input form, as PostgresWriter sends vectors: `[x,y,z]`."""
+    return "[" + ",".join(repr(float(x)) for x in vector) + "]"
+
+
+class QueryVectors:
+    """--query-vectors FILE: question id -> the vector it was embedded to, once.
+
+    Both sides of the equivalence gate must ask the same question of the same
+    vector, and whether ada-002 returns identical vectors across calls is not
+    verified. So a question is embedded at most once, ever: a missing question
+    is embedded, the file is written and read back, and the run uses what is on
+    disk, exactly as every later run will.
+    """
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.entries: Dict[str, dict] = (
+            json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        )
+
+    def ensure(
+        self,
+        questions: List[dict],
+        embed: Callable[[List[str]], List[List[float]]],
+        model: str,
+    ) -> int:
+        """Embed the questions not yet cached, with `embed`. Returns how many were."""
+        for q in questions:
+            entry = self.entries.get(q["id"])
+            if entry is None:
+                continue
+            if entry["question"] != q["question"]:
+                sys.exit(f"{self.path}: {q['id']} is cached for a different question text; "
+                         "refusing to reuse its vector")
+            if entry["model"] != model:
+                sys.exit(f"{self.path}: {q['id']} was embedded with {entry['model']} and the engine "
+                         f"uses {model}; a query is never compared across models (22-CONTEXT P4)")
+        missing = [q for q in questions if q["id"] not in self.entries]
+        if missing:
+            vectors = embed([q["question"] for q in missing])
+            if len(vectors) != len(missing):
+                sys.exit(f"embedding returned {len(vectors)} vectors for {len(missing)} questions")
+            for q, vector in zip(missing, vectors):
+                self.entries[q["id"]] = {
+                    "question": q["question"],
+                    "model": model,
+                    "vector": [float(x) for x in vector],
+                }
+            self.path.write_text(json.dumps(self.entries, indent=0), encoding="utf-8")
+            self.entries = json.loads(self.path.read_text(encoding="utf-8"))
+        return len(missing)
+
+    def vector(self, question_id: str) -> List[float]:
+        return self.entries[question_id]["vector"]
+
+
+def pin_query_vector(engine: QueryEngine, question: str, vector: List[float]) -> None:
+    """Make `engine` answer `question` with `vector`, and refuse to embed anything else.
+
+    The vector retriever embeds a query through
+    `self.embedding_generator.client.generate_embeddings_batch([query])[0]`.
+    That exact call path is what this replaces, on the client instance, so the
+    same pin works on the Qdrant read path and on the pgvector one. Any other
+    text raises: an unexpected embedding call would be a measurement on a
+    vector the record does not carry, and it must not pass silently.
+    """
+    client = engine.vector_retriever.embedding_generator.client
+
+    def pinned(texts: List[str]) -> List[List[float]]:
+        if list(texts) != [question]:
+            raise RuntimeError(
+                f"unexpected embedding call for {list(texts)!r}: only the cached question "
+                f"{question!r} may be embedded during a recorded measurement"
+            )
+        return [list(vector)]
+
+    client.generate_embeddings_batch = pinned
+
+
+def connection_identity(conn) -> dict:
+    """Who a connection is, and whether row-level security applies to it."""
+    with conn.cursor() as cur:
+        cur.execute(IDENTITY_SQL)
+        current_user, session_user, rolsuper, rolbypassrls = cur.fetchone()
+    if not conn.autocommit:
+        conn.rollback()  # the SELECT opened a transaction; require_tenant needs it idle
+    return {
+        "current_user": current_user,
+        "session_user": session_user,
+        "rolsuper": bool(rolsuper),
+        "rolbypassrls": bool(rolbypassrls),
+    }
+
+
+def measuring_connections(engine: QueryEngine) -> Dict[str, dict]:
+    """The identity of every Postgres connection the engine measures through."""
+    engine.fts_retriever.connect()
+    out = {"fts": connection_identity(engine.fts_retriever.conn)}
+    if hasattr(engine.vector_retriever, "connect"):
+        engine.vector_retriever.connect()
+        out["vector"] = connection_identity(engine.vector_retriever.conn)
+    return out
+
+
+def database_facts() -> dict:
+    """Where the run measured, without the password, and the server's vector settings."""
+    parsed = parse_dsn(PG)
+    facts = {key: parsed.get(key) for key in ("host", "port", "dbname", "options")}
+    conn = psycopg2.connect(PG)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SHOW server_version")
+            facts["server_version"] = cur.fetchone()[0]
+            for setting in ("hnsw.ef_search", "hnsw.iterative_scan"):
+                try:
+                    cur.execute(f"SHOW {setting}")
+                    facts[setting] = cur.fetchone()[0]
+                except psycopg2.Error:
+                    conn.rollback()
+                    facts[setting] = None
+        facts["connection"] = connection_identity(conn)
+    finally:
+        conn.close()
+    return facts
+
+
+def visible_chunks(corpus: Corpus) -> int:
+    """How many of the corpus's chunks the configured connection can see under the tenant."""
+    conn = psycopg2.connect(PG)
+    try:
+        with require_tenant(conn, ORG) as cur:
+            cur.execute("SELECT count(*) FROM chunks WHERE repository_id = %s",
+                        (str(corpus.repository_id),))
+            return cur.fetchone()[0]
+    finally:
+        conn.close()
+
+
+def harness_commit() -> Optional[str]:
+    try:
+        return git("rev-parse", "HEAD", cwd=REPO_ROOT)
+    except (subprocess.CalledProcessError, OSError):
+        return None
+
+
+def do_exact(corpus: Corpus, questions: List[dict], vectors: QueryVectors, model: str,
+             out: Path) -> None:
+    """The exact-search reference for class (b): per question, the nearest chunks by
+    cosine distance with index scans off, plus every chunk tied with the 50th."""
+    conn = psycopg2.connect(PG)
+    try:
+        identity = connection_identity(conn)
+        plan = None
+        results = {}
+        for q in questions:
+            vector = vectors.vector(q["id"])
+            params = {
+                "q": vector_literal(vector),
+                "repo": str(corpus.repository_id),
+                "model": model,
+                "limit": EXACT_LIMIT + EXACT_TAIL,
+            }
+            with require_tenant(conn, ORG) as cur:
+                cur.execute("SET LOCAL enable_indexscan = off")
+                cur.execute("SET LOCAL enable_bitmapscan = off")
+                if plan is None:
+                    cur.execute("EXPLAIN (COSTS OFF) " + EXACT_SQL, params)
+                    plan = [row[0] for row in cur.fetchall()]
+                cur.execute(EXACT_SQL, params)
+                rows = [(chunk_id, float(distance)) for chunk_id, distance in cur.fetchall()]
+            top = [{"chunk_id": c, "distance": d} for c, d in rows[:EXACT_LIMIT]]
+            tail = []
+            if len(top) == EXACT_LIMIT:
+                cutoff = top[-1]["distance"] + EXACT_TIE_TOLERANCE
+                for c, d in rows[EXACT_LIMIT:]:
+                    if d > cutoff:
+                        break
+                    tail.append({"chunk_id": c, "distance": d})
+            results[q["id"]] = {
+                "query_vector_sha256": vector_sha256(vector),
+                "top": top,
+                "tail_ties": tail,
+                "tail_complete": len(rows) < EXACT_LIMIT + EXACT_TAIL or len(tail) < EXACT_TAIL,
+            }
+    finally:
+        conn.close()
+    out.write_text(json.dumps({
+        "corpus": corpus.name, "repository_id": str(corpus.repository_id), "model": model,
+        "limit": EXACT_LIMIT, "tie_tolerance": EXACT_TIE_TOLERANCE, "connection": identity,
+        "plan": plan, "harness_commit": harness_commit(),
+        "recorded_at": datetime.now(timezone.utc).isoformat(), "questions": results,
+    }, indent=1), encoding="utf-8")
+    incomplete = sum(1 for r in results.values() if not r["tail_complete"])
+    print(f"[*] exact search for {len(results)} questions of {corpus.name} as {identity['current_user']} "
+          f"(rolsuper={identity['rolsuper']}) -> {out}; plan: {' / '.join(plan or [])}"
+          + (f"; WARNING {incomplete} tie tails may be incomplete" if incomplete else ""))
+
+
+def do_qdrant_ids(corpus: Corpus, out: Path) -> None:
+    """Every point Qdrant holds for the corpus. Class (a) is defined by this set."""
+    client = QdrantClient(url=QDRANT)
+    ids: List[str] = []
+    offset = None
+    while True:
+        points, offset = client.scroll(
+            QDRANT_COLLECTION, scroll_filter=_repository_filter(corpus), limit=1000,
+            with_payload=False, with_vectors=False, offset=offset,
+        )
+        ids.extend(str(p.id) for p in points)
+        if offset is None:
+            break
+    chunks = visible_chunks(corpus)
+    out.write_text(json.dumps({
+        "corpus": corpus.name, "repository_id": str(corpus.repository_id),
+        "collection": QDRANT_COLLECTION, "count": len(ids), "postgres_chunks": chunks,
+        "harness_commit": harness_commit(),
+        "recorded_at": datetime.now(timezone.utc).isoformat(), "ids": sorted(ids),
+    }, indent=1), encoding="utf-8")
+    print(f"[*] {corpus.name}: {len(ids)} Qdrant points, {chunks} chunks in Postgres "
+          f"({chunks - len(ids)} without a point) -> {out}")
+
+
 def _score(ranks: List[Optional[int]]) -> dict:
     found = [r for r in ranks if r]
     total = len(ranks)
@@ -528,21 +861,61 @@ def _score(ranks: List[Optional[int]]) -> dict:
 
 
 def do_measure(corpus: Corpus, set_name: str, top_k: int, boost_config=None,
-               json_out: Optional[Path] = None) -> None:
+               json_out: Optional[Path] = None, query_vectors: Optional[QueryVectors] = None,
+               record: Optional[Path] = None) -> dict:
     questions = [q for q in corpus.questions if set_name == "all" or q["set"] == set_name]
     # boost_config goes straight to QueryEngine -> MetadataBooster, which merges
     # it over DEFAULT_CONFIG. Lets a ranking variant be measured without editing
     # library code, so several variants can run side by side against one build.
     engine = QueryEngine(postgres_conn=PG, qdrant_url=QDRANT, openai_api_key=OPENAI,
                          boost_config=boost_config)
+    model = engine.vector_retriever.embedding_generator.model
+    if query_vectors is not None:
+        # Embed whatever is missing through the engine's own client, BEFORE the
+        # pin below replaces that method for the run.
+        embed = engine.vector_retriever.embedding_generator.client.generate_embeddings_batch
+        embedded = query_vectors.ensure(questions, embed, model)
+        print(f"[*] query vectors: {len(questions) - embedded} cached, {embedded} embedded now "
+              f"({model}) -> {query_vectors.path}")
+    recorder = None
+    if record is not None:
+        if query_vectors is None:
+            sys.exit("--record needs --query-vectors: the record carries the hash of the vector "
+                     "each question was measured with")
+        connections = measuring_connections(engine)
+        for name, identity in connections.items():
+            if identity["rolsuper"] or identity["rolbypassrls"]:
+                sys.exit(f"--record refused: the {name} connection is {identity['current_user']} "
+                         f"(rolsuper={identity['rolsuper']}, rolbypassrls={identity['rolbypassrls']}). "
+                         "A superuser bypasses row-level security, so a measurement on it proves "
+                         "nothing about the read path; put options=-c role=rag_doc_app in DATABASE_URL.")
+        header = {
+            "record": "run", "corpus": corpus.name, "commit": corpus.commit,
+            "repository_id": str(corpus.repository_id), "organization_id": str(ORG),
+            "set": set_name, "top_k": top_k, "boost_config": boost_config,
+            "harness_commit": harness_commit(),
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "vector_backend": "qdrant" if hasattr(engine.vector_retriever, "qdrant_writer") else "pgvector",
+            "embedding_model": model, "database": database_facts(),
+            "connections": connections, "chunks_visible": visible_chunks(corpus),
+        }
+        recorder = record.open("w", encoding="utf-8")
+        recorder.write(json.dumps(header) + "\n")
+        print(f"[*] recording to {record} as {connections['fts']['current_user']} "
+              f"(rolsuper={connections['fts']['rolsuper']}, "
+              f"rolbypassrls={connections['fts']['rolbypassrls']}); "
+              f"vector backend: {header['vector_backend']}")
     rows = []
     for q in questions:
         row = {"id": q["id"], "set": q["set"], "question": q["question"], "path": q["path"],
                "symbol": q.get("symbol"), "file_rank": None, "symbol_rank": None,
                "top_hit": "", "error": None}
+        trace: Optional[dict] = {} if recorder is not None else None
+        if query_vectors is not None:
+            pin_query_vector(engine, q["question"], query_vectors.vector(q["id"]))
         try:
             res = engine.query(query_text=q["question"], organization_id=ORG,
-                               repository_id=corpus.repository_id, top_k=top_k)
+                               repository_id=corpus.repository_id, top_k=top_k, trace=trace)
         except Exception as exc:                     # noqa: BLE001
             # A failed retriever raises RetrievalError (ISS-030) and lands here,
             # as an error rather than a miss. Before that fix QueryEngine returned
@@ -551,6 +924,10 @@ def do_measure(corpus: Corpus, set_name: str, top_k: int, boost_config=None,
             # measured 0/15 with no error reported.
             row["error"] = str(exc)[:120]
             rows.append(row)
+            if recorder is not None:
+                recorder.write(json.dumps({"record": "question", **row, "trace": trace,
+                                           "query_vector_sha256": vector_sha256(
+                                               query_vectors.vector(q["id"]))}) + "\n")
             continue
         results = res.get("results", [])
         row["top_hit"] = results[0].get("file_path", "") if results else "(no results)"
@@ -561,6 +938,15 @@ def do_measure(corpus: Corpus, set_name: str, top_k: int, boost_config=None,
                 (i for i, (hit, r) in enumerate(zip(in_file, results), 1)
                  if hit and symbol_matches(row["symbol"], r.get("breadcrumb"))), None)
         rows.append(row)
+        if recorder is not None:
+            recorder.write(json.dumps({
+                "record": "question", **row,
+                "query_vector_sha256": vector_sha256(query_vectors.vector(q["id"])),
+                "trace": trace,
+            }) + "\n")
+    if recorder is not None:
+        recorder.close()
+        print(f"wrote {record}")
 
     print(f"\n[{corpus.name} / {set_name}]  {len(questions)} questions, top_k={top_k}")
     if boost_config:
@@ -624,11 +1010,33 @@ if __name__ == "__main__":
                          '\'{"breadcrumb_match_boost": 1.0}\'')
     ap.add_argument("--json-out", type=Path, default=None,
                     help="also write per-question ranks and the summary as JSON")
+    ap.add_argument("--allow-compose", action="store_true",
+                    help="let --ingest and --clear write to compose's Postgres (port 5434) or "
+                         "Qdrant (6333); without it they refuse")
+    ap.add_argument("--query-vectors", type=Path, default=None,
+                    help="JSON cache of question id -> query vector; a missing question is "
+                         "embedded once and written back, and the run uses the cached vector")
+    ap.add_argument("--record", type=Path, default=None,
+                    help="with --measure: write QueryEngine's trace, the ranks, the query-vector "
+                         "hash and the measuring role per question, as JSON lines "
+                         "(needs --query-vectors and a non-superuser DATABASE_URL)")
+    ap.add_argument("--exact", type=Path, default=None,
+                    help="write each question's exact-search nearest chunks (index scans off) "
+                         "from the cached vectors (needs --query-vectors)")
+    ap.add_argument("--qdrant-ids", type=Path, default=None,
+                    help="write the set of Qdrant point ids held for this corpus")
     a = ap.parse_args()
 
     corpus = load_corpus(a.corpus, a.corpora_dir)
     if (a.ingest or a.measure) and not OPENAI:
         sys.exit("OPENAI_API_KEY not set")
+    # The guard runs before anything is touched: compose's stores are not scratch.
+    for action in ("clear", "ingest"):
+        if getattr(a, action):
+            refuse_compose(action, PG, QDRANT, a.allow_compose)
+    if (a.exact or a.record) and a.query_vectors is None:
+        sys.exit("--exact and --record need --query-vectors")
+    query_vectors = QueryVectors(a.query_vectors) if a.query_vectors else None
     if a.fetch:
         do_fetch(corpus)
     if a.check:
@@ -641,8 +1049,23 @@ if __name__ == "__main__":
             sys.exit(f"{corpus.name} is already indexed (runs={runs}, points={points}); re-indexing "
                      "without --clear would mix two indexes (ISS-027)")
         do_ingest(corpus)
+    if a.qdrant_ids:
+        do_qdrant_ids(corpus, a.qdrant_ids)
+    if a.exact:
+        questions = [q for q in corpus.questions if a.set == "all" or q["set"] == a.set]
+        if not OPENAI:
+            sys.exit("OPENAI_API_KEY not set (needed to embed any question the cache is missing)")
+        engine = QueryEngine(postgres_conn=PG, qdrant_url=QDRANT, openai_api_key=OPENAI)
+        model = engine.vector_retriever.embedding_generator.model
+        embedded = query_vectors.ensure(
+            questions, engine.vector_retriever.embedding_generator.client.generate_embeddings_batch,
+            model)
+        print(f"[*] query vectors: {len(questions) - embedded} cached, {embedded} embedded now "
+              f"({model}) -> {query_vectors.path}")
+        do_exact(corpus, questions, query_vectors, model, a.exact)
     if a.measure:
-        if do_measure(corpus, a.set, a.top_k, a.boost_config, a.json_out)["errors"]:
+        if do_measure(corpus, a.set, a.top_k, a.boost_config, a.json_out,
+                      query_vectors=query_vectors, record=a.record)["errors"]:
             sys.exit(2)
-    if not (a.fetch or a.check or a.clear or a.ingest or a.measure):
+    if not (a.fetch or a.check or a.clear or a.ingest or a.measure or a.exact or a.qdrant_ids):
         ap.print_help()

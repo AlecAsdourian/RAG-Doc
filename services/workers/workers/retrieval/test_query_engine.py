@@ -24,13 +24,14 @@ from workers.retrieval.query_engine import QueryEngine
 SENTINEL = "sk-SENTINEL-must-not-leak"
 
 
-def _hit(chunk_id: str) -> dict:
+def _hit(chunk_id: str, **scores) -> dict:
     return {
         "chunk_id": chunk_id,
         "file_path": f"pkg/{chunk_id}.go",
         "breadcrumb": "",
         "chunk_type": "function",
         "content_preview": f"func {chunk_id}() {{}}",
+        **scores,
     }
 
 
@@ -150,6 +151,90 @@ class TestQueryEngineRetrieverFailure:
         result = _query(engine)
 
         assert result["results"] == []
+
+
+class TestTrace:
+    """`trace=` records every stage from inside the real pipeline (22-03).
+
+    The harness's `--record` feeds the storage-move equivalence gate from it,
+    so the trace must be the pipeline's own numbers in the pipeline's own
+    order, and its absence must change nothing.
+    """
+
+    @staticmethod
+    def _seed(engine):
+        engine.fts_retriever.search.return_value = [_hit("a", fts_score=0.5), _hit("b", fts_score=0.25)]
+        engine.vector_retriever.search.return_value = [_hit("b", vector_score=0.9), _hit("c", vector_score=0.8)]
+
+    def test_trace_none_changes_nothing(self, engine):
+        self._seed(engine)
+
+        without = _query(engine)
+        explicit = engine.query(
+            query_text="how does the parser work",
+            organization_id=uuid4(),
+            repository_id=uuid4(),
+            top_k=5,
+            trace=None,
+        )
+
+        for response in (without, explicit):
+            response["metadata"].pop("duration_ms")
+            response.pop("organization_id")
+            response.pop("repository_id")
+        assert explicit == without
+        assert [r["chunk_id"] for r in without["results"]] == ["b", "a", "c"]
+        assert "trace" not in without and "trace" not in without["metadata"]
+
+    def test_trace_records_every_stage_in_pipeline_order(self, engine):
+        self._seed(engine)
+        trace = {}
+
+        result = engine.query(
+            query_text="how does the parser work",
+            organization_id=uuid4(),
+            repository_id=uuid4(),
+            top_k=2,
+            trace=trace,
+        )
+
+        assert list(trace) == ["fts", "vector", "fused", "boosted", "top"]
+        # The legs, as the retrievers returned them, with their scores.
+        assert [(e["chunk_id"], e["score"]) for e in trace["fts"]] == [("a", 0.5), ("b", 0.25)]
+        assert [(e["chunk_id"], e["score"]) for e in trace["vector"]] == [("b", 0.9), ("c", 0.8)]
+        assert trace["fts"][0]["file_path"] == "pkg/a.go"
+        # Fusion: b is in both legs (1/62 + 1/61), a is fts #1 (1/61), c is vector #2 (1/62).
+        assert [e["chunk_id"] for e in trace["fused"]] == ["b", "a", "c"]
+        assert [e["rrf_score"] for e in trace["fused"]] == [1 / 62 + 1 / 61, 1 / 61, 1 / 62]
+        assert trace["fused"][0]["sources"] == ["fts", "vector"]
+        # Boosted, in the final sorted order, is what the top_k cut is taken from.
+        assert [e["chunk_id"] for e in trace["boosted"]] == ["b", "a", "c"]
+        boosted_scores = [e["boosted_score"] for e in trace["boosted"]]
+        assert boosted_scores == sorted(boosted_scores, reverse=True)
+        for entry in trace["boosted"]:
+            assert entry["boosted_score"] == entry["rrf_score"] * entry["boost_multiplier"]
+        # `top` is the enriched top_k, and its scores are the response's.
+        assert [e["chunk_id"] for e in trace["top"]] == ["b", "a"]
+        assert [e["chunk_id"] for e in result["results"]] == ["b", "a"]
+        assert [e["score"] for e in trace["top"]] == [r["score"] for r in result["results"]]
+        assert [e["score"] for e in trace["top"]] == boosted_scores[:2]
+
+    def test_trace_holds_copies_not_the_pipeline_objects(self, engine):
+        self._seed(engine)
+        trace = {}
+
+        result = engine.query(
+            query_text="how does the parser work",
+            organization_id=uuid4(),
+            repository_id=uuid4(),
+            top_k=5,
+            trace=trace,
+        )
+        trace["boosted"][0]["boosted_score"] = -1.0
+        trace["top"][0]["chunk_id"] = "tampered"
+
+        assert result["results"][0]["chunk_id"] == "b"
+        assert result["results"][0]["score"] > 0
 
 
 class TestRetrievalError:

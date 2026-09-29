@@ -22,6 +22,17 @@ from .vector_retriever import VectorRetriever
 logger = logging.getLogger(__name__)
 
 
+def _leg_entry(result: Dict[str, Any], score_key: str) -> Dict[str, Any]:
+    """One retriever result as the trace records it: the chunk and its score."""
+    return {
+        "chunk_id": result.get("chunk_id"),
+        "file_path": result.get("file_path"),
+        "breadcrumb": result.get("breadcrumb") or "",
+        "chunk_type": result.get("chunk_type") or "",
+        "score": result.get(score_key),
+    }
+
+
 class QueryEngine:
     """
     Complete RAG query engine orchestrating hybrid search pipeline.
@@ -109,6 +120,7 @@ class QueryEngine:
         repository_id: UUID,
         top_k: int = 5,
         run_id: Optional[UUID] = None,
+        trace: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Execute complete query pipeline and return ranked results.
@@ -118,6 +130,14 @@ class QueryEngine:
             repository_id: Repository UUID to search
             top_k: Number of top results to return (default: 5)
             run_id: Optional specific ingestion run to search
+            trace: Optional dict. When given, every stage of this pipeline
+                writes what it produced into it, in order and from inside the
+                real code path: `fts` and `vector` (chunk ids with scores, as
+                the retrievers returned them), `fused` (with `rrf_score`),
+                `boosted` (in final order, with `boosted_score`) and `top`
+                (the enriched results). The quality harness's `--record` uses
+                it for the 22-03 storage-move equivalence gate. When `None`,
+                the default, nothing is recorded and nothing else changes.
 
         Returns:
             Dict with:
@@ -208,12 +228,24 @@ class QueryEngine:
             f"Parallel search complete: FTS={len(fts_results)} results, "
             f"Vector={len(vector_results)} results"
         )
+        if trace is not None:
+            trace["fts"] = [_leg_entry(r, "fts_score") for r in fts_results]
+            trace["vector"] = [_leg_entry(r, "vector_score") for r in vector_results]
 
         # Step 3: Fuse results with RRF
         fused_results = self.rrf_fusion.fuse(
             {"fts": fts_results, "vector": vector_results}
         )
         logger.info(f"RRF fusion produced {len(fused_results)} unique results")
+        if trace is not None:
+            trace["fused"] = [
+                {
+                    "chunk_id": r.get("chunk_id"),
+                    "rrf_score": r.get("rrf_score"),
+                    "sources": list(r.get("sources", [])),
+                }
+                for r in fused_results
+            ]
 
         # Step 4: Apply metadata boosts
         boosted_results = self.metadata_booster.boost(fused_results, parsed_query)
@@ -222,11 +254,32 @@ class QueryEngine:
         # Step 5: Sort by boosted_score and take top_k
         boosted_results.sort(key=lambda x: x.get("boosted_score", 0.0), reverse=True)
         top_results = boosted_results[:top_k]
+        if trace is not None:
+            # Recorded after the sort: this is the final order the cut is taken from.
+            trace["boosted"] = [
+                {
+                    "chunk_id": r.get("chunk_id"),
+                    "rrf_score": r.get("rrf_score"),
+                    "boost_multiplier": r.get("boost_multiplier"),
+                    "boosted_score": r.get("boosted_score"),
+                }
+                for r in boosted_results
+            ]
 
         # Step 6: Fetch full metadata from Postgres for top results
         enriched_results = self._enrich_results_with_metadata(
             top_results, organization_id, repository_id
         )
+        if trace is not None:
+            trace["top"] = [
+                {
+                    "chunk_id": r.get("chunk_id"),
+                    "file_path": r.get("file_path"),
+                    "breadcrumb": r.get("breadcrumb") or "",
+                    "score": r.get("score"),
+                }
+                for r in enriched_results
+            ]
 
         # Calculate duration
         duration_ms = int((time.time() - start_time) * 1000)
