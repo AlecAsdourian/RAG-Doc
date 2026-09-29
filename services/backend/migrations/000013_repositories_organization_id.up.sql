@@ -12,8 +12,10 @@
 -- copy with a COMPOSITE FOREIGN KEY to `projects (id, organization_id)`,
 -- which is stronger than the trigger D5's wording asks for:
 --
---   - Foreign-key checks run with row-level security bypassed, so the key
---     holds even where a trigger's read would be filtered.
+--   - Per-row foreign-key checks run with row-level security bypassed, so
+--     the key holds even where a trigger's read would be filtered. (The
+--     one-time VALIDATION `ADD CONSTRAINT` runs is not bypassed, which is
+--     why the key is added before the backfill; section 3.)
 --   - It makes a project's organization unchangeable while the project has
 --     repositories. Nothing changes it today: the only writer of
 --     `projects.organization_id` was 000010's one-time backfill.
@@ -39,7 +41,61 @@ ALTER TABLE projects
   ADD CONSTRAINT projects_id_org_key UNIQUE (id, organization_id);
 
 -- =====================================================================
--- 3. Backfill, one organization at a time
+-- 3. The guarantee, added BEFORE the backfill
+-- =====================================================================
+--
+-- THIS KEY, NOT A TRIGGER, IS WHAT MAKES DRIFT UNREPRESENTABLE. A
+-- repository's `(project_id, organization_id)` must be a real
+-- `(id, organization_id)` pair in `projects`. Per-row foreign-key checks
+-- run with row-level security bypassed, so no tenant context and no
+-- filtered read can let a mismatched pair through, and a trigger that is
+-- disabled, dropped or buggy leaves the guarantee standing.
+--
+-- It also fixes a project's organization while the project has
+-- repositories: `UPDATE projects SET organization_id` fails with 23503.
+--
+-- The single-column `project_id` foreign key from 000001 is kept, not
+-- replaced. It is no longer usually the error a writer sees for a missing
+-- project: RLS, NOT NULL or D5's trigger speaks first (see sections 7 and
+-- 8), and this key stays as the backstop beneath them.
+--
+-- ⚠ WHY IT IS HERE, ABOVE THE LOOP, AND NOT BELOW IT (ISS-031; moved in
+-- 22-01). `ADD CONSTRAINT ... FOREIGN KEY` validates the existing rows
+-- with ONE QUERY, run as the migrating role. In the deployment shape that
+-- role owns `repositories`, which forces row-level security on its owner,
+-- so the query reads `repositories` through the tenant policy. Below the
+-- loop it ran under the LAST organization's tenant, which
+-- `set_config(..., true)` leaves in force for the rest of this file, and
+-- saw only that organization's rows. Measured by PR #48's review with the
+-- key in that original place: a backfill mutated to file one
+-- organization's repositories under another reached version 16, clean,
+-- with this key marked valid over four rows that violate it. Only the
+-- seeded gate's drift check caught it, and only because the backfill
+-- happens to copy the value from the row the key points at.
+--
+-- Here every `organization_id` is still NULL. A row with a NULL key
+-- column is not checked (MATCH SIMPLE), so the validation has nothing to
+-- check and passes for that reason, not because a policy hid the rows.
+-- Then EVERY value the loop writes is checked per row as it is written,
+-- with row-level security bypassed, against a `projects` table that has
+-- no policy at all. The same mutation now fails at 13 with 23503 and
+-- commits nothing (22-01-SUMMARY.md, MX13). That is a stronger check than
+-- the validation below the loop ever was.
+--
+-- ⚠ THIS EDITS A MIGRATION THAT HAD ALREADY SHIPPED, on the same grounds
+-- as 000014's key (22-01): nothing was deployed. golang-migrate never
+-- re-applies a recorded version, so a database that already applied
+-- 000013 keeps the key it has, and 22-01 measured the two orders' schemas
+-- identical, `convalidated` included. After the first production deploy
+-- that escape is gone. The rule for a key on an EXISTING table is in
+-- 000014's section 4 and ISS-031; this file is its worked example.
+ALTER TABLE repositories
+  ADD CONSTRAINT repositories_project_org_fkey
+  FOREIGN KEY (project_id, organization_id)
+  REFERENCES projects (id, organization_id) ON DELETE CASCADE;
+
+-- =====================================================================
+-- 4. Backfill, one organization at a time
 -- =====================================================================
 --
 -- WHY ONE ORGANIZATION AT A TIME. Two guards stand between a migration and
@@ -60,18 +116,25 @@ ALTER TABLE projects
 -- tenant trigger. Copied here it passes on an empty database — CI's, and
 -- the harnesses' — and raises 42501 on any database with a repository in it.
 --
--- WHAT IT LEAVES BEHIND (ISS-013). `set_config(..., true)` lasts until the
--- end of this migration's transaction, so for the rest of this file the
--- tenant is the LAST organization's id: DML after this block against a
--- row-level-security table would silently see one organization. After
--- commit the session holds '', which nothing can return to NULL, and
+-- WHAT IT LEAVES BEHIND (ISS-013, ISS-031). `set_config(..., true)` lasts
+-- until the end of this migration's transaction, so for the rest of this
+-- file the tenant is the LAST organization's id: DML after this block
+-- against a row-level-security table would silently see one organization,
+-- and so would a FOREIGN KEY's validation, which is an SQL query under the
+-- policy. That is why section 3 sits above this block. After commit the
+-- session holds '', which nothing can return to NULL, and
 -- `current_setting(...)::uuid` then raises 22P02. So:
 --
 --   - nothing after this block, in this file, may run DML against a table
---     with row-level security. DDL is fine: the validation scans below are
---     not subject to it.
+--     with row-level security, or add or validate a FOREIGN KEY. What does
+--     run after it is safe there: `SET NOT NULL` (section 5) and the
+--     UNIQUE constraint (section 6) validate by scanning the heap directly,
+--     which row-level security does not filter (measured: 21-01 for SET
+--     NOT NULL; 22-01 for CHECK and UNIQUE, on the poisoned session), and
+--     the trigger and function definitions read no rows at all.
 --   - a LATER migration applied in the same run must set a tenant itself
---     before it touches a row-level-security table.
+--     before it touches a row-level-security table, and must not add a
+--     key by ALTER TABLE at all (000014's section 4 has the rule).
 DO $$
 DECLARE org RECORD;
 BEGIN
@@ -87,7 +150,7 @@ BEGIN
 END $$;
 
 -- =====================================================================
--- 4. The proof that the backfill filled every row
+-- 5. The proof that the backfill filled every row
 -- =====================================================================
 --
 -- THIS STATEMENT IS THE PROOF. `SET NOT NULL` validates by scanning the
@@ -100,29 +163,6 @@ END $$;
 --
 -- Measured on seeded data rather than assumed; see 21-01-SUMMARY.md.
 ALTER TABLE repositories ALTER COLUMN organization_id SET NOT NULL;
-
--- =====================================================================
--- 5. The guarantee
--- =====================================================================
---
--- THIS KEY, NOT A TRIGGER, IS WHAT MAKES DRIFT UNREPRESENTABLE. A
--- repository's `(project_id, organization_id)` must be a real
--- `(id, organization_id)` pair in `projects`. Foreign-key checks run with
--- row-level security bypassed, so no tenant context and no filtered read can
--- let a mismatched pair through, and a trigger that is disabled, dropped or
--- buggy leaves the guarantee standing.
---
--- It also fixes a project's organization while the project has
--- repositories: `UPDATE projects SET organization_id` fails with 23503.
---
--- The single-column `project_id` foreign key from 000001 is kept, not
--- replaced. It is no longer usually the error a writer sees for a missing
--- project: RLS, NOT NULL or D5's trigger speaks first (see sections 7 and
--- 8), and this key stays as the backstop beneath them.
-ALTER TABLE repositories
-  ADD CONSTRAINT repositories_project_org_fkey
-  FOREIGN KEY (project_id, organization_id)
-  REFERENCES projects (id, organization_id) ON DELETE CASCADE;
 
 -- =====================================================================
 -- 6. The key 21-02's composite foreign key references
