@@ -11,6 +11,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 from workers.db import require_tenant
+from workers.embeddings.embedding_generator import EmbeddingGenerator
 
 from .errors import RETRIEVER_LABELS, RetrievalError
 from .fts_retriever import FTSRetriever
@@ -39,7 +40,9 @@ class QueryEngine:
 
     Pipeline:
     1. Parse query → extract quoted terms, identifiers
-    2. Run FTS and vector searches in parallel
+    2. Run FTS and vector searches in parallel, both in Postgres under the
+       caller's tenant (22-03: the vector leg reads chunks.embedding with
+       pgvector; Qdrant is gone)
     3. Fuse results with RRF (reciprocal rank fusion)
     4. Apply metadata boosts (chunk-type, path, exact-match)
     5. Sort by final score, return top-k chunks with provenance
@@ -48,7 +51,6 @@ class QueryEngine:
     def __init__(
         self,
         postgres_conn: str,
-        qdrant_url: str,
         openai_api_key: str,
         boost_config: Optional[Dict[str, Any]] = None,
     ):
@@ -56,19 +58,24 @@ class QueryEngine:
         Initialize QueryEngine with all retrieval components.
 
         Args:
-            postgres_conn: PostgreSQL connection string
-            qdrant_url: Qdrant server URL
+            postgres_conn: PostgreSQL connection string. Both legs and result
+                enrichment open their connections from it, so its role is the
+                role every read runs as; in tests that is `rag_doc_app`.
             openai_api_key: OpenAI API key for embeddings
             boost_config: Optional boost configuration for MetadataBooster
         """
         self.postgres_conn = postgres_conn
-        self.qdrant_url = qdrant_url
         self.openai_api_key = openai_api_key
+
+        # One generator, shared with the vector leg: its `.model` is the model
+        # filter on chunks.embedding_model (22-CONTEXT P4), read from here and
+        # never copied.
+        self.embedding_generator = EmbeddingGenerator(api_key=openai_api_key)
 
         # Initialize all components
         self.fts_retriever = FTSRetriever(connection_string=postgres_conn)
         self.vector_retriever = VectorRetriever(
-            qdrant_url=qdrant_url, openai_api_key=openai_api_key
+            postgres_conn=postgres_conn, embedding_generator=self.embedding_generator
         )
         self.query_parser = QueryParser()
         self.rrf_fusion = RRFFusion()
@@ -129,7 +136,12 @@ class QueryEngine:
             query_text: Search query string
             repository_id: Repository UUID to search
             top_k: Number of top results to return (default: 5)
-            run_id: Optional specific ingestion run to search
+            run_id: Must be None. Search is not scoped to an ingestion run:
+                a run is the wrong unit of currency once files are re-indexed
+                incrementally (ISS-027; per-file currency is 22.1-02's), and
+                until 22-03 only the keyword leg honoured it while the vector
+                leg ignored it. A value raises ValueError rather than being
+                half-applied.
             trace: Optional dict. When given, every stage of this pipeline
                 writes what it produced into it, in order and from inside the
                 real code path: `fts` and `vector` (chunk ids with scores, as
@@ -153,15 +165,22 @@ class QueryEngine:
                 partial result is returned (ISS-030).
 
         Example:
-            >>> engine = QueryEngine(postgres_conn, qdrant_url, openai_key)
+            >>> engine = QueryEngine(postgres_conn, openai_key)
             >>> result = engine.query(
             ...     "authentication error",
+            ...     organization_id=UUID("..."),
             ...     repository_id=UUID("..."),
             ...     top_k=5
             ... )
             >>> for chunk in result["results"]:
             ...     print(f"{chunk['file_path']}:{chunk['start_line']} - {chunk['score']}")
         """
+        if run_id is not None:
+            raise ValueError(
+                "run_id is not supported: search covers the repository's current chunks, "
+                "not one ingestion run (ISS-027; per-file currency is 22.1-02's)"
+            )
+
         start_time = time.time()
 
         logger.info(
@@ -196,10 +215,10 @@ class QueryEngine:
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             futures = {
                 "fts": executor.submit(
-                    self._run_fts_search, query_text, organization_id, repository_id, run_id
+                    self._run_fts_search, query_text, organization_id, repository_id
                 ),
                 "vector": executor.submit(
-                    self._run_vector_search, query_text, repository_id, run_id
+                    self._run_vector_search, query_text, organization_id, repository_id
                 ),
             }
             for name, future in futures.items():
@@ -311,7 +330,6 @@ class QueryEngine:
         query_text: str,
         organization_id: UUID,
         repository_id: UUID,
-        run_id: Optional[UUID],
     ) -> List[Dict]:
         """
         Run FTS search. An exception propagates to `query`, which logs it and
@@ -321,7 +339,6 @@ class QueryEngine:
             query_text: Search query.
             organization_id: Tenant scope for the FTS query.
             repository_id: Repository UUID.
-            run_id: Optional run UUID.
 
         Returns:
             List of FTS results.
@@ -331,26 +348,29 @@ class QueryEngine:
             organization_id=organization_id,
             repository_id=repository_id,
             limit=50,
-            run_id=run_id,
         )
 
     def _run_vector_search(
-        self, query_text: str, repository_id: UUID, run_id: Optional[UUID]
+        self, query_text: str, organization_id: UUID, repository_id: UUID
     ) -> List[Dict]:
         """
-        Run vector search. An exception propagates to `query`, which logs it
-        and raises RetrievalError.
+        Run vector search, under the same tenant scope as the keyword leg. An
+        exception propagates to `query`, which logs it and raises
+        RetrievalError.
 
         Args:
             query_text: Search query
+            organization_id: Tenant scope for the vector query
             repository_id: Repository UUID
-            run_id: Optional run UUID
 
         Returns:
             List of vector results
         """
         return self.vector_retriever.search(
-            query=query_text, repository_id=repository_id, limit=50, run_id=run_id
+            query=query_text,
+            organization_id=organization_id,
+            repository_id=repository_id,
+            limit=50,
         )
 
     def _enrich_results_with_metadata(

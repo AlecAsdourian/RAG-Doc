@@ -7,8 +7,8 @@ nothing and returned 0 results, so `/search` answered 200 with nothing and
 `/chat` answered "I don't have enough information". Now any retriever failure
 raises RetrievalError, and no partial result is assembled.
 
-The engine is built with both retriever classes patched, so these tests need no
-Postgres, Qdrant or OpenAI.
+The engine is built with both retriever classes and the embedding generator
+patched, so these tests need no Postgres or OpenAI.
 """
 
 import logging
@@ -51,10 +51,9 @@ def _enriched(results, organization_id, repository_id):
 def engine():
     with patch("workers.retrieval.query_engine.FTSRetriever"), patch(
         "workers.retrieval.query_engine.VectorRetriever"
-    ):
+    ), patch("workers.retrieval.query_engine.EmbeddingGenerator"):
         engine = QueryEngine(
             postgres_conn="postgresql://unused.invalid/unused",
-            qdrant_url="http://unused.invalid:6333",
             openai_api_key="unused",
             boost_config={},
         )
@@ -151,6 +150,42 @@ class TestQueryEngineRetrieverFailure:
         result = _query(engine)
 
         assert result["results"] == []
+
+    def test_both_legs_receive_the_tenant(self, engine):
+        """The vector leg runs under the same tenant scope as the keyword leg (22-03)."""
+        engine.fts_retriever.search.return_value = []
+        engine.vector_retriever.search.return_value = []
+        organization_id, repository_id = uuid4(), uuid4()
+
+        engine.query(
+            query_text="how does the parser work",
+            organization_id=organization_id,
+            repository_id=repository_id,
+        )
+
+        for retriever in (engine.fts_retriever, engine.vector_retriever):
+            retriever.search.assert_called_once_with(
+                query="how does the parser work",
+                organization_id=organization_id,
+                repository_id=repository_id,
+                limit=50,
+            )
+
+    def test_a_run_id_is_refused_rather_than_half_applied(self, engine):
+        """Search is not run-scoped (ISS-027). Before 22-03 only the keyword leg
+        honoured run_id, so a caller asking for a run got two legs that disagreed."""
+        engine.fts_retriever.search.return_value = []
+        engine.vector_retriever.search.return_value = []
+
+        with pytest.raises(ValueError, match="run_id is not supported"):
+            engine.query(
+                query_text="how does the parser work",
+                organization_id=uuid4(),
+                repository_id=uuid4(),
+                run_id=uuid4(),
+            )
+        engine.fts_retriever.search.assert_not_called()
+        engine.vector_retriever.search.assert_not_called()
 
 
 class TestTrace:

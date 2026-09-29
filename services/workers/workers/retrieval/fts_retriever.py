@@ -1,14 +1,21 @@
 """Full-text search retrieval using PostgreSQL FTS.
 
 All Postgres access here goes through `workers.db.require_tenant`. Without
-tenant scope, RLS on `chunks` and `ingestion_runs` returns zero rows and
-callers would see empty results with no indication anything is wrong.
-Every public method takes `organization_id` so a missing tenant is a
-programming error, not a silent empty-list bug.
+tenant scope, RLS on `chunks` returns zero rows and callers would see empty
+results with no indication anything is wrong. Every public method takes
+`organization_id` so a missing tenant is a programming error, not a silent
+empty-list bug.
+
+The statement filters by repository, not by ingestion run. Until 22-03 it
+filtered to the repository's latest completed run, which is the wrong notion
+of currency for incremental indexing: unchanged files legitimately keep
+chunks from earlier runs, so a latest-run filter would hide most of the
+repository (ISS-027). Currency becomes per file in 22.1-02; until then a
+repository has one run's chunks and the two legs agree on what they search.
 """
 
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List
 from uuid import UUID
 
 import psycopg2
@@ -17,6 +24,38 @@ from psycopg2.extras import RealDictCursor
 from workers.db import require_tenant
 
 logger = logging.getLogger(__name__)
+
+# The breadcrumb expression, verbatim the expression migration 000017 indexes
+# (`chunks_breadcrumb_fts_idx`, GIN). An index on an expression serves only a
+# query that uses the same expression, so the SQL below is composed from this
+# constant and tests/isolation/test_query_engine_isolation.py proves the
+# planner uses the index for it (22-03).
+BREADCRUMB_TSVECTOR = "to_tsvector('english', COALESCE(breadcrumb, ''))"
+CONTENT_TSVECTOR = "to_tsvector('english', content)"
+
+FTS_SEARCH_SQL = f"""
+    SELECT
+        id::text as chunk_id,
+        file_path,
+        start_line,
+        end_line,
+        breadcrumb,
+        chunk_type,
+        LEFT(content, 200) as content_preview,
+        GREATEST(
+            ts_rank_cd({CONTENT_TSVECTOR}, plainto_tsquery('english', %(q)s)),
+            ts_rank_cd({BREADCRUMB_TSVECTOR}, plainto_tsquery('english', %(q)s))
+        ) as fts_score
+    FROM chunks
+    WHERE
+        repository_id = %(repo)s
+        AND (
+            {CONTENT_TSVECTOR} @@ plainto_tsquery('english', %(q)s)
+            OR {BREADCRUMB_TSVECTOR} @@ plainto_tsquery('english', %(q)s)
+        )
+    ORDER BY fts_score DESC
+    LIMIT %(limit)s
+"""
 
 
 class FTSRetriever:
@@ -44,47 +83,12 @@ class FTSRetriever:
             self.conn.close()
             logger.info("FTSRetriever closed Postgres connection")
 
-    def _get_latest_run_id(
-        self, organization_id: UUID, repository_id: UUID
-    ) -> Optional[UUID]:
-        """Return the latest completed ingestion_runs.id under this tenant.
-
-        Args:
-            organization_id: Tenant scope (required).
-            repository_id: Repository UUID.
-
-        Returns:
-            UUID of the latest completed run, or None if none exist under
-            this tenant.
-        """
-        self.connect()
-
-        query = """
-            SELECT id FROM ingestion_runs
-            WHERE repository_id = %s AND status = 'completed'
-            ORDER BY completed_at DESC
-            LIMIT 1
-        """
-
-        with require_tenant(self.conn, organization_id) as cur:
-            cur.execute(query, (str(repository_id),))
-            result = cur.fetchone()
-
-            if result:
-                return UUID(result[0]) if isinstance(result[0], str) else result[0]
-
-            logger.warning(
-                f"No completed ingestion runs found for repository {repository_id} under org {organization_id}"
-            )
-            return None
-
     def search(
         self,
         query: str,
         organization_id: UUID,
         repository_id: UUID,
         limit: int = 50,
-        run_id: Optional[UUID] = None,
     ) -> List[Dict]:
         """Full-text search on `chunks`, scoped to the caller's tenant.
 
@@ -93,54 +97,19 @@ class FTSRetriever:
             organization_id: Tenant scope (required).
             repository_id: UUID of the repository to search.
             limit: Maximum number of results (default: 50).
-            run_id: Optional specific ingestion_runs.id to search. If
-                unset, the latest completed run for the repository is
-                used.
 
         Returns:
             List of dicts with chunk metadata and `fts_score`.
         """
         self.connect()
 
-        if run_id is None:
-            run_id = self._get_latest_run_id(organization_id, repository_id)
-            if run_id is None:
-                logger.warning(
-                    f"No completed runs for repository {repository_id} under org {organization_id}; returning empty"
-                )
-                return []
-
-        query_sql = """
-            SELECT
-                id::text as chunk_id,
-                file_path,
-                start_line,
-                end_line,
-                breadcrumb,
-                chunk_type,
-                LEFT(content, 200) as content_preview,
-                GREATEST(
-                    ts_rank_cd(to_tsvector('english', content), plainto_tsquery('english', %s)),
-                    ts_rank_cd(to_tsvector('english', COALESCE(breadcrumb, '')), plainto_tsquery('english', %s))
-                ) as fts_score
-            FROM chunks
-            WHERE
-                ingestion_run_id = %s
-                AND (
-                    to_tsvector('english', content) @@ plainto_tsquery('english', %s)
-                    OR to_tsvector('english', COALESCE(breadcrumb, '')) @@ plainto_tsquery('english', %s)
-                )
-            ORDER BY fts_score DESC
-            LIMIT %s
-        """
-
         try:
             with require_tenant(
                 self.conn, organization_id, cursor_factory=RealDictCursor
             ) as cur:
                 cur.execute(
-                    query_sql,
-                    (query, query, str(run_id), query, query, limit),
+                    FTS_SEARCH_SQL,
+                    {"q": query, "repo": str(repository_id), "limit": limit},
                 )
                 results = [dict(row) for row in cur.fetchall()]
 

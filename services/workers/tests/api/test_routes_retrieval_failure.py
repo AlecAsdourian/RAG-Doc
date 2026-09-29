@@ -71,16 +71,16 @@ def client_with_mock_engines():
 def client_with_real_pipeline():
     """Yield a TestClient over the real QueryEngine and AnswerGenerator.
 
-    Only the retriever classes, the OpenAI client and tiktoken are patched. So
-    everything from a retriever raising to the HTTP response is production
-    code: QueryEngine.query, AnswerGenerator.generate and the routes.
+    Only the retriever classes, the embedding generator, the OpenAI client and
+    tiktoken are patched. So everything from a retriever raising to the HTTP
+    response is production code: QueryEngine.query, AnswerGenerator.generate
+    and the routes.
     """
     with patch("workers.retrieval.query_engine.FTSRetriever"), patch(
         "workers.retrieval.query_engine.VectorRetriever"
-    ):
+    ), patch("workers.retrieval.query_engine.EmbeddingGenerator"):
         query_engine = QueryEngine(
             postgres_conn="postgresql://unused.invalid/unused",
-            qdrant_url="http://unused.invalid:6333",
             openai_api_key="unused",
             boost_config={},
         )

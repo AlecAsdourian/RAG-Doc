@@ -617,7 +617,7 @@ def refuse_compose(action: str, pg_dsn: str, qdrant_url: str, allow_compose: boo
     targets = compose_targets(pg_dsn, qdrant_url)
     if targets and not allow_compose:
         sys.exit(
-            f"--{action} refused: {' and '.join(targets)} is compose's (docker-compose.yml), "
+            f"--{action} refused: {' and '.join(targets)}: compose's (docker-compose.yml), "
             "not a scratch store. Point DATABASE_URL/QDRANT_URL at a scratch container, "
             "or pass --allow-compose to write to compose deliberately."
         )
@@ -744,6 +744,9 @@ def database_facts() -> dict:
         with conn.cursor() as cur:
             cur.execute("SHOW server_version")
             facts["server_version"] = cur.fetchone()[0]
+            # pgvector registers its parameters when its library loads, which
+            # a fresh session has not done until it touches the vector type.
+            cur.execute("SELECT '[1]'::vector")
             for setting in ("hnsw.ef_search", "hnsw.iterative_scan"):
                 try:
                     cur.execute(f"SHOW {setting}")
@@ -776,6 +779,33 @@ def harness_commit() -> Optional[str]:
         return None
 
 
+def short_plan(lines: List[str]) -> List[str]:
+    """EXPLAIN output with a bound query vector abbreviated, so a record stays readable."""
+    return [re.sub(r"'\[[-0-9.e,]+\]'::vector", "'[<query vector>]'::vector", line) for line in lines]
+
+
+def explain_legs(engine: QueryEngine, corpus: Corpus, vector: List[float]) -> Dict[str, List[str]]:
+    """EXPLAIN both production statements as the measuring role under the tenant (A5).
+
+    The statements are the retriever modules' own constants, with a cached
+    vector bound the way the retriever binds it; no copy of either.
+    """
+    from workers.retrieval.fts_retriever import FTS_SEARCH_SQL
+    from workers.retrieval.vector_retriever import VECTOR_SEARCH_SQL
+
+    engine.fts_retriever.connect()
+    model = engine.vector_retriever.embedding_generator.model
+    plans = {}
+    with require_tenant(engine.fts_retriever.conn, ORG) as cur:
+        cur.execute("EXPLAIN (COSTS OFF) " + VECTOR_SEARCH_SQL, {
+            "q": vector_literal(vector), "repo": str(corpus.repository_id), "model": model, "limit": 50})
+        plans["vector"] = short_plan([row[0] for row in cur.fetchall()])
+        cur.execute("EXPLAIN (COSTS OFF) " + FTS_SEARCH_SQL, {
+            "q": "where is the configuration loaded", "repo": str(corpus.repository_id), "limit": 50})
+        plans["fts"] = short_plan([row[0] for row in cur.fetchall()])
+    return plans
+
+
 def do_exact(corpus: Corpus, questions: List[dict], vectors: QueryVectors, model: str,
              out: Path) -> None:
     """The exact-search reference for class (b): per question, the nearest chunks by
@@ -798,7 +828,7 @@ def do_exact(corpus: Corpus, questions: List[dict], vectors: QueryVectors, model
                 cur.execute("SET LOCAL enable_bitmapscan = off")
                 if plan is None:
                     cur.execute("EXPLAIN (COSTS OFF) " + EXACT_SQL, params)
-                    plan = [row[0] for row in cur.fetchall()]
+                    plan = short_plan([row[0] for row in cur.fetchall()])
                 cur.execute(EXACT_SQL, params)
                 rows = [(chunk_id, float(distance)) for chunk_id, distance in cur.fetchall()]
             top = [{"chunk_id": c, "distance": d} for c, d in rows[:EXACT_LIMIT]]
@@ -898,6 +928,10 @@ def do_measure(corpus: Corpus, set_name: str, top_k: int, boost_config=None,
             "vector_backend": "qdrant" if hasattr(engine.vector_retriever, "qdrant_writer") else "pgvector",
             "embedding_model": model, "database": database_facts(),
             "connections": connections, "chunks_visible": visible_chunks(corpus),
+            "explain": (
+                explain_legs(engine, corpus, query_vectors.vector(questions[0]["id"]))
+                if questions and hasattr(engine.vector_retriever, "conn") else None
+            ),
         }
         recorder = record.open("w", encoding="utf-8")
         recorder.write(json.dumps(header) + "\n")
