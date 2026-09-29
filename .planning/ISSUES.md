@@ -4,6 +4,16 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 ## Open Enhancements
 
+### ISS-036: `chunks.ingestion_run_id` and `chunks.symbol_id` carry no tenancy, so a tenant can cite another tenant's run or symbol on its own row
+
+- **Discovered:** 2026-09-29, by the reviewer session on PR #49 (22-02), measured in the deployment shape (a `NOSUPERUSER NOBYPASSRLS` owner, FORCE RLS everywhere) as `rag_doc_app`.
+- **Type:** Correctness / Tenancy
+- **Priority:** LOW-MEDIUM. **Not a boundary breach:** tenant A can only mis-file its own row, and tenant B cannot read it. But B deleting its run or symbol then reaches A's partition (the cascade and the `SET NULL` run with row-level security bypassed), and nothing refuses the write. P3's "a misfiled row is unrepresentable" holds on the **repository** axis only.
+- **What is wrong:** 000017's `chunks` carries `chunks_repo_tenant_fk` `(repository_id, organization_id) → repositories (id, organization_id)`, which is the tenant guarantee, and two single-column keys, `ingestion_run_id → ingestion_runs(id)` and `symbol_id → symbols(id)`. Per-row foreign-key checks run with `SECURITY_NOFORCE_RLS`, so they see every row whatever the tenant: as A, a chunk of A's repository citing **B's `ingestion_run_id`** was accepted (`INSERT 0 1`), and one citing **B's `symbol_id`** was accepted too. Neither composite key notices, because both are keyed on the repository.
+- **What guards it today (22-02, PR #49's review applied):** `isolation.CheckChunkTenantDrift` has two more arms, `chunks:<id>:run` (the chunk's run belongs to another repository, or is gone) and `chunks:<id>:symbol` (the same for its symbol), run at the end of every test that writes the tables; `TestChunksPartition_TheSingleColumnKeysCarryNoTenancy` pins the acceptance, the cross-partition delete and the check's report; 000017's header and `docs/isolation.md` state the limit.
+- **The fix, scheduled for 22.1-01** (the plan that gives `symbols` a writer): composite keys on `chunks`, `(ingestion_run_id, repository_id) → ingestion_runs (id, repository_id)` and `(symbol_id, repository_id) → symbols (id, repository_id)`, each needing `UNIQUE (id, repository_id)` on the referenced table (a UNIQUE validates by heap scan and is not subject to row-level security). **Under ISS-031's rule** the keys go on tables that will hold rows by then, and every table the validation reads forces row-level security: `chunks` (whose validation reads every partition through its own policy), `ingestion_runs` and `symbols`. So either lift FORCE for that one statement on every one of them, the parent, all 64 partitions and the referenced table, before any tenant is set and put it back in the same file, or find the rows-free moment. 22.1-01's plan decides, and measures it through the seeded gate.
+- **Related:** ISS-031 (the rule the fix has to follow), P3 in `22-CONTEXT.md`.
+
 ### ISS-035: The `make seed*` scripts have failed since migration 000009
 
 - **Discovered:** 2026-09-17, by the fact-check of the Phase 22 plans, measured at schema version 15.
@@ -116,6 +126,7 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Measured state when found:** one run, 368 Qdrant points against 368 chunks, so nothing was mixed yet. Confirmed by clearing the harness repository's points and runs before re-ingesting for the Go method fix.
 - **⚠ "Latest run" is the wrong fix for incremental indexing.** Phase 22's incremental re-index re-embeds only changed files, so unchanged files legitimately keep chunks from earlier runs. Filtering to the latest run would hide most of the repository. Currency has to be per file (or per symbol, per D1), not per run.
 - **Fix direction, decided with Phase 22:** when a file is re-indexed, delete that file's superseded points and chunks in the same transaction that writes the replacements. Record the run and file in the Qdrant payload so the stores can be reconciled. D2's move to pgvector would put vectors under the same transaction and the same filter, which removes the cross-store half of this problem.
+- **What that fix creates, for 22-05's `write_results` to handle consciously (PR #49's review, 2026-09-29):** deleting superseded chunks is exactly the event that leaves `retrievals` rows whose `chunk_id` points at nothing. Since 000017 (22-02, P17) that column has no foreign key, so nothing cascades and nothing refuses, and `DELETE /api/repositories/{id}` reaches only retrievals whose chunk **still exists** (the limit is written in `repositories.go`'s `Delete` and `docs/api-repositories.md`). `write_results` must decide what happens to a replaced chunk's retrievals, delete them, repoint them, or leave them and say so, rather than leave it to accident. The link's final shape is U9's, decided when feedback ships; today nothing writes `retrievals` or `feedback`.
 
 
 ### ISS-026: Whole classes and large functions are stored as single oversized chunks

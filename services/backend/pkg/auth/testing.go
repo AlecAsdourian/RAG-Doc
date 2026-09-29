@@ -115,6 +115,10 @@ func CleanupTestDB(t *testing.T, db *pgxpool.Pool) {
 			SELECT id FROM queries WHERE created_at >= $1)`,
 		`DELETE FROM queries WHERE created_at >= $1`,
 		`DELETE FROM chunks WHERE created_at >= $1`,
+		// 000017 (22-02). Under replica mode nothing cascades, so a symbol
+		// left here would outlive its repository and fail another package's
+		// AssertNoChunkTenantDrift. No test in this package writes one yet.
+		`DELETE FROM symbols WHERE created_at >= $1`,
 		`DELETE FROM ingestion_runs WHERE created_at >= $1`,
 		`DELETE FROM repositories WHERE created_at >= $1`,
 		`DELETE FROM projects WHERE created_at >= $1`,

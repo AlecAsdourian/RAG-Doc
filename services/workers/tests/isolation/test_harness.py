@@ -107,6 +107,58 @@ def test_assert_no_cross_tenant_leak_catches_a_real_leak(db_conn, with_two_orgs)
         )
 
 
+def test_migration_000017_applied_through_psycopg2_secures_every_partition(db_conn):
+    """The catalog half of the proof that 000017 came through THIS harness
+    whole. The conftest applies every migration with one psycopg2 `execute`
+    per file, a different path from golang-migrate's, and until this test
+    the only Python evidence was the writer's behaviour. Mirrors the Go
+    guard (`TestChunksPartition_EveryPartitionEnforcesRowLevelSecurity`):
+    64 partitions, each with row-level security enabled AND forced, the
+    tenant policy and the tenant trigger; one policy expression across the
+    parent and every partition; `symbols` secured the same way.
+    """
+    with db_conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT count(*),
+                   count(*) FILTER (WHERE c.relrowsecurity),
+                   count(*) FILTER (WHERE c.relforcerowsecurity),
+                   count(*) FILTER (WHERE EXISTS (
+                       SELECT 1 FROM pg_policy p
+                       WHERE p.polrelid = c.oid AND p.polname = 'tenant_isolation')),
+                   count(*) FILTER (WHERE EXISTS (
+                       SELECT 1 FROM pg_trigger t
+                       WHERE t.tgrelid = c.oid AND t.tgname = 'trg_assert_tenant'))
+            FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+            WHERE i.inhparent = 'public.chunks'::regclass
+            """
+        )
+        partitions = cur.fetchone()
+        cur.execute(
+            """
+            SELECT count(*), count(DISTINCT qual)
+            FROM pg_policies
+            WHERE schemaname = 'public' AND tablename LIKE 'chunks%'
+              AND policyname = 'tenant_isolation'
+            """
+        )
+        policies = cur.fetchone()
+        cur.execute(
+            """
+            SELECT relkind, relrowsecurity, relforcerowsecurity
+            FROM pg_class WHERE oid = 'public.symbols'::regclass
+            """
+        )
+        symbols = cur.fetchone()
+    db_conn.rollback()
+
+    assert partitions == (64, 64, 64, 64, 64), (
+        "every one of the 64 partitions must carry RLS, FORCE, the policy and the trigger itself"
+    )
+    assert policies == (65, 1), "one policy expression across the parent and its 64 partitions"
+    assert symbols == ("r", True, True)
+
+
 def test_assert_no_cross_tenant_leak_passes_when_isolated(db_conn, with_two_orgs):
     org_a, org_b = with_two_orgs
 

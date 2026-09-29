@@ -79,3 +79,7 @@ CREATE TRIGGER trg_assert_tenant BEFORE INSERT OR UPDATE OR DELETE ON chunks
 ALTER TABLE retrievals
   ADD CONSTRAINT retrievals_chunk_id_fkey
   FOREIGN KEY (chunk_id) REFERENCES chunks(id) ON DELETE CASCADE NOT VALID;
+
+-- The up's comment on the column says there is no key; there is one again.
+-- 000004 set no comment, so none is what the column had before 000017.
+COMMENT ON COLUMN retrievals.chunk_id IS NULL;

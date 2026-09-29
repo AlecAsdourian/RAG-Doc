@@ -82,6 +82,21 @@
 --     and runs in CI; the replica-mode acceptance is pinned as a test so
 --     nobody re-derives the claim that the key "holds without triggers".
 --
+-- PER-ROW FOREIGN-KEY CHECKS RUN WITH ROW-LEVEL SECURITY BYPASSED, the
+-- opposite of the ALTER TABLE validation above. That is why an insert
+-- works at all in the deployment shape, where the owner's FORCE would
+-- otherwise hide the referenced repository from the check. It is also why
+-- the two single-column keys below, ingestion_run_id and symbol_id, CARRY
+-- NO TENANCY: measured by PR #49's review as the app role, a chunk of
+-- tenant A's repository citing tenant B's run, or B's symbol, is accepted.
+-- Not a breach (A can only mis-file its own row, and B cannot read it),
+-- but B deleting its run or symbol then reaches A's partition through the
+-- cascade and the SET NULL, and neither composite key notices, because
+-- both are keyed on the repository. The drift query reports both shapes
+-- (its :run and :symbol arms); ISS-036 carries the composite keys
+-- (ingestion_run_id, repository_id) and (symbol_id, repository_id) that
+-- close them, scheduled for 22.1-01, when symbols gets a writer.
+--
 -- ⚠ A TRIGGER CANNOT FILL IN organization_id. 000013 fills
 -- repositories.organization_id from the project in a BEFORE trigger; the
 -- same trick on a partitioned table fails with 0A000, "moving row to

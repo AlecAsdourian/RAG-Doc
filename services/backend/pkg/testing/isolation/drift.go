@@ -77,33 +77,61 @@ func AssertNoRepositoryTenantDrift(t *testing.T, pool *pgxpool.Pool) {
 }
 
 // chunkTenantDriftSQL is D5's drift-detection query for the two tables
-// 000017 (22-02) keys to repositories: every chunk and every symbol whose
-// stored organization_id disagrees with its repository's, or whose
-// repository no longer exists at all. Each id is prefixed with its table.
+// 000017 (22-02) keys to repositories. Four arms, each row tagged
+// "<table>:<id>:<reason>":
 //
-// Both conditions are unrepresentable while chunks_repo_tenant_fk and
-// symbols_repo_tenant_fk are enforced. They stop being enforced under
-// `session_replication_role = replica` or `DISABLE TRIGGER`, which is why
-// this query exists (22-CONTEXT P3's correction: measured, a misfiled chunk
-// inserts cleanly past the key in replica mode).
+//   - chunks:<id>:tenant and symbols:<id>:tenant. The row's organization_id
+//     disagrees with its repository's, or the repository is gone (a row
+//     with no repository has no truth to agree with). Unrepresentable
+//     while chunks_repo_tenant_fk and symbols_repo_tenant_fk are enforced,
+//     and those are foreign-key triggers: `session_replication_role =
+//     replica` and `DISABLE TRIGGER` switch them off, and a misfiled row
+//     then inserts cleanly (22-CONTEXT P3's correction, measured).
+//   - chunks:<id>:run. The chunk's run belongs to another repository, or
+//     is gone. The single-column key ingestion_run_id carries NO TENANCY:
+//     per-row foreign-key checks bypass row-level security, so as tenant A
+//     a chunk of A's repository citing B's run is ACCEPTED, no bypass
+//     needed (PR #49's review, measured in the deployment shape). Not a
+//     breach, since A can only mis-file its own row and B cannot read it,
+//     but B deleting its run then cascades into A's partition, and
+//     neither key sees it. ISS-036 carries the composite keys that close
+//     it when 22.1-01 gives symbols a writer.
+//   - chunks:<id>:symbol. The same for symbol_id, where it is set.
 //
 // `chunks` is read without ONLY, so every partition's rows are checked.
+// Ordered in the "C" collation, byte by byte, so the result matches Go's
+// string order whatever the database's default collation makes of the
+// hyphens in a uuid. (`ORDER BY 1 COLLATE "C"` is not that: the ordinal
+// is an integer there, and integers take no collation, 42804.)
 const chunkTenantDriftSQL = `
-SELECT 'chunks:' || c.id::text
-FROM chunks c
-LEFT JOIN repositories r ON r.id = c.repository_id
-WHERE r.id IS NULL OR c.organization_id IS DISTINCT FROM r.organization_id
-UNION ALL
-SELECT 'symbols:' || s.id::text
-FROM symbols s
-LEFT JOIN repositories r ON r.id = s.repository_id
-WHERE r.id IS NULL OR s.organization_id IS DISTINCT FROM r.organization_id
-ORDER BY 1`
+SELECT drift FROM (
+  SELECT 'chunks:' || c.id::text || ':tenant' AS drift
+  FROM chunks c
+  LEFT JOIN repositories r ON r.id = c.repository_id
+  WHERE r.id IS NULL OR c.organization_id IS DISTINCT FROM r.organization_id
+  UNION ALL
+  SELECT 'symbols:' || s.id::text || ':tenant'
+  FROM symbols s
+  LEFT JOIN repositories r ON r.id = s.repository_id
+  WHERE r.id IS NULL OR s.organization_id IS DISTINCT FROM r.organization_id
+  UNION ALL
+  SELECT 'chunks:' || c.id::text || ':run'
+  FROM chunks c
+  LEFT JOIN ingestion_runs ir ON ir.id = c.ingestion_run_id
+  WHERE ir.id IS NULL OR ir.repository_id IS DISTINCT FROM c.repository_id
+  UNION ALL
+  SELECT 'chunks:' || c.id::text || ':symbol'
+  FROM chunks c
+  LEFT JOIN symbols s ON s.id = c.symbol_id
+  WHERE c.symbol_id IS NOT NULL
+    AND (s.id IS NULL OR s.repository_id IS DISTINCT FROM c.repository_id)
+) d
+ORDER BY drift COLLATE "C"`
 
-// CheckChunkTenantDrift returns every chunk and symbol whose organization_id
-// disagrees with its repository's, or whose repository is gone, as
-// "chunks:<id>" and "symbols:<id>" (migration 000017). An empty slice means
-// no drift.
+// CheckChunkTenantDrift returns every chunk and symbol that is out of step
+// with the rows it points at, as "<table>:<id>:<reason>" (see
+// chunkTenantDriftSQL for the four reasons; migration 000017). An empty
+// slice means no drift.
 //
 // Like CheckRepositoryTenantDrift it REFUSES to run under a role that
 // row-level security applies to: every partition of chunks, and symbols,
@@ -125,10 +153,12 @@ func CheckChunkTenantDrift(ctx context.Context, q Querier) ([]string, error) {
 }
 
 // AssertNoChunkTenantDrift fails the test if any chunk or symbol carries an
-// organization_id that is not its repository's, across every partition. It
-// is the CI half of 22-CONTEXT P3: the composite keys make drift
-// unrepresentable only while foreign-key triggers are enabled, so tests that
-// write chunks or symbols call this at the end.
+// organization_id that is not its repository's, or cites a run or symbol of
+// another repository, across every partition. It is the CI half of
+// 22-CONTEXT P3: the composite keys make tenant drift unrepresentable only
+// while foreign-key triggers are enabled, and the run and symbol keys carry
+// no tenancy at all (ISS-036), so tests that write chunks or symbols call
+// this at the end.
 func AssertNoChunkTenantDrift(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	WithSuperuserConn(t, pool, func(conn *pgx.Conn) {
@@ -138,8 +168,8 @@ func AssertNoChunkTenantDrift(t *testing.T, pool *pgxpool.Pool) {
 			t.Fatalf("isolation: chunk tenant drift check: %v", err)
 		}
 		if len(ids) > 0 {
-			t.Errorf("chunk tenant drift (D5, P3): %d chunks or symbols whose organization_id "+
-				"disagrees with their repository's, or whose repository is gone: %v", len(ids), ids)
+			t.Errorf("chunk tenant drift (D5, P3, ISS-036): %d chunks or symbols out of step with "+
+				"their repository, run or symbol: %v", len(ids), ids)
 		}
 	})
 }

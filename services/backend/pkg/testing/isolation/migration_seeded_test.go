@@ -137,6 +137,7 @@ import (
 
 	"github.com/golang-migrate/migrate/v4/database"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 )
@@ -168,6 +169,12 @@ const (
 	seededRetrievalID = "80000000-0000-4000-8000-000000000a01"
 	seededFeedbackID  = "90000000-0000-4000-8000-000000000a01"
 	seededCitedChunk  = "60000000-0000-4000-8000-00000000a401"
+
+	// Alpha's surviving run and repository, and bravo's repository, for the
+	// deployment-shape write after the up (testdata/seed_at_000010.sql).
+	seededAlphaRun        = "50000000-0000-4000-8000-0000000000a4"
+	seededAlphaSyncedRepo = "40000000-0000-4000-8000-0000000000a4"
+	seededBravoSyncedRepo = "40000000-0000-4000-8000-0000000000b3"
 
 	// The installation the gate uninstalls at version 12, and its tenant
 	// (testdata/seed_at_000010.sql, organization "alpha").
@@ -428,6 +435,63 @@ func TestMigrationsApplyToASeededDatabase(t *testing.T) {
 			"the user's feedback on it survived")
 	})
 
+	// The one write in the deployment shape (PR #49's review, nit 7): the
+	// tables are the owner's, FORCE applies to the owner, and the
+	// application role writes through them. Per-row foreign-key checks run
+	// with row-level security bypassed, which is why a correct insert works
+	// at all here (the referenced repository is invisible to the owner's
+	// policy), and why the tenant key can refuse a misfiled one.
+	t.Run("000017: the application role writes a chunk in the deployment shape, and a misfiled one is refused", func(t *testing.T) {
+		// The grants at 12 covered the tables that existed then; the
+		// harnesses re-grant after migrating, and so does this.
+		grantAppRoleIn(t, super)
+		conn, err := pgx.Connect(ctx, db.SuperuserDSN)
+		require.NoError(t, err)
+		defer func() { _ = conn.Close(ctx) }()
+		switchToAppRole(t, conn)
+
+		tx, err := conn.Begin(ctx)
+		require.NoError(t, err)
+		defer func() { _ = tx.Rollback(ctx) }()
+		_, err = tx.Exec(ctx, `SELECT set_config('app.current_tenant', $1, true)`, uninstalledTenantID)
+		require.NoError(t, err)
+
+		var chunkID, partition string
+		require.NoError(t, tx.QueryRow(ctx, TestChunkInsertSQL,
+			uninstalledTenantID, seededAlphaRun, seededAlphaSyncedRepo,
+			"deploy.go", 1, 1, "written in the deployment shape", "h-deploy",
+		).Scan(&chunkID), "as rag_doc_app, a chunk of alpha's own repository")
+		require.NoError(t, tx.QueryRow(ctx,
+			`SELECT tableoid::regclass::text FROM chunks WHERE id = $1`, chunkID).Scan(&partition))
+		require.Regexp(t, `^chunks_p[0-9]+$`, partition, "routed to a partition, and readable back under the tenant")
+
+		_, err = tx.Exec(ctx, `SAVEPOINT misfiled`)
+		require.NoError(t, err)
+		_, err = tx.Exec(ctx, TestChunkInsertSQL,
+			uninstalledTenantID, seededAlphaRun, seededBravoSyncedRepo,
+			"misfiled.go", 1, 1, "alpha citing bravo's repository", "h-misfiled")
+		require.Error(t, err)
+		var pgErr *pgconn.PgError
+		require.True(t, errors.As(err, &pgErr), "%T: %v", err, err)
+		require.Equal(t, "23503", pgErr.Code, "message: %s", pgErr.Message)
+		require.Equal(t, "chunks_repo_tenant_fk", pgErr.ConstraintName)
+		_, err = tx.Exec(ctx, `ROLLBACK TO SAVEPOINT misfiled`)
+		require.NoError(t, err)
+
+		_, err = tx.Exec(ctx, `INSERT INTO symbols
+			   (id, organization_id, repository_id, file_path, symbol_path, kind,
+			    start_line, end_line, span_digest, first_seen_commit, last_seen_commit)
+			 VALUES (gen_random_uuid(), $1, $2, 'deploy.go', 'deploy', 'module', 1, 1, 'sha-deploy', 'c1', 'c1')`,
+			uninstalledTenantID, seededAlphaSyncedRepo)
+		require.NoError(t, err, "as rag_doc_app, a symbol of alpha's own repository")
+		require.NoError(t, tx.Commit(ctx))
+
+		require.Equal(t, 1, countOf(t, super, `SELECT count(*) FROM chunks`), "the one committed chunk, read as the superuser")
+		drifted, err := CheckChunkTenantDrift(ctx, super)
+		require.NoError(t, err)
+		require.Empty(t, drifted)
+	})
+
 	// `chunks` is excluded: 000017 drops and recreates it (P1), which the
 	// subtests above assert directly.
 	t.Run("every seeded row outside chunks survived", func(t *testing.T) {
@@ -539,8 +603,10 @@ func TestMigration000016NeedsTheExtensionPreCreated(t *testing.T) {
 //   - with FORCE lifted on `repositories` for that one statement, passes,
 //     with FORCE back on, nothing flagged and the key validated.
 //
-// The probe migrations are numbered after the newest committed one, so they
-// run after 000017 and the partitioned chunks it creates.
+// The probe migrations are numbered from the newest committed migration IN
+// THE DIRECTORY, read at run time, so they always run after the real ones
+// and never collide with the next one to land. (A constant here collided
+// twice: 000017 with 22-02's migration, then 000018 with 22-03's.)
 //
 // ISS-031's first instance was this shape: `ingestion_jobs` had no policy
 // and `repositories` did. Lifting FORCE on the key's own table alone changes
@@ -549,8 +615,7 @@ func TestForeignKeyValidationReadsTheReferencedTable(t *testing.T) {
 	ctx := context.Background()
 	pool := SetupTestDB(t)
 
-	// 000018 (the probe numbers sit after the newest committed migration,
-	// 000017): the probe table, filled under each organization's tenant with
+	// The first probe: a table filled under each organization's tenant with
 	// that organization's pairs, so every row is correct by construction.
 	const fill = `
 CREATE TABLE probe_children (
@@ -584,7 +649,8 @@ END $$;
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			const probeFill, probeKey = partitionedChunksVersion + 1, partitionedChunksVersion + 2
+			newest := newestMigrationVersion(t, migrationsDir())
+			probeFill, probeKey := newest+1, newest+2
 			dir := probeMigrationsDir(t, map[string]string{
 				fmt.Sprintf("%06d_probe_fill.up.sql", probeFill):   fill,
 				fmt.Sprintf("%06d_probe_fill.down.sql", probeFill): "DROP TABLE probe_children;",

@@ -27,6 +27,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 
@@ -546,10 +547,106 @@ func TestChunksPartition_TheKeyDoesNotHoldUnderReplicaMode(t *testing.T) {
 			_, err = tx.Exec(ctx, symbolInsertSQL, symbolID, orgA.ID, orgB.RepoID, "misfiled.go", "misfiled", "sha-replica")
 			require.NoError(t, err, "the misfiled symbol must be ACCEPTED under replica mode")
 
+			// The chunk is reported twice: its tenant is not its repository's,
+			// and its run (A's) is not its repository's (B's) either.
 			drifted, err := CheckChunkTenantDrift(ctx, tx)
 			require.NoError(t, err)
-			require.Equal(t, []string{"chunks:" + chunkID, "symbols:" + symbolID}, drifted,
-				"the drift check must report exactly the two misfiled rows")
+			require.Equal(t, []string{
+				"chunks:" + chunkID + ":run",
+				"chunks:" + chunkID + ":tenant",
+				"symbols:" + symbolID + ":tenant",
+			}, drifted, "the drift check must report exactly the two misfiled rows")
+		})
+
+		AssertNoChunkTenantDrift(t, pool)
+	})
+}
+
+// TestChunksPartition_TheSingleColumnKeysCarryNoTenancy pins PR #49's
+// review finding (minor 3) so it is not re-derived as a breach, and so the
+// drift check is known to cover it: the single-column keys ingestion_run_id
+// and symbol_id are checked per row with row-level security bypassed, so AS
+// THE APP ROLE, with no bypass of any kind, tenant A can write a chunk of
+// its own repository that cites tenant B's run, or B's symbol. Not a
+// boundary breach: A mis-files its own row and B cannot read it. But B
+// deleting its run then cascades into A's partition, and B deleting its
+// symbol nulls A's chunk, and neither composite key notices, because both
+// are keyed on the repository. The drift query's :run and :symbol arms do.
+// ISS-036 carries the composite keys that close this when 22.1-01 gives
+// symbols a writer.
+//
+// One transaction on a superuser connection, switched to the app role for
+// the writes and back for the check, never committed.
+func TestChunksPartition_TheSingleColumnKeysCarryNoTenancy(t *testing.T) {
+	pool := SetupTestDB(t)
+	ctx := context.Background()
+
+	WithTwoOrgs(t, pool, func(orgA, orgB *TestOrg) {
+		runA := commitRun(t, pool, orgA, "single-a")
+		runB := commitRun(t, pool, orgB, "single-b")
+		symbolB := uuid.NewString()
+		tx, err := TenantScope(ctx, pool, orgB.ID)
+		require.NoError(t, err)
+		_, err = tx.Exec(ctx, symbolInsertSQL, symbolB, orgB.ID, orgB.RepoID, "b.go", "B", "sha-b")
+		require.NoError(t, err)
+		require.NoError(t, tx.Commit(ctx))
+
+		WithSuperuserConn(t, pool, func(conn *pgx.Conn) {
+			tx, err := conn.Begin(ctx)
+			require.NoError(t, err)
+			defer func() { _ = tx.Rollback(ctx) }()
+
+			// As A, with nothing lifted.
+			_, err = tx.Exec(ctx, "SET ROLE "+appRole)
+			require.NoError(t, err)
+			_, err = tx.Exec(ctx, fmt.Sprintf("SET LOCAL app.current_tenant = '%s'", orgA.ID))
+			require.NoError(t, err)
+
+			var citesRunB, citesSymbolB string
+			require.NoError(t, tx.QueryRow(ctx, TestChunkInsertSQL,
+				orgA.ID, runB, orgA.RepoID, "cites-b-run.go", 1, 1, "cites B's run", "h-b-run",
+			).Scan(&citesRunB), "a chunk of A's repository citing B's run is ACCEPTED as A")
+			require.NoError(t, tx.QueryRow(ctx, `INSERT INTO chunks
+			   (organization_id, ingestion_run_id, repository_id, symbol_id, file_path,
+			    start_line, end_line, content, content_hash, embedding, embedding_model)
+			 VALUES ($1, $2, $3, $4, 'cites-b-symbol.go', 1, 1, 'cites B''s symbol', 'h-b-symbol', `+TestEmbeddingSQL+`, $5)
+			 RETURNING id::text`,
+				orgA.ID, runA, orgA.RepoID, symbolB, TestEmbeddingModel,
+			).Scan(&citesSymbolB), "a chunk of A's repository citing B's symbol is ACCEPTED as A")
+
+			// Back to the superuser: the drift check sees both, and only both.
+			_, err = tx.Exec(ctx, "RESET ROLE")
+			require.NoError(t, err)
+			want := []string{"chunks:" + citesRunB + ":run", "chunks:" + citesSymbolB + ":symbol"}
+			sort.Strings(want)
+			drifted, err := CheckChunkTenantDrift(ctx, tx)
+			require.NoError(t, err)
+			require.Equal(t, want, drifted)
+
+			// The consequence: B, deleting its own run and symbol, reaches
+			// A's partition through the cascade and the SET NULL, because
+			// referential actions bypass row-level security too.
+			_, err = tx.Exec(ctx, "SET ROLE "+appRole)
+			require.NoError(t, err)
+			_, err = tx.Exec(ctx, fmt.Sprintf("SET LOCAL app.current_tenant = '%s'", orgB.ID))
+			require.NoError(t, err)
+			tag, err := tx.Exec(ctx, `DELETE FROM ingestion_runs WHERE id = $1`, runB)
+			require.NoError(t, err)
+			require.EqualValues(t, 1, tag.RowsAffected())
+			tag, err = tx.Exec(ctx, `DELETE FROM symbols WHERE id = $1`, symbolB)
+			require.NoError(t, err)
+			require.EqualValues(t, 1, tag.RowsAffected())
+			_, err = tx.Exec(ctx, "RESET ROLE")
+			require.NoError(t, err)
+
+			require.Zero(t, countRows(t, tx, `SELECT count(*) FROM chunks WHERE id = $1`, citesRunB),
+				"B's run delete removed A's chunk from A's partition")
+			var symbol *string
+			require.NoError(t, tx.QueryRow(ctx, `SELECT symbol_id::text FROM chunks WHERE id = $1`, citesSymbolB).Scan(&symbol))
+			require.Nil(t, symbol, "B's symbol delete nulled A's chunk")
+			drifted, err = CheckChunkTenantDrift(ctx, tx)
+			require.NoError(t, err)
+			require.Empty(t, drifted, "and nothing is left for the check to report")
 		})
 
 		AssertNoChunkTenantDrift(t, pool)
@@ -819,9 +916,16 @@ func TestChunksPartition_DriftCheckDetectsDrift(t *testing.T) {
 	require.NoError(t, err, "with the key gone the misfiled symbol is representable")
 	require.NoError(t, tx.Commit(ctx))
 
+	// The chunk twice (its tenant, and its run A's while its repository is
+	// B's), the symbol once.
+	want := []string{
+		"chunks:" + misfiledChunk + ":run",
+		"chunks:" + misfiledChunk + ":tenant",
+		"symbols:" + misfiledSymbol + ":tenant",
+	}
 	drifted, err = CheckChunkTenantDrift(ctx, super)
 	require.NoError(t, err)
-	require.Equal(t, []string{"chunks:" + misfiledChunk, "symbols:" + misfiledSymbol}, drifted)
+	require.Equal(t, want, drifted)
 
 	// And an ORPHAN: the repository the rows still name is deleted out from
 	// under them (the single-column keys are dropped too, so the delete does
@@ -840,8 +944,38 @@ func TestChunksPartition_DriftCheckDetectsDrift(t *testing.T) {
 
 	drifted, err = CheckChunkTenantDrift(ctx, super)
 	require.NoError(t, err)
-	require.Equal(t, []string{"chunks:" + misfiledChunk, "symbols:" + misfiledSymbol}, drifted,
-		"orphaned rows are drift too")
+	require.Equal(t, want, drifted, "orphaned rows are drift too")
+
+	// The :run and :symbol arms on their own: a chunk of A's repository
+	// citing another run of A's, and one citing a symbol of A's other
+	// repository. Same tenant throughout, so the tenant arms stay silent.
+	repoA2 := seedScratchRepositoryInOrg(t, super, orgA, "drift-a2")
+	tx, err = super.Begin(ctx)
+	require.NoError(t, err)
+	_, err = tx.Exec(ctx, fmt.Sprintf("SET LOCAL app.current_tenant = '%s'", orgA))
+	require.NoError(t, err)
+	var runA2, wrongRun, wrongSymbol string
+	require.NoError(t, tx.QueryRow(ctx,
+		`INSERT INTO ingestion_runs (repository_id, commit_sha, branch, status)
+		 VALUES ($1, repeat('f', 40), 'main', 'completed') RETURNING id::text`, repoA2).Scan(&runA2))
+	require.NoError(t, tx.QueryRow(ctx, TestChunkInsertSQL,
+		orgA, runA2, repoA, "wrong-run.go", 1, 1, "cites a run of A's other repository", "h-wrong-run").Scan(&wrongRun))
+	symbolA2 := uuid.NewString()
+	_, err = tx.Exec(ctx, symbolInsertSQL, symbolA2, orgA, repoA2, "a2.go", "A2", "sha-a2")
+	require.NoError(t, err)
+	require.NoError(t, tx.QueryRow(ctx, `INSERT INTO chunks
+	   (organization_id, ingestion_run_id, repository_id, symbol_id, file_path,
+	    start_line, end_line, content, content_hash, embedding, embedding_model)
+	 VALUES ($1, $2, $3, $4, 'wrong-symbol.go', 1, 1, 'cites a symbol of A''s other repository', 'h-wrong-symbol', `+TestEmbeddingSQL+`, $5)
+	 RETURNING id::text`,
+		orgA, runA, repoA, symbolA2, TestEmbeddingModel).Scan(&wrongSymbol))
+	require.NoError(t, tx.Commit(ctx))
+
+	want = append(want, "chunks:"+wrongRun+":run", "chunks:"+wrongSymbol+":symbol")
+	sort.Strings(want)
+	drifted, err = CheckChunkTenantDrift(ctx, super)
+	require.NoError(t, err)
+	require.Equal(t, want, drifted, "a run or symbol of another repository is drift, within one tenant too")
 
 	// Under a role subject to row-level security the check refuses to run,
 	// rather than reporting "no drift" about rows it cannot see.
@@ -999,6 +1133,22 @@ func seedScratchRepository(t *testing.T, super *pgx.Conn, orgID, slug string) st
 	require.NoError(t, super.QueryRow(ctx,
 		`INSERT INTO projects (organization_id, name, slug, is_default) VALUES ($1, 'Default', 'default', true)
 		 RETURNING id::text`, orgID).Scan(&projectID))
+	return seedScratchRepositoryInProject(t, super, orgID, projectID, slug)
+}
+
+// seedScratchRepositoryInOrg adds a second repository to an organization
+// seedScratchRepository created, under its default project.
+func seedScratchRepositoryInOrg(t *testing.T, super *pgx.Conn, orgID, slug string) string {
+	t.Helper()
+	var projectID string
+	require.NoError(t, super.QueryRow(context.Background(),
+		`SELECT id::text FROM projects WHERE organization_id = $1 AND is_default`, orgID).Scan(&projectID))
+	return seedScratchRepositoryInProject(t, super, orgID, projectID, slug)
+}
+
+func seedScratchRepositoryInProject(t *testing.T, super *pgx.Conn, orgID, projectID, slug string) string {
+	t.Helper()
+	ctx := context.Background()
 	tx, err := super.Begin(ctx)
 	require.NoError(t, err)
 	defer func() { _ = tx.Rollback(ctx) }()
