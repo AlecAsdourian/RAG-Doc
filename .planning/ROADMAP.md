@@ -188,7 +188,7 @@ Plans:
   - fusion stays in Python;
   - Qdrant removed from code, compose, dependencies and the harness;
   - a benchmark equivalence gate on the same ada-002 vectors.
-  **Executed 2026-09-29, in review:** the rule was committed before the first measurement; the Qdrant-era baseline was recorded completely on one scratch database with the query vectors embedded once; the pgvector read path was measured against the same database and vectors as `rag_doc_app`; `compare_runs.py` found **no question differing** in file or symbol rank (0 UNEXPLAINED, exit 0) and identical aggregates; then Qdrant was retired everywhere. Both plan-shape proofs (HNSW eligibility, the breadcrumb GIN index) are tests. See `22-03-SUMMARY.md` and `22-03-equivalence.md`.
+  **Executed 2026-09-29, in review as PR #53:** the rule was committed before the first measurement; the Qdrant-era baseline was recorded completely on one scratch database with the query vectors embedded once; the pgvector read path was measured against the same database and vectors as `rag_doc_app`; `compare_runs.py` found **no question differing** in file or symbol rank (0 UNEXPLAINED, exit 0) and identical aggregates; then Qdrant was retired everywhere. Both plan-shape proofs (HNSW eligibility, the breadcrumb GIN index) are tests. See `22-03-SUMMARY.md` and `22-03-equivalence.md`.
 - [ ] 22-04: fetching a repository safely:
   - the backend mints a one-hour, one-repository, read-only token, checked against the job lease — **the App key never enters the worker** (U4);
   - an archive fetch through the GitHub API (U5);
