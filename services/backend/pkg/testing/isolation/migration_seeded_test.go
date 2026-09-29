@@ -30,20 +30,53 @@ package isolation
 // fails with 22P02, leaving `schema_migrations` at 14, dirty. The fix
 // declares the key inside `CREATE TABLE` (000014's section 4 says why).
 //
-// THE RULE IT ENFORCES, for every migration after this one:
+// WHAT IT GUARDS, and by which mechanism. The rule is in 000014's section 4
+// and in ISS-031; this is what each half of the gate can see of it.
 //
-//   - declare foreign keys on new tables INSIDE `CREATE TABLE`, where there
-//     are no rows to validate;
-//   - never rely on the session's tenant: a migration that needs one sets
-//     it itself, per organization, as 000015 does. 000013 AND 000015 both
-//     leave the setting at '' for whatever runs after them. Measured with
-//     a probe: a 000017 adding a composite tenant key by ALTER TABLE failed
-//     this gate at 17, dirty, with 22P02; the same key declared inside
-//     CREATE TABLE passed (22-01-SUMMARY.md, mutations M9 and M9b);
-//   - NEVER make a validation pass by setting a sentinel tenant. Validation
-//     then sees zero rows and passes vacuously, and this gate CANNOT tell
-//     that apart from a real fix (22-01-SUMMARY.md records the mutation
-//     that survives). Review has to catch that one.
+//  1. THE '' LEFTOVER, through the one-session up. A migration after 13 or
+//     15 that validates a foreign key or evaluates a policy on the poisoned
+//     session fails with 22P02 and leaves the version dirty. This is loud
+//     ONLY because 13 and 15 run inside the one session: PR #48's review
+//     measured the same ALTER TABLE key reaching 17, clean, when it ran in a
+//     fresh session (the shape of every deploy after the first). Keep 13 and
+//     15 inside the one-session run; moving the seed forward would silence
+//     this half without any test noticing.
+//
+//  2. THE TENANT AUDIT (installTenantAudit), which does not depend on the
+//     session being poisoned. Two event triggers watch every ALTER TABLE
+//     from the first migration on and record each foreign key the command
+//     left validated that was not validated before it, whenever either:
+//       (a) the session's app.current_tenant was non-empty. That is the
+//           sentinel the rule forbids, or the tenant an earlier loop left
+//           behind. The validation read through the policy as one
+//           organization, and no test can tell that from a real check
+//           (mutation M3 was a silent pass until this landed);
+//       (b) the key's own table has forced row-level security AND held at
+//           least one row the key applies to (every key column non-NULL).
+//           The owner's validation was then filtered whatever the tenant:
+//           NULL sees no rows at all. This is the fresh-session shape from
+//           point 1, made visible.
+//     It records ALTER TABLE only. A key declared inside CREATE TABLE never
+//     runs a validation query (no rows exist), and a key added while its
+//     column is still NULL has nothing to check, so neither is flagged: a
+//     new-column key added BEFORE a backfill loop (000013's shape since
+//     22-01) passes, while the same key added AFTER the loop is flagged by
+//     both (a) and (b). SET NOT NULL, CHECK and UNIQUE validations scan the
+//     heap directly and are not subject to row-level security (SET NOT NULL
+//     measured by 21-01, CHECK and UNIQUE by 22-01's review pass), so they
+//     are deliberately not the audit's business.
+//     No version is exempt. Before 22-01's review, committed 000013
+//     validated repositories_project_org_fkey after its loop, under the last
+//     organization's tenant, and the audit flags exactly that (M10). An
+//     exemption is where the next instance would hide.
+//
+// WHAT IT CANNOT SEE. DML in a later migration that inherits the session's
+// tenant instead of setting its own: under '' it fails loudly here, but
+// under a fresh session it silently matches nothing, and only the outcome
+// assertions below (what 000013 and 000015 must have done to every seeded
+// row) stand against that. A validating TRIGGER's reads, which the audit does
+// not watch either. Both are why the rule is written where the next author
+// reads it, not only tested.
 //
 // MUTATIONS, and why there is an environment variable. The gate migrates
 // from RAG_DOC_SEEDED_GATE_MIGRATIONS when it is set: a scratch copy of the
@@ -93,6 +126,13 @@ const (
 	// (testdata/seed_at_000010.sql, organization "alpha").
 	uninstalledInstallationID = "30000000-0000-4000-8000-0000000000a2"
 	uninstalledTenantID       = "10000000-0000-4000-8000-00000000000a"
+
+	// minOrganizationsWithRepositories is the seed's multi-tenant premise. A
+	// per-organization backfill that reached one tenant and not another can
+	// only leave a row for the assertions to find if more than one tenant
+	// has rows to backfill; three, so that "first", "last" and "the one in
+	// between" are all represented.
+	minOrganizationsWithRepositories = 3
 )
 
 // seededRepoOutcome is what 000015 must leave for one seeded repository.
@@ -130,41 +170,17 @@ func TestMigrationsApplyToASeededDatabase(t *testing.T) {
 	require.GreaterOrEqual(t, newest, uint(pgvectorVersion),
 		"the gate expects at least 000016 in %s", dir)
 
-	// 1. A database owned by the deployment-shape role.
-	db := ScratchDatabase(t, pool, DeploymentOwnerRole)
-	super := connectScratch(t, db.SuperuserDSN)
+	// 1 to 5: the deployment shape, seeded at 10 and again at 12.
+	db, super := seedDeploymentShape(t, pool, dir)
 
-	// 2. The operator's step: `vector` is untrusted, so the owner cannot
-	//    create it (TestMigration000016NeedsTheExtensionPreCreated).
-	_, err := super.Exec(ctx, `CREATE EXTENSION vector`)
-	require.NoError(t, err, "create the extension as the operator")
-
-	// 3. The schema the fixture was written for, as the owner.
-	require.NoError(t, applyMigrationsTo(db.OwnerDSN, dir, seedVersion),
-		"migrate to %d as %s", seedVersion, DeploymentOwnerRole)
-
-	// 4. The rows, written the way the application writes them.
-	grantAppRoleIn(t, super)
-	seed, err := os.ReadFile(filepath.Join("testdata", "seed_at_000010.sql"))
-	require.NoError(t, err)
-	execAsAppRole(t, db.SuperuserDSN, string(seed))
-
-	// 5. On to 12 in a session of its own, then the one row the fixture
-	//    could not hold at 10.
-	//
-	//    ⚠ THE RE-GRANT IS NOT OPTIONAL. 000012's AFTER UPDATE trigger on
-	//    github_installations (not SECURITY DEFINER) writes
-	//    github_installation_tenants, a table created after step 4's grants.
-	//    Without it the update fails with 42501 (measured by the fact-check).
-	require.NoError(t, applyMigrationsTo(db.OwnerDSN, dir, uninstallVersion),
-		"migrate to %d as %s", uninstallVersion, DeploymentOwnerRole)
-	grantAppRoleIn(t, super)
-	markInstallationUninstalled(t, db.SuperuserDSN)
-
-	assertDeploymentShape(t, super, db.Name)
 	before := snapshotSeededRows(t, super)
 	seededChunks := countOf(t, super, `SELECT count(*) FROM chunks`)
 	require.Equal(t, 3, seededChunks, "premise: the seed's chunks, in two organizations")
+	require.GreaterOrEqual(t, countOf(t, super, `
+		SELECT count(DISTINCT p.organization_id)
+		FROM repositories r JOIN projects p ON p.id = r.project_id`),
+		minOrganizationsWithRepositories,
+		"premise: the seed is multi-tenant where the backfills act")
 
 	// 6. ONE `up`: one migrate instance, one session, 12 to the newest.
 	upStarted := time.Now()
@@ -194,6 +210,12 @@ func TestMigrationsApplyToASeededDatabase(t *testing.T) {
 
 	t.Run("still the deployment shape after the up", func(t *testing.T) {
 		assertDeploymentShape(t, super, db.Name)
+	})
+
+	t.Run("no foreign key was validated under a tenant or through row-level security", func(t *testing.T) {
+		require.Empty(t, flaggedForeignKeyValidations(t, super),
+			"an ALTER TABLE validated a foreign key in a shape the rule forbids; "+
+				"see this file's header, 000014's section 4 and ISS-031")
 	})
 
 	t.Run("000013 filled every repository's organization_id from its project", func(t *testing.T) {
@@ -282,6 +304,10 @@ func TestMigrationsApplyToASeededDatabase(t *testing.T) {
 // so a non-superuser owner cannot create it; an image WITHOUT pgvector would
 // fail differently ("is not available", 0A000), and the premise below rules
 // that out, so this failure can only be the privilege.
+//
+// It also pins the state each failure leaves behind and the documented way
+// out of it (docs/local-development.md, "Recovering a dirty version"): a
+// version left dirty is the operator's first sight of any of this.
 func TestMigration000016NeedsTheExtensionPreCreated(t *testing.T) {
 	ctx := context.Background()
 	pool := SetupTestDB(t)
@@ -308,6 +334,7 @@ func TestMigration000016NeedsTheExtensionPreCreated(t *testing.T) {
 	version, dirty := migrationVersion(t, super)
 	require.Equal(t, int64(pgvectorVersion), version)
 	require.True(t, dirty)
+	require.False(t, extensionInstalled(t, super), "the failed up installed nothing")
 
 	// The operator's way out, as docs/local-development.md gives it: create
 	// the extension, force back to 15, and run the migration again, which is
@@ -327,18 +354,46 @@ func TestMigration000016NeedsTheExtensionPreCreated(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, "42501", sqlStateOf(err), describeMigrationError(err))
 	require.Contains(t, err.Error(), "must be owner of extension vector")
+
+	// The state a failed down leaves: 15, dirty, with the extension STILL
+	// INSTALLED. golang-migrate records the target version as dirty before
+	// it runs the file, and the DROP rolled back with the file.
+	version, dirty = migrationVersion(t, super)
+	require.Equal(t, int64(pgvectorVersion-1), version, "a failed down records its target version")
+	require.True(t, dirty)
+	require.True(t, extensionInstalled(t, super), "the failed down dropped nothing")
+
+	// Two documented ways out. Abandon the rollback: the extension stays,
+	// and 16 is what the database actually has.
+	require.NoError(t, forceMigrationVersion(db.OwnerDSN, dir, pgvectorVersion))
+	version, dirty = migrationVersion(t, super)
+	require.Equal(t, int64(pgvectorVersion), version)
+	require.False(t, dirty)
+	require.True(t, extensionInstalled(t, super))
+
+	// Or finish it by hand: the operator drops the extension and records
+	// 15, which then IS the state of the database.
+	_, err = super.Exec(ctx, `DROP EXTENSION vector`)
+	require.NoError(t, err)
+	require.NoError(t, forceMigrationVersion(db.OwnerDSN, dir, pgvectorVersion-1))
+	version, dirty = migrationVersion(t, super)
+	require.Equal(t, int64(pgvectorVersion-1), version)
+	require.False(t, dirty)
+	require.False(t, extensionInstalled(t, super))
 }
 
 // TestMigrationSchemaMatchesBaseline compares the schema two migrations
 // directories build, as catalog dumps. It is a proof tool, not a gate: it
 // skips unless RAG_DOC_SCHEMA_BASELINE_MIGRATIONS names the second
-// directory. 22-01 used it to show that declaring
-// ingestion_jobs_repo_tenant_fk inside CREATE TABLE leaves the schema
-// identical to the ALTER TABLE form, `convalidated` included:
+// directory. 22-01 used it to show that its two edits to applied migrations
+// (000013's key moved ahead of its loop, 000014's key declared inside
+// CREATE TABLE) leave the schema identical to main's, `convalidated`
+// included:
 //
 //	mkdir -p /tmp/baseline && cp services/backend/migrations/* /tmp/baseline/
-//	git show RAG-Doc/main:services/backend/migrations/000014_ingestion_jobs.up.sql \
-//	  > /tmp/baseline/000014_ingestion_jobs.up.sql
+//	for f in 000013_repositories_organization_id 000014_ingestion_jobs; do
+//	  git show RAG-Doc/main:services/backend/migrations/$f.up.sql > /tmp/baseline/$f.up.sql
+//	done
 //	RAG_DOC_SCHEMA_BASELINE_MIGRATIONS=/tmp/baseline \
 //	  go test ./pkg/testing/isolation -run TestMigrationSchemaMatchesBaseline -v
 //
@@ -372,6 +427,53 @@ func gateMigrationsDir(t *testing.T) string {
 		return dir
 	}
 	return migrationsDir()
+}
+
+// seedDeploymentShape builds the database the gate runs on and returns it
+// with a superuser connection: owned and migrated by DeploymentOwnerRole,
+// the extension pre-created by the operator, audited from the first
+// migration on, seeded at 10 as rag_doc_app and, at 12, with one
+// installation uninstalled. The deployment-shape premises are checked before
+// it returns.
+func seedDeploymentShape(t *testing.T, pool *pgxpool.Pool, dir string) (ScratchDB, *pgx.Conn) {
+	t.Helper()
+	ctx := context.Background()
+
+	// 1. A database owned by the deployment-shape role.
+	db := ScratchDatabase(t, pool, DeploymentOwnerRole)
+	super := connectScratch(t, db.SuperuserDSN)
+
+	// 2. The operator's step: `vector` is untrusted, so the owner cannot
+	//    create it (TestMigration000016NeedsTheExtensionPreCreated). And the
+	//    audit, before any migration runs, so no version is exempt from it.
+	_, err := super.Exec(ctx, `CREATE EXTENSION vector`)
+	require.NoError(t, err, "create the extension as the operator")
+	installTenantAudit(t, super)
+
+	// 3. The schema the fixture was written for, as the owner.
+	require.NoError(t, applyMigrationsTo(db.OwnerDSN, dir, seedVersion),
+		"migrate to %d as %s", seedVersion, DeploymentOwnerRole)
+
+	// 4. The rows, written the way the application writes them.
+	grantAppRoleIn(t, super)
+	seed, err := os.ReadFile(filepath.Join("testdata", "seed_at_000010.sql"))
+	require.NoError(t, err)
+	execAsAppRole(t, db.SuperuserDSN, string(seed))
+
+	// 5. On to 12 in a session of its own, then the one row the fixture
+	//    could not hold at 10.
+	//
+	//    ⚠ THE RE-GRANT IS NOT OPTIONAL. 000012's AFTER UPDATE trigger on
+	//    github_installations (not SECURITY DEFINER) writes
+	//    github_installation_tenants, a table created after step 4's grants.
+	//    Without it the update fails with 42501 (measured by the fact-check).
+	require.NoError(t, applyMigrationsTo(db.OwnerDSN, dir, uninstallVersion),
+		"migrate to %d as %s", uninstallVersion, DeploymentOwnerRole)
+	grantAppRoleIn(t, super)
+	markInstallationUninstalled(t, db.SuperuserDSN)
+
+	assertDeploymentShape(t, super, db.Name)
+	return db, super
 }
 
 func connectScratch(t *testing.T, dsn string) *pgx.Conn {
@@ -476,6 +578,118 @@ func assertDeploymentShape(t *testing.T, super *pgx.Conn, dbName string) {
 	require.True(t, rls && force, "premise: repositories forces row-level security on its owner")
 }
 
+// =====================================================================
+// The tenant audit
+// =====================================================================
+
+// tenantAuditSQL installs the audit the header describes: two event
+// triggers on ALTER TABLE, in a schema of their own so the deployment-shape
+// premise on public tables is untouched.
+//
+// SECURITY DEFINER, owned by the superuser that installs it: the functions
+// read catalogs and count rows with row-level security bypassed, and write
+// audit tables the migrating owner has no grant on. `app.current_tenant` is
+// a session setting, so the definer switch does not change what
+// current_setting returns.
+//
+// gate_audit.snapshot runs before each ALTER TABLE and records which foreign
+// keys were already validated. gate_audit.record runs after it and looks at
+// each foreign key the command left validated that was not before. It counts
+// the key's table WITHOUT `ONLY`, so a key on a partitioned parent sees its
+// partitions' rows. golang-migrate records `version = N, dirty` before it
+// runs file N, so the version read here is the file that ran the command.
+const tenantAuditSQL = `
+CREATE SCHEMA gate_audit;
+
+CREATE TABLE gate_audit.fk_before (
+  conoid      oid PRIMARY KEY,
+  convalidated boolean NOT NULL
+);
+
+CREATE TABLE gate_audit.flagged (
+  version         bigint,
+  relation        text NOT NULL,
+  constraint_name text NOT NULL,
+  tenant          text,
+  force_rls       boolean NOT NULL,
+  checkable_rows  bigint NOT NULL,
+  reason          text NOT NULL
+);
+
+CREATE FUNCTION gate_audit.snapshot() RETURNS event_trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+  DELETE FROM gate_audit.fk_before;
+  INSERT INTO gate_audit.fk_before
+  SELECT oid, convalidated FROM pg_catalog.pg_constraint WHERE contype = 'f';
+END $$;
+
+CREATE FUNCTION gate_audit.record() RETURNS event_trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+DECLARE
+  tenant    text := pg_catalog.current_setting('app.current_tenant', true);
+  fk        record;
+  cols      text;
+  checkable bigint;
+BEGIN
+  FOR fk IN
+    SELECT c.oid, c.conrelid, c.conname, c.conkey, n.nspname, r.relname,
+           (r.relrowsecurity AND r.relforcerowsecurity) AS force_rls
+    FROM pg_catalog.pg_constraint c
+    JOIN pg_catalog.pg_class r ON r.oid = c.conrelid
+    JOIN pg_catalog.pg_namespace n ON n.oid = r.relnamespace
+    LEFT JOIN gate_audit.fk_before b ON b.conoid = c.oid
+    WHERE c.contype = 'f' AND c.convalidated
+      AND (b.conoid IS NULL OR NOT b.convalidated)
+  LOOP
+    SELECT pg_catalog.string_agg(pg_catalog.format('%I IS NOT NULL', a.attname), ' AND ')
+      INTO cols
+    FROM pg_catalog.pg_attribute a
+    WHERE a.attrelid = fk.conrelid AND a.attnum = ANY (fk.conkey);
+
+    EXECUTE pg_catalog.format('SELECT count(*) FROM %I.%I WHERE %s', fk.nspname, fk.relname, cols)
+      INTO checkable;
+
+    IF (tenant IS NOT NULL AND tenant <> '') OR (fk.force_rls AND checkable > 0) THEN
+      INSERT INTO gate_audit.flagged
+      VALUES (
+        (SELECT version FROM public.schema_migrations LIMIT 1),
+        fk.nspname || '.' || fk.relname, fk.conname, tenant, fk.force_rls, checkable,
+        CASE WHEN tenant IS NOT NULL AND tenant <> ''
+             THEN 'validated under a tenant'
+             ELSE 'validated through forced row-level security with rows to check' END);
+    END IF;
+  END LOOP;
+END $$;
+
+CREATE EVENT TRIGGER gate_audit_snapshot ON ddl_command_start
+  WHEN TAG IN ('ALTER TABLE') EXECUTE FUNCTION gate_audit.snapshot();
+CREATE EVENT TRIGGER gate_audit_record ON ddl_command_end
+  WHEN TAG IN ('ALTER TABLE') EXECUTE FUNCTION gate_audit.record();
+`
+
+func installTenantAudit(t *testing.T, super *pgx.Conn) {
+	t.Helper()
+	_, err := super.Exec(context.Background(), tenantAuditSQL)
+	require.NoError(t, err, "install the tenant audit")
+}
+
+// flaggedForeignKeyValidations reads the audit: one line per foreign key an
+// ALTER TABLE validated under a tenant, or through forced row-level
+// security with rows to check. Empty is the only acceptable answer.
+func flaggedForeignKeyValidations(t *testing.T, super *pgx.Conn) []string {
+	t.Helper()
+	rows, err := super.Query(context.Background(), `
+		SELECT format('%s: %s on %s %s (tenant=%s, force_rls=%s, checkable_rows=%s)',
+		              version, constraint_name, relation, reason,
+		              coalesce(tenant, 'NULL'), force_rls, checkable_rows)
+		FROM gate_audit.flagged ORDER BY version, relation, constraint_name`)
+	require.NoError(t, err)
+	flagged, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	require.NoError(t, err)
+	return flagged
+}
+
 // seededTables are the tables the seed writes, with the column that
 // identifies a row. `chunks` is counted separately; see the gate.
 var seededTables = []struct{ table, key string }{
@@ -519,6 +733,14 @@ func migrationVersion(t *testing.T, super *pgx.Conn) (int64, bool) {
 	require.NoError(t, super.QueryRow(context.Background(),
 		`SELECT version, dirty FROM schema_migrations`).Scan(&version, &dirty))
 	return version, dirty
+}
+
+func extensionInstalled(t *testing.T, super *pgx.Conn) bool {
+	t.Helper()
+	var installed bool
+	require.NoError(t, super.QueryRow(context.Background(),
+		`SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector')`).Scan(&installed))
+	return installed
 }
 
 func newestMigrationVersion(t *testing.T, dir string) uint {
