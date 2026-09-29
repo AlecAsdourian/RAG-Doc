@@ -584,3 +584,17 @@ port), never 5434.
 - If `GET /repositories/{id}` ever fails, the fallback is
   `GET /repos/{full_name}` from the mint reply.
 - Run the Python suite in `python:3.11-slim` for Linux checks.
+- **A dense bomb is rejected AT the cap, not before it** (observed in PR
+  #52's re-check, no code change). The declared-size budget refuses a
+  member only once the running total EXCEEDS the cap, so a bomb whose
+  members sum to exactly the cap is let through by that counter and is
+  stopped by the stream counter instead, when the tar stream (headers
+  included) crosses it: in the re-check the declared bytes sat at exactly
+  the cap when the stream crossed it. **Up to one member's worth of content
+  can therefore be on disk at the moment of rejection** — which is the
+  "within one member of the cap" this summary and the PR body state, not
+  "nothing on disk". What bounds the consequence is `fetch_repository`'s
+  `finally`, which removes the job directory on a rejection as on anything
+  else; a caller that uses `extract_archive` directly, as 22-05 might for a
+  resumed stage, owns that cleanup itself. Size the worker's disk for the
+  cap plus one file (500 MB + 1 MB), not for the cap.
