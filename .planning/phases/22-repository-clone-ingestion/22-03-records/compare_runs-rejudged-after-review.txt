@@ -1,0 +1,37 @@
+note: self: the baseline header records no exact_paths; assumed False (the harness's rule: self matches by substring, benchmark corpora exactly)
+note: self: the candidate header records no exact_paths; assumed False (the harness's rule: self matches by substring, benchmark corpora exactly)
+note: miniflux: the baseline header records no exact_paths; assumed True (the harness's rule: self matches by substring, benchmark corpora exactly)
+note: miniflux: the candidate header records no exact_paths; assumed True (the harness's rule: self matches by substring, benchmark corpora exactly)
+note: mealie: the baseline header records no exact_paths; assumed True (the harness's rule: self matches by substring, benchmark corpora exactly)
+note: mealie: the candidate header records no exact_paths; assumed True (the harness's rule: self matches by substring, benchmark corpora exactly)
+corpus   id         set      file         symbol       class       note
+---------------------------------------------------------------------------------------------------------------
+(no question differs in file rank or symbol rank)
+---------------------------------------------------------------------------------------------------------------
+differing questions: 0   (a)=0   (b)=0   (c)=0   UNEXPLAINED=0
+
+Aggregates, reported and not judged (recall@k = found/questions, rank-1, MRR):
+corpus    set      side      file recall  file #1  file MRR  sym recall  sym #1  sym MRR 
+self      holdout  qdrant    12/15        7        0.633     0/0        0       0.000   
+self      tuning   qdrant    20/25        14       0.649     0/0        0       0.000   
+self      holdout  pgvector  12/15        7        0.633     0/0        0       0.000   
+self      tuning   pgvector  20/25        14       0.649     0/0        0       0.000   
+miniflux  confirm  qdrant    10/15        6        0.494     8/15       3       0.319   
+miniflux  holdout  qdrant    11/15        5        0.489     11/15       5       0.478   
+miniflux  tuning   qdrant    9/15        6        0.483     6/15       3       0.263   
+miniflux  confirm  pgvector  10/15        6        0.494     8/15       3       0.319   
+miniflux  holdout  pgvector  11/15        5        0.489     11/15       5       0.478   
+miniflux  tuning   pgvector  9/15        6        0.483     6/15       3       0.263   
+mealie    confirm  qdrant    14/15        7        0.629     10/15       4       0.376   
+mealie    holdout  qdrant    11/15        5        0.489     6/15       2       0.239   
+mealie    tuning   qdrant    8/15        3        0.307     8/15       3       0.290   
+mealie    confirm  pgvector  14/15        7        0.629     10/15       4       0.376   
+mealie    holdout  pgvector  11/15        5        0.489     6/15       2       0.239   
+mealie    tuning   pgvector  8/15        3        0.307     8/15       3       0.290   
+
+For information only:
+  self: 40/40 questions with fully agreeing boosted rankings; max |delta similarity| over 2000 chunk scores both legs returned = 4.66e-07; chunks without a Qdrant point: 0 (534 in Postgres, 534 points)
+  miniflux: 39/45 questions with fully agreeing boosted rankings; max |delta similarity| over 2243 chunk scores both legs returned = 4.85e-07; chunks without a Qdrant point: 12 (2134 in Postgres, 2122 points)
+  mealie: 25/45 questions with fully agreeing boosted rankings; max |delta similarity| over 2152 chunk scores both legs returned = 6.03e-07; chunks without a Qdrant point: 80 (2816 in Postgres, 2736 points)
+
+VERDICT: PASS (0 UNEXPLAINED)

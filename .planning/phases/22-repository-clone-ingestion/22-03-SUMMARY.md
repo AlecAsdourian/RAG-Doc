@@ -13,10 +13,10 @@ requires:
     provides: "the testcontainers harness and the two-tenant fixtures"
 provides:
   - "VectorRetriever on pgvector: VECTOR_SEARCH_SQL under require_tenant, the query vector bound, hnsw.iterative_scan = relaxed_order per transaction, re-sorted by exact distance, filtered to EmbeddingGenerator.model"
-  - "FTSRetriever filtered by repository (the latest-run filter and _get_latest_run_id are gone), FTS_SEARCH_SQL composed from BREADCRUMB_TSVECTOR"
+  - "FTSRetriever filtered by repository (the latest-completed-run filter and _get_latest_run_id are gone), FTS_SEARCH_SQL composed from BREADCRUMB_TSVECTOR"
   - "QueryEngine(postgres_conn, openai_api_key, boost_config=None) with one EmbeddingGenerator, both legs under one tenant scope, a trace hook, and run_id refused"
   - "tests/isolation/conftest.py: app_dsn; the vector-leg isolation, model-refusal, iterative-scan, HNSW-eligibility and breadcrumb-GIN tests"
-  - "rag_quality_harness.py: --query-vectors, --record, --exact, --allow-compose and the compose guard; scripts/rag_benchmarks/compare_runs.py, the gate's arbiter"
+  - "rag_quality_harness.py: --query-vectors, --record (with exact_paths and every measuring connection in the header), --exact, --allow-compose and the compose guard (which reads libpq's PGPORT/PGSERVICE and refuses service= and multi-host DSNs); scripts/rag_benchmarks/compare_runs.py, the gate's arbiter, and scoring.py, the one scoring rule both use"
   - "22-03-equivalence.md: the rule committed before measurement, the baseline, the verdict; 22-03-records/: every record, gzipped"
   - "Qdrant retired: qdrant_writer.py, qdrant-client, QDRANT_URL, the compose service, the harness's Qdrant paths, the frontend copy, the docs"
 affects: [retrieval-quality track (U10, unblocked), 22-05 (IngestionPipeline(postgres_conn, openai_api_key); QueryEngine without qdrant_url), 22.1-02 (per-file currency, ISS-027's remainder), 22.1-05 (the HNSW plan at scale), ISS-021 (the SemanticCache call still broken, argument list changed)]
@@ -34,8 +34,9 @@ tech-stack:
 key-files:
   created:
     - .planning/phases/22-repository-clone-ingestion/22-03-equivalence.md
-    - .planning/phases/22-repository-clone-ingestion/22-03-records/ (baseline-*, pgvector-*, exact-*, qdrant_ids-*, vecs.json.gz, compare_runs.txt, the logs)
+    - .planning/phases/22-repository-clone-ingestion/22-03-records/ (baseline-*, pgvector-*, exact-*, qdrant_ids-*, vecs.json.gz, the *.summary.json, compare_runs.txt, the mutation and check logs as .txt, explain_fts_shapes.py)
     - services/workers/scripts/rag_benchmarks/compare_runs.py
+    - services/workers/scripts/rag_benchmarks/scoring.py
     - services/workers/tests/test_compare_runs.py
     - services/workers/tests/test_rag_quality_harness.py
   modified:
@@ -63,6 +64,8 @@ key-files:
     - .planning/ISSUES.md
     - .planning/ROADMAP.md
     - .planning/STATE.md
+    - .planning/phases/22-repository-clone-ingestion/22-CONTEXT.md (the tolerance note for the quality track)
+    - scripts/dev-tmux.sh
   deleted:
     - services/workers/workers/storage/qdrant_writer.py
     - services/workers/workers/storage/test_qdrant_writer.py
@@ -80,6 +83,7 @@ key-decisions:
 issues-closed: []
 issues-updated: [ISS-021, ISS-027]
 issues-filed: []
+review: "PR #53 — reviewer B (Qdrant retirement, harness, tests, docs): approve with changes, nothing critical or important, A7 holding clause by clause; reviewer A (protocol integrity and retrieval SQL): nothing blocking, the order of operations confirmed from git, the RLS SQL and A5 holding. Three mediums, four lows and six nits from B and two mediums and two lows from A, all applied (the last section of this summary); A's L4 (A6's wording in 22-ACCEPTANCE.md) applied by the coordinator."
 completed: 2026-09-29
 ---
 
@@ -89,13 +93,16 @@ completed: 2026-09-29
 row-level security as the text, as `rag_doc_app`, with `hnsw.iterative_scan =
 relaxed_order` set per transaction and the rows filtered to the generator's
 model (P4, P5, P6).** The keyword leg searches the repository instead of its
-latest run (ISS-027). Fusion and boosts are untouched. **The storage move was
-judged under a rule committed before the first measurement**
-(`22-03-equivalence.md`, `e87cbf1`), on one scratch database ingested once
-and one set of query vectors embedded once: `compare_runs.py` found **no
-question of 130 differing** in file rank or symbol rank, 0 UNEXPLAINED, exit
-0, every aggregate identical. **Only then was Qdrant retired everywhere.**
-The retrieval-quality track (U10) is unblocked.
+latest completed run (ISS-027). Fusion and boosts are untouched. **The
+storage move was judged under a rule committed before the first
+measurement** (`22-03-equivalence.md`, `e87cbf1`), on one scratch database
+ingested once and one set of query vectors embedded once: `compare_runs.py`
+found **no question of 130 differing** in file rank or symbol rank, 0
+UNEXPLAINED, exit 0, every aggregate identical. In the terms of what was
+measured: **the storage move, judged by exact search on both sides, changed
+no ranking on 130 vector-leg questions** (the keyword leg was empty for 120
+of them; HNSW-served rankings are 22.1-05's). **Only then was Qdrant retired
+everywhere.** The retrieval-quality track (U10) is unblocked.
 
 **The order of record** (one branch, one PR):
 
@@ -108,6 +115,8 @@ The retrieval-quality track (U10) is unblocked.
 | `4fd8f80` | the harness building `QueryEngine` without `qdrant_url` |
 | `8c1dd36` | the verdict, the pgvector-side records, the mutation log |
 | `ee22f44` | Qdrant retired everywhere |
+| `c5ce8e8`, `78e8271`, `6bc6012` | ASCII comments; the summary, the ROADMAP tick, the STATE line; the PR number |
+| `296233a`, `e0c9fe2`, `bfe407b`, and the closing docs commit | PR #53's review applied (the last section) |
 
 ## The instrumentation (Task 1)
 
@@ -132,14 +141,17 @@ scores being the pipeline's own, and that the trace holds copies.
   and **raising on any other text**. That is the exact call path the
   retriever uses, before and after the move, which is why one pin worked on
   both sides.
-- `--record FILE.jsonl`: a header (corpus, set, top_k, boost config, the
-  harness commit, the vector backend, the model, the database's host, port,
-  dbname and options — never the password — its server version and pgvector
-  settings, the identity of every measuring connection, the visible chunk
-  count, and from Task 2 the `EXPLAIN` of both production statements), then
-  per question the ranks, the SHA-256 of the query vector actually used (over
-  its JSON float list) and the trace. **It refuses to record on a connection
-  whose `rolsuper` or `rolbypassrls` is true.**
+- `--record FILE.jsonl`: a header (corpus, set, top_k, boost config,
+  `exact_paths` — how a result's path is matched to a question's, since the
+  review — the harness commit, the vector backend, the model, the database's
+  host, port, dbname and options — never the password — its server version
+  and pgvector settings, the identity of every measuring connection, the
+  visible chunk count, and from Task 2 the `EXPLAIN` of both production
+  statements), then per question the ranks, the SHA-256 of the query vector
+  actually used (over its JSON float list) and the trace. **It refuses to
+  record on a connection whose `rolsuper` or `rolbypassrls` is true.** The
+  ranks come from `scripts/rag_benchmarks/scoring.py`, the one module the
+  judge recomputes them with.
 - `--exact FILE`: the exact-search reference per question, as the DSN's role
   under the harness tenant, with `enable_indexscan` and `enable_bitmapscan`
   off, filtered by repository and model, from the cached vector: the top 50
@@ -150,20 +162,35 @@ scores being the pipeline's own, and that the trace holds copies.
   `--allow-compose`, before touching anything. Shown from the real CLI before
   the first ingest: `--ingest refused: Postgres on port 5434 …` exit 1, and
   the same for `--clear` with the harness's defaults. `TestComposeGuard`
-  pins it, including that the message never echoes the DSN.
+  pins it, including that the message never echoes the DSN. Since the
+  review the guard reads libpq's environment the way libpq does: a port-less
+  DSN takes its port from `PGPORT` (so `PGPORT=5434` is compose), a
+  `service=` DSN or a `PGSERVICE` filling in the port is refused because the
+  port cannot be known, and a multi-host DSN is refused rather than crashed;
+  none of it with `--allow-compose` as an escape, which means "compose,
+  deliberately", not "somewhere, deliberately".
 
 **`compare_runs.py`** reads the four files per corpus, **refuses before
 comparing anything** if any question's hash differs, the question sets
-differ, `top_k` or the boost config differ, a query failed, or a measuring
-connection was a superuser; classifies every differing question as (a),
-(b), (c) or UNEXPLAINED in the rule's order; prints the table, the counts,
-the aggregates under both runs and the information lines; exits 1 on any
-UNEXPLAINED, 2 on a refusal, 0 otherwise. Its test (`test_compare_runs.py`)
-builds hand-made records with one difference of each class plus one
-UNEXPLAINED and asserts each is classified as such and the exit is 1; a
-second pair differing in one hash is refused with exit 2 and no table; a
-superuser header and a failed query are refused too; the fusion is
-recomputed with an independent RRF in the fixtures.
+differ, `top_k`, the boost config, the repository or the model differ, a
+query failed, a question has no exact list, a measuring connection was a
+superuser or is not recorded, a question is recorded twice, a record lacks
+what the comparison reads, **a record's ranks are not what its own final
+list gives under `scoring.py`'s rule**, the Qdrant point set is empty, or
+the exact list was produced by a superuser, for another model or another
+repository; classifies every differing question as (a), (b), (c) or
+UNEXPLAINED in the rule's order, (c) only when the final lists themselves
+differ and only by tied chunks; prints the table, the counts, the aggregates
+under both runs and the information lines; exits 1 on any UNEXPLAINED, 2 on
+a refusal, 0 otherwise. Its tests (`test_compare_runs.py`, 38) build
+hand-made records with one difference of each class plus one UNEXPLAINED
+and assert each is classified as such and the exit is 1; every refusal
+above has a test that shows exit 2 and no table; a rank edited by hand with
+the trace untouched (reviewer A's reproduction, which used to come out (c)
+and PASS) is refused; a real tied swap in the final list is (c) and an
+untied one UNEXPLAINED; the fusion is recomputed with an independent RRF in
+the fixtures, and the judge's `ranks` is asserted to be the harness's own
+object.
 
 ## The baseline, then the candidate, on one database
 
@@ -202,11 +229,14 @@ same path as before, which the harness's pin depends on.
 
 **`FTSRetriever`:** `FTS_SEARCH_SQL` is composed from `BREADCRUMB_TSVECTOR =
 "to_tsvector('english', COALESCE(breadcrumb, ''))"` and `CONTENT_TSVECTOR`,
-filters `repository_id = %(repo)s`, and `_get_latest_run_id` is gone. Measured
-before anything changed: the two predicate shapes plan identically on the
-scratch data (`Limit → Sort → Append, Subplans Removed: 63 → Bitmap Heap Scan
-on chunks_p0 → Bitmap Index Scan` on the run or repository btree), so the
-sort saw the same rows in the same order (`22-03-records/explain_fts_shapes-baseline.txt`).
+filters `repository_id = %(repo)s` where it used to filter to the
+repository's **latest completed run**, and `_get_latest_run_id` is gone.
+Measured before anything changed: the two predicate shapes plan identically
+on the scratch data (`Limit → Sort → Append, Subplans Removed: 63 → Bitmap
+Heap Scan on chunks_p0 → Bitmap Index Scan` on the run or repository btree),
+so the sort saw the same rows in the same order
+(`22-03-records/explain_fts_shapes.py` and its output
+`explain_fts_shapes-baseline.txt`).
 
 **`QueryEngine(postgres_conn, openai_api_key, boost_config=None)`:** one
 `EmbeddingGenerator`, shared with the vector leg; the vector leg receives
@@ -236,9 +266,11 @@ retriever's own path.
 | `test_fts_searches_the_repository_not_the_latest_run` | two completed runs, one chunk each: both found (before 22-03 only the second would have been) | — |
 | the five keyword-leg tests from before | unchanged assertions, now on `app_dsn` with the app-role identity asserted | — |
 
-Unit level, no database: `TestTrace` (three tests),
-`test_both_legs_receive_the_tenant`, `test_a_run_id_is_refused_rather_than_half_applied`,
-the 14 harness tests and the 13 `compare_runs.py` tests.
+Unit level, no database: `TestTrace` (three tests; the first now also shows
+a recorded trace changes nothing), `test_both_legs_receive_the_tenant`,
+`test_a_run_id_is_refused_rather_than_half_applied`, the 22 harness tests
+(14 before Task 3 removed the Qdrant-port guard test; the review round added
+the libpq-environment ones) and the 38 `compare_runs.py` tests.
 
 ## The two plan-shape proofs, with what they do and do not prove
 
@@ -313,14 +345,21 @@ VERDICT: PASS (0 UNEXPLAINED)
 ```
 
 **Read, not judged:** the Qdrant and pgvector scores of the same chunk for
-the same query differ by at most 6.0e-07 across 6,395 pairs, three orders
-inside the tolerance; the 6 miniflux and 20 mealie questions whose *full*
-boosted rankings differ are the ones where duplicate-content chunks entered
-the vector top 50 (class (a)'s mechanism) below the top-5 cut — the one
-difference P6 said to expect, seen where it was expected; the keyword leg is
-empty for 30 of 40 `self` questions and all 90 benchmark questions
-(ISS-029), so the gate was almost entirely a test of the vector leg, which is
-its subject.
+the same query differ by at most 6.03e-07 across 6,395 pairs, none above
+1e-6, three orders inside the pre-committed 1e-5 (about 16× generous, and
+harmless here: no adjacent pair within it changed a rank); the 6 miniflux
+and 20 mealie questions whose *full* boosted rankings differ are the ones
+where duplicate-content chunks entered the vector top 50 (class (a)'s
+mechanism) below the top-5 cut — the one difference P6 said to expect, seen
+where it was expected; the keyword leg is empty for 30 of 40 `self`
+questions and all 90 benchmark questions (ISS-029), so the gate was almost
+entirely a test of the vector leg, which is its subject.
+
+**Re-judged after the review** with the hardened `compare_runs.py`
+(`22-03-records/compare_runs-rejudged-after-review.txt`): the same 260
+records, no record refused (every recorded rank is what its own final list
+gives), the same line — `differing questions: 0   (a)=0   (b)=0   (c)=0
+UNEXPLAINED=0`, `VERDICT: PASS (0 UNEXPLAINED)`, exit 0.
 
 ## Qdrant retired (Task 3)
 
@@ -351,11 +390,16 @@ redis, rag-api`, volume `postgres_data`; no compose service was started.
 (Compose warns that the `version` attribute is obsolete; pre-existing, not
 changed here.)
 
-**The grep gate** (`grep -rni qdrant services/ docker-compose.yml docs/`)
+**The grep gate, over the whole repository** (`git grep -n -i qdrant`, every
+tracked file; the plan's `services/ docker-compose.yml docs/` scope let
+`scripts/dev-tmux.sh` hide, which reviewer B found and this round fixed)
 finds only these survivors, each with its reason:
 
 | Where | Why it stays |
 |---|---|
+| `.planning/` (phases 03, 05 and 07's plans and summaries; `v2-substrate/`'s DECISIONS, DESIGN, RESEARCH and REWORK; ISSUES, ROADMAP, STATE; this phase's files) | the record of choosing Qdrant, of deciding to leave it (D2, K1), and of leaving it; history by design |
+| `.github/workflows/backend-ci.yml:91` | a comment recounting how a `go.sum` gap first surfaced, on the qdrant bump; history |
+| `scripts/dev-tmux.sh` | **fixed in this round**: it asked compose for `postgres qdrant redis backend rag-api`, which failed with "no such service"; it asks for `postgres redis backend rag-api` now |
 | `compare_runs.py`, `test_compare_runs.py`, `rag_quality_harness.py:121` | the gate's arbiter reads the recorded Qdrant point set, `qdrant_ids-<c>.json`, which defines class (a) and can never be recorded again |
 | `rag_quality_harness.py:229, :549, :684` | comments saying what changed and why the pin worked on both sides |
 | `migrations/000017_partitioned_chunks.up.sql:15, :115, :234` | the migration's history: why duplicates had no vector and P15's transition |
@@ -374,7 +418,9 @@ not found, and `workers.retrieval`, `workers.pipeline`, `workers.storage` and
 Committed code, one mutation at a time in the working tree, each proven to
 have landed by a tool printing the original text's count (1→0) and the
 mutated text's (0→1), the target test run, the file restored with `git
-checkout --`, the tree shown clean after each (`22-03-records/mutations-*.log`).
+checkout --`, the tree shown clean after each (`22-03-records/mutations-*.txt`;
+`.txt` because `.gitignore` ignores `*.log`, which is how the first commit
+titled as adding them added nothing — reviewer B's finding).
 
 | # | Mutation | Expected | Result |
 |---|---|---|---|
@@ -389,6 +435,20 @@ checkout --`, the tree shown clean after each (`22-03-records/mutations-*.log`).
 | T2 | the trace recorded when `trace is None` | the `trace=None` test fails | **killed**: `TypeError: 'NoneType' object does not support item assignment` in every trace-less call |
 | M0 | committed code | pass | 11/11 isolation tests; 38/38 unit tests; tree clean |
 
+**The review round's mutations** (`22-03-records/mutations-review-round.txt`),
+same discipline, on `e0c9fe2`:
+
+| # | Mutation | Expected | Result |
+|---|---|---|---|
+| R1 | the duplicate-id refusal neutered | the duplicated-record test fails | **killed**: the script compared and the (a) row vanished, exactly reviewer B's reproduction |
+| R2 | the rank recomputation neutered | the rank-tamper tests fail | **killed**: the tampered `q-same` came out `#1->#2 UNEXPLAINED "the final lists are identical, yet the ranks differ"` — so even without step 0, reviewer A's reproduction no longer yields (c); with step 0 it is refused |
+| R3 | the missing-connections refusal neutered | the role-unknown tests fail | **killed** (as a crash, `TypeError` on the `None` header, rather than as a refusal message: the guard was the only thing standing between a missing header and the code that reads it) |
+| R4 | the empty-point-set refusal neutered | the point-set tests fail | **killed** (as a crash, `TypeError` on the missing `ids`; same shape as R3) |
+| R5 | the exact-list checks neutered | the untrusted-exact-list tests fail | **killed**: a superuser exact list compared and printed its table |
+| R6 | `PGPORT` ignored | the libpq-environment tests fail | **killed**: `5432 == 5434` on both DSN forms and `DID NOT RAISE SystemExit` |
+| R7 | the class-(c) final-list tie check forced true | **expected to survive** | **survived, as predicted**: step 0 already requires `top` to be the boosted list cut at `top_k`, the boosted list descending and consistent, and the ranks to be what `top` gives, which implies the final-list check; it stays as defence in depth, as reviewer A asked, and this row is the honest record that no test can reach it |
+| M0 | committed code | pass | 72/72 across the three unit files; tree clean |
+
 ## Verification
 
 | Check | Result |
@@ -397,14 +457,16 @@ checkout --`, the tree shown clean after each (`22-03-records/mutations-*.log`).
 | `pytest tests/isolation/test_query_engine_isolation.py -q` (Task 2, testcontainers) | 11 passed |
 | `pytest tests/ workers/ -q` as CI runs it (`REDIS_URL` on a scratch Redis db 15, `OPENAI_API_KEY=sk-test-dummy`, no `DATABASE_URL`, no reachable `.env`, fresh venv from `requirements.txt`, Python 3.13.7), after Task 2 | **330 passed** (main: 292) |
 | the same after Task 3 (Qdrant gone) | **322 passed** (the 8 deleted Qdrant-writer tests and the Qdrant-port guard test) |
+| the same after PR #53's review round | **356 passed** (the 25 new `compare_runs.py` tests and the 9 new harness tests) |
 | `compare_runs.py` on the real records | exit 0, 0 UNEXPLAINED, 0 differing |
 | the guard from the real CLI on port 5434 and on the defaults | refused, exit 1, before any connection |
-| `--ingest` on an indexed corpus; `--clear self` on the scratch data as the superuser | refused (`runs=1, chunks=2134`); `runs=0 chunks=0`, the other corpora's 4,950 chunks untouched (`harness-clear-check.log`) |
+| `--ingest` on an indexed corpus; `--clear self` on the scratch data as the superuser | refused (`runs=1, chunks=2134`); `runs=0 chunks=0`, the other corpora's 4,950 chunks untouched (`harness-clear-check.txt`) |
+| `compare_runs.py` re-run on the committed records with the hardened script (review round) | exit 0, 0 differing, 0 refused; verdict unchanged |
 | a clean venv from `requirements.txt` | installs; `qdrant-client` not found; the packages import |
 | `docker compose config` | valid; no service started; the Qdrant volume untouched |
 | the grep gate | survivors listed above, each with a reason |
-| `scripts/ci/check-isolation-tests.py --base-ref RAG-Doc/main --head-ref HEAD` | PASS |
-| the branch's added lines (2,850) scanned for cp1252-undecodable bytes and curly quotes | 0 and 0 |
+| `scripts/ci/check-isolation-tests.py --base-ref RAG-Doc/main --head-ref HEAD` | PASS (re-run after the review round: PASS) |
+| the branch's added lines scanned for cp1252-undecodable bytes and curly quotes | 0 and 0 (2,850 lines before the review round; 3,954 after) |
 | Go | untouched; no Go change was needed (nothing in Go referenced Qdrant after 22-01) |
 | port 5434, compose's Postgres, the compose volumes | never touched; every run used `rag2203-pg` (127.0.0.1:61797), `rag2203-qdrant` (61799) and `rag2203-redis`, all removed |
 
@@ -420,8 +482,13 @@ checkout --`, the tree shown clean after each (`22-03-records/mutations-*.log`).
    only to drop the latest-run filter. Keeping an explicit run filter on one
    leg would recreate ISS-027's disagreement; ignoring it would be a silent
    filter loss. Nothing in production passes one.
-3. **The records are committed** (gzipped, 2.9 MB, plus the logs), which the
-   plan did not ask for; without them the verdict could not be re-judged.
+3. **The records are committed** (gzipped, 2.9 MB; the six
+   `baseline-<c>.summary.json` / `pgvector-<c>.summary.json` files, which are
+   the harness's `--json-out` per-question ranks and summary for each run,
+   readable without gunzip; the mutation and check logs as `.txt`; the
+   EXPLAIN script), which the plan did not ask for; without them the verdict
+   could not be re-judged, and reviewer B re-judged it byte-identically from
+   them.
 4. **The FTS predicate-shape EXPLAIN** was measured before the baseline as a
    check that the keyword leg's tie order could not change with the filter;
    not in the plan, recorded in the equivalence doc.
@@ -447,10 +514,117 @@ checkout --`, the tree shown clean after each (`22-03-records/mutations-*.log`).
 - **22.1-02:** per-file currency on re-index; until then `--ingest` refuses
   an indexed corpus without `--clear`.
 - **22.1-05:** the HNSW plan at scale; here the planner chose exact scans and
-  eligibility is the test's proof.
+  eligibility is the test's proof. **The gate judged exact search on both
+  sides, on repositories of at most 2,816 chunks**; HNSW-served rankings have
+  no equivalence evidence from 22-03.
 - **The retrieval-quality track (U10):** unblocked. Its runs use
   `--query-vectors` and `--record`, and `compare_runs.py` can judge any two
   recorded runs on the same database; its protocol commits its rule first,
-  as this one did.
+  as this one did. **Two things it inherits from the measurement, also
+  written into `22-CONTEXT.md`'s track section:**
+  - **The gate's reach was the vector leg.** The keyword leg was empty for
+    120 of the 130 questions (all 90 benchmark questions and 30 of 40
+    `self`, ISS-029), so a keyword-leg change — ISS-029's own fix first of
+    all — has no equivalence evidence from 22-03 and needs the protocol's
+    fresh questions.
+  - **The tolerance.** 1e-5 on vector similarity was committed before
+    measuring; the measured cross-store difference was at most 6.03e-07 over
+    6,395 pairs, none above 1e-6, so 1e-5 was about 16× generous (harmless
+    here). Reviewer A's recommendation, adopted as the hand-off: **fix the
+    track's tolerance at about 2e-6 from this measurement, dated, before its
+    next rule is written.**
 - **ISS-021:** the `SemanticCache` call still passes the wrong arguments;
   when repaired, its key must carry the model (P4).
+
+## PR #53's review, applied 2026-09-29
+
+Two reviewers. **Reviewer B** (Qdrant retirement, harness, tests, docs):
+approve with changes, nothing critical or important; A7 holds clause by
+clause; the 322 count and the byte-identical re-judge from the committed
+records confirmed. **Reviewer A** (protocol integrity and retrieval SQL):
+nothing blocking; the order of operations confirmed from git (the rule file's
+diffs across history fill only the "baseline" and "candidate and verdict"
+sections, never the rule); the precision definitions did no work in the
+verdict; both legs inside `require_tenant` with no `organization_id` in
+either statement; M4's "empty, not `22P02`" confirmed as ISS-013's
+fresh-connection shape; A5 holds. Everything below was applied on the branch,
+in `296233a` (B-M1, B-M2), `e0c9fe2` (B-M3, B-L1, B-L2, A-M2, A-L3, the
+nits), `bfe407b` (B-L3, B-L4, A-L4, the tolerance note) and the closing docs
+commit; A-L4's qualification of A6 in `22-ACCEPTANCE.md` by the coordinator.
+
+**Reviewer B.**
+- **M1, `scripts/dev-tmux.sh`** still asked compose for `qdrant` (the one
+  live reference left, outside the plan's grep scope): fixed, and the grep
+  gate widened to every tracked file (above).
+- **M2, the evidence was not in the PR:** `.gitignore` ignores `*.log`, so
+  the mutation and clear-check logs never landed and `explain_fts_shapes.py`
+  was untracked. The logs are committed as `.txt` (`.gitignore` untouched)
+  and the script beside its output.
+- **M3, `load_run` overwrote a duplicated question id** (last wins; a second
+  `q-a` agreeing with the candidate made the (a) row vanish, PASS): it raises
+  `ValueError`, reported as REFUSED — `test_a_duplicated_question_record_is_refused`.
+- **L1, refusals that did not fire:** a header with no `connections` (or
+  `{}`) skipped the superuser refusal; an empty or missing `qdrant_ids.ids`
+  made (b) trivially available. Both refuse now, and a pgvector run must
+  record both legs' connections —
+  `test_a_run_whose_measuring_role_is_unknown_is_refused` (four shapes),
+  `test_a_pgvector_run_must_record_the_vector_legs_connection`,
+  `test_an_empty_or_inconsistent_qdrant_point_set_is_refused` (three shapes).
+- **L2, the guard could be bypassed through libpq's environment:** a
+  port-less DSN with `PGPORT=5434`, a `service=` DSN, and a multi-host DSN
+  that crashed. `dsn_port` reads `PGPORT` (and reports `PGHOST`) when the DSN
+  omits the port, refuses `service=` and a port-filling `PGSERVICE`, and
+  refuses multi-host DSNs explicitly; nothing echoes the DSN —
+  `test_a_port_less_dsn_takes_its_port_from_pgport`,
+  `test_a_host_less_dsn_reports_pghost_for_context`,
+  `test_a_service_dsn_is_refused_because_its_port_cannot_be_known`,
+  `test_pgservice_with_a_port_less_dsn_is_refused_but_an_explicit_port_wins`,
+  `test_a_multi_host_dsn_is_refused_not_crashed`,
+  `test_a_dsn_that_does_not_parse_is_refused`. Every guard test passes an
+  explicit environment, so the developer's own `PGPORT` cannot decide them.
+- **L3, `STATE.md`:** 22-02's block is restored under "Previously", as
+  22-01's is.
+- **L4:** the ISS-029 caveat is in the hand-off above, and "latest run" reads
+  "latest **completed** run" here and in ISS-027.
+- **Nits:** the harness test count corrected; the harness USAGE shows a
+  scratch `DATABASE_URL` first; `vector_literal` is one function (the
+  harness imports the retriever's, asserted by identity); a record missing
+  `trace` or a rank is REFUSED, not a `KeyError`
+  (`test_an_incomplete_record_is_refused_rather_than_crashing`);
+  `test_trace_none_changes_nothing` also compares against a recorded trace;
+  the six `*.summary.json` files are listed in deviation 3.
+- **Rulings recorded, no action:** deleting the eight Qdrant-writer tests,
+  the 6333 guard twin and the two smoke scripts loses nothing (reviewer B
+  checked each); committing the 2.9 MB gzipped records was the right call,
+  and flake8, mypy and the isolation scanner do not see them.
+
+**Reviewer A.**
+- **M1:** the same evidence finding as B-M2.
+- **M2, `compare_runs.py` could be made to lie about a fabricated
+  difference:** step 0 never recomputed `file_rank`/`symbol_rank` from
+  `trace.top`, and step 2 returned (c) whenever the legs and the fused and
+  boosted lists agreed, without checking that the final lists differed or
+  that the crossing chunks were tied; a candidate `file_rank` changed from 1
+  to 2 with the trace untouched came out "(c) … PASS", and applied to all 130
+  non-differing questions, (c) was the default output. No effect on this
+  verdict (the reviewer recomputed all 260 records' ranks: 0 inconsistent),
+  but the quality track will judge real differences with the tool. Now: the
+  harness records `exact_paths` in the header and scores with
+  `scoring.py`; `refusals()` recomputes every record's ranks from its own
+  `trace.top` with the same module and **refuses on mismatch**; step 2
+  requires the final lists to differ, and only by tied chunks, before (c).
+  Tests: `test_a_rank_edited_without_its_final_list_is_refused_not_classified`
+  (file rank and symbol rank), `test_a_real_tied_swap_in_the_final_list_is_class_c`,
+  `test_an_untied_swap_in_the_final_list_is_unexplained`,
+  `test_a_missing_exact_paths_is_assumed_by_corpus_and_said_so`,
+  `test_the_judge_scores_with_the_harnesss_own_rule`. The committed records
+  re-judged: unchanged (above).
+- **L3, the exact list was not checked:** `exact-<c>.json`'s connection
+  identity, model and repository are now held to a run's standard —
+  `test_an_exact_list_that_cannot_be_trusted_is_refused` (five shapes),
+  `test_a_question_with_no_exact_list_is_refused`.
+- **L4, A6's wording:** the verdict is stated in the terms measured, here
+  and in `22-03-equivalence.md`: the storage move, judged by exact search on
+  both sides, changed no ranking on 130 vector-leg questions.
+- **The tolerance for the track:** written into the hand-off above,
+  `22-03-equivalence.md` and `22-CONTEXT.md`'s track section.

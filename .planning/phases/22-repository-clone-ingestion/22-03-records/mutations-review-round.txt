@@ -1,0 +1,93 @@
+tree before: 0 changed files (expect 0)
+
+################ R1-duplicate-id-refusal-neutered ################
+[R1-duplicate-id-refusal-neutered] compare_runs.py: original 1->0, mutated 0->1  LANDED
+E       AssertionError: corpus   id         set      file         symbol       class       note
+E         ---------------------------------------------------------------------------------------------------------------
+E         toy      q-b        holdout  MISS->#2     -            b           the Qdrant leg differs from exact search (a chunk on one side only is not in that side's tie group at the cut); the pgvector leg matches it
+E         toy      q-c        confirm  MISS->#2     -            c           the legs agree; tied chunks are ordered differently and the top-k cut fell between them
+E         toy      q-u        tuning   #2->MISS     -            UNEXPLAINED the pgvector leg differs from exact search (B and C are in the other order and not tied); vector legs: B and C are in the other order and not tied
+E         ---------------------------------------------------------------------------------------------------------------
+E         differing questions: 3   (a)=0   (b)=1   (c)=1   UNEXPLAINED=1
+E         
+E         Aggregates, reported and not judged (recall@k = found/questions, rank-1, MRR):
+E         corpus    set      side      file recall  file #1  file MRR  sym recall  sym #1  sym MRR 
+E         toy       confirm  qdrant    0/1         0        0.000     0/0        0       0.000   
+E         toy       holdout  qdrant    0/1         0        0.000     0/0        0       0.000   
+E         toy       tuning   qdrant    2/3         1        0.500     0/0        0       0.000   
+E         toy       confirm  pgvector  1/1         0        0.500     0/0        0       0.000   
+restored: 0 changed files (expect 0)
+
+################ R2-rank-recomputation-neutered ################
+[R2-rank-recomputation-neutered] compare_runs.py: original 1->0, mutated 0->1  LANDED
+E       AssertionError: corpus   id         set      file         symbol       class       note
+E         ---------------------------------------------------------------------------------------------------------------
+E         toy      q-a        tuning   #2->MISS     -            a           1 chunk(s) with no Qdrant point entered the pgvector top 50; the rest agrees
+E         toy      q-b        holdout  MISS->#2     -            b           the Qdrant leg differs from exact search (a chunk on one side only is not in that side's tie group at the cut); the pgvector leg matches it
+E         toy      q-c        confirm  MISS->#2     -            c           the legs agree; tied chunks are ordered differently and the top-k cut fell between them
+E         toy      q-same     tuning   #1->#2       -            UNEXPLAINED the final lists are identical, yet the ranks differ
+E         toy      q-u        tuning   #2->MISS     -            UNEXPLAINED the pgvector leg differs from exact search (B and C are in the other order and not tied); vector legs: B and C are in the other order and not tied
+E         ---------------------------------------------------------------------------------------------------------------
+E         differing questions: 5   (a)=1   (b)=1   (c)=1   UNEXPLAINED=2
+E         
+E         Aggregates, reported and not judged (recall@k = found/questions, rank-1, MRR):
+E         corpus    set      side      file recall  file #1  file MRR  sym recall  sym #1  sym MRR 
+E         toy       confirm  qdrant    0/1         0        0.000     0/0        0       0.000   
+E         toy       holdout  qdrant    0/1         0        0.000     0/0        0       0.000   
+restored: 0 changed files (expect 0)
+
+################ R3-connections-refusal-neutered ################
+[R3-connections-refusal-neutered] compare_runs.py: original 1->0, mutated 0->1  LANDED
+E           TypeError: argument of type 'NoneType' is not iterable
+scripts\rag_benchmarks\compare_runs.py:398: TypeError
+1 failed, 3 passed, 34 deselected in 0.18s
+restored: 0 changed files (expect 0)
+
+################ R4-empty-point-set-refusal-neutered ################
+[R4-empty-point-set-refusal-neutered] compare_runs.py: original 1->0, mutated 0->1  LANDED
+            raise ValueError(
+E       TypeError: object of type 'NoneType' has no len()
+scripts\rag_benchmarks\compare_runs.py:643: TypeError
+1 failed, 2 passed, 35 deselected in 0.15s
+restored: 0 changed files (expect 0)
+
+################ R5-exact-list-checks-neutered ################
+[R5-exact-list-checks-neutered] compare_runs.py: original 1->0, mutated 0->1  LANDED
+E       AssertionError: corpus   id         set      file         symbol       class       note
+E         ---------------------------------------------------------------------------------------------------------------
+E         toy      q-a        tuning   #2->MISS     -            a           1 chunk(s) with no Qdrant point entered the pgvector top 50; the rest agrees
+E         toy      q-b        holdout  MISS->#2     -            b           the Qdrant leg differs from exact search (a chunk on one side only is not in that side's tie group at the cut); the pgvector leg matches it
+E         toy      q-c        confirm  MISS->#2     -            c           the legs agree; tied chunks are ordered differently and the top-k cut fell between them
+E         toy      q-u        tuning   #2->MISS     -            UNEXPLAINED the pgvector leg differs from exact search (B and C are in the other order and not tied); vector legs: B and C are in the other order and not tied
+E         ---------------------------------------------------------------------------------------------------------------
+E         differing questions: 4   (a)=1   (b)=1   (c)=1   UNEXPLAINED=1
+E         
+E         Aggregates, reported and not judged (recall@k = found/questions, rank-1, MRR):
+E         corpus    set      side      file recall  file #1  file MRR  sym recall  sym #1  sym MRR 
+E         toy       confirm  qdrant    0/1         0        0.000     0/0        0       0.000   
+E         toy       holdout  qdrant    0/1         0        0.000     0/0        0       0.000   
+E         toy       tuning   qdrant    3/3         1        0.667     0/0        0       0.000   
+restored: 0 changed files (expect 0)
+
+################ R6-pgport-ignored ################
+[R6-pgport-ignored] rag_quality_harness.py: original 1->0, mutated 0->1  LANDED
+E       AssertionError: assert 5432 == 5434
+E        +  where 5432 = <function dsn_port at 0x000001F641CBED40>('postgresql://u:hunter2@127.0.0.1/db', {'PGPORT': '5434'})
+E        +    where <function dsn_port at 0x000001F641CBED40> = harness.dsn_port
+tests\test_rag_quality_harness.py:73: AssertionError
+E       AssertionError: assert 5432 == 5434
+E        +  where 5432 = <function dsn_port at 0x000001F641CBED40>('host=127.0.0.1 dbname=db user=u password=hunter2', {'PGPORT': '5434'})
+E        +    where <function dsn_port at 0x000001F641CBED40> = harness.dsn_port
+tests\test_rag_quality_harness.py:73: AssertionError
+E       Failed: DID NOT RAISE SystemExit
+3 failed, 19 deselected in 0.87s
+restored: 0 changed files (expect 0)
+
+################ R7-final-list-tie-check-neutered ################
+[R7-final-list-tie-check-neutered] compare_runs.py: original 1->0, mutated 0->1  LANDED
+38 passed in 0.84s
+restored: 0 changed files (expect 0)
+
+M0: committed code:
+72 passed in 1.01s
+tree after: 0 changed files (expect 0)
