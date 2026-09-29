@@ -348,6 +348,72 @@ Written in 000014's section 4, the gate's header and ISS-031:
 - Never rely on the tenant an earlier loop left behind; never set a sentinel
   tenant.
 
+### The second review (APPROVE WITH NITS): three minors on the FORCE-lift clause and the audit's edges, applied 2026-09-29
+
+The reviewer confirmed I1 closed, tried to evade the audit with `NOT VALID`
+plus `VALIDATE CONSTRAINT` and with a key added through `DO`/`EXECUTE` (both
+caught), and confirmed `SECURITY DEFINER` is contained. Three minors remained;
+the user chose to fix them before merging.
+
+**Minor 1: the validation reads the referenced table through its policy
+too.** The rule's new clause named only the key's own table. The validation
+is one `LEFT OUTER JOIN` of the key's table to the referenced table, and as
+the owner each side is read through its own policy: that referenced side is
+ISS-031's original mechanism (`ingestion_jobs` had no policy, `repositories`
+did). M11c held only because its probe referenced `organizations`, which has
+no RLS. The clause now says "every table the validation reads that has it,
+the key's table and the referenced table", in 000014 §4, the gate header,
+ISS-031 and the `22P02` hint (which gained "or validated a foreign key
+against a forced-RLS table with FORCE still on").
+
+The reviewer's E4/E4b are pinned as a committed test,
+`TestForeignKeyValidationReadsTheReferencedTable`, against the table 22-02's
+keys will reference. A plain table holding every seeded repository's
+**correct** `(id, organization_id)` pair (filled under each organization's
+tenant, so correct by construction, and checked as the superuser), keyed to
+`repositories` by `ALTER TABLE` in a **fresh** session:
+- **nothing lifted:** `23503 … violates foreign key constraint
+  "probe_children_repo_tenant_fk", Key (repository_id, organization_id)=(…)`,
+  18 dirty. `repositories` shows the owner no rows, so every correct pair is
+  reported missing;
+- **FORCE lifted on `repositories` for the statement:** 18 clean, the key
+  validated, FORCE back on, no key left `NOT VALID`, nothing flagged.
+
+The same probe through the gate's one session: nothing lifted → 18 dirty,
+`22P02`, with the corrected hint; lifted → 6 migrations, clean, unflagged,
+FORCE intact.
+
+**Minor 2: nothing checked that a lifted FORCE came back.** A probe 000017
+of just `ALTER TABLE chunks NO FORCE ROW LEVEL SECURITY;` passed the gate
+unflagged (the reviewer's E5). After the up, the gate now asserts that no
+table has row-level security enabled without FORCE, and that every table that
+forced it before the up still does (which also catches a table whose RLS was
+switched off altogether). **Measured:** E5 is killed: `tables with row-level
+security enabled but no longer FORCEd: [chunks]`.
+
+**Minor 3: a key left `NOT VALID` passed.** A key added `NOT VALID` and never
+validated runs no validation, so the audit had nothing to record (E2). After
+the up, the gate asserts no public foreign key is `NOT convalidated`.
+**Measured:** E2 (a `NOT VALID` key on a new table at 17) is killed:
+`[probe_nv.probe_nv_repo_tenant_fk]`.
+
+**Nits, chosen:**
+- (b)'s one theoretical false positive, a FORCE table whose policy shows the
+  owner every row (`USING (true)`): stated in the gate header and ISS-031 as a
+  limit; none exists, every policy is tenant-scoped.
+- (b) encodes the owner-migrates premise, which `assertDeploymentShape` pins:
+  stated in the header and, for Phase 24's grant model, in ISS-031 (a
+  non-owner migrating role is subject to RLS on any enabled table, FORCE or
+  not, so (b) should then test `relrowsecurity` alone).
+- `checkable_rows` follows MATCH SIMPLE's rule: a comment on the audit says a
+  MATCH FULL key would also reject partly-NULL rows the count skips. None here.
+- M13/M14: this summary's numbering is the record (M13 disables (b), M14
+  disables (a)); the PR comment's summary line had them the other way round.
+
+**Re-run on the final code:** the gate, the extension test and the new test
+`-count=3`, all passes, no scratch database left behind; M1, M3, M10 and MX13
+on the committed 000013 killed as before.
+
 ### What the gate guards, corrected in the three places the review named
 
 000014:202, the gate's header and ISS-031 all said the gate enforced the rule.
@@ -480,6 +546,10 @@ Committed code was never edited to run a mutation.
 | M12 | a violating CHECK at 17, on the poisoned session | **`23514`**: the validation saw the rows. A violating UNIQUE: **`23505`**. A satisfied pair: 17, clean |
 | M13 | clause (b) of the audit disabled (`OR false`) | M11b is **no longer flagged** (`"[]" should have 1 item(s)`): (b) is load-bearing |
 | M14 | clause (a) of the audit disabled (`IF false OR …`) | M3 **survives again**: (a) is load-bearing |
+| E2 | a key added `NOT VALID` on a new table at 17, never validated (second review) | **killed by the NOT VALID assertion**: `[probe_nv.probe_nv_repo_tenant_fk]`. Before it: 17 clean, `convalidated = false`, audit empty |
+| E4 | a plain table of eight **correct** pairs keyed to `repositories`, nothing lifted (second review) | in the gate's one session: 18 dirty, `22P02`, with the corrected hint. In a fresh session (the committed test): `23503` on correct data |
+| E4b | the same, FORCE lifted on `repositories` for the statement | passes in both shapes, FORCE restored, unflagged, key validated |
+| E5 | `ALTER TABLE chunks NO FORCE ROW LEVEL SECURITY;` alone at 17 (second review) | **killed by the FORCE assertion**: `[chunks]`. Before it: 5 migrations, clean, unflagged |
 | R1 | the dirty-at-14 recovery: `main`'s 000014 on the seeded shape, then `force 14`, then `up` | 14, dirty, **no `ingestion_jobs` table**; after `force 14`, `up` fails at 15 with `42P01 relation "public.ingestion_jobs" does not exist`, 15 dirty |
 | R2 | then `force 13`, `up` | **16, clean**, the key validated, 4 jobs, audit empty |
 | S2 | schema tool against `main`'s 000013 and 000014 together, against `main`'s 000013 alone, and against `main`'s 000014 alone | **identical, 550 catalog lines**, all three |
@@ -497,10 +567,10 @@ touched, the compose volume never touched.
 | Check | Result |
 |---|---|
 | `go build ./...`, `go vet ./...`, `go mod tidy -diff`, gofmt on every changed Go file | clean |
-| `go test ./... -count=1 -p 1` | every package `ok` except `pkg/api/handlers`, whose only failure is `TestSignatureComparisonIsConstantTime`, the known CRLF artefact. **480 tests and subtests passed, 1 failed (that one), 4 skipped**: three pre-existing `pkg/auth` supersessions, and the schema tool with no baseline set. The gate: `4 migrations from 12 in one session in 94ms` |
+| `go test ./... -count=1 -p 1` | every package `ok` except `pkg/api/handlers`, whose only failure is `TestSignatureComparisonIsConstantTime`, the known CRLF artefact. After the second review: **485 tests and subtests passed, 1 failed (that one), 4 skipped**: three pre-existing `pkg/auth` supersessions, and the schema tool with no baseline set. The gate: `4 migrations from 12 in one session in 92ms` |
 | CI's package-parallelism step | same |
-| `-race` in `golang:1.25` (go1.25.14) with the Docker socket and `TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal`, CI's package list | same, 0 data races |
-| `pytest tests/ workers/ -q` (`REDIS_URL` on db 15, `OPENAI_API_KEY=sk-test-dummy`, no `DATABASE_URL`, no reachable `.env`, fresh venv from `requirements.txt`) | **284 passed** |
+| `-race` in `golang:1.25` (go1.25.14) with the Docker socket and `TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal`, CI's package list | same, 0 data races (run after the first review; the second review's changes are two gate assertions and one test, which CI's race step covers) |
+| `pytest tests/ workers/ -q` (`REDIS_URL` on db 15, `OPENAI_API_KEY=sk-test-dummy`, no `DATABASE_URL`, no reachable `.env`, fresh venv from `requirements.txt`) | **284 passed** after the first review; nothing under `services/workers` changed in the second, so it was not re-run |
 | up, down, up with the `migrate` CLI as the superuser on a fresh `pgvector/pgvector:pg16` database | up to 16, clean; `down -all` leaves no tables, functions or extension; up again to 16, clean, both keys validated |
 | `docker compose config` | the pgvector image; `docker ps` identical before and after |
 | gate and extension test, `-count=3` | six passes; no scratch database left behind |
