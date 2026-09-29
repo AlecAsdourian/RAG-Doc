@@ -94,29 +94,20 @@ SERVICE_ROOT = pathlib.Path(__file__).resolve().parents[2]
 # =====================================================================
 
 
-@pytest.fixture
-def dsn(test_db_container) -> str:
-    """The container DSN, forced onto the NOSUPERUSER app role.
-
-    ⚠ THE `options` PARAMETER IS LOAD-BEARING, and it is the only way to
-    say this: a `Worker` opens its own connections from a DSN, so there is
-    no cursor for a fixture to `SET ROLE` on. Connecting as the container
-    superuser instead would bypass row-level security even with FORCE, and
-    every tenant assertion below -- above all the installation read, which
-    is scoped by `require_tenant` -- would pass for the wrong reason.
-    `test_the_worker_connects_as_the_unprivileged_app_role` asserts it
-    rather than trusting it.
-    """
-    base = test_db_container.get_connection_url().replace(
-        "postgresql+psycopg2://", "postgresql://"
-    )
-    return f"{base}?options=-c%20role%3Drag_doc_app"
+# The DSN forced onto the NOSUPERUSER app role is conftest.py's `app_dsn`
+# fixture (lifted from here in 22-03). ITS `options` PARAMETER IS
+# LOAD-BEARING: a `Worker` opens its own connections from a DSN, so there is
+# no cursor to `SET ROLE` on, and the superuser would bypass row-level
+# security even with FORCE -- every tenant assertion below, above all the
+# installation read scoped by `require_tenant`, would pass for the wrong
+# reason. `test_the_worker_connects_as_the_unprivileged_app_role` asserts it
+# rather than trusting it.
 
 
 @pytest.fixture
-def conn(dsn: str):
+def conn(app_dsn: str):
     """The test's own connection, separate from every worker's."""
-    connection = psycopg2.connect(dsn)
+    connection = psycopg2.connect(app_dsn)
     connection.autocommit = False
     try:
         yield connection
@@ -382,13 +373,13 @@ def until(predicate: Callable[[], Any], what: str, timeout: float = SETTLE) -> A
     raise AssertionError(f"timed out after {timeout:.0f}s waiting for {what} (last={last!r})")
 
 
-def build_worker(dsn: str, handlers: dict, **kwargs) -> Worker:
+def build_worker(app_dsn: str, handlers: dict, **kwargs) -> Worker:
     """A `Worker` on this file's short timings."""
     kwargs.setdefault("lease", LEASE)
     kwargs.setdefault("heartbeat", HEARTBEAT)
     kwargs.setdefault("idle_poll", IDLE_POLL)
     kwargs.setdefault("suspended_defer", SUSPENDED_DEFER)
-    return Worker(dsn, handlers, **kwargs)
+    return Worker(app_dsn, handlers, **kwargs)
 
 
 @contextmanager
@@ -505,7 +496,7 @@ class NeverCalled:
 # =====================================================================
 
 
-def test_the_worker_connects_as_the_unprivileged_app_role(dsn):
+def test_the_worker_connects_as_the_unprivileged_app_role(app_dsn):
     """Every RLS assertion in this file rests on this, so it is asserted.
 
     A PostgreSQL superuser bypasses row-level security even under FORCE. If
@@ -514,7 +505,7 @@ def test_the_worker_connects_as_the_unprivileged_app_role(dsn):
     trigger would never fire, and each isolation assertion below would pass
     for a reason that has nothing to do with the code.
     """
-    connection = psycopg2.connect(dsn)
+    connection = psycopg2.connect(app_dsn)
     try:
         with connection.cursor() as cur:
             cur.execute(
@@ -529,14 +520,14 @@ def test_the_worker_connects_as_the_unprivileged_app_role(dsn):
 
     assert user == "rag_doc_app", (
         f"the worker DSN connects as {user!r}; the `options=-c role=...` "
-        "parameter in the `dsn` fixture is not taking effect"
+        "parameter in the `app_dsn` fixture is not taking effect"
     )
     assert is_super is False, "the worker role must not bypass row-level security"
     assert bypasses_rls is False
 
 
 def test_an_unset_max_job_duration_is_announced_rather_than_silent(
-    conn, dsn, with_two_orgs, caplog
+    conn, app_dsn, with_two_orgs, caplog
 ):
     """The omission has to be visible, and only a log record can show it.
 
@@ -553,7 +544,7 @@ def test_an_unset_max_job_duration_is_announced_rather_than_silent(
     org, _ = with_two_orgs
     caplog.set_level(logging.INFO, logger="workers.jobs.runtime")
 
-    with running(build_worker(dsn, {"full_ingest": lambda ctx: None})):
+    with running(build_worker(app_dsn, {"full_ingest": lambda ctx: None})):
         warnings = until(
             lambda: [
                 record.getMessage()
@@ -578,7 +569,7 @@ def test_an_unset_max_job_duration_is_announced_rather_than_silent(
     # And with one set, the line says so and nothing warns.
     caplog.clear()
     bounded = build_worker(
-        dsn,
+        app_dsn,
         {"full_ingest": lambda ctx: None},
         max_job_duration=timedelta(seconds=120),
     )
@@ -638,7 +629,7 @@ def test_require_tenant_says_a_dead_connection_is_dead(conn, superuser_conn):
             pass  # pragma: no cover - the scope must never open
 
 
-def test_a_worker_refuses_an_empty_handler_map(dsn):
+def test_a_worker_refuses_an_empty_handler_map(app_dsn):
     """The backstop for a caller that builds a `Worker` directly.
 
     `__main__` refuses earlier and more loudly, but a `Worker` with no
@@ -646,7 +637,7 @@ def test_a_worker_refuses_an_empty_handler_map(dsn):
     it -- the accident this whole plan is arranged around.
     """
     with pytest.raises(ValueError, match="at least one handler"):
-        Worker(dsn, {})
+        Worker(app_dsn, {})
 
 
 # =====================================================================
@@ -654,7 +645,7 @@ def test_a_worker_refuses_an_empty_handler_map(dsn):
 # =====================================================================
 
 
-def test_a_claimed_job_runs_its_handler_and_completes(conn, dsn, with_two_orgs):
+def test_a_claimed_job_runs_its_handler_and_completes(conn, app_dsn, with_two_orgs):
     org, _ = with_two_orgs
     link_installation(conn, org)
     job_id = seed_job(conn, org)
@@ -664,7 +655,7 @@ def test_a_claimed_job_runs_its_handler_and_completes(conn, dsn, with_two_orgs):
     probe = Probe(org.repo_id, f"sha-happy-{job_id[:8]}")
     handler = Recorder(probe)
 
-    with running(build_worker(dsn, {"full_ingest": handler})):
+    with running(build_worker(app_dsn, {"full_ingest": handler})):
         until(
             lambda: job_row(conn, job_id)["state"] == "completed",
             "the job to complete",
@@ -685,7 +676,7 @@ def test_a_claimed_job_runs_its_handler_and_completes(conn, dsn, with_two_orgs):
 
 
 def test_the_heartbeat_extends_the_lease_of_a_job_that_outlives_it(
-    conn, dsn, with_two_orgs
+    conn, app_dsn, with_two_orgs
 ):
     """A handler that runs for three leases still completes, and the lease moved.
 
@@ -713,7 +704,7 @@ def test_the_heartbeat_extends_the_lease_of_a_job_that_outlives_it(
         elapsed.append(time.monotonic() - started)
         return probe
 
-    with running(build_worker(dsn, {"full_ingest": slow_handler})):
+    with running(build_worker(app_dsn, {"full_ingest": slow_handler})):
         first = until(
             lambda: job_row(conn, job_id)["lease_expires_at"], "the job to be claimed"
         )
@@ -744,7 +735,7 @@ def test_the_heartbeat_extends_the_lease_of_a_job_that_outlives_it(
 
 
 def test_the_heartbeat_thread_opens_its_own_connection(
-    conn, dsn, with_two_orgs, monkeypatch
+    conn, app_dsn, with_two_orgs, monkeypatch
 ):
     """The one invariant here whose failure mode is a race, not a result.
 
@@ -787,7 +778,7 @@ def test_the_heartbeat_thread_opens_its_own_connection(
         may_finish.wait(timeout=SETTLE)
         return None
 
-    with running(build_worker(dsn, {"full_ingest": slow})):
+    with running(build_worker(app_dsn, {"full_ingest": slow})):
         assert running_long.wait(timeout=SETTLE), "the handler never started"
         # Both connections are open right now: the loop's and the
         # heartbeat thread's.
@@ -810,7 +801,7 @@ def test_the_heartbeat_thread_opens_its_own_connection(
 
 
 def test_a_supersede_mid_run_aborts_the_handler_and_writes_nothing(
-    conn, dsn, with_two_orgs
+    conn, app_dsn, with_two_orgs
 ):
     """L4 step 3: a superseded worker stops cooperatively and writes nothing.
 
@@ -839,7 +830,7 @@ def test_a_supersede_mid_run_aborts_the_handler_and_writes_nothing(
         observed["elapsed"] = time.monotonic() - started
         return probe
 
-    with running(build_worker(dsn, {"full_ingest": cooperative})):
+    with running(build_worker(app_dsn, {"full_ingest": cooperative})):
         until(lambda: job_row(conn, job_id)["state"] == "running", "the claim")
         # `supersedeLiveSQL` from pkg/jobs/producer.go, verbatim: it does
         # NOT clear the lease.
@@ -873,7 +864,7 @@ def test_a_supersede_mid_run_aborts_the_handler_and_writes_nothing(
     )
 
 
-def test_a_supersede_is_reported_in_the_log(conn, dsn, with_two_orgs, caplog):
+def test_a_supersede_is_reported_in_the_log(conn, app_dsn, with_two_orgs, caplog):
     """The supersede's only operator-visible signal, read as a LogRecord.
 
     ⚠ A TEST THAT READS NO LOG RECORD CANNOT CATCH A LOGGING BUG, which is
@@ -897,7 +888,7 @@ def test_a_supersede_is_reported_in_the_log(conn, dsn, with_two_orgs, caplog):
             pass
         return None
 
-    with running(build_worker(dsn, {"full_ingest": cooperative})):
+    with running(build_worker(app_dsn, {"full_ingest": cooperative})):
         until(lambda: job_row(conn, job_id)["state"] == "running", "the claim")
         sql(
             conn,
@@ -926,7 +917,7 @@ def test_a_supersede_is_reported_in_the_log(conn, dsn, with_two_orgs, caplog):
     assert FAKE_TOKEN not in line
 
 
-def test_a_handlers_progress_report_lands_on_the_job_row(conn, dsn, with_two_orgs):
+def test_a_handlers_progress_report_lands_on_the_job_row(conn, app_dsn, with_two_orgs):
     org, _ = with_two_orgs
     link_installation(conn, org)
     job_id = seed_job(conn, org)
@@ -939,7 +930,7 @@ def test_a_handlers_progress_report_lands_on_the_job_row(conn, dsn, with_two_org
         reported.append(ctx.report_progress("clone", {"files_parsed": 7}))
         return None
 
-    with running(build_worker(dsn, {"full_ingest": reporting})):
+    with running(build_worker(app_dsn, {"full_ingest": reporting})):
         until(lambda: job_row(conn, job_id)["state"] == "completed", "completion")
 
     row = job_row(conn, job_id)
@@ -949,7 +940,7 @@ def test_a_handlers_progress_report_lands_on_the_job_row(conn, dsn, with_two_org
 
 
 def test_a_progress_report_from_a_worker_that_lost_its_lease_is_refused(
-    conn, dsn, with_two_orgs
+    conn, app_dsn, with_two_orgs
 ):
     """`PROGRESS_SQL` is fenced, and `last_stage` is why it has to be.
 
@@ -974,7 +965,7 @@ def test_a_progress_report_from_a_worker_that_lost_its_lease_is_refused(
         reported.append(ctx.report_progress("embed", {"files_parsed": 99}))
         return None
 
-    with running(build_worker(dsn, {"full_ingest": reporting})):
+    with running(build_worker(app_dsn, {"full_ingest": reporting})):
         assert first_done.wait(timeout=SETTLE), "the handler never reported"
         sql(
             conn,
@@ -999,7 +990,7 @@ def test_a_progress_report_from_a_worker_that_lost_its_lease_is_refused(
 
 
 def test_an_expired_lease_is_reclaimed_until_the_job_dead_letters(
-    conn, dsn, with_two_orgs
+    conn, app_dsn, with_two_orgs
 ):
     """The crash path end to end: reclaim, reclaim, exhaust, sweep.
 
@@ -1036,7 +1027,7 @@ def test_an_expired_lease_is_reclaimed_until_the_job_dead_letters(
 
     dead_workers = [
         build_worker(
-            dsn,
+            app_dsn,
             {"full_ingest": blocking(probe)},
             heartbeat=timedelta(seconds=30),
         )
@@ -1055,7 +1046,7 @@ def test_an_expired_lease_is_reclaimed_until_the_job_dead_letters(
         # now -- so `idle_sweeper` doubles as the assertion that the claim
         # guard holds, and the sweeper is the only thing that can move it.
         idle_sweeper = NeverCalled()
-        sweeper = build_worker(dsn, {"full_ingest": idle_sweeper})
+        sweeper = build_worker(app_dsn, {"full_ingest": idle_sweeper})
         with running(sweeper):
             until(
                 lambda: job_row(conn, job_id)["state"] == "dead",
@@ -1092,7 +1083,7 @@ def test_an_expired_lease_is_reclaimed_until_the_job_dead_letters(
 
 
 def test_eight_threads_racing_for_one_job_produce_exactly_one_claim(
-    conn, dsn, with_two_orgs
+    conn, app_dsn, with_two_orgs
 ):
     """`FOR UPDATE SKIP LOCKED`, pinned from Python at last.
 
@@ -1114,7 +1105,7 @@ def test_eight_threads_racing_for_one_job_produce_exactly_one_claim(
 
     racers = 8
     rounds = 5
-    connections = [psycopg2.connect(dsn) for _ in range(racers)]
+    connections = [psycopg2.connect(app_dsn) for _ in range(racers)]
     workers = [new_worker_id() for _ in range(racers)]
     try:
         for round_number in range(rounds):
@@ -1181,7 +1172,7 @@ def test_eight_threads_racing_for_one_job_produce_exactly_one_claim(
 
 
 def test_a_suspended_installation_defers_without_consuming_an_attempt(
-    conn, dsn, with_two_orgs
+    conn, app_dsn, with_two_orgs
 ):
     """ISS-033's other half: a suspension heals on its own, so it must wait.
 
@@ -1204,7 +1195,7 @@ def test_a_suspended_installation_defers_without_consuming_an_attempt(
     probe = Probe(org.repo_id, f"sha-susp-{job_id[:8]}")
     handler = Recorder(probe)
 
-    with running(build_worker(dsn, {"full_ingest": handler})):
+    with running(build_worker(app_dsn, {"full_ingest": handler})):
         # ⚠ `last_error`, NOT `state == 'queued'`. The job STARTS `queued`
         # with no lease, so a condition on the state alone is satisfied
         # before the worker has even claimed it, and the assertions below
@@ -1255,7 +1246,7 @@ def test_a_suspended_installation_defers_without_consuming_an_attempt(
 
 
 @pytest.mark.parametrize("shape", ["uninstalled", "no-installation"])
-def test_a_dead_installation_abandons_the_job(conn, dsn, with_two_orgs, shape):
+def test_a_dead_installation_abandons_the_job(conn, app_dsn, with_two_orgs, shape):
     """ISS-033's ending, built: `superseded` and `never_synced`, never `failed`.
 
     Both shapes are here because the fixture cannot distinguish them on its
@@ -1282,7 +1273,7 @@ def test_a_dead_installation_abandons_the_job(conn, dsn, with_two_orgs, shape):
     probe = Probe(org.repo_id, f"sha-gone-{job_id[:8]}")
     handler = Recorder(probe)
 
-    with running(build_worker(dsn, {"full_ingest": handler})):
+    with running(build_worker(app_dsn, {"full_ingest": handler})):
         until(
             lambda: job_row(conn, job_id)["state"] == "superseded",
             "the job to be abandoned",
@@ -1307,7 +1298,7 @@ def test_a_dead_installation_abandons_the_job(conn, dsn, with_two_orgs, shape):
 # =====================================================================
 
 
-def test_a_shutdown_finishes_the_job_in_flight(conn, dsn, with_two_orgs):
+def test_a_shutdown_finishes_the_job_in_flight(conn, app_dsn, with_two_orgs):
     """`stop` asks; it does not interrupt. A handler that FINISHES is completed.
 
     ⚠ AND `should_abort()` STAYS FALSE THROUGHOUT, which is the half PR
@@ -1332,7 +1323,7 @@ def test_a_shutdown_finishes_the_job_in_flight(conn, dsn, with_two_orgs):
         may_finish.wait(timeout=SETTLE)
         return handler(ctx)
 
-    with running(build_worker(dsn, {"full_ingest": slow})) as stop:
+    with running(build_worker(app_dsn, {"full_ingest": slow})) as stop:
         assert in_handler.wait(timeout=SETTLE), "the handler never started"
         stop.set()
         # The worker must not touch the job while the handler still holds it.
@@ -1354,7 +1345,7 @@ def test_a_shutdown_finishes_the_job_in_flight(conn, dsn, with_two_orgs):
 
 
 def test_a_handler_that_stops_early_on_shutdown_defers_instead_of_completing(
-    conn, dsn, with_two_orgs
+    conn, app_dsn, with_two_orgs
 ):
     """`Unfinished` is how a handler says "I stopped part-way".
 
@@ -1394,7 +1385,7 @@ def test_a_handler_that_stops_early_on_shutdown_defers_instead_of_completing(
         # handler does NOT do: it never returns `probe`.
         raise Unfinished("worker shutting down after clone")
 
-    with running(build_worker(dsn, {"full_ingest": winds_down})) as stop:
+    with running(build_worker(app_dsn, {"full_ingest": winds_down})) as stop:
         assert in_handler.wait(timeout=SETTLE), "the handler never started"
         stop.set()
         row = job_when(
@@ -1431,7 +1422,7 @@ def test_a_handler_that_stops_early_on_shutdown_defers_instead_of_completing(
 
 
 def test_unfinished_outside_a_shutdown_fails_rather_than_re_claiming_forever(
-    conn, dsn, with_two_orgs
+    conn, app_dsn, with_two_orgs
 ):
     """`Unfinished` is only free during a shutdown, and this is the bound.
 
@@ -1475,7 +1466,7 @@ def test_unfinished_outside_a_shutdown_fails_rather_than_re_claiming_forever(
             raise RuntimeError("spin cap reached")
         raise Unfinished("a handler bug, not a shutdown")
 
-    with running(build_worker(dsn, {"full_ingest": always_unfinished})):
+    with running(build_worker(app_dsn, {"full_ingest": always_unfinished})):
         row = job_when(
             conn,
             job_id,
@@ -1511,7 +1502,7 @@ def test_unfinished_outside_a_shutdown_fails_rather_than_re_claiming_forever(
 
 
 def test_a_worker_whose_connection_dies_reconnects_and_claims_the_next_job(
-    conn, superuser_conn, dsn, with_two_orgs
+    conn, superuser_conn, app_dsn, with_two_orgs
 ):
     """psycopg2 connections do not self-heal, and the loop's was opened once.
 
@@ -1536,7 +1527,7 @@ def test_a_worker_whose_connection_dies_reconnects_and_claims_the_next_job(
 
     handler = Recorder(None)
 
-    with running(build_worker(dsn, {"full_ingest": handler})):
+    with running(build_worker(app_dsn, {"full_ingest": handler})):
         until(lambda: job_row(conn, first)["state"] == "completed", "the first job")
 
         # Kill the loop's backend, and only it. `application_name` is what
@@ -1621,7 +1612,7 @@ def test_an_unreachable_database_is_retried_and_then_gives_up_with_exit_1(
             signal.signal(sig, handler)
 
 
-def test_a_connect_that_hangs_times_out_instead_of_blocking_forever(dsn):
+def test_a_connect_that_hangs_times_out_instead_of_blocking_forever(app_dsn):
     """`connect_timeout` — and its absence was a hole in the give-up rules.
 
     ⚠ A REFUSED CONNECTION FAILS AT ONCE, which is every case the tests and
@@ -1697,7 +1688,7 @@ def test_a_connect_that_hangs_times_out_instead_of_blocking_forever(dsn):
 
 
 def test_a_heartbeat_whose_connection_dies_reopens_it_and_the_job_survives(
-    conn, superuser_conn, dsn, with_two_orgs
+    conn, superuser_conn, app_dsn, with_two_orgs
 ):
     """One dropped heartbeat connection must not cost a whole ingest.
 
@@ -1726,7 +1717,7 @@ def test_a_heartbeat_whose_connection_dies_reopens_it_and_the_job_survives(
         observed["aborted"] = ctx.should_abort()
         return probe
 
-    with running(build_worker(dsn, {"full_ingest": patient})):
+    with running(build_worker(app_dsn, {"full_ingest": patient})):
         assert started_work.wait(timeout=SETTLE), "the handler never started"
         # ⚠ WAIT FOR A BEAT TO LAND BEFORE KILLING, not merely for the
         # claim. The lease is set by `claim`, and the heartbeat thread
@@ -1765,7 +1756,7 @@ def test_a_heartbeat_whose_connection_dies_reopens_it_and_the_job_survives(
 
 
 def test_a_heartbeat_that_cannot_beat_for_a_full_lease_gives_up(
-    conn, superuser_conn, dsn, with_two_orgs
+    conn, superuser_conn, app_dsn, with_two_orgs
 ):
     """A heartbeat that cannot land must stop the handler, not beat into the void.
 
@@ -1817,7 +1808,7 @@ def test_a_heartbeat_that_cannot_beat_for_a_full_lease_gives_up(
         raise Unfinished("the lease went away")
 
     try:
-        with running(build_worker(dsn, {"full_ingest": cooperative})):
+        with running(build_worker(app_dsn, {"full_ingest": cooperative})):
             assert beating.wait(timeout=SETTLE), "the handler never started"
             # Let one beat land first: `last_ok` must be a real timestamp
             # rather than the start of the job, and the heartbeat's
@@ -1855,7 +1846,7 @@ def test_a_heartbeat_that_cannot_beat_for_a_full_lease_gives_up(
 
 
 def test_a_handler_that_overruns_max_job_duration_is_cut_loose(
-    conn, dsn, with_two_orgs
+    conn, app_dsn, with_two_orgs
 ):
     """A hung handler must stop having its lease renewed for it.
 
@@ -1886,7 +1877,7 @@ def test_a_handler_that_overruns_max_job_duration_is_cut_loose(
         raise Unfinished("cut loose")
 
     worker = build_worker(
-        dsn,
+        app_dsn,
         {"full_ingest": hangs},
         max_job_duration=timedelta(seconds=1),
     )
@@ -1900,7 +1891,7 @@ def test_a_handler_that_overruns_max_job_duration_is_cut_loose(
 
 
 def test_progress_fields_are_redacted_before_they_reach_the_column(
-    conn, dsn, with_two_orgs
+    conn, app_dsn, with_two_orgs
 ):
     """`last_stage` and `progress` are handler-supplied and 21-07 hands them back.
 
@@ -1935,7 +1926,7 @@ def test_progress_fields_are_redacted_before_they_reach_the_column(
         )
         return None
 
-    with running(build_worker(dsn, {"full_ingest": leaky})):
+    with running(build_worker(app_dsn, {"full_ingest": leaky})):
         until(lambda: job_row(conn, job_id)["state"] == "completed", "completion")
 
     row = job_row(conn, job_id)
@@ -1950,7 +1941,7 @@ def test_progress_fields_are_redacted_before_they_reach_the_column(
 
 
 def test_a_job_type_with_no_handler_is_failed_rather_than_left_running(
-    conn, dsn, with_two_orgs
+    conn, app_dsn, with_two_orgs
 ):
     """Defensive: `__main__` cannot start with an empty registry.
 
@@ -1964,7 +1955,7 @@ def test_a_job_type_with_no_handler_is_failed_rather_than_left_running(
     assert_only_claimable(conn, job_id)
 
     wrong_type = NeverCalled()
-    with running(build_worker(dsn, {"incremental": wrong_type})):
+    with running(build_worker(app_dsn, {"incremental": wrong_type})):
         row = job_when(
             conn,
             job_id,
@@ -1979,7 +1970,7 @@ def test_a_job_type_with_no_handler_is_failed_rather_than_left_running(
 
 
 def test_a_handler_that_raises_fails_the_job_with_a_redacted_error(
-    conn, dsn, with_two_orgs
+    conn, app_dsn, with_two_orgs
 ):
     """Whatever a handler raises reaches `last_error`, and it is redacted first.
 
@@ -1997,7 +1988,7 @@ def test_a_handler_that_raises_fails_the_job_with_a_redacted_error(
     def exploding(ctx):
         raise RuntimeError(f"clone failed: https://x-access-token:{FAKE_TOKEN}@github.com/a/b.git")
 
-    with running(build_worker(dsn, {"full_ingest": exploding})):
+    with running(build_worker(app_dsn, {"full_ingest": exploding})):
         row = job_when(
             conn,
             job_id,

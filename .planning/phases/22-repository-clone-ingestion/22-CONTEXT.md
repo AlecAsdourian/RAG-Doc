@@ -752,6 +752,19 @@ each is measured on the chunks and vectors it will ship with.
 
 It can run alongside 22-04, 22-05 and Phase 22.1. Phase 23 waits for both.
 
+*Carried in from 22-03 (2026-09-29, PR #53's review), for the track's first
+rule:* the storage move was judged with a vector-score tolerance of 1e-5,
+committed before measuring; the measured cross-store difference was at most
+6.03e-07 over 6,395 chunk scores, none above 1e-6. **Fix the track's
+tolerance at about 2e-6 from that measurement, dated, before the next rule is
+written.** The judge is `scripts/rag_benchmarks/compare_runs.py`; its
+records carry each question's query-vector hash, the measuring role of every
+connection, and `exact_paths`, and the harness's scoring rule lives in
+`scripts/rag_benchmarks/scoring.py`, shared with it. The gate's reach was the
+vector leg: the keyword leg was empty for 120 of the 130 questions (ISS-029),
+so a keyword-leg change has no equivalence evidence from 22-03 and needs the
+protocol's own fresh questions.
+
 ---
 
 ## Boundaries

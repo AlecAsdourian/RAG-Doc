@@ -157,6 +157,28 @@ container more (`docker run --shm-size=1g`, or `shm_size: 1g` on a compose
 service) before building or `REINDEX`ing a large HNSW index. It does not
 matter for migrations, which create the index on an empty table.
 
+## Qdrant is gone
+
+Vectors live in the pgvector Postgres above, in `chunks.embedding`, under the
+same row-level security as the chunk text (`DECISIONS.md` D2). The compose
+`qdrant` service, `QDRANT_URL`, `qdrant-client` and the Qdrant writer were
+retired in 22-03, after the storage-move equivalence gate passed on the same
+chunks and the same query vectors
+(`.planning/phases/22-repository-clone-ingestion/22-03-equivalence.md`).
+
+Nothing removes data for you. If you ran the earlier compose file, a
+`testtgsd_qdrant_data` volume is still on your machine; nothing reads it, and
+you may remove it when convenient:
+
+```bash
+docker volume rm testtgsd_qdrant_data
+```
+
+The benchmark harness (`services/workers/scripts/rag_quality_harness.py`)
+writes and deletes, so its `--ingest` and `--clear` refuse compose's Postgres
+on port 5434 unless `--allow-compose` is passed; point `DATABASE_URL` at a
+scratch container instead.
+
 ## Apply migrations
 
 Migrations are golang-migrate format in `services/backend/migrations/`.
@@ -255,7 +277,7 @@ sets only `ENV`, `DATABASE_URL` and `RAG_SERVICE_URL` — no `SUPABASE_*`,
 no `REDIS_URL`, no `GITHUB_APP_*` — and the router panics without
 `SUPABASE_WEBHOOK_SECRET`, so `docker compose up backend` does not
 currently start. Run the backend directly, as above; compose is for
-Postgres, Redis and Qdrant.
+Postgres and Redis.
 
 ## Verify
 

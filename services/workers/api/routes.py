@@ -109,8 +109,8 @@ async def search(request: SearchRequest, req: Request) -> SearchResponse:
 
     except RetrievalError as e:
         # ISS-030: a failed retriever fails the request rather than returning
-        # 200 with partial or empty results. 503, because a dependency (OpenAI,
-        # Qdrant or Postgres) is failing and a retry may succeed.
+        # 200 with partial or empty results. 503, because a dependency (OpenAI
+        # or Postgres) is failing and a retry may succeed.
         logger.warning(
             f"/search answered 503: {e.failed_description} failed "
             f"(organization_id={request.organization_id})"

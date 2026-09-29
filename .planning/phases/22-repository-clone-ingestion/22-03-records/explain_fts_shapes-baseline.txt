@@ -1,0 +1,79 @@
+connection: ('rag_doc_app', False, False)
+
+=== self: 534 chunks visible, run 47c79029 ===
+--- 22-02 shape: ingestion_run_id = latest run
+    Limit
+      ->  Sort
+            Sort Key: (GREATEST(ts_rank_cd(to_tsvector('english'::regconfig, chunks.content), '''keyword'' & ''result'' & ''vector'' & ''result'' & ''combin'' & ''one'' & ''rank'''::tsquery), ts_rank_cd(to_tsvector('english'::regconfig, COALESCE(chunks.breadcrumb, ''::text)), '''keyword'' & ''result'' & ''vector'' & ''result'' & ''combin'' & ''one'' & ''rank'''::tsquery))) DESC
+            ->  Append
+                  Subplans Removed: 63
+                  ->  Bitmap Heap Scan on chunks_p0 chunks_1
+                        Recheck Cond: (ingestion_run_id = '47c79029-895e-48f1-ac7f-25c3d3bbaa45'::uuid)
+                        Filter: ((organization_id = (current_setting('app.current_tenant'::text, true))::uuid) AND ((to_tsvector('english'::regconfig, content) @@ '''keyword'' & ''result'' & ''vector'' & ''result'' & ''combin'' & ''one'' & ''rank'''::tsquery) OR (to_tsvector('english'::regconfig, COALESCE(breadcrumb, ''::text)) @@ '''keyword'' & ''result'' & ''vector'' & ''result'' & ''combin'' & ''one'' & ''rank'''::tsquery)))
+                        ->  Bitmap Index Scan on chunks_p0_ingestion_run_id_idx
+                              Index Cond: (ingestion_run_id = '47c79029-895e-48f1-ac7f-25c3d3bbaa45'::uuid)
+    rows: 0; first: []
+--- 22-03 shape: repository_id = repo
+    Limit
+      ->  Sort
+            Sort Key: (GREATEST(ts_rank_cd(to_tsvector('english'::regconfig, chunks.content), '''keyword'' & ''result'' & ''vector'' & ''result'' & ''combin'' & ''one'' & ''rank'''::tsquery), ts_rank_cd(to_tsvector('english'::regconfig, COALESCE(chunks.breadcrumb, ''::text)), '''keyword'' & ''result'' & ''vector'' & ''result'' & ''combin'' & ''one'' & ''rank'''::tsquery))) DESC
+            ->  Append
+                  Subplans Removed: 63
+                  ->  Bitmap Heap Scan on chunks_p0 chunks_1
+                        Recheck Cond: (repository_id = '0ca11117-0000-4000-8000-00000000f003'::uuid)
+                        Filter: ((organization_id = (current_setting('app.current_tenant'::text, true))::uuid) AND ((to_tsvector('english'::regconfig, content) @@ '''keyword'' & ''result'' & ''vector'' & ''result'' & ''combin'' & ''one'' & ''rank'''::tsquery) OR (to_tsvector('english'::regconfig, COALESCE(breadcrumb, ''::text)) @@ '''keyword'' & ''result'' & ''vector'' & ''result'' & ''combin'' & ''one'' & ''rank'''::tsquery)))
+                        ->  Bitmap Index Scan on chunks_p0_repository_id_file_path_idx
+                              Index Cond: (repository_id = '0ca11117-0000-4000-8000-00000000f003'::uuid)
+    rows: 0; first: []
+
+=== miniflux: 2134 chunks visible, run c5b6dbcd ===
+--- 22-02 shape: ingestion_run_id = latest run
+    Limit
+      ->  Sort
+            Sort Key: (GREATEST(ts_rank_cd(to_tsvector('english'::regconfig, chunks.content), '''keyword'' & ''result'' & ''vector'' & ''result'' & ''combin'' & ''one'' & ''rank'''::tsquery), ts_rank_cd(to_tsvector('english'::regconfig, COALESCE(chunks.breadcrumb, ''::text)), '''keyword'' & ''result'' & ''vector'' & ''result'' & ''combin'' & ''one'' & ''rank'''::tsquery))) DESC
+            ->  Append
+                  Subplans Removed: 63
+                  ->  Bitmap Heap Scan on chunks_p0 chunks_1
+                        Recheck Cond: (ingestion_run_id = 'c5b6dbcd-0030-496b-823f-3222fab47af1'::uuid)
+                        Filter: ((organization_id = (current_setting('app.current_tenant'::text, true))::uuid) AND ((to_tsvector('english'::regconfig, content) @@ '''keyword'' & ''result'' & ''vector'' & ''result'' & ''combin'' & ''one'' & ''rank'''::tsquery) OR (to_tsvector('english'::regconfig, COALESCE(breadcrumb, ''::text)) @@ '''keyword'' & ''result'' & ''vector'' & ''result'' & ''combin'' & ''one'' & ''rank'''::tsquery)))
+                        ->  Bitmap Index Scan on chunks_p0_ingestion_run_id_idx
+                              Index Cond: (ingestion_run_id = 'c5b6dbcd-0030-496b-823f-3222fab47af1'::uuid)
+    rows: 0; first: []
+--- 22-03 shape: repository_id = repo
+    Limit
+      ->  Sort
+            Sort Key: (GREATEST(ts_rank_cd(to_tsvector('english'::regconfig, chunks.content), '''keyword'' & ''result'' & ''vector'' & ''result'' & ''combin'' & ''one'' & ''rank'''::tsquery), ts_rank_cd(to_tsvector('english'::regconfig, COALESCE(chunks.breadcrumb, ''::text)), '''keyword'' & ''result'' & ''vector'' & ''result'' & ''combin'' & ''one'' & ''rank'''::tsquery))) DESC
+            ->  Append
+                  Subplans Removed: 63
+                  ->  Bitmap Heap Scan on chunks_p0 chunks_1
+                        Recheck Cond: (repository_id = 'e938bb80-f6ee-5a9a-bd3b-83d0746cca78'::uuid)
+                        Filter: ((organization_id = (current_setting('app.current_tenant'::text, true))::uuid) AND ((to_tsvector('english'::regconfig, content) @@ '''keyword'' & ''result'' & ''vector'' & ''result'' & ''combin'' & ''one'' & ''rank'''::tsquery) OR (to_tsvector('english'::regconfig, COALESCE(breadcrumb, ''::text)) @@ '''keyword'' & ''result'' & ''vector'' & ''result'' & ''combin'' & ''one'' & ''rank'''::tsquery)))
+                        ->  Bitmap Index Scan on chunks_p0_repository_id_file_path_idx
+                              Index Cond: (repository_id = 'e938bb80-f6ee-5a9a-bd3b-83d0746cca78'::uuid)
+    rows: 0; first: []
+
+=== mealie: 2816 chunks visible, run 5440a644 ===
+--- 22-02 shape: ingestion_run_id = latest run
+    Limit
+      ->  Sort
+            Sort Key: (GREATEST(ts_rank_cd(to_tsvector('english'::regconfig, chunks.content), '''keyword'' & ''result'' & ''vector'' & ''result'' & ''combin'' & ''one'' & ''rank'''::tsquery), ts_rank_cd(to_tsvector('english'::regconfig, COALESCE(chunks.breadcrumb, ''::text)), '''keyword'' & ''result'' & ''vector'' & ''result'' & ''combin'' & ''one'' & ''rank'''::tsquery))) DESC
+            ->  Append
+                  Subplans Removed: 63
+                  ->  Bitmap Heap Scan on chunks_p0 chunks_1
+                        Recheck Cond: (ingestion_run_id = '5440a644-9991-433f-91b8-e58cad2536af'::uuid)
+                        Filter: ((organization_id = (current_setting('app.current_tenant'::text, true))::uuid) AND ((to_tsvector('english'::regconfig, content) @@ '''keyword'' & ''result'' & ''vector'' & ''result'' & ''combin'' & ''one'' & ''rank'''::tsquery) OR (to_tsvector('english'::regconfig, COALESCE(breadcrumb, ''::text)) @@ '''keyword'' & ''result'' & ''vector'' & ''result'' & ''combin'' & ''one'' & ''rank'''::tsquery)))
+                        ->  Bitmap Index Scan on chunks_p0_ingestion_run_id_idx
+                              Index Cond: (ingestion_run_id = '5440a644-9991-433f-91b8-e58cad2536af'::uuid)
+    rows: 0; first: []
+--- 22-03 shape: repository_id = repo
+    Limit
+      ->  Sort
+            Sort Key: (GREATEST(ts_rank_cd(to_tsvector('english'::regconfig, chunks.content), '''keyword'' & ''result'' & ''vector'' & ''result'' & ''combin'' & ''one'' & ''rank'''::tsquery), ts_rank_cd(to_tsvector('english'::regconfig, COALESCE(chunks.breadcrumb, ''::text)), '''keyword'' & ''result'' & ''vector'' & ''result'' & ''combin'' & ''one'' & ''rank'''::tsquery))) DESC
+            ->  Append
+                  Subplans Removed: 63
+                  ->  Bitmap Heap Scan on chunks_p0 chunks_1
+                        Recheck Cond: (repository_id = '9e801ead-15a5-5cd5-800b-1551d550cdd1'::uuid)
+                        Filter: ((organization_id = (current_setting('app.current_tenant'::text, true))::uuid) AND ((to_tsvector('english'::regconfig, content) @@ '''keyword'' & ''result'' & ''vector'' & ''result'' & ''combin'' & ''one'' & ''rank'''::tsquery) OR (to_tsvector('english'::regconfig, COALESCE(breadcrumb, ''::text)) @@ '''keyword'' & ''result'' & ''vector'' & ''result'' & ''combin'' & ''one'' & ''rank'''::tsquery)))
+                        ->  Bitmap Index Scan on chunks_p0_repository_id_file_path_idx
+                              Index Cond: (repository_id = '9e801ead-15a5-5cd5-800b-1551d550cdd1'::uuid)
+    rows: 0; first: []

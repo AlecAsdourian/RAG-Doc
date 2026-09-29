@@ -57,8 +57,8 @@ const ACTIVE_DOC = {
     { type: 'grid',    items: [
         { icon: 'upload_file',  title: 'Ingestion',   desc: 'Raw source files are loaded from connected repositories or local uploads.'   },
         { icon: 'code',         title: 'Parsing',     desc: 'Language-specific AST parsers extract symbols, functions, and semantic units.' },
-        { icon: 'hub',          title: 'Embedding',   desc: 'Chunks are encoded into high-dimensional vectors using text-embedding-3-small.' },
-        { icon: 'storage',      title: 'Storage',     desc: 'Vectors are persisted in the Qdrant vector store for fast ANN retrieval.'     },
+        { icon: 'hub',          title: 'Embedding',   desc: 'Chunks are encoded into high-dimensional vectors using OpenAI text-embedding-ada-002.' },
+        { icon: 'storage',      title: 'Storage',     desc: 'Vectors are persisted in Postgres, with pgvector, beside the chunks they describe.' },
       ]
     },
     { type: 'code', lang: 'python', text: `# Example: Chunking strategy
