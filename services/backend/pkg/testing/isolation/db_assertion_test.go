@@ -407,7 +407,7 @@ func requireTenantViolation(t *testing.T, err error, op, table string) {
 // for why both are acceptable on UPDATE/DELETE.
 //
 // The message-shape assertions matter: they pin the error to one of the
-// two known isolation paths (trigger raise, or RLS ''::uuid cast on the
+// two known isolation paths (trigger raise, or RLS ”::uuid cast on the
 // empty-string GUC). An unrelated 42501 or 22P02 from some future bug
 // would fail here rather than silently satisfy the test.
 func requireIsolationRefusal(t *testing.T, err error) {

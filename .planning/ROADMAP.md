@@ -161,7 +161,7 @@ this entry was one of the three.
 **Goal:** Move the vectors into Postgres under tenant isolation, retire Qdrant, and index one real GitHub repository end to end through the Phase 21 queue: connect → queue → worker → pgvector → search.
 **Depends on:** Phase 21 (job infra)
 **Research:** Complete — `22-RESEARCH.md`; decisions locked in `22-CONTEXT.md` (2026-09-17, user answers U1–U10)
-**Plans:** 5, written 2026-09-17 (`22-01-PLAN.md` … `22-05-PLAN.md`). Fact-checked and revised the same day. The user decided P3 and P7 (both as recommended) and approved 22-05's live repository. Merged as `ac95151` (PR #47). 22-01 is executed and in review (PR #48).
+**Plans:** 5, written 2026-09-17 (`22-01-PLAN.md` … `22-05-PLAN.md`). Fact-checked and revised the same day. The user decided P3 and P7 (both as recommended) and approved 22-05's live repository. Merged as `ac95151` (PR #47). 22-01 merged as `4a3b16c` (PR #48). 22-02 is executed and in review (PR #49).
 
 **What changed from the original sketch, and why.** The sketch said "Research: Unlikely". That was written before D1–D5, all of which land here. The research measured three contradictions in them, now recorded as dated corrections in `.planning/v2-substrate/DECISIONS.md`. The user split the work in two (U1):
 - this phase ends with a real repository indexed and searchable;
@@ -175,13 +175,14 @@ Scope per plan, estimates and every decision are in `22-CONTEXT.md`, which is th
 Where a line below describes one of them, it describes the proposal.
 
 Plans:
-- [x] 22-01: pgvector image everywhere — compose, both test harnesses (with the Go harness's reuse container renamed, because it reuses by name without checking the image), and CI — proven by migration `000016_enable_pgvector`. **Fixes ISS-031**, which is live in the deployment shape, by declaring 000014's foreign key inside `CREATE TABLE`. A seeded-migration CI gate proves the fix: it seeds at migration 10, runs as a non-superuser owner, fails on `main` and passes after. Also deletes `pkg/vectordb` (moved here from 22-02). **Executed 2026-09-17, in review as PR #48:** the gate failed with `22P02` at 14, dirty, on the commit that added it, and passes after the fix; the schema is identical (550 catalog lines). See `22-01-SUMMARY.md`.
-- [ ] 22-02: the partitioned `chunks` table, and every writer of it (migration `000017`):
+- [x] 22-01: pgvector image everywhere — compose, both test harnesses (with the Go harness's reuse container renamed, because it reuses by name without checking the image), and CI — proven by migration `000016_enable_pgvector`. **Fixes ISS-031**, which is live in the deployment shape, by declaring 000014's foreign key inside `CREATE TABLE`. A seeded-migration CI gate proves the fix: it seeds at migration 10, runs as a non-superuser owner, fails on `main` and passes after. Also deletes `pkg/vectordb` (moved here from 22-02). **Executed 2026-09-17, merged 2026-09-29 as `4a3b16c` (PR #48):** the gate failed with `22P02` at 14, dirty, on the commit that added it, and passes after the fix; the schema is identical (550 catalog lines). PR #48's review found a second instance in 000013 and the gate gained a tenant audit. See `22-01-SUMMARY.md`.
+- [x] 22-02: the partitioned `chunks` table, and every writer of it (migration `000017`):
   - `chunks` rebuilt, partitioned by organization, with **row-level security on every partition** (the parent's does not reach them);
   - the tenant guarantee, `embedding vector(1536)` and `embedding_model`;
   - the `symbols` table (`symbol_edges` moved to 22.1-04);
   - `retrievals.chunk_id`'s foreign key dropped (U9), with the repository delete kept honest;
   - every Go and Python writer of `chunks` in the same PR, including `PostgresWriter` storing vectors (moved here from 22-03).
+  **Executed 2026-09-29, in review as PR #49:** 000017 passes 22-01's seeded gate in the deployment shape, with every key inside its `CREATE TABLE`; the measured cross-tenant leak through a partition is closed and pinned as a test; `EXPLAIN` shows `Subplans Removed: 63` from the policy alone; the key's replica-mode limit is pinned and drift-guarded. See `22-02-SUMMARY.md`.
 - [ ] 22-03: both retrieval legs on pgvector, and Qdrant retired:
   - `hnsw.iterative_scan` is load-bearing for the repository filter;
   - fusion stays in Python;
@@ -298,7 +299,7 @@ Plans:
 | 19. Auth Wiring & Org Provisioning | v1.0 | 4/4 | Complete | 2026-09-08 |
 | 20. Repository Integration Backend | v1.0 | 5/5 | Complete | 2026-09-09 |
 | 21. Ingestion Job Infrastructure | v1.0 | 7/7 | Complete | 2026-09-16 |
-| 22. pgvector Storage & the First Real Repository | v1.0 | 1/5 | In progress: plans merged as `ac95151` (PR #47); 22-01 executed, in review (PR #48) | - |
+| 22. pgvector Storage & the First Real Repository | v1.0 | 2/5 | In progress: plans merged as `ac95151` (PR #47); 22-01 merged as `4a3b16c` (PR #48); 22-02 executed, in review (PR #49) | - |
 | 22.1. Symbols, Incremental Updates, Progress & the Code Graph | v1.0 | 0/5 | Researched, decisions locked; plans not written | - |
 | 23. Frontend Wiring & Onboarding UX | v1.0 | 0/5 | Not started | - |
 | 24. Production Deployment & Cost Controls | v1.0 | 0/5 | Not started | - |
