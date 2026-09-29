@@ -246,6 +246,90 @@ def test_the_job_id_must_be_a_uuid() -> None:
         request_token(INTERNAL, "../admin", LEASE_OWNER, transport=transport_answering(marked(200, good_token_body())))
 
 
+class _MarkedTokenServer(http.server.BaseHTTPRequestHandler):
+    """A real internal API answering the marked 200."""
+
+    seen: List[str] = []
+
+    def do_POST(self) -> None:  # noqa: N802 - http.server's name
+        type(self).seen.append(self.path)
+        length = int(self.headers.get("Content-Length", "0"))
+        self.rfile.read(length)
+        body = json.dumps(good_token_body()).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header(MARKER_HEADER, MARKER_VALUE)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args) -> None:
+        pass
+
+
+class _ProxyRecorder(http.server.BaseHTTPRequestHandler):
+    """Records anything that arrives, so 'the proxy was not used' is measured."""
+
+    seen: List[Tuple[str, str]] = []
+
+    def _record(self) -> None:
+        type(self).seen.append((self.command, self.path))
+        length = int(self.headers.get("Content-Length", "0"))
+        if length:
+            self.rfile.read(length)
+        self.send_response(502)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    do_GET = do_POST = do_CONNECT = _record  # noqa: N815 - http.server's names
+
+    def log_message(self, *args) -> None:
+        pass
+
+
+def test_the_token_client_ignores_proxy_environment_variables(monkeypatch) -> None:
+    # ⚠ NO MockTransport HERE: with an explicit transport httpx never
+    # consults the proxy environment, so a mock could not show anything.
+    # Two real servers: the internal API and a "proxy" that records what
+    # reaches it. L2 (PR #52's review): with trust_env at its default the
+    # lease owner and the token would transit HTTP_PROXY in the clear, and
+    # the marker would survive the relay, so nothing would fail loudly.
+    class Direct(_MarkedTokenServer):
+        seen: List[str] = []
+
+    class Proxy(_ProxyRecorder):
+        seen: List[Tuple[str, str]] = []
+
+    direct_server, direct_base = _serve(Direct)
+    proxy_server, proxy_base = _serve(Proxy)
+    try:
+        for var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+            monkeypatch.setenv(var, proxy_base)
+        for var in ("NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(var, raising=False)
+
+        # The premise: with the environment trusted, the very same request
+        # DOES go to the proxy. Without this, "the proxy saw nothing" could
+        # be httpx ignoring the variables for its own reasons.
+        with httpx.Client(trust_env=True, timeout=5.0) as trusting:
+            response = trusting.post(
+                f"{direct_base}/internal/jobs/{JOB_ID}/repository-token", json={"lease_owner": "premise"}
+            )
+        assert response.status_code == 502, "premise: the trusting client reached the proxy"
+        assert len(Proxy.seen) == 1 and Proxy.seen[0][0] == "POST", Proxy.seen
+        assert Direct.seen == [], "premise: the trusting client did not reach the API directly"
+        Proxy.seen.clear()
+
+        # The property: request_token goes direct, whatever the environment says.
+        token = request_token(direct_base, JOB_ID, LEASE_OWNER)
+        assert token.full_name == "acme/widgets"
+        assert Direct.seen == [f"/internal/jobs/{JOB_ID}/repository-token"]
+        assert Proxy.seen == [], f"the lease owner went through the proxy: {Proxy.seen}"
+    finally:
+        direct_server.shutdown()
+        proxy_server.shutdown()
+
+
 # ---------------------------------------------------------------------
 # The fetcher over a fake GitHub
 # ---------------------------------------------------------------------
@@ -253,14 +337,19 @@ def test_the_job_id_must_be_a_uuid() -> None:
 TOP = f"acme-widgets-{SHA[:7]}"
 
 
-def make_archive(files: Dict[str, bytes]) -> bytes:
+def make_archive(files: Dict[str, bytes], top: str = TOP) -> bytes:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         for name, data in files.items():
-            info = tarfile.TarInfo(f"{TOP}/{name}")
+            info = tarfile.TarInfo(f"{top}/{name}")
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))
     return buf.getvalue()
+
+
+def job_dirs(tmp_path) -> List[str]:
+    """The job's directories under the workdir: `<job id>-<random>`."""
+    return sorted(n for n in os.listdir(str(tmp_path)) if n.startswith(JOB_ID + "-"))
 
 
 def token_for(full_name: str = "acme/widgets", branch: str = "main", token: str = SENTINEL_TOKEN) -> RepositoryToken:
@@ -315,7 +404,7 @@ def test_fetch_resolves_the_sha_and_downloads_the_exact_commit(tmp_path) -> None
         assert tree.download.final_host == "codeload.github.test"
         assert tree.download.query_param_names == ["token"], "names only, never the value"
         assert tree.extract is not None and tree.extract.top_level == TOP
-        assert os.path.isdir(os.path.join(str(tmp_path), JOB_ID)), "the job directory exists inside the block"
+        assert job_dirs(tmp_path), "the job directory exists inside the block"
 
     api = gh.by_host("api.github.test")
     assert [r.url.path for r in api] == [
@@ -446,15 +535,22 @@ def test_the_download_cap_stops_within_one_chunk(tmp_path) -> None:
             pytest.fail("the block must not run")
     assert "archive exceeds" in raised.value.reason
     assert len(pulled) <= 64 * 1024 // len(chunk) + 1, f"pulled {len(pulled)} chunks past the cap"
-    assert not os.path.exists(os.path.join(str(tmp_path), JOB_ID)), "cleaned up after the rejection"
+    assert job_dirs(tmp_path) == [], "cleaned up after the rejection"
 
 
 def test_a_declared_content_length_over_the_cap_is_rejected_before_reading(tmp_path) -> None:
+    pulled: List[int] = []
+
+    class Counted(httpx.SyncByteStream):
+        def __iter__(self):
+            pulled.append(1)
+            yield b"x" * 10
+
     class Declared(FakeGitHub):
         def __call__(self, request: httpx.Request) -> httpx.Response:
             if request.url.host == "codeload.github.test":
                 self.requests.append(request)
-                return httpx.Response(200, content=b"x" * 10, headers={"content-length": str(600 * MB)})
+                return httpx.Response(200, stream=Counted(), headers={"content-length": str(600 * MB)})
             return super().__call__(request)
 
     with pytest.raises(FetchRejected):
@@ -463,6 +559,21 @@ def test_a_declared_content_length_over_the_cap_is_rejected_before_reading(tmp_p
             transport=Declared(b"").transport(),
         ):
             pytest.fail("the block must not run")
+    assert pulled == [], "the body was never read: the declared length was enough to refuse"
+
+
+def test_an_archive_under_the_wrong_top_level_directory_is_a_plain_failure(tmp_path) -> None:
+    # PR #52's review, L5: the fetcher tells the extractor what GitHub must
+    # have named the directory, `{owner}-{repo}-{sha7}`, and anything else
+    # is not the archive that was asked for.
+    gh = FakeGitHub(make_archive({"src/a.py": b"#\n"}, top="someone-else-0000000"))
+    with pytest.raises(FetchFailed) as raised:
+        with fetch_repository(
+            token_for(), job_id=JOB_ID, workdir=str(tmp_path), api_base="https://api.github.test", transport=gh.transport()
+        ):
+            pytest.fail("the block must not run")
+    assert "top-level directory" in str(raised.value)
+    assert job_dirs(tmp_path) == []
 
 
 @pytest.mark.parametrize("failure", ["status", "transport"])
@@ -497,7 +608,7 @@ def test_a_download_failure_never_leaks_the_link_into_a_message_or_a_log(tmp_pat
     assert DOWNLOAD_PATH not in caplog.text
     assert SENTINEL_TOKEN not in caplog.text
     assert "ghs_" not in caplog.text
-    assert not os.path.exists(os.path.join(str(tmp_path), JOB_ID)), "cleaned up after the failure"
+    assert job_dirs(tmp_path) == [], "cleaned up after the failure"
 
 
 def test_the_token_never_reaches_a_log_line_during_a_successful_fetch(tmp_path, caplog) -> None:
@@ -522,20 +633,19 @@ def test_the_token_never_reaches_a_log_line_during_a_successful_fetch(tmp_path, 
 
 def test_the_job_directory_is_removed_after_the_block(tmp_path) -> None:
     gh = FakeGitHub(make_archive({"src/a.py": b"#\n"}))
-    jobdir = os.path.join(str(tmp_path), JOB_ID)
     with fetch_repository(
         token_for(), job_id=JOB_ID, workdir=str(tmp_path), api_base="https://api.github.test", transport=gh.transport()
     ) as tree:
-        assert os.path.isdir(jobdir)
+        [jobdir] = job_dirs(tmp_path)
+        assert os.path.isdir(os.path.join(str(tmp_path), jobdir))
         assert tree.files
     # Asserted AFTER the block, never inside a finally.
-    assert not os.path.lexists(jobdir)
+    assert job_dirs(tmp_path) == []
     assert os.listdir(str(tmp_path)) == []
 
 
 def test_the_job_directory_is_removed_when_the_block_raises(tmp_path) -> None:
     gh = FakeGitHub(make_archive({"src/a.py": b"#\n"}))
-    jobdir = os.path.join(str(tmp_path), JOB_ID)
 
     class HandlerBlewUp(RuntimeError):
         pass
@@ -544,9 +654,9 @@ def test_the_job_directory_is_removed_when_the_block_raises(tmp_path) -> None:
         with fetch_repository(
             token_for(), job_id=JOB_ID, workdir=str(tmp_path), api_base="https://api.github.test", transport=gh.transport()
         ):
-            assert os.path.isdir(jobdir)
+            assert len(job_dirs(tmp_path)) == 1
             raise HandlerBlewUp("parser died")
-    assert not os.path.lexists(jobdir)
+    assert job_dirs(tmp_path) == []
 
 
 def test_a_failed_head_resolution_is_a_plain_failure(tmp_path) -> None:
@@ -582,8 +692,8 @@ def test_a_short_sha_from_the_api_is_refused(tmp_path) -> None:
 
 
 def test_sweep_stale_workdirs_removes_only_old_job_directories(tmp_path) -> None:
-    old_job = os.path.join(str(tmp_path), str(uuid.uuid4()))
-    fresh_job = os.path.join(str(tmp_path), str(uuid.uuid4()))
+    old_job = os.path.join(str(tmp_path), f"{uuid.uuid4()}-abc123")
+    fresh_job = os.path.join(str(tmp_path), f"{uuid.uuid4()}-def456")
     not_ours = os.path.join(str(tmp_path), "not-a-job")
     for path in (old_job, fresh_job, not_ours):
         os.makedirs(path)
@@ -597,5 +707,10 @@ def test_sweep_stale_workdirs_removes_only_old_job_directories(tmp_path) -> None
     assert removed == 1
     assert not os.path.exists(old_job)
     assert os.path.exists(fresh_job)
-    assert os.path.exists(not_ours), "only UUID-named directories are ours to remove"
+    assert os.path.exists(not_ours), "only `<uuid>-<suffix>` directories are ours to remove"
+    bare_uuid = os.path.join(str(tmp_path), str(uuid.uuid4()))
+    os.makedirs(bare_uuid)
+    os.utime(bare_uuid, (two_days_ago, two_days_ago))
+    assert sweep_stale_workdirs(str(tmp_path), timedelta(hours=1)) == 0
+    assert os.path.exists(bare_uuid), "a bare UUID without the suffix is not one of ours either"
     assert sweep_stale_workdirs(os.path.join(str(tmp_path), "absent"), timedelta(hours=1)) == 0

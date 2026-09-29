@@ -10,18 +10,27 @@ The guards under test, and the mutation each case kills (recorded in
 22-04-SUMMARY.md):
 
 - the header check (type, path, top-level directory, size) and
-  `filter="data"` -- each holds alone, both removed lets traversal through;
-- the expanded-bytes counter -- the bomb guard;
+  `filter="data"` -- each holds alone, both removed lets traversal through,
+  and `test_the_data_filter_alone_refuses_traversal` makes the filter's
+  contribution observable on its own;
+- the two expansion counters -- the stream counter (a header bomb) and the
+  declared-size budget (a sparse bomb, PR #52's review H1);
 - the name filters before writing -- a secret never lands on disk;
+- a write failing for any reason but the name fails the extraction loudly
+  and leaves no partial file (PR #52's review H2);
 - `os.walk(followlinks=False)` and `lstat` -- the walk never follows a
   link that somehow exists on disk.
 
 Symlink-on-disk cases need `os.symlink`, which Windows grants only with a
-privilege this machine does not have; they skip there and run in CI.
+privilege this machine does not have; they skip there and run in CI. The
+real-full-disk case needs a tiny filesystem, named by `RAG_DOC_TINY_FS`
+(a `--tmpfs /small:size=300k` in the container runs); a monkeypatched
+twin of it runs everywhere.
 """
 
 from __future__ import annotations
 
+import errno
 import gzip
 import io
 import os
@@ -33,12 +42,15 @@ import pytest
 
 from workers.fetch import (
     DEFAULT_LIMITS,
+    FetchFailed,
     FetchRejected,
     Limits,
     collect_tree,
     extract_archive,
     job_directory,
+    sweep_stale_workdirs,
 )
+from workers.fetch import archive as archive_module
 
 MB = 1024 * 1024
 TOP = "acme-widgets-0123456789ab"
@@ -103,6 +115,52 @@ def build(members: Iterable[Member]) -> bytes:
 
 def regular(rel: str, data: bytes = b"print('ok')\n") -> Member:
     return Member(f"{TOP}/{rel}", data)
+
+
+# --- raw tar bytes, for shapes tarfile will read but not write ---
+
+
+def raw_regular(name: str, data: bytes) -> bytes:
+    info = tarfile.TarInfo(name)
+    info.size = len(data)
+    return info.tobuf(format=tarfile.GNU_FORMAT) + data + b"\0" * ((512 - len(data) % 512) % 512)
+
+
+def raw_sparse(name: str, stored: bytes, apparent_size: int) -> bytes:
+    """An old-GNU sparse member (typeflag 'S'): `stored` at offset 0, then a
+    hole up to `apparent_size`. tarfile reads it as a regular file of
+    `apparent_size` bytes with `.sparse` set, and extracts it by seek and
+    truncate -- `apparent_size` on disk from `len(stored)` in the stream.
+    """
+    buf = bytearray(512)
+
+    def put(off: int, val: bytes) -> None:
+        buf[off:off + len(val)] = val
+
+    put(0, name.encode())
+    put(100, b"0000644\0")
+    put(108, b"0000000\0")
+    put(116, b"0000000\0")
+    put(124, f"{len(stored):011o}\0".encode())
+    put(136, f"{0:011o}\0".encode())
+    buf[156] = ord("S")
+    put(257, b"ustar  \0")
+    put(265, b"root\0")
+    put(297, b"root\0")
+    put(386, f"{0:011o}\0".encode())
+    put(398, f"{len(stored):011o}\0".encode())
+    buf[482] = 0
+    put(483, f"{apparent_size:011o}\0".encode())
+    chksum = 256 + sum(buf[:148]) + sum(buf[156:])
+    put(148, f"{chksum:06o}\0 ".encode())
+    return bytes(buf) + stored + b"\0" * ((512 - len(stored) % 512) % 512)
+
+
+def raw_gz(*members: bytes, end_of_archive: bool = True) -> bytes:
+    out = io.BytesIO()
+    with gzip.GzipFile(fileobj=out, mode="wb") as g:
+        g.write(b"".join(members) + (b"\0" * 1024 if end_of_archive else b""))
+    return out.getvalue()
 
 
 def listing(archive: str) -> Dict[str, tarfile.TarInfo]:
@@ -247,6 +305,39 @@ def test_a_second_top_level_directory_is_refused(tmp_path) -> None:
     stats, files, _, dest = run(tmp_path, archive)
     assert stats.skipped.get("unexpected_top_level") == 1
     assert everything_under(dest) == ["src/a.py"]
+
+
+def test_the_top_level_directory_is_checked_against_the_expected_name(tmp_path) -> None:
+    # `{owner}-{repo}-{sha7}` is what GitHub builds; an archive under any
+    # other name is not the one asked for, and it is refused on its FIRST
+    # member, before anything is written.
+    archive = write(tmp_path, build([Member(TOP, kind=tarfile.DIRTYPE), regular("src/a.py")]))
+    dest = os.path.join(str(tmp_path), "dest")
+    stats = extract_archive(archive, dest, DEFAULT_LIMITS, expected_top_level=TOP)
+    assert stats.files_written == 1, "the expected name is accepted"
+
+    dest2 = os.path.join(str(tmp_path), "dest2")
+    with pytest.raises(FetchFailed) as raised:
+        extract_archive(archive, dest2, DEFAULT_LIMITS, expected_top_level="acme-widgets-0000000")
+    assert "top-level directory" in str(raised.value)
+    assert everything_under(dest2) == []
+
+
+def test_the_data_filter_alone_refuses_traversal(tmp_path, monkeypatch) -> None:
+    # The header check is strictly broader than `filter="data"`, so with
+    # both in place the filter never fires and its contribution is
+    # invisible (PR #52's review, L2). Neutering the header check here
+    # makes it visible: the traversal member reaches `tar.extract`, and the
+    # filter refuses it.
+    monkeypatch.setattr(archive_module, "_unsafe", lambda name: False)
+    archive = write(tmp_path, build([regular("src/a.py"), Member(f"{TOP}/../escape.py", b"escaped\n")]))
+    assert f"{TOP}/../escape.py" in listing(archive), "premise"
+
+    stats, files, _, dest = run(tmp_path, archive)
+    assert stats.skipped.get("refused_by_filter") == 1, stats.skipped
+    assert "unsafe_path" not in stats.skipped, "premise: the header check was out of the way"
+    assert everything_under(dest) == ["src/a.py"]
+    assert_nothing_outside_dest(tmp_path)
 
 
 # ---------------------------------------------------------------------
@@ -397,6 +488,153 @@ def test_the_expansion_cap_counts_the_whole_tar_stream_not_only_payloads(tmp_pat
     assert raised.value.members_seen < 4000
 
 
+def test_a_sparse_member_is_skipped_and_never_lands(tmp_path) -> None:
+    # PR #52's review, H1. tarfile materialises a sparse member by seek and
+    # truncate to its declared size: measured before the fix, a 366-byte
+    # archive of ten sparse members put 10,000,000 apparent bytes on disk
+    # while the stream counter saw 98,304, and the walk returned all ten as
+    # text. A real prefix longer than any NUL probe is the shape.
+    stored = b"# real prefix\n" + b"x" * 9000
+    archive = write(tmp_path, raw_gz(*(raw_sparse(f"{TOP}/src/s{i}.py", stored, 1_000_000) for i in range(10))))
+    assert os.path.getsize(archive) < 2048, "premise: a few hundred bytes on disk"
+    members = listing(archive)
+    assert len(members) == 10, "premise"
+    for member in members.values():
+        assert member.sparse is not None and member.isreg() and member.size == 1_000_000, "premise: sparse"
+
+    stats, files, walk_skipped, dest = run(tmp_path, archive)
+    assert stats.skipped == {"sparse": 10}
+    assert stats.files_written == 0
+    assert stats.declared_bytes == 10_000_000, "the declared size was charged even though nothing landed"
+    assert everything_under(dest) == []
+    assert files == []
+
+
+def test_a_sparse_bomb_is_rejected_on_its_declared_size(tmp_path) -> None:
+    # The same archive under a 1 MB expansion cap: the SECOND member's
+    # declared size takes the budget past the cap, whatever the stream
+    # counter says, so the extractor stops there.
+    stored = b"# real prefix\n" + b"x" * 9000
+    archive = write(tmp_path, raw_gz(*(raw_sparse(f"{TOP}/src/s{i}.py", stored, 1_000_000) for i in range(10))))
+    dest = os.path.join(str(tmp_path), "dest")
+    with pytest.raises(FetchRejected) as raised:
+        extract_archive(archive, dest, Limits(max_expanded_bytes=1 * MB))
+    assert "expands past" in raised.value.reason
+    assert raised.value.members_seen == 2, "stopped at the member that crossed the cap"
+    assert everything_under(dest) == []
+
+
+def test_a_full_disk_raises_and_leaves_no_partial_file(tmp_path, monkeypatch) -> None:
+    # PR #52's review, H2. Measured before the fix on a 300 KB tmpfs: the
+    # extractor returned normally with 5 written and 15 "unwritable", 20
+    # files were on disk of which 15 were partial, and the walk returned
+    # all 20 as complete files. Here ENOSPC is raised by a wrapped file
+    # object once 300,000 bytes have been written, which leaves the same
+    # half-written file behind that the real disk did.
+    real_open = archive_module.tarfile.bltn_open
+    written = {"bytes": 0}
+
+    def quota_open(path, mode="r", *args, **kwargs):
+        fh = real_open(path, mode, *args, **kwargs)
+        if "w" not in mode:
+            return fh
+
+        class Quota:
+            def write(self, data):
+                if written["bytes"] + len(data) > 300_000:
+                    raise OSError(errno.ENOSPC, "No space left on device")
+                written["bytes"] += len(data)
+                return fh.write(data)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                fh.close()
+
+            def __getattr__(self, name):
+                return getattr(fh, name)
+
+        return Quota()
+
+    monkeypatch.setattr(archive_module.tarfile, "bltn_open", quota_open)
+    archive = write(tmp_path, build([regular(f"src/f{i}.py", b"#" + b"a" * 51204) for i in range(20)]))
+    dest = os.path.join(str(tmp_path), "dest")
+    with pytest.raises(FetchFailed) as raised:
+        extract_archive(archive, dest, DEFAULT_LIMITS)
+    assert "No space left" in str(raised.value) and str(errno.ENOSPC) in str(raised.value)
+    sizes = {p: os.path.getsize(os.path.join(dest, p)) for p in everything_under(dest)}
+    assert sizes, "premise: some files were written before the disk filled"
+    assert all(size == 51205 for size in sizes.values()), f"a partial file remained: {sizes}"
+
+
+def test_a_full_disk_raises_and_leaves_no_partial_file_on_a_real_small_filesystem(tmp_path) -> None:
+    tiny = os.environ.get("RAG_DOC_TINY_FS")
+    if not tiny or not os.path.isdir(tiny):
+        pytest.skip("RAG_DOC_TINY_FS names no tiny filesystem; run in the container with --tmpfs")
+    archive = write(tmp_path, build([regular(f"src/f{i}.py", b"#" + b"a" * 51204) for i in range(20)]))
+    dest = os.path.join(tiny, f"dest-{uuid.uuid4().hex}")
+    try:
+        with pytest.raises(FetchFailed) as raised:
+            extract_archive(archive, dest, DEFAULT_LIMITS)
+        assert str(errno.ENOSPC) in str(raised.value)
+        sizes = {p: os.path.getsize(os.path.join(dest, p)) for p in everything_under(dest)}
+        assert all(size == 51205 for size in sizes.values()), f"a partial file remained: {sizes}"
+    finally:
+        archive_module._rmtree_quiet(dest)
+
+
+def test_a_name_shaped_write_error_is_skipped_not_fatal(tmp_path, monkeypatch) -> None:
+    # ENAMETOOLONG is about the member, not the disk: skipped and counted,
+    # and the extraction goes on.
+    real_open = archive_module.tarfile.bltn_open
+
+    def picky_open(path, mode="r", *args, **kwargs):
+        if "w" in mode and path.endswith("long.py"):
+            raise OSError(errno.ENAMETOOLONG, "File name too long")
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(archive_module.tarfile, "bltn_open", picky_open)
+    archive = write(tmp_path, build([regular("src/long.py"), regular("src/a.py")]))
+    stats, files, _, dest = run(tmp_path, archive)
+    assert stats.skipped == {"unwritable": 1}
+    assert [f.path for f in files] == ["src/a.py"]
+
+
+@pytest.mark.parametrize(
+    "label, payload",
+    [
+        ("not gzip at all", b"this is a text file, not a gzip stream\n" * 4),
+        ("a truncated gzip", None),
+        ("a gzip of garbage", gzip.compress(os.urandom(4096))),
+        ("an empty gzip", gzip.compress(b"")),
+    ],
+)
+def test_an_unreadable_archive_is_a_plain_failure(tmp_path, label: str, payload: Optional[bytes]) -> None:
+    # PR #52's review, L3: BadGzipFile, EOFError and ReadError all become
+    # FetchFailed, so 22-05 retries rather than crashing the worker loop.
+    if payload is None:
+        whole = build([regular("src/a.py", b"#" * 4000)])
+        payload = whole[: len(whole) // 2]
+    archive = write(tmp_path, payload)
+    dest = os.path.join(str(tmp_path), "dest")
+    with pytest.raises(FetchFailed) as raised:
+        extract_archive(archive, dest, DEFAULT_LIMITS)
+    assert "not a readable gzip tar" in str(raised.value), label
+
+
+def test_a_member_truncated_mid_data_is_a_plain_failure(tmp_path) -> None:
+    # The header promises 4,000 bytes; the stream ends after 100.
+    info = tarfile.TarInfo(f"{TOP}/src/cut.py")
+    info.size = 4000
+    archive = write(tmp_path, raw_gz(info.tobuf(format=tarfile.GNU_FORMAT) + b"#" * 100, end_of_archive=False))
+    dest = os.path.join(str(tmp_path), "dest")
+    with pytest.raises(FetchFailed) as raised:
+        extract_archive(archive, dest, DEFAULT_LIMITS)
+    assert "not a readable gzip tar" in str(raised.value)
+    assert everything_under(dest) == [], "the half-written member was unlinked"
+
+
 def test_more_than_twenty_thousand_indexable_files_is_rejected_at_the_cap(tmp_path) -> None:
     # 20,001 indexable files, then a hundred more the extractor must never
     # reach: `members_seen` proves it stopped at the cap, not at the end.
@@ -411,7 +649,9 @@ def test_more_than_twenty_thousand_indexable_files_is_rejected_at_the_cap(tmp_pa
     assert raised.value.members_seen == cap + 1
 
 
-def test_exactly_twenty_thousand_indexable_files_is_allowed(tmp_path) -> None:
+def test_exactly_the_file_cap_is_allowed(tmp_path) -> None:
+    # The cap is a parameter; this runs it at 50. The 20,001 case above
+    # runs the real number.
     limits = Limits(max_indexable_files=50)
     archive = write(tmp_path, build([Member(f"{TOP}/src/f{i}.py", b"#\n") for i in range(50)]))
     stats, files, _, _ = run(tmp_path, archive, limits)
@@ -460,6 +700,21 @@ def test_secret_looking_files_beside_real_code_are_never_returned_or_written(tmp
     # And the counts carry no paths.
     assert all(isinstance(v, int) for v in stats.skipped.values())
     assert "id_rsa" not in repr(stats.skipped) and ".env" not in repr(stats.skipped)
+
+
+def test_the_review_named_secret_files_are_never_written(tmp_path) -> None:
+    # PR #52's review, L6: the entries it asked to see on the list, each
+    # asserted at the extraction level rather than only by name.
+    names = [".env.production", ".npmrc", "certs/client.p12", "android/release.jks", ".git-credentials", "home/.aws/credentials"]
+    archive = write(tmp_path, build([regular("src/a.py")] + [regular(n, f"{SECRET}\n".encode()) for n in names]))
+    members = listing(archive)
+    for n in names:
+        assert f"{TOP}/{n}" in members, f"premise: {n}"
+
+    stats, files, _, dest = run(tmp_path, archive)
+    assert stats.skipped == {"secret": len(names)}
+    assert [f.path for f in files] == ["src/a.py"]
+    assert everything_under(dest) == ["src/a.py"]
 
 
 def test_a_secret_planted_on_disk_is_still_refused_by_the_walk(tmp_path) -> None:
@@ -514,13 +769,17 @@ def test_a_binary_py_file_is_skipped(tmp_path) -> None:
     assert walk_skipped == {"binary": 1}
 
 
-def test_a_nul_after_the_first_eight_kilobytes_is_not_binary(tmp_path) -> None:
-    text_then_nul = b"# " + b"a" * 9000 + b"\x00"
-    archive = write(tmp_path, build([regular("src/late.py", text_then_nul)]))
+def test_a_nul_anywhere_in_the_file_is_binary(tmp_path) -> None:
+    # PR #52's review, H3. The first cut probed 8 KB and let a late NUL
+    # through into `content`, which 22-05 writes with psycopg2 -- and a NUL
+    # is the one character psycopg2 refuses. The whole file is in memory;
+    # the whole file is checked.
+    text_then_nul = b"# " + b"a" * 9000 + b"\x00" * 100
+    archive = write(tmp_path, build([regular("src/a.py"), regular("src/late.py", text_then_nul)]))
     _, files, walk_skipped, _ = run(tmp_path, archive)
-    # It is not called binary on the NUL alone, but it is not valid UTF-8
-    # text either: the NUL decodes, so the file is returned.
-    assert [f.path for f in files] == ["src/late.py"]
+    assert [f.path for f in files] == ["src/a.py"]
+    assert walk_skipped == {"binary": 1}
+    assert all("\x00" not in f.content for f in files)
 
 
 def test_non_utf8_content_is_skipped(tmp_path) -> None:
@@ -625,28 +884,48 @@ def test_job_directory_requires_a_uuid(tmp_path) -> None:
         job_directory(str(tmp_path), "../escape")
     with pytest.raises(ValueError):
         job_directory(str(tmp_path), "not-a-uuid")
-    path = job_directory(str(tmp_path), str(uuid.uuid4()).upper())
+    job = str(uuid.uuid4())
+    path = job_directory(str(tmp_path), job.upper())
     assert os.path.isdir(path)
-    assert os.path.basename(path) == os.path.basename(path).lower(), "canonical spelling"
+    assert os.path.basename(path).startswith(job + "-"), "canonical spelling, then the random suffix"
     assert os.path.dirname(path) == str(tmp_path)
 
 
-def test_job_directory_starts_fresh(tmp_path) -> None:
+def test_job_directory_is_unique_per_call(tmp_path) -> None:
+    # PR #52's review, M1: two processes on one host holding the same job
+    # (a reclaim racing a stale attempt) must not share a tree by path.
     job = str(uuid.uuid4())
     first = job_directory(str(tmp_path), job)
-    with open(os.path.join(first, "leftover"), "w", encoding="utf-8") as fh:
+    with open(os.path.join(first, "stale"), "w", encoding="utf-8") as fh:
         fh.write("x")
     second = job_directory(str(tmp_path), job)
-    assert first == second
-    assert os.listdir(second) == []
+    assert first != second
+    assert os.path.isdir(first) and os.path.isdir(second)
+    assert os.listdir(second) == [], "the new attempt starts empty"
+    assert os.listdir(first) == ["stale"], "and the stale attempt's tree is untouched"
+
+
+def test_sweep_removes_only_the_stale_directory_of_a_job(tmp_path) -> None:
+    job = str(uuid.uuid4())
+    stale = job_directory(str(tmp_path), job)
+    fresh = job_directory(str(tmp_path), job)
+    from datetime import datetime, timedelta
+
+    old = (datetime.now() - timedelta(days=2)).timestamp()
+    os.utime(stale, (old, old))
+    assert sweep_stale_workdirs(str(tmp_path), timedelta(hours=1)) == 1
+    assert not os.path.exists(stale)
+    assert os.path.isdir(fresh)
 
 
 def test_gzip_stream_is_read_through_the_counter(tmp_path) -> None:
     # The counted expansion is the tar stream: for a tiny archive that is
     # tarfile's 10 KB record, more than the 1-byte payload and less than
-    # the 1 MB cap.
+    # the 1 MB cap. The declared budget is the payload alone.
     archive = write(tmp_path, build([regular("src/a.py", b"#")]))
     stats, _, _, _ = run(tmp_path, archive)
     assert stats.payload_bytes == 1
+    assert stats.declared_bytes == 1
     assert 1 < stats.expanded_bytes <= 64 * 1024
-    assert gzip.open(archive).read()  # the file is a real gzip stream
+    with gzip.open(archive) as g:
+        assert g.read()  # the file is a real gzip stream

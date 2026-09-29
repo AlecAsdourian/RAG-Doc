@@ -5,9 +5,12 @@ An archive holds only TRACKED files, so `.gitignore` protects nothing
 indexed. Three kinds, in the order they are checked:
 
 1. **Secret-looking files (U7).** Never sent to OpenAI, never stored, never
-   written to the worker's disk. A deny-list by base name, case-insensitive.
-   It misses secrets pasted into ordinary source files; the user chose this
-   over content scanning for v1 (U7, option A).
+   written to the worker's disk. A deny-list by base name, case-insensitive,
+   plus one path rule (`.aws/credentials`). It misses secrets pasted into
+   ordinary source files -- a key inside `README.md` or `config.py` is
+   indexed; the user chose this over content scanning for v1 (U7, option A),
+   and 22-CONTEXT.md records the measured gap for the retrieval-quality
+   track.
 2. **Vendored and generated code.** Directories such as `vendor/` and
    `node_modules/`, files such as `*.min.js` and `*_pb2.py`, lockfiles, and
    Go files whose first 20 lines carry the canonical generated-code header.
@@ -30,7 +33,11 @@ from fnmatch import fnmatchcase
 from typing import NamedTuple, Optional
 
 #: U7's deny-list, by base name, matched case-insensitively.
-SECRET_NAMES = frozenset({".env", ".npmrc", ".pypirc", ".netrc"})
+SECRET_NAMES = frozenset({".env", ".npmrc", ".pypirc", ".netrc", ".git-credentials"})
+
+#: The one PATH rule: a file named `credentials` inside a `.aws` directory,
+#: wherever that directory sits (PR #52's review, L6).
+SECRET_PATHS = frozenset({(".aws", "credentials")})
 SECRET_PATTERNS = (
     ".env.*",
     "*.pem",
@@ -101,6 +108,8 @@ def classify_path(path: str) -> Verdict:
     lower = basename.lower()
 
     if is_secret_name(lower):
+        return Verdict(False, "secret", None)
+    if len(parts) >= 2 and (parts[-2].lower(), lower) in SECRET_PATHS:
         return Verdict(False, "secret", None)
     if any(directory.lower() in VENDORED_DIRS for directory in parts[:-1]):
         return Verdict(False, "vendored", None)

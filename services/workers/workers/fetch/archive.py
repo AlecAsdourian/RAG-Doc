@@ -15,31 +15,42 @@ WHAT HAPPENS, IN ORDER (`fetch_repository`):
    which `ingestion_runs.commit_sha` needs. The branch name is never what
    gets downloaded.
 2. **Download** `GET /repos/{full_name}/tarball/{sha}` -- the exact
-   commit -- streamed to `workdir/<job_id>/archive.tar.gz`, with
+   commit -- streamed to `<job dir>/archive.tar.gz`, with
    `Authorization: Bearer <token>` on the API request only. GitHub answers
    with a redirect to a download host; `httpx` strips `Authorization` when
    the host changes, and `test_fetch_client.py` MEASURES that rather than
    assuming it. Downloaded bytes are counted and the download is refused
-   past `Limits.max_archive_bytes`.
-3. **Extract**, streaming, member by member, into `workdir/<job_id>/tree/`.
+   past `Limits.max_archive_bytes`. (`iter_bytes` counts DECODED bytes,
+   which is stricter than the wire if the host ever compresses the stream
+   again; recorded, not relied on.)
+3. **Extract**, streaming, member by member, into `<job dir>/tree/`. The
+   first member's top-level directory must be the `{owner}-{repo}-{sha7}`
+   GitHub builds, or the archive is refused as not the one asked for.
    Before a member is written its HEADER is checked: regular files only
-   (symlinks, hardlinks, devices and FIFOs are skipped and counted); a
-   safe path (no `..`, no absolute path, no drive letter, no backslash, and
-   the one top-level directory GitHub's archives have); size within
-   `Limits.max_file_bytes` (oversize files are skipped and counted); and
-   the name filters (a `.env` is never written to disk). Then
+   (symlinks, hardlinks, devices and FIFOs are skipped and counted); its
+   DECLARED size is charged to the expansion budget; a sparse member is
+   skipped (a sparse header lands its declared size on disk from almost
+   nothing -- PR #52's review, H1); a safe path (no `..`, no absolute path,
+   no drive letter, no backslash, and the one top-level directory); size
+   within `Limits.max_file_bytes` (oversize files are skipped and counted);
+   and the name filters (a `.env` is never written to disk). Then
    `tar.extract(..., filter="data")`, which refuses absolute paths, `..`
    and links on its own -- defence in depth, and the mutation table in
    22-04-SUMMARY.md records which guard holds when the other is removed.
-   **The bomb guard**: the bytes the gzip stream expands to are counted as
-   they are read, and the extraction stops -- within one read of the cap,
-   not after reading it all -- past `Limits.max_expanded_bytes`. U6 as
-   locked by the user on 2026-09-17 applies the same 500 MB to both the
-   download and the expansion.
+   **The bomb guard is two counters against one cap**: the bytes the gzip
+   stream expands to, counted as they are read (so a header bomb is caught
+   within one read), AND the sum of the members' declared sizes, charged
+   before each member is written (so what LANDS is bounded, not only what
+   streams). U6 as locked by the user on 2026-09-17 applies the same 500 MB
+   to both the download and the expansion.
+   **A write that fails for any reason but the name** -- a full disk, an
+   I/O error, a permission -- raises `FetchFailed` after unlinking the
+   half-written file (PR #52's review, H2): a silently truncated tree
+   indexed as complete is worse than a retried job.
 4. **Walk** the tree with `os.walk(followlinks=False)`, `lstat` on every
    file, judging what is ON DISK: the name filters again, then the content
-   checks -- a NUL in the first 8 KB or a failed UTF-8 decode is binary;
-   a Go file with the generated-code header is generated.
+   checks -- a NUL anywhere in the file, or a failed UTF-8 decode, is
+   binary; a Go file with the generated-code header is generated.
 5. **Cap** indexable files at `Limits.max_indexable_files`, at extraction
    time (the count of files written, which bounds directory entries against
    an inode bomb) and again after the walk.
@@ -49,8 +60,11 @@ WHAT HAPPENS, IN ORDER (`fetch_repository`):
 
 CLEANUP. `fetch_repository` is a context manager: the job's directory is
 removed on exit, success or failure, and never asserts anything on the way
-out. `sweep_stale_workdirs` removes job directories older than a bound that
-no live job can reach; 22-05 calls it when the worker starts.
+out. The directory is `mkdtemp`'d under `<job id>-`, so two processes on one
+host holding the same job (a reclaim racing a stale attempt) cannot write
+into each other's tree by path (PR #52's review, M1). `sweep_stale_workdirs`
+removes job directories older than a bound no live job can reach; 22-05
+calls it when the worker starts.
 
 NOTHING HERE LOGS A URL. The download link may carry a credential of its
 own ([not verified], 22-RESEARCH Q8), so every message names a HOST, a
@@ -64,6 +78,7 @@ in one attempt (U6). `FetchFailed` is an ordinary failure: retried.
 
 from __future__ import annotations
 
+import errno
 import gzip
 import logging
 import os
@@ -71,8 +86,10 @@ import re
 import shutil
 import stat
 import tarfile
+import tempfile
 import time
 import uuid
+import zlib
 from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -114,11 +131,27 @@ USER_AGENT = "rag-doc-worker"
 
 MB = 1024 * 1024
 
-#: The bytes of a file examined for a NUL before it is called text.
-NUL_PROBE_BYTES = 8192
-
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _DRIVE = re.compile(r"^[A-Za-z]:")
+
+#: A job directory is `<uuid>-<random>`; only names of that shape are ours
+#: to sweep.
+_JOB_DIR = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-")
+
+#: Write errors that are about the NAME being written, not the disk: the
+#: member is skipped and counted. Anything else -- ENOSPC, EIO, EACCES,
+#: EROFS, EDQUOT, EMFILE, ... -- means the tree cannot be trusted, and the
+#: extraction fails loudly.
+_SKIPPABLE_WRITE_ERRNOS = frozenset(
+    {
+        errno.ENAMETOOLONG,
+        errno.EINVAL,  # a name the filesystem refuses (Windows: `?`, `:`, reserved names)
+        errno.ENOTDIR,  # a path component is a file the archive itself wrote
+        errno.EISDIR,  # the target is a directory the archive itself made
+        errno.EEXIST,
+        errno.ELOOP,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -149,7 +182,10 @@ class FetchRejected(Exception):
 
 
 class FetchFailed(Exception):
-    """A download or API call failed. An ordinary, retryable failure."""
+    """A download, an API call, an unreadable archive or a write failed.
+
+    An ordinary, retryable failure.
+    """
 
 
 class FetchedFile(NamedTuple):
@@ -177,6 +213,9 @@ class ExtractStats:
     members_seen: int = 0
     #: Bytes the gzip stream expanded to (the tar stream, headers included).
     expanded_bytes: int = 0
+    #: Sum of the regular members' DECLARED sizes -- what a full extraction
+    #: would put on disk, sparse members included. The second bomb guard.
+    declared_bytes: int = 0
     #: Bytes of file content actually written to disk.
     payload_bytes: int = 0
     files_written: int = 0
@@ -317,10 +356,13 @@ def download_archive(
 class _CountingReader:
     """Feeds tarfile from the gzip stream, counting the bytes it expands to.
 
-    THIS IS THE BOMB GUARD. The count is the tar stream -- headers, padding
-    and payload alike -- so a bomb made of headers is caught as surely as
-    one made of zeros, and the check runs on every read, so it trips within
-    one buffer of the cap rather than after the whole stream.
+    THIS IS THE FIRST BOMB GUARD. The count is the tar stream -- headers,
+    padding and payload alike -- so a bomb made of headers is caught as
+    surely as one made of zeros, and the check runs on every read, so it
+    trips within one buffer of the cap rather than after the whole stream.
+    The second guard, the declared-size budget in `extract_archive`, is what
+    bounds what LANDS: a sparse member streams almost nothing and lands its
+    declared size.
     """
 
     def __init__(self, raw: Any, cap: int, stats: ExtractStats) -> None:
@@ -362,75 +404,142 @@ def _member_kind(member: tarfile.TarInfo) -> str:
     return "other"
 
 
-def extract_archive(archive_path: str, dest: str, limits: Limits = DEFAULT_LIMITS) -> ExtractStats:
+def _unlink_quiet(path: Optional[str]) -> None:
+    if not path:
+        return
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def extract_archive(
+    archive_path: str,
+    dest: str,
+    limits: Limits = DEFAULT_LIMITS,
+    *,
+    expected_top_level: Optional[str] = None,
+) -> ExtractStats:
     """Extract the regular files that pass every check into `dest`, streaming.
 
-    See the module docstring, step 3. Raises `FetchRejected` at a cap.
+    See the module docstring, step 3. Raises `FetchRejected` at a cap and
+    `FetchFailed` for an archive that cannot be read, is not the expected
+    one, or cannot be written for a reason other than a member's name.
     """
     stats = ExtractStats()
     skipped: Counter = Counter()
     os.makedirs(dest, exist_ok=True)
     real_dest = os.path.realpath(dest)
+    cap_mb = limits.max_expanded_bytes // MB
+    target: Optional[str] = None
 
-    with gzip.open(archive_path, "rb") as raw:
-        reader = _CountingReader(raw, limits.max_expanded_bytes, stats)
-        with tarfile.open(fileobj=reader, mode="r|") as tar:
-            for member in tar:
-                stats.members_seen += 1
+    try:
+        with gzip.open(archive_path, "rb") as raw:
+            reader = _CountingReader(raw, limits.max_expanded_bytes, stats)
+            # errorlevel=2: every extraction problem surfaces as an
+            # exception here rather than a logged line, so nothing about a
+            # member can go wrong quietly.
+            with tarfile.open(fileobj=reader, mode="r|", errorlevel=2) as tar:
+                for member in tar:
+                    stats.members_seen += 1
+                    target = None
 
-                if member.isdir():
-                    # Structure, not content; parents are created on demand.
-                    continue
-                if not member.isreg():
-                    skipped[_member_kind(member)] += 1
-                    continue
-                if _unsafe(member.name):
-                    skipped["unsafe_path"] += 1
-                    continue
+                    # GitHub's archives put everything under one directory,
+                    # `{owner}-{repo}-{sha7}`. The FIRST member fixes it, and
+                    # when the caller knows what it must be, it is checked:
+                    # an archive under another name is not the one asked for.
+                    top, _, rel = member.name.partition("/")
+                    if stats.top_level is None:
+                        if expected_top_level is not None and top != expected_top_level:
+                            raise FetchFailed(
+                                f"archive top-level directory is not the expected "
+                                f"{expected_top_level!r}"
+                            )
+                        stats.top_level = top
 
-                # GitHub's archives put everything under one directory,
-                # `owner-repo-sha/`. Strip it, and refuse a second one.
-                top, _, rel = member.name.partition("/")
-                if not rel:
-                    skipped["unexpected_top_level"] += 1
-                    continue
-                if stats.top_level is None:
-                    stats.top_level = top
-                elif top != stats.top_level:
-                    skipped["unexpected_top_level"] += 1
-                    continue
+                    if member.isdir():
+                        # Structure, not content; parents are created on demand.
+                        continue
+                    if not member.isreg():
+                        skipped[_member_kind(member)] += 1
+                        continue
 
-                if member.size > limits.max_file_bytes:
-                    skipped["oversize_file"] += 1
-                    continue
+                    # THE SECOND BOMB GUARD: what this member would put on
+                    # disk, charged before anything else is decided about it.
+                    stats.declared_bytes += member.size
+                    if stats.declared_bytes > limits.max_expanded_bytes:
+                        stats.skipped = dict(skipped)
+                        raise FetchRejected(
+                            f"archive expands past {cap_mb} MB", members_seen=stats.members_seen
+                        )
+                    if member.sparse is not None:
+                        # tarfile materialises a sparse member by seek and
+                        # truncate to its declared size: megabytes on disk
+                        # from a few bytes of stream. `git archive` never
+                        # emits one, so it is never a real repository.
+                        skipped["sparse"] += 1
+                        continue
 
-                verdict = filters.classify_path(rel)
-                if not verdict.indexable:
-                    # Never written. A committed `.env` does not touch the disk.
-                    skipped[verdict.reason] += 1
-                    continue
+                    if _unsafe(member.name):
+                        skipped["unsafe_path"] += 1
+                        continue
+                    if not rel or top != stats.top_level:
+                        skipped["unexpected_top_level"] += 1
+                        continue
+                    if member.size > limits.max_file_bytes:
+                        skipped["oversize_file"] += 1
+                        continue
 
-                if stats.files_written >= limits.max_indexable_files:
-                    stats.skipped = dict(skipped)
-                    raise FetchRejected(
-                        f"more than {limits.max_indexable_files} indexable files",
-                        members_seen=stats.members_seen,
-                    )
+                    verdict = filters.classify_path(rel)
+                    if not verdict.indexable:
+                        # Never written. A committed `.env` does not touch the disk.
+                        skipped[verdict.reason] += 1
+                        continue
 
-                try:
-                    tar.extract(
-                        member.replace(name=rel), path=real_dest, set_attrs=False, filter="data"
-                    )
-                except tarfile.FilterError:
-                    # The header check above should have caught it; this is
-                    # the second guard doing its job.
-                    skipped["refused_by_filter"] += 1
-                    continue
-                except (tarfile.TarError, OSError):
-                    skipped["unwritable"] += 1
-                    continue
-                stats.files_written += 1
-                stats.payload_bytes += member.size
+                    if stats.files_written >= limits.max_indexable_files:
+                        stats.skipped = dict(skipped)
+                        raise FetchRejected(
+                            f"more than {limits.max_indexable_files} indexable files",
+                            members_seen=stats.members_seen,
+                        )
+
+                    target = os.path.join(real_dest, rel)
+                    try:
+                        tar.extract(
+                            member.replace(name=rel),
+                            path=real_dest,
+                            set_attrs=False,
+                            filter="data",
+                        )
+                    except tarfile.FilterError:
+                        # The header check above should have caught it; this
+                        # is the second guard doing its job.
+                        skipped["refused_by_filter"] += 1
+                        continue
+                    except (tarfile.TarError, gzip.BadGzipFile, EOFError, zlib.error):
+                        # The archive, not the disk: classified below.
+                        raise
+                    except OSError as exc:
+                        # ⚠ A half-written file must not stay: a full disk
+                        # that left 40,960 of 51,205 bytes behind was walked
+                        # and indexed as a complete file (PR #52's review).
+                        _unlink_quiet(target)
+                        if exc.errno in _SKIPPABLE_WRITE_ERRNOS:
+                            skipped["unwritable"] += 1
+                            continue
+                        raise FetchFailed(
+                            f"writing the tree failed at member {stats.members_seen}: "
+                            f"{exc.strerror or type(exc).__name__} (errno {exc.errno})"
+                        ) from None
+                    target = None
+                    stats.files_written += 1
+                    stats.payload_bytes += member.size
+    except (tarfile.TarError, gzip.BadGzipFile, EOFError, zlib.error) as exc:
+        _unlink_quiet(target)
+        stats.skipped = dict(skipped)
+        raise FetchFailed(
+            f"the archive is not a readable gzip tar: {type(exc).__name__}"
+        ) from None
 
     stats.skipped = dict(skipped)
     return stats
@@ -465,7 +574,11 @@ def collect_tree(
                 continue
             with open(full, "rb") as fh:
                 raw = fh.read(limits.max_file_bytes + 1)
-            if b"\x00" in raw[:NUL_PROBE_BYTES]:
+            # Anywhere, not in a probe: the whole file is in memory, a NUL
+            # breaks the psycopg2 write 22-05 makes of `content`, and a
+            # text prefix longer than any probe is how a sparse member and
+            # a padded binary look (PR #52's review, H3).
+            if b"\x00" in raw:
                 skipped["binary"] += 1
                 continue
             try:
@@ -488,12 +601,16 @@ def collect_tree(
 
 
 def job_directory(workdir: str, job_id: str) -> str:
-    """`workdir/<job_id>/`, fresh. The id must be a UUID, so it cannot traverse."""
+    """A fresh `workdir/<job_id>-<random>/`, unique per call.
+
+    Keyed on the job id AND a random suffix (`mkdtemp`), so two processes
+    on one host holding the same job -- a reclaim racing a stale attempt --
+    cannot write into each other's tree by path. The id must be a UUID, so
+    it cannot traverse.
+    """
     canonical = str(uuid.UUID(str(job_id)))
-    path = os.path.join(workdir, canonical)
-    _rmtree_quiet(path)
-    os.makedirs(path)
-    return path
+    os.makedirs(workdir, exist_ok=True)
+    return tempfile.mkdtemp(prefix=f"{canonical}-", dir=workdir)
 
 
 def _rmtree_quiet(path: str) -> None:
@@ -516,8 +633,10 @@ def _rmtree_quiet(path: str) -> None:
 def sweep_stale_workdirs(workdir: str, older_than: timedelta) -> int:
     """Remove job directories older than `older_than`. Returns how many.
 
-    Only directories named by a UUID are ours to remove; anything else in
-    `workdir` is left alone, as is a symlink of any name.
+    Only directories named `<uuid>-<suffix>` are ours to remove; anything
+    else in `workdir` is left alone, as is a symlink of any name. A job
+    with two directories (a stale attempt and a reclaim) loses only the
+    stale one, because age is judged per directory.
     """
     if not os.path.isdir(workdir):
         return 0
@@ -526,9 +645,7 @@ def sweep_stale_workdirs(workdir: str, older_than: timedelta) -> int:
     for entry in os.scandir(workdir):
         if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
             continue
-        try:
-            uuid.UUID(entry.name)
-        except ValueError:
+        if not _JOB_DIR.match(entry.name):
             continue
         if entry.stat(follow_symlinks=False).st_mtime > cutoff:
             continue
@@ -542,6 +659,12 @@ def sweep_stale_workdirs(workdir: str, older_than: timedelta) -> int:
 # ---------------------------------------------------------------------
 # The whole thing
 # ---------------------------------------------------------------------
+
+
+def expected_top_level_for(full_name: str, sha: str) -> str:
+    """The directory GitHub puts an archive under: `{owner}-{repo}-{sha7}`."""
+    owner, _, repo = full_name.partition("/")
+    return f"{owner}-{repo}-{sha[:7]}"
 
 
 @contextmanager
@@ -565,6 +688,10 @@ def fetch_repository(
     try:
         if timeout is None:
             timeout = httpx.Timeout(30.0, read=120.0)
+        # trust_env stays at its default here, unlike the token client in
+        # workers.fetch.client: an egress proxy for GitHub is a legitimate
+        # deployment, and this traffic is HTTPS through a CONNECT tunnel,
+        # so a proxy sees the host and never the token.
         with httpx.Client(follow_redirects=True, transport=transport, timeout=timeout) as client:
             sha = resolve_head(
                 client, token.full_name, token.default_branch, token.token, api_base=api_base
@@ -576,19 +703,24 @@ def fetch_repository(
             )
 
         tree_dir = os.path.join(jobdir, "tree")
-        extract = extract_archive(archive, tree_dir, limits)
+        extract = extract_archive(
+            archive, tree_dir, limits,
+            expected_top_level=expected_top_level_for(token.full_name, sha),
+        )
         os.remove(archive)
         files, walk_skipped = collect_tree(tree_dir, limits)
 
         skipped: Counter = Counter(extract.skipped)
         skipped.update(walk_skipped)
         logger.info(
-            "fetched %s@%s: %d indexable files, %d members, %d bytes expanded, skipped=%s",
+            "fetched %s@%s: %d indexable files, %d members, %d bytes expanded "
+            "(%d declared), skipped=%s",
             token.full_name,
             sha[:12],
             len(files),
             extract.members_seen,
             extract.expanded_bytes,
+            extract.declared_bytes,
             dict(sorted(skipped.items())),
         )
         yield FetchedTree(

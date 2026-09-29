@@ -42,6 +42,7 @@ SECRET_EXAMPLES = [
     ("credentials*.json (suffixed)", "credentials-prod.json"),
     ("service-account*.json", "service-account.json"),
     ("service-account*.json (suffixed)", "service-account-ci.json"),
+    (".git-credentials", ".git-credentials"),
 ]
 
 
@@ -56,6 +57,19 @@ def test_each_deny_list_entry_refuses_its_example(rule: str, name: str) -> None:
 @pytest.mark.parametrize("name", ["ID_RSA", "Server.PEM", ".ENV", ".Env.Local"])
 def test_the_deny_list_is_case_insensitive(name: str) -> None:
     assert classify_path(name).reason == "secret"
+
+
+@pytest.mark.parametrize("path", [".aws/credentials", "home/deploy/.aws/credentials", ".AWS/Credentials"])
+def test_aws_credentials_are_a_secret_wherever_the_directory_sits(path: str) -> None:
+    assert classify_path(path).reason == "secret"
+
+
+def test_the_aws_rule_is_the_credentials_file_only() -> None:
+    # `.aws/config` holds region and profile names, not keys, and a file
+    # merely named `credentials` elsewhere is judged by its extension.
+    assert classify_path(".aws/config").reason == "unsupported"
+    assert classify_path("src/credentials").reason == "unsupported"
+    assert classify_path("credentials.py").indexable, "the content-level gap, recorded in 22-CONTEXT U7"
 
 
 def test_a_secret_beats_every_other_rule() -> None:
