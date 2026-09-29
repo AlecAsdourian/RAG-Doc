@@ -147,7 +147,95 @@ that misses a chunk exact search finds is *not* explained by anything above:
 
 ## The baseline
 
-*(filled in after the Qdrant-era baseline is recorded)*
+Recorded 2026-09-29, on the code as 22-02 left it plus the instrumentation
+committed in `9bd404b` (after the rule, `e87cbf1`). Nothing in the read path
+had changed: the vector leg was Qdrant's. The records are committed, gzipped,
+in `22-03-records/`; `compare_runs.py` reads them as they are.
+
+**Scratch stores, on free ports, removed after the verdict.** A fresh
+`pgvector/pgvector:pg16@sha256:ccc6e83d…` (`rag2203-pg`, 127.0.0.1:61797,
+`--shm-size=1g`) with `migrate … up` to 17 clean (64 partitions, pgvector
+0.8.6) and `rag_doc_app` created `NOSUPERUSER NOBYPASSRLS` with the Python
+harness's grants; a scratch `qdrant/qdrant:latest` (`rag2203-qdrant`,
+127.0.0.1:61799), empty. Port 5434 and compose's stores were never touched;
+the guard was shown refusing `--ingest` and `--clear` on them from the CLI
+(exit 1, before any connection) before the first ingest.
+
+**Ingest, as the superuser** (`--corpus <c> --corpora-dir <path> --fetch
+--check`, then `--ingest`), one embedding call per batch, each vector written
+to both stores (P15's transition):
+
+| corpus | files | chunks | embeddings | chunks without a Qdrant point | plan said |
+|---|---|---|---|---|---|
+| self | 74 | 534 | 534 | 0 | — |
+| miniflux (76889f08) | 335 | 2,134 | 2,122 | **12** | 12 |
+| mealie (84b2677f) | 390 | 2,816 | 2,736 | **80** | 80 |
+
+The three corpora sit under the harness's one organization, so one
+partition, `chunks_p0`, holds all 5,484 rows.
+
+**The Qdrant point set** (`--qdrant-ids`, `qdrant_ids-<c>.json`): 534, 2,122
+and 2,736 point ids, scrolled with the repository filter; the counts above
+are `postgres_chunks − points`.
+
+**The query vectors** (`vecs.json`): 130 questions (40 `self`, 45 miniflux,
+45 mealie), each embedded **once**, with `text-embedding-ada-002`, in three
+batch calls during the `--exact` step; every later run read the file and
+embedded nothing (`0 embedded now` in each log). 1,536 dimensions each.
+
+**The exact lists** (`--exact`, `exact-<c>.json`), as `rag_doc_app`
+(`rolsuper=false, rolbypassrls=false`) under the harness tenant, with
+`enable_indexscan` and `enable_bitmapscan` off, filtered by repository and
+`embedding_model = 'text-embedding-ada-002'`, from the cached vectors. The
+recorded plan on every corpus: `Limit → Sort (embedding <=> '[…]'::vector,
+id) → Append, Subplans Removed: 63 → Seq Scan on chunks_p0` — exact search,
+pruned to the one partition by the policy. Top 50 per question plus the
+chunks tied with the 50th: 0 tail ties in `self`, 2 in miniflux, 36 in
+mealie (the duplicate groups), every tail complete.
+
+**The measurement** (`--measure --set all --query-vectors vecs.json --record
+baseline-<c>.jsonl`), with `DATABASE_URL` carrying
+`options=-c role=rag_doc_app`. Every record header says `vector_backend:
+qdrant`, `harness_commit: 9bd404b`, `top_k: 5`, no boost config, and the
+measuring connection `current_user = rag_doc_app` (session user `scratch`),
+`rolsuper = false`, `rolbypassrls = false`. 130 question records, **0
+errors**, 130 distinct query-vector hashes, 50 entries in every vector leg,
+5 in every `top`.
+
+**Aggregates under the Qdrant read path**, reported and not judged
+(`recall@5`, rank-1, MRR; symbol level where questions name a symbol):
+
+| corpus | set | file recall@5 | file #1 | file MRR | symbol recall@5 | symbol #1 | symbol MRR |
+|---|---|---|---|---|---|---|---|
+| self | all (40) | 32/40 | 21 | 0.643 | — | — | — |
+| miniflux | all (45) | 30/45 | 17 | 0.489 | 25/45 | 11 | 0.353 |
+| mealie | all (45) | 33/45 | 15 | 0.475 | 24/45 | 9 | 0.301 |
+
+(`compare_runs.py` prints them per set as well.)
+
+**Two things the baseline shows about the comparison itself.**
+
+- **The keyword leg is empty for 30 of 40 `self` questions and for all 90
+  benchmark questions** (ISS-029: `plainto_tsquery` demands every word). So
+  on the benchmark corpora the final ranking *is* the vector leg's order
+  through fusion and boosts, and the gate is almost entirely a test of the
+  vector leg. That is the rule's subject, so nothing changes; it is written
+  here so the numbers are read correctly.
+- **The keyword leg's two predicate shapes plan identically.** Measured on
+  the scratch data as `rag_doc_app` before anything was changed
+  (`explain_fts_shapes.py`): 22-02's `ingestion_run_id = <latest run>` and
+  22-03's `repository_id = <repo>` both give `Limit → Sort → Append
+  (Subplans Removed: 63) → Bitmap Heap Scan on chunks_p0 (Filter: the policy
+  and the two tsvector predicates) → Bitmap Index Scan` on the respective
+  btree. The sort therefore receives the same rows in the same (heap) order
+  either way, which is what decides the order of equal `ts_rank_cd` scores.
+  Neither shape consults the GIN indexes on this data, which is why the
+  breadcrumb-index proof needs its own shape (Task 2).
+
+`hnsw.ef_search` and `hnsw.iterative_scan` read as unset in the baseline
+headers: pgvector registers its parameters when its library loads, which had
+not happened on the fresh header connection. The candidate's harness loads it
+first. The baseline never set either; the read path was Qdrant's.
 
 ## The candidate and the verdict
 
