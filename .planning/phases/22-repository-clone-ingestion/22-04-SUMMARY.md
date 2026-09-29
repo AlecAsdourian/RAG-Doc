@@ -68,9 +68,9 @@ key-decisions:
   - "httpx's and httpcore's loggers are held at WARNING by the fetcher, because httpx logs every request URL at INFO, redirect link and ?token= included (measured)"
 
 issues-closed: []
-issues-updated: []
-review: "PR #52 — opened 2026-09-29; the PR body maps every clause of A8 to its test and lists the checklist items with how each was run."
-duration: ~9h
+issues-updated: [ISS-037 (filed)]
+review: "PR #52 — reviewer A (security, token route): APPROVE WITH NITS; M1–M8 re-run and killed, no cross-serving path, byte-identical 404 with no timing oracle (516.7µs vs 516.8µs medians); three lows and five nits. Reviewer B (fetcher, tests, docs): CHANGES REQUESTED; two highs in the extractor (H1 sparse members bypass the expansion cap, H2 a full disk yields a truncated tree indexed as complete), a medium (a NUL past the probe), a lifecycle medium (job directories keyed on the id alone), nine lows; mealie reproduced with every figure identical, tests/fetch 141/141 on 3.12 and 3.11. Everything applied 2026-09-29 in 4787148 (A) and fbf1362 (B); each high reproduced in a container before the fix and measured after. Section 14."
+duration: ~9h, plus ~5h applying the two reviews
 completed: 2026-09-29
 ---
 
@@ -140,6 +140,25 @@ read every running job's lease and obtain tokens for those repositories —
 still one repository, read-only, an hour) and Phase 24's requirement that the
 address is never published.
 
+**Since the review:** the listener **refuses to bind every interface**
+(`:8081`, `0.0.0.0`, `::`, the `inet_aton` shorthands) unless
+`INTERNAL_ADDR_ALLOW_ALL_INTERFACES=true` is set, and then warns on every
+start; compose binds the service name (`INTERNAL_ADDR=backend:8081`).
+`internalapi.CheckListenAddr` judges it and `listen_addr_test.go` pins the
+spellings. The body is parsed **exactly** — one object, one `lease_owner`, one
+non-empty string, no repeated key, no trailing bytes (`parseLeaseBody`,
+`lease_body_test.go`, four more cases in Scenario5). The listener logs through
+the same `slog` handler `LOG_FORMAT` gives the public side. And **the lease
+gates issuance, not validity** — measured by reviewer A: after the lease
+expires the route refuses, but a token it already issued stays valid for
+GitHub's hour — so 22-05 revokes it (`DELETE /installation/token`, authenticated
+by the token itself) when the fetch ends and on `LeaseLost`. The worker's
+token client is built with `trust_env=False`: `httpx` would otherwise route the
+lease owner and the token through an `HTTP_PROXY` from the environment, and a
+forward proxy relays the marker, so nothing would fail loudly
+(`test_the_token_client_ignores_proxy_environment_variables`, against a real
+recording proxy).
+
 ## 2. The token's scoping, as observed
 
 `RepositoryToken` posts, through the new body-carrying path (`doJSON` →
@@ -162,11 +181,25 @@ substring. The mint is signed with the App JWT; the follow-up
 **Beyond the plan, fail-closed on what GitHub reports back:** the response
 must list exactly the requested repository, `contents` must be `read`, and no
 permission beyond `contents` and `metadata` may appear (GitHub always adds
-`metadata: read`). Six refusals in `TestRepositoryToken_RefusesAScopeWiderThanAsked`,
-and a refused token is never used for the lookup. **Inferred**, from GitHub's
-documentation of the access-tokens response; verified against the fake; 22-05's
-live proof is what confirms it against the real API. If the real response
-omits `repositories`, the client refuses and 22-05 will see it at once.
+`metadata: read`). Eight refusals in `TestRepositoryToken_RefusesAScopeWiderThanAsked`,
+each naming its own cause — since the review, "no `repositories` field" and
+"no `permissions` object" are distinct from "0 repositories" and
+`contents=""`, so 22-05's live proof can read which happened — and a refused
+token is never used for the lookup. **Inferred**, from GitHub's documentation
+of the access-tokens response; verified against the fake; 22-05's live proof
+is what confirms it against the real API. Reviewer A confirmed the check would
+refuse a valid real response only if GitHub omitted `permissions` entirely,
+omitted `repositories` despite `repository_ids`, or added an implicit
+permission other than `metadata` — all loud first-mint failures naming the
+cause. The lookup error is redacted **by value as well as by prefix**, and the
+by-value rule redacts any run of eight or more characters that is a prefix of
+the token: `request()` keeps 300 bytes of an upstream body, so an echoed
+387-character token is truncated, and the test for this found an exact-match
+redaction letting 270 characters through
+(`TestRepositoryToken_LookupErrorRedactsTheTokenByValue`,
+`TestRedactValues_CoversATruncatedEcho`). `GET /repositories/{id}` is the
+undocumented by-id alias; the fallback, `GET /repos/{full_name}` from the mint
+reply's `repositories[0].full_name`, is noted beside it for 22-05.
 
 `ScopedToken` excludes the token from JSON (`json:"-"`) and from `%v`, `%+v`,
 `%s`, `%#v`, `Sprint` and `String()`; the route copies it into its own
@@ -188,14 +221,29 @@ B's job id gets the same 404, GitHub receives no mint request, and B's own
 | Cap | Where | How |
 |---|---|---|
 | 500 MB downloaded | `download_archive` | streamed to `workdir/<job_id>/archive.tar.gz`; bytes counted per chunk and the download rejected past the cap (within one chunk); a `Content-Length` above the cap is rejected before reading |
-| 500 MB expanded | `extract_archive` | `_CountingReader` feeds `tarfile` (stream mode, `r|`) from the gzip stream and counts **the bytes the stream expands to** — headers, padding and payload — raising within one read of the cap. A header bomb (4,000 empty members = 2 MB of headers) trips it as surely as a zero bomb |
+| 500 MB expanded | `extract_archive` | **Two counters against one cap.** `_CountingReader` feeds `tarfile` (stream mode, `r|`) from the gzip stream and counts **the bytes the stream expands to** — headers, padding and payload — raising within one read of the cap; a header bomb (4,000 empty members = 2 MB of headers) trips it as surely as a zero bomb. And every regular member's **declared size** is charged to `declared_bytes` before the member is written — the bytes that would **land** — because a sparse member streams a few bytes and lands its declared size (reviewer B's H1: a 366-byte archive put 10,000,000 apparent bytes on disk while the stream counter saw 98,304). Sparse members are skipped besides; `git archive` never emits one |
 | 1 MB per file | `extract_archive` (header), `collect_tree` (lstat) | skipped and counted, never written |
 | 20,000 indexable files | `extract_archive` (files written), `collect_tree` (files returned) | `FetchRejected("more than 20000 indexable files")` at the 20,001st file that passes the name filters, and again after the content filters |
 | 100,000 chunks | — | 22-05, after chunking |
 
 `FetchRejected` carries a plain, token-free reason and `members_seen`; 22-05
 turns it into `Rejected` → `dead` in one attempt. `FetchFailed` is an ordinary,
-retried failure. `Limits` is a parameter, so the tests run the caps at 1 MB.
+retried failure — and since the review it is also what a **write failing for
+any reason but the name** raises (reviewer B's H2: on a 300 KB tmpfs the
+extractor returned normally with 5 written and 15 "unwritable", 20 files on
+disk of which 15 partial, and the walk returned all 20 as complete; now
+`writing the tree failed at member 6: No space left on device (errno 28)`,
+the half-written file unlinked, the 5 complete ones left), what an
+**unreadable archive** raises (`BadGzipFile`, `EOFError`, `ReadError` and a
+member truncated mid-data all become `FetchFailed("the archive is not a
+readable gzip tar: …")`), and what an archive under the **wrong top-level
+directory** raises: the fetcher tells the extractor GitHub must have named it
+`{owner}-{repo}-{sha7}` and the first member is checked against it. Only
+name-shaped write errors (`ENAMETOOLONG`, `EINVAL`, `ENOTDIR`, `EISDIR`,
+`EEXIST`, `ELOOP`) skip the member and go on. A NUL **anywhere** in a file is
+binary (the 8 KB probe let a late NUL into `content`, which 22-05 writes with
+psycopg2 — the one character it refuses). `Limits` is a parameter, so the
+tests run the caps at 1 MB.
 
 ## 5. The mealie measurement (public, no token; two unauthenticated requests)
 
@@ -208,8 +256,8 @@ Windows host, default limits:
 | downloaded | **23,525,683 bytes in 2.04 s**, status 200 |
 | redirect | `api.github.com` → **`codeload.github.com`** (one hop) |
 | query parameters on the download URL | **none** (names recorded, never values; a private repository's link is recorded the same way in 22-05, and whether it carries a credential stays unverified until then) |
-| members | **1,967**; top level `mealie-recipes-mealie-84b2677` |
-| expanded | **55,654,400 bytes** of tar stream; 3,611,551 bytes of indexable content written |
+| members | **1,967**; top level `mealie-recipes-mealie-84b2677` — which, re-measured after the review, **matches the `{owner}-{repo}-{sha7}` the fetcher now expects**, so the check holds against a real GitHub archive |
+| expanded | **55,654,400 bytes** of tar stream; **54,218,029 bytes declared** (the second counter, re-measured after the review); 3,611,551 bytes of indexable content written |
 | extraction / walk | 1.16 s / 5.66 s |
 | indexable files | **979**: python 648, typescript 278, markdown 49, javascript 4 |
 | skipped | unsupported 688, oversize 4, lockfile 2, symlink 1 |
@@ -227,9 +275,14 @@ first reason that applies:
 
 - **secret** — `.env`, `.env.*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`,
   `*.keystore`, `id_rsa*`, `id_dsa*`, `id_ecdsa*`, `id_ed25519*`, `.npmrc`,
-  `.pypirc`, `.netrc`, `*.tfvars`, `credentials*.json`, `service-account*.json`
+  `.pypirc`, `.netrc`, `*.tfvars`, `credentials*.json`, `service-account*.json`,
+  and since the review `.git-credentials` and the path rule `.aws/credentials`
   (`id_rsa*` deliberately matches `id_rsa_notes.md`: broad, because a miss
-  sends key material to OpenAI);
+  sends key material to OpenAI). **What the list cannot do, measured by
+  reviewer B and recorded in `22-CONTEXT.md` U7:** a key pasted into
+  `README.md`, `secrets.py`, `config.py`, `private_key.go` or `token.js` is
+  indexed. That is option A's known limitation; content-level detection is a
+  question for the retrieval-quality track;
 - **vendored** — any component `vendor`, `node_modules`, `dist`, `build`,
   `.git`, `third_party`;
 - **generated** — `*.min.js`, `*_pb2.py`, `*.pb.go`, and a Go file whose first
@@ -280,6 +333,16 @@ extractor; after every run the whole temporary directory is listed and only
 | a file symlink planted on disk → an outside secret | walk skips it `link` (Linux; skipped on Windows without the privilege) |
 | a directory symlink planted on disk | walk does not descend (Linux) |
 | `job_directory("../escape")` | `ValueError`; ids are UUIDs, canonical |
+| **Added at the review** | |
+| ten GNU sparse members, 1,000,000 bytes apparent each, 9 KB stored (a 366-byte archive; premise asserted: `sparse is not None`, `size == 1_000_000`) | skipped `sparse: 10`, nothing written, 10,000,000 bytes charged to the declared budget; under a 1 MB cap **rejected at member 2** |
+| a disk that fills after 300,000 bytes (a quota-wrapped file object; and the real 300 KB tmpfs when `RAG_DOC_TINY_FS` names one) | `FetchFailed` naming `errno 28`, the half-written file unlinked, every remaining file complete |
+| `ENAMETOOLONG` on one member | skipped `unwritable`; the extraction goes on |
+| a text file named `.tar.gz`; a gzip cut in half; a gzip of random bytes; an empty gzip; a member whose data ends after 100 of 4,000 bytes | `FetchFailed("the archive is not a readable gzip tar: …")`, nothing left on disk |
+| an archive under `someone-else-0000000` when `acme-widgets-<sha7>` was asked for | `FetchFailed` on the first member; nothing written |
+| `.env.production`, `.npmrc`, `certs/client.p12`, `android/release.jks`, `.git-credentials`, `home/.aws/credentials` beside real code | never written, counted `secret: 6` |
+| 9 KB of text then 100 NULs | `binary` (returned as text before the review) |
+| `../escape.py` with the header check neutered in the test | `filter="data"` refuses it: `refused_by_filter: 1`, nothing lands — the filter's contribution made observable |
+| two directories for one job, one stale | `job_directory` gives a new `<id>-<random>` each call; the sweep removes only the stale one |
 
 ## 8. The redirect-header measurement
 
@@ -349,10 +412,10 @@ except where the host cannot create symlinks):
 | P1 | `followlinks=True` | **killed on Linux** (`test_the_walk_does_not_descend_a_directory_symlink`); not observable on Windows |
 | P2 | expanded-bytes check removed | **killed** — the zero bomb and the header bomb |
 | P3 | `*.pem` removed | **killed** — its own case, `Server.PEM`, the beside-real-code test |
-| P4a | `filter="data"` removed **alone** | **survives, as designed** — the header check holds |
+| P4a | `filter="data"` removed **alone** | survived on the first run, as designed — the header check holds. **Since the review it is killed** (PB11 below): `test_the_data_filter_alone_refuses_traversal` neuters the header check itself, so the filter's contribution is observable |
 | P4b | header path check removed **alone** | 8 accounting tests fail (`refused_by_filter` instead of `unsafe_path`); **all five "nothing lands" property tests pass** — `filter="data"` holds |
 | P5 | **both** removed | **killed** — `TestNothingHostileLands::test_dot_dot_traversal`: the file lands at `tmp/escape.py`. The absolute-path property still holds: the top-level strip and the one-top-level rule contain it |
-| P6a | member-type check removed **alone** | 7 accounting tests fail; all five property tests pass — `filter="data"` refuses the links and devices, and stream mode refuses the inside link |
+| P6a | member-type check removed **alone** | 7 accounting tests fail; the five property tests pass — `filter="data"` refuses the absolute and outside links and the devices. **Corrected at the review (reviewer B, L1):** the inside symlink `alias.py → src/a.py` **lands** under P6a on Linux, because the `data` filter allows a link that stays inside the destination; the type check is the only guard for in-tree links, and its own test says so. The first version of this row claimed stream mode refused it, which was wrong |
 | P6b | **both** removed | **killed** — Linux 10 failures (7 accounting + the two symlink and the hardlink properties: links land on disk; the walk still never reads through them); Windows 8 |
 | P7 | walk `lstat` check removed | **killed on Linux** (`test_the_walk_skips_a_file_symlink_planted_on_disk`) |
 | P8 | per-file size check removed at extraction | **killed** — the 2 MB file is written |
@@ -366,7 +429,42 @@ The defence-in-depth result the plan asked for, exactly: with either the
 header check or `filter="data"` removed alone, no hostile member lands; with
 both removed, `..` traversal lands. Absolute paths are contained by a third
 mechanism (the top-level strip), which is recorded rather than claimed as a
-guard.
+guard. Reviewer B ruled the overlap a strength — the header check is strictly
+broader (backslash, drive letter, NUL, surrogates, `.`/empty components, all
+measured) and the type check catches the in-tree links the filter allows —
+provided the second guard is observable, which PB11 now makes it.
+
+**Mutations added at the review** (each on a copy of the committed tree,
+`4787148`/`fbf1362`, proven present, restored, the copy diffed clean):
+
+Go:
+
+| # | Mutation | Result |
+|---|---|---|
+| GA1 | `redactValues` anchors on the whole value (prefix rule removed) | **killed** — `TestRedactValues_CoversATruncatedEcho`, `TestRepositoryToken_LookupErrorRedactsTheTokenByValue` |
+| GA2a | `CheckListenAddr` does not flag unspecified IPs | **killed** — `TestCheckListenAddr/every-interface_spellings_are_flagged` |
+| GA2b | `CheckListenAddr` does not flag an empty host | **killed** — same |
+| GA3 | `parseLeaseBody` accepts a duplicate key | **killed** — `TestParseLeaseBody`, Scenario5 |
+| GA4 | `parseLeaseBody` accepts trailing bytes | **killed** — `TestParseLeaseBody`, Scenario5 |
+| GA5 | no distinct error for an absent `repositories` field | **killed** — `…/repositories_field_absent` |
+| GA6 | no distinct error for an absent `permissions` object | **killed** — `…/permissions_object_absent` |
+
+Python (Windows 3.13.7 and `python:3.11-slim`, identical):
+
+| # | Mutation | Result |
+|---|---|---|
+| PB1 | `trust_env=True` on the token client | **killed** — `test_the_token_client_ignores_proxy_environment_variables` (the request reaches the recording proxy) |
+| PB2 | sparse members not skipped | **killed** — both sparse tests (files land) |
+| PB3 | declared size not charged | **killed** — both sparse tests (the bomb is not rejected) |
+| PB4 | every write error skippable (ENOSPC swallowed) | **killed** — `test_a_full_disk_raises_and_leaves_no_partial_file` |
+| PB5 | the half-written file not unlinked | **killed** — same test, on the "no partial file" assertion |
+| PB6 | the NUL check back to an 8 KB probe | **killed** — `test_a_nul_anywhere_in_the_file_is_binary` (run through an escape-free helper, after a shared helper's `unicode_escape` turned the `\x00` in the mutation into a real NUL and refused it) |
+| PB7 | expected top level not checked | **killed** — the extractor test and the fetcher test |
+| PB8a | `.git-credentials` removed | **killed** — its name case and the never-written test |
+| PB8b | the `.aws/credentials` path rule removed | **killed** — three path cases and the never-written test |
+| PB9 | job directory keyed on the id alone | **killed** — `test_job_directory_is_unique_per_call`, `test_sweep_removes_only_the_stale_directory_of_a_job` |
+| PB10 | unreadable archives not wrapped | **killed** — the four unreadable cases and the truncated member |
+| PB11 | `filter="data"` removed alone | **killed** — `test_the_data_filter_alone_refuses_traversal` (P4a's survivor, now observable) |
 
 ## 11. Verification
 
@@ -381,6 +479,14 @@ guard.
 | `check-isolation-tests.py --base-ref RAG-Doc/main` | PASS; `POST /internal/jobs/{id}/repository-token` **covered** |
 | `grep -rn GITHUB_APP_PRIVATE_KEY services/workers` | nothing |
 | compose | untouched; no service started |
+| **After the review (`4787148`, `fbf1362`)** | |
+| `go test ./pkg/github/... ./pkg/internalapi/...` | ok |
+| `-race` in `golang:1.25` on the same two packages | ok, 0 data races |
+| `pytest tests/fetch` locally (3.13.7) | **159 passed, 3 skipped** (the tiny-filesystem case and the two on-disk symlink cases) |
+| `pytest tests/fetch` in **`python:3.11-slim`** (the production image), with `--tmpfs /small:size=300k` and `RAG_DOC_TINY_FS=/small` | **162 passed, 0 skipped** — the real-full-disk case included |
+| `pytest tests/ workers/` as CI (fresh venv) | **451 passed, 3 skipped** |
+| H1 / H2 reproduced in `python:3.12-slim` before the fix, re-run in `python:3.11-slim` after | section 4 has both sets of numbers |
+| mealie re-measured after the fix | identical figures; top level matched; declared 54,218,029 bytes; no cap tripped |
 
 `DATABASE_TEST_URL` pointed at an own scratch pgvector container (random
 port), never 5434.
@@ -398,7 +504,11 @@ port), never 5434.
   (the expansion cap bounds the tar stream and `max_job_duration` bounds
   time; nothing bounds member count separately); a repository with more than
   20,000 name-indexable files that content filters would bring under the cap
-  is rejected, by the conservative reading.
+  is rejected, by the conservative reading; the download cap counts
+  `iter_bytes`, which is **decoded** bytes — stricter than the wire if the
+  download host ever applies a content encoding, never looser (reviewer B,
+  L9); a token's life after its lease — the lease gates issuance, not
+  validity, and revocation is 22-05's.
 
 ## 13. Deviations and notes
 
@@ -411,13 +521,66 @@ port), never 5434.
 - The router's "GitHub App unset" WARN moved to `main.go` with the client
   construction; the router keeps its slug and client-credential panics, keyed
   on `cfg.GitHubClient != nil`.
-- **Fleet-environment finding.** The Go harness reuses its container **by
-  name** across worktrees. The parallel 22-02 run migrated the shared
-  container to 17 while this tree was at 16, and golang-migrate refused
-  ("no migration found for version 17"). Worked around with a local,
+- **Fleet-environment finding, filed as ISS-037.** The Go harness reuses its
+  container **by name** across worktrees. The parallel 22-02 run migrated the
+  shared container to 17 while this tree was at 16, and golang-migrate
+  refused ("no migration found for version 17"). Worked around with a local,
   uncommitted rename of the constant until `main` (with 000017) was merged,
-  then restored. An `ISOLATION_CONTAINER_NAME` override would remove the
-  collision for the rest of the fleet — the planner's call; not changed here
-  because the file is not this plan's.
-- No real GitHub App call was made; the only network calls were two
-  unauthenticated requests for the public mealie archive. No `.env` was read.
+  then restored. The fix reviewer B recommended and the planner adopted —
+  derive the name from the worktree by default, `ISOLATION_CONTAINER_NAME`
+  as an override — is 22-05's first task, not this PR's.
+- No real GitHub App call was made; the only network calls were four
+  unauthenticated requests for the public mealie archive (two before the
+  review, two after). No `.env` was read.
+
+## 14. Applied from PR #52's two reviews
+
+**Reviewer A (security, token route) — APPROVE WITH NITS, all applied in `4787148`:**
+
+| # | Finding | What changed |
+|---|---|---|
+| L1 | the lease gates issuance, not validity | stated in the package doc and `docs/internal-api.md`; 22-05 revokes via `DELETE /installation/token` on fetch end and `LeaseLost` (recorded in `22-CONTEXT.md`'s 22-05 row) |
+| L2 | `httpx` honours `HTTP_PROXY` by default | `trust_env=False` on the token client; `test_the_token_client_ignores_proxy_environment_variables` against a real recording proxy, with the trusting client shown reaching it first |
+| L3 | `INTERNAL_ADDR=:8081` binds every interface | `CheckListenAddr`; the process refuses to start on a wildcard host unless `INTERNAL_ADDR_ALLOW_ALL_INTERFACES=true`, and then warns; `listen_addr_test.go` |
+| N1 | redact the lookup error by value | done — and the by-value rule now covers a truncated echo, which the new test found leaking |
+| N2 | distinguish "no permissions object" from `contents=""` | done, and "no repositories field" from "0 repositories" |
+| N3 | the internal listener logged in text regardless of `LOG_FORMAT` | one `slog` handler built from `LOG_FORMAT`/`LOG_LEVEL`, set as default and handed to the listener |
+| N4 | lenient JSON decoding | `parseLeaseBody`: exactly one object, one key, one string, no trailing bytes; 19 refused shapes |
+| N5 | the by-id alias is undocumented | the fallback noted beside the lookup |
+| ruling | network position + lease owner is sufficient for v1 on a private compose network | carried to Phase 24 (`ROADMAP.md`, `docs/internal-api.md`): a bearer secret or mTLS if the worker and the backend ever sit on different hosts |
+
+**Reviewer B (fetcher, tests, docs) — CHANGES REQUESTED, all applied in `fbf1362`:**
+
+| # | Finding | What changed |
+|---|---|---|
+| H1 | sparse members bypass the expansion cap (measured: 6,016-byte archive → 210 MB apparent) | reproduced (366 bytes → 10,000,000 apparent, walk returned all ten); sparse members skipped **and** every member's declared size charged to the budget; after: rejected at member 2 |
+| H2 | a full disk yields a truncated tree indexed as complete | reproduced on a 300 KB tmpfs (5 written, 15 "unwritable", 15 partial files walked as complete); only name-shaped errnos skip, everything else unlinks the partial file and raises `FetchFailed`; after: `errno 28`, no partial file |
+| H3 | a NUL past the 8 KB probe reached `content` | `if b"\x00" in raw:` over the whole file; the test that pinned the hole rewritten |
+| M1 | `job_directory` keyed on the id alone | `mkdtemp(prefix=f"{job_id}-")`; the sweep keys on `<uuid>-`; two-directory tests |
+| L1 | P6a's mechanism was false | corrected in section 10 |
+| L2 | `filter="data"` unobserved | `test_the_data_filter_alone_refuses_traversal`; PB11 kills the P4a survivor |
+| L3 | raw `BadGzipFile`/`EOFError`/`ReadError` escaped | wrapped as `FetchFailed`, five cases |
+| L4 | two test names overclaimed | `…_rejected_before_reading` now asserts no chunk was pulled; `…_exactly_the_file_cap_is_allowed` |
+| L5 | the top-level directory was fixed by member order | checked against `{owner}-{repo}-{sha7}` on the first member; matched by the real mealie archive |
+| L6 | deny-list gaps | `.git-credentials` and `.aws/credentials` added with tests; the content-level gap recorded in `22-CONTEXT.md` U7 for the retrieval-quality track |
+| L7 | the production image was never run | `python:3.11-slim` runs recorded above and preferred for Linux from now on |
+| L8 | the harness collision | filed as ISS-037, 22-05's first task |
+| L9 | `iter_bytes` counts decoded bytes | recorded under does-not-pin |
+
+## 15. Hand-off to 22-05
+
+- **Revoke the token** when the fetch ends and on `LeaseLost`:
+  `DELETE /installation/token` with `Authorization: Bearer <the token>`; no
+  App key involved. The lease gates issuance, not validity.
+- **Compose binds the internal listener to the service name**
+  (`INTERNAL_ADDR=backend:8081`), never a wildcard; the override exists for
+  a platform that has no other way, and it warns.
+- **ISS-037 first**: derive the harness container name from the worktree.
+- Record the **private** repository's download-link query parameter
+  **names** (the public one had none) and whether the link carries a
+  credential.
+- Confirm the mint reply's `repositories` and `permissions` against the
+  real API on the first live mint; the client's refusals name the cause.
+- If `GET /repositories/{id}` ever fails, the fallback is
+  `GET /repos/{full_name}` from the mint reply.
+- Run the Python suite in `python:3.11-slim` for Linux checks.
