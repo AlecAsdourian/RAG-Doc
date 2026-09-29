@@ -95,7 +95,7 @@ SERVICE_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 # The DSN forced onto the NOSUPERUSER app role is conftest.py's `app_dsn`
-# fixture (lifted from here in 22-03). ⚠ ITS `options` PARAMETER IS
+# fixture (lifted from here in 22-03). ITS `options` PARAMETER IS
 # LOAD-BEARING: a `Worker` opens its own connections from a DSN, so there is
 # no cursor to `SET ROLE` on, and the superuser would bypass row-level
 # security even with FORCE -- every tenant assertion below, above all the

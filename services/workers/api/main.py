@@ -60,7 +60,7 @@ async def lifespan(app: FastAPI):
                 try:
                     from workers.generation.semantic_cache import SemanticCache
 
-                    # ⚠ STILL BROKEN, DELIBERATELY (ISS-021). SemanticCache takes
+                    # STILL BROKEN, DELIBERATELY (ISS-021). SemanticCache takes
                     # (redis_url, embedding_generator, ...); this call has passed
                     # the wrong arguments since Phase 05, the TypeError is
                     # swallowed just below, and the cache has never run. 22-03
