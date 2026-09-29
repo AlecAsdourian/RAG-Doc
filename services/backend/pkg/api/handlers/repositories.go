@@ -286,17 +286,34 @@ func (d *DeleteRepositoryResponse) Render(http.ResponseWriter, *http.Request) er
 
 // Delete handles DELETE /api/repositories/{id}.
 //
-// THIS DELETES INGESTED DATA. The real cascade, all ON DELETE CASCADE
-// across migrations 000002-000005:
+// THIS DELETES INGESTED DATA. What goes, and by which mechanism:
 //
-//	repositories ─┬─> ingestion_runs ─> chunks
-//	              └─> chunks ─> retrievals ─> feedback
+//	repositories ─┬─> ingestion_runs ─> chunks          ON DELETE CASCADE (000002, 000017)
+//	              ├─> chunks, symbols                   ON DELETE CASCADE (000017)
+//	              └─> retrievals ─> feedback            retrievals by the explicit DELETE
+//	                                                    below; feedback cascades from it
 //
 // `chunks` hangs off `repositories` DIRECTLY as well as through
-// `ingestion_runs` (000003 denormalizes `repository_id` for query
-// performance), and the chain does not stop at `retrievals` — user-written
-// `feedback` goes too. `queries` survive; only the retrievals that cited
-// this repository's chunks are removed.
+// `ingestion_runs` (000003 denormalizes `repository_id`; 000017 keeps it
+// and adds the tenant key), and the chain does not stop at `retrievals` —
+// user-written `feedback` goes too. `queries` survive; only the retrievals
+// that cited this repository's chunks are removed.
+//
+// ⚠ THE RETRIEVALS STEP IS EXPLICIT SINCE 000017 (22-CONTEXT P17, U9).
+// `retrievals.chunk_id` no longer carries a foreign key — one cannot exist
+// against a `chunks` whose primary key is (organization_id, id) — so the
+// database cascade now stops at `chunks`. Without the DELETE below the
+// response would report `feedback_deleted` for feedback it no longer
+// deleted, and the repository's retrievals would keep chunk ids pointing
+// at nothing. The DELETE uses the same predicate as the count, so the two
+// agree by construction.
+//
+// THE LIMIT, stated: only retrievals reachable THROUGH A CHUNK THAT STILL
+// EXISTS are found. A retrieval whose chunk a re-index already replaced
+// (every full ingest replaces a repository's chunks from 22-05 on) is
+// unreachable here and survives, with its feedback. Whether such rows
+// should point at a symbol, or at a chunk with a tenant, is the link's
+// shape U9 deferred to when feedback ships.
 //
 // That is the intended behaviour rather than an accident of the schema.
 // A "disconnect" that left the chunks in place would keep a repository's
@@ -329,10 +346,10 @@ func (h *RepositoriesHandler) Delete(w http.ResponseWriter, r *http.Request) {
 			`SELECT count(*) FROM ingestion_runs WHERE repository_id = $1`, id).Scan(&runs); cerr != nil {
 			return cerr
 		}
-		// Feedback is USER-AUTHORED and two edges down the cascade
-		// (chunks → retrievals → feedback), so it was being destroyed
-		// without appearing in the response. Counted separately because it
-		// is the one thing here a user cannot regenerate by re-ingesting.
+		// Feedback is USER-AUTHORED and two edges down (chunks → retrievals
+		// → feedback), so it was being destroyed without appearing in the
+		// response. Counted separately because it is the one thing here a
+		// user cannot regenerate by re-ingesting.
 		if cerr := tx.QueryRow(ctx, `
 			SELECT count(*)
 			FROM feedback f
@@ -340,6 +357,19 @@ func (h *RepositoriesHandler) Delete(w http.ResponseWriter, r *http.Request) {
 			JOIN chunks c ON c.id = rt.chunk_id
 			WHERE c.repository_id = $1`, id).Scan(&feedback); cerr != nil {
 			return cerr
+		}
+
+		// P17: nothing cascades from chunks to retrievals any more, so the
+		// retrievals that cited this repository's chunks are deleted here,
+		// with the count's predicate, BEFORE the chunks go and make them
+		// unreachable. feedback cascades from retrievals (000005's key is
+		// unchanged). Pinned by TestDeleteReportsTheWholeCascade: without
+		// this statement the survivor is counted under the tenant, and the
+		// {1,1,1} assertion for orgA fails.
+		if _, derr := tx.Exec(ctx, `
+			DELETE FROM retrievals
+			WHERE chunk_id IN (SELECT id FROM chunks WHERE repository_id = $1)`, id); derr != nil {
+			return derr
 		}
 
 		tag, derr := tx.Exec(ctx, `DELETE FROM repositories WHERE id = $1`, id)

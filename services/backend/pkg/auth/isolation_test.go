@@ -235,18 +235,27 @@ func TestChunksIsolation(t *testing.T) {
 		repoB).Scan(&runB)
 	require.NoError(t, err)
 
-	// Create chunks for each repo
+	// Create chunks for each repo.
+	//
+	// Since migration 000017 (22-02) a chunk names its tenant and carries a
+	// vector and a model. This is the same column list as
+	// pkg/testing/isolation.TestChunkInsertSQL, written inline because this
+	// file is package auth and cannot import the harness.
 	var chunkA, chunkB string
 	err = db.QueryRow(context.Background(),
-		`INSERT INTO chunks (ingestion_run_id, repository_id, file_path, start_line, end_line, content, content_hash)
-         VALUES ($1, $2, 'src/file.ts', 1, 10, 'console.log("A")', 'hash-a') RETURNING id`,
-		runA, repoA).Scan(&chunkA)
+		`INSERT INTO chunks (organization_id, ingestion_run_id, repository_id, file_path, start_line, end_line,
+                             content, content_hash, embedding, embedding_model)
+         VALUES ($1, $2, $3, 'src/file.ts', 1, 10, 'console.log("A")', 'hash-a',
+                 array_fill(0.01::real, ARRAY[1536])::vector, 'test-fixed') RETURNING id`,
+		orgA, runA, repoA).Scan(&chunkA)
 	require.NoError(t, err)
 
 	err = db.QueryRow(context.Background(),
-		`INSERT INTO chunks (ingestion_run_id, repository_id, file_path, start_line, end_line, content, content_hash)
-         VALUES ($1, $2, 'src/file.ts', 1, 10, 'console.log("B")', 'hash-b') RETURNING id`,
-		runB, repoB).Scan(&chunkB)
+		`INSERT INTO chunks (organization_id, ingestion_run_id, repository_id, file_path, start_line, end_line,
+                             content, content_hash, embedding, embedding_model)
+         VALUES ($1, $2, $3, 'src/file.ts', 1, 10, 'console.log("B")', 'hash-b',
+                 array_fill(0.01::real, ARRAY[1536])::vector, 'test-fixed') RETURNING id`,
+		orgB, runB, repoB).Scan(&chunkB)
 	require.NoError(t, err)
 
 	// Test: Set tenant context to Org A

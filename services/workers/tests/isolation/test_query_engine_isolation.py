@@ -23,6 +23,7 @@ Three scenarios per the plan:
 
 from __future__ import annotations
 
+import hashlib
 from types import SimpleNamespace
 
 import psycopg2
@@ -32,6 +33,12 @@ from workers.chunker.models import Chunk
 from workers.retrieval.fts_retriever import FTSRetriever
 from workers.retrieval.query_engine import QueryEngine
 from workers.storage.postgres_writer import PostgresWriter
+
+# Since migration 000017 (22-02) every chunk carries a vector and the model
+# that produced it. These tests are about the keyword leg, so the vector is
+# a fixed non-zero fill and the model a name no real generator has. No
+# OpenAI call is made.
+_TEST_MODEL = "test-fixed"
 
 
 def _make_chunk(content: str, file_path: str = "probe.md") -> Chunk:
@@ -44,6 +51,10 @@ def _make_chunk(content: str, file_path: str = "probe.md") -> Chunk:
         chunk_type="doc",
         metadata={},
     )
+
+
+def _embeddings_for(chunk: Chunk) -> dict:
+    return {hashlib.sha256(chunk.content.encode("utf-8")).hexdigest(): [0.01] * 1536}
 
 
 def _seed_chunk(dsn: str, org, content: str) -> None:
@@ -60,11 +71,14 @@ def _seed_chunk(dsn: str, org, content: str) -> None:
             commit_sha="a" * 40,
             branch="main",
         )
+        chunk = _make_chunk(content)
         writer.insert_chunks(
             organization_id=org.id,
-            chunks=[_make_chunk(content)],
+            chunks=[chunk],
             ingestion_run_id=run_id,
             repository_id=org.repo_id,
+            embeddings=_embeddings_for(chunk),
+            embedding_model=_TEST_MODEL,
         )
         writer.complete_ingestion_run(
             organization_id=org.id,
@@ -196,6 +210,8 @@ def _seed_named_chunk(dsn: str, org, content: str, breadcrumb: str) -> str:
             chunks=[chunk],
             ingestion_run_id=run_id,
             repository_id=org.repo_id,
+            embeddings=_embeddings_for(chunk),
+            embedding_model=_TEST_MODEL,
         )
         writer.complete_ingestion_run(
             organization_id=org.id,

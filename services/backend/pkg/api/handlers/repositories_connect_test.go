@@ -1214,6 +1214,11 @@ func TestDeleteReportsTheWholeCascade(t *testing.T) {
 		// still passes.
 		siblingID := seedSiblingRepository(t, pool, orgA)
 
+		// The ids the delete is about to remove, read under the tenant
+		// before it runs, for the direct assertion below.
+		doomedChunks := chunkIDsOf(t, pool, orgA, orgA.RepoID)
+		require.Len(t, doomedChunks, 2, "premise: the seed's two chunks")
+
 		status, body := doRepoRequest(t, url, http.MethodDelete,
 			"/api/repositories/"+orgA.RepoID, tokenA, "")
 		require.Equal(t, http.StatusOK, status, "body=%s", body)
@@ -1241,7 +1246,39 @@ func TestDeleteReportsTheWholeCascade(t *testing.T) {
 			"deleting one repository must not take orgA's other one with it")
 		s, b := doRepoRequest(t, url, http.MethodGet, "/api/repositories/"+siblingID, tokenA, "")
 		require.Equal(t, http.StatusOK, s, "orgA's sibling repository was deleted too; body=%s", b)
+
+		// And directly, without row-level security in the way: the deleted
+		// repository's chunks, the retrievals that cited them, and the
+		// feedback on those retrievals are GONE, not merely invisible. Since
+		// 000017 nothing cascades from chunks to retrievals; the handler
+		// deletes them itself (P17), and this is what says it did.
+		isolation.WithSuperuserConn(t, pool, func(conn *pgx.Conn) {
+			for _, q := range []struct{ what, sql string }{
+				{"chunks", `SELECT count(*) FROM chunks WHERE id = ANY($1)`},
+				{"retrievals citing them", `SELECT count(*) FROM retrievals WHERE chunk_id::text = ANY($1)`},
+				{"feedback on those retrievals", `SELECT count(*) FROM feedback f
+					JOIN retrievals r ON r.id = f.retrieval_id WHERE r.chunk_id::text = ANY($1)`},
+			} {
+				var n int
+				require.NoError(t, conn.QueryRow(context.Background(), q.sql, doomedChunks).Scan(&n))
+				require.Zero(t, n, "%s of the deleted repository must be gone", q.what)
+			}
+		})
 	})
+}
+
+// chunkIDsOf reads the ids of a repository's chunks under org's tenant.
+func chunkIDsOf(t *testing.T, pool *pgxpool.Pool, org *isolation.TestOrg, repoID string) []string {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := isolation.TenantScope(ctx, pool, org.ID)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback(ctx) }()
+	rows, err := tx.Query(ctx, `SELECT id::text FROM chunks WHERE repository_id = $1 ORDER BY id`, repoID)
+	require.NoError(t, err)
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	require.NoError(t, err)
+	return ids
 }
 
 // seedSiblingRepository adds a second repository to org's default project,
@@ -1268,11 +1305,9 @@ func seedSiblingRepository(t *testing.T, pool *pgxpool.Pool, org *isolation.Test
 			RETURNING id::text`, repoID).Scan(&runID); err != nil {
 			return err
 		}
-		if err := tx.QueryRow(bg, `
-			INSERT INTO chunks
-			  (ingestion_run_id, repository_id, file_path, start_line, end_line, content, content_hash)
-			VALUES ($1, $2, 'sibling.go', 1, 2, 'package main', repeat('d', 64))
-			RETURNING id::text`, runID, repoID).Scan(&chunkID); err != nil {
+		if err := tx.QueryRow(bg, isolation.TestChunkInsertSQL,
+			org.ID, runID, repoID, "sibling.go", 1, 2, "package main", strings.Repeat("d", 64),
+		).Scan(&chunkID); err != nil {
 			return err
 		}
 		if err := tx.QueryRow(bg, `
@@ -1327,13 +1362,9 @@ func seedIngestedContent(t *testing.T, pool *pgxpool.Pool, org *isolation.TestOr
 
 		var chunkID string
 		for i := 0; i < chunks; i++ {
-			if err := tx.QueryRow(bg, `
-				INSERT INTO chunks
-				  (ingestion_run_id, repository_id, file_path, start_line, end_line,
-				   content, content_hash)
-				VALUES ($1, $2, $3, 1, 2, 'package main', repeat('b', 64))
-				RETURNING id::text`,
-				runID, org.RepoID, fmt.Sprintf("main%d.go", i)).Scan(&chunkID); err != nil {
+			if err := tx.QueryRow(bg, isolation.TestChunkInsertSQL,
+				org.ID, runID, org.RepoID, fmt.Sprintf("main%d.go", i), 1, 2, "package main", strings.Repeat("b", 64),
+			).Scan(&chunkID); err != nil {
 				return fmt.Errorf("chunk %d: %w", i, err)
 			}
 		}

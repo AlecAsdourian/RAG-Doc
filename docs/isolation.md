@@ -189,16 +189,49 @@ Every function that reads or writes a tenant-scoped table takes an
 ```python
 from workers.db import require_tenant
 
-def insert_chunks(conn, organization_id, chunks, repository_id, ingestion_run_id):
+def insert_chunks(conn, organization_id, chunks, repository_id, ingestion_run_id,
+                  embeddings, embedding_model):
     """Batch-insert chunks under the caller's tenant scope."""
     with require_tenant(conn, organization_id) as cur:
         cur.executemany(
-            "INSERT INTO chunks (id, ingestion_run_id, repository_id, "
-            "file_path, start_line, end_line, content, content_hash) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            "INSERT INTO chunks (id, organization_id, ingestion_run_id, repository_id, "
+            "file_path, start_line, end_line, content, content_hash, "
+            "embedding, embedding_model) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s)",
             [(...) for c in chunks],
         )
 ```
+
+Since migration 000017 a chunk row names its tenant explicitly: `chunks`
+is partitioned by `organization_id` and nothing fills the column in (a
+`BEFORE` trigger cannot route a row to another partition), so every
+writer supplies it, and the composite key `chunks_repo_tenant_fk` refuses
+a value that is not the repository's. The row also carries its vector and
+the model that produced it, read from the generator. The real writer is
+`PostgresWriter.insert_chunks`; Go tests use
+`isolation.TestChunkInsertSQL` and Python tests
+`tests.isolation.fixtures.TEST_CHUNK_INSERT_SQL`.
+
+**Two limits of the tenant key, and the guard for both.**
+`chunks_repo_tenant_fk` and `symbols_repo_tenant_fk` are enforced by
+foreign-key triggers, so `SET session_replication_role = replica` and
+`ALTER TABLE … DISABLE TRIGGER` switch them off, and a misfiled row then
+inserts cleanly (measured; pinned by
+`TestChunksPartition_TheKeyDoesNotHoldUnderReplicaMode`). Loading either
+table that way is **forbidden**; 000017's table comments say so, and
+`isolation.AssertNoChunkTenantDrift` runs in CI to catch the day it
+happens. The application role cannot reach either bypass, nor `TRUNCATE`,
+which row-level security does not govern: all three refuse with `42501`
+(`permission denied to set parameter "session_replication_role"`, `must be
+owner of table chunks`, measured). So this is addressed to whoever runs as
+the table owner or a superuser: migrations, operators, and
+`pkg/auth/testing.go`'s cleanup, which uses replica mode to *delete*, never
+to load. Second, the single-column keys `ingestion_run_id` and `symbol_id`
+carry no tenancy at all: per-row foreign-key checks bypass row-level
+security, so a tenant can, on its own row, cite another tenant's run or
+symbol (**ISS-036**; not a breach, since the other tenant cannot read the
+row, but its delete then cascades into it). The drift check reports that
+too, and 22.1-01 closes it with composite keys.
 
 Read paths look the same — `require_tenant` yields a cursor bound to a
 tenant-scoped transaction; RLS silently filters `SELECT` results to

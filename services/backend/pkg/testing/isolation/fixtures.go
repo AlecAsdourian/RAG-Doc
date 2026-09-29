@@ -11,6 +11,38 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// The chunk row a Go test writes, since migration 000017 (22-02).
+//
+// `chunks` is partitioned by organization_id and requires an embedding and
+// the model that produced it, so a test cannot insert the seven columns it
+// used to. These are the pieces every writer shares:
+//
+//   - TestChunkInsertSQL is a complete INSERT taking the tenant explicitly
+//     ($1), because nothing fills organization_id in: a BEFORE trigger
+//     cannot route a row to another partition (0A000), so every writer,
+//     test or production, supplies it. It RETURNS id.
+//   - TestEmbeddingSQL is a fixed, NON-ZERO vector expression for writers
+//     that need extra columns and spell the INSERT out: the cosine distance
+//     of a zero vector is undefined, so a test that later ordered by
+//     `embedding <=> ...` would get NaN distances from a zero fill.
+//   - TestEmbeddingModel is the model name those rows record. It is not a
+//     real model, deliberately: a retriever that compares a real query
+//     vector against rows embedded with "test-fixed" is mixing models, and
+//     22-03's retriever refuses that (22-CONTEXT P4).
+//
+// A test in a package that cannot import this one writes the same column
+// list inline and points here.
+const (
+	TestEmbeddingSQL   = `array_fill(0.01::real, ARRAY[1536])::vector`
+	TestEmbeddingModel = "test-fixed"
+
+	TestChunkInsertSQL = `INSERT INTO chunks
+	   (organization_id, ingestion_run_id, repository_id, file_path,
+	    start_line, end_line, content, content_hash, embedding, embedding_model)
+	 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, ` + TestEmbeddingSQL + `, '` + TestEmbeddingModel + `')
+	 RETURNING id`
+)
+
 // TestOrg is a test tenant with three role members and a starter repository.
 // WithTwoOrgs produces two of them for cross-tenant tests.
 //
@@ -209,6 +241,9 @@ func cleanupOrg(ctx context.Context, pool *pgxpool.Pool, org *TestOrg) {
 		{`DELETE FROM retrievals WHERE query_id IN (SELECT id FROM queries WHERE project_id = $1)`, []any{org.ProjectID}},
 		{`DELETE FROM queries WHERE project_id = $1`, []any{org.ProjectID}},
 		{`DELETE FROM chunks WHERE repository_id IN (SELECT id FROM repositories WHERE project_id = $1)`, []any{org.ProjectID}},
+		// 000017 (22-02). Both cascade from repositories anyway; deleting
+		// them here keeps the order explicit, like chunks.
+		{`DELETE FROM symbols WHERE repository_id IN (SELECT id FROM repositories WHERE project_id = $1)`, []any{org.ProjectID}},
 		{`DELETE FROM ingestion_runs WHERE repository_id IN (SELECT id FROM repositories WHERE project_id = $1)`, []any{org.ProjectID}},
 		{`DELETE FROM repositories WHERE project_id = $1`, []any{org.ProjectID}},
 		{`DELETE FROM projects WHERE id = $1`, []any{org.ProjectID}},
