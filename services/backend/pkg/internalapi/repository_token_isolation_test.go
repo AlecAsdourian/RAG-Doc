@@ -278,6 +278,11 @@ func leaseBody(owner string) string {
 	return string(b)
 }
 
+func strconvQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
 func requireMarked(t *testing.T, h http.Header) {
 	t.Helper()
 	require.Equal(t, internalapi.MarkerValue, h.Get(internalapi.MarkerHeader),
@@ -422,9 +427,9 @@ func TestRepositoryTokenIsolation(t *testing.T) {
 			cases := map[string]struct {
 				id, owner string
 			}{
-				"wrong owner": {jobA, uuid.NewString()},
+				"wrong owner":           {jobA, uuid.NewString()},
 				"the other org's owner": {jobA, ownerB},
-				"unknown id": {uuid.NewString(), ownerA},
+				"unknown id":            {uuid.NewString(), ownerA},
 				"superseded, lease still attached": {
 					seedJob(t, pool, orgA.ID, seedRepo(t, pool, orgA, "superseded", instA, 1103353669),
 						"superseded", ownerA, &liveLease), ownerA},
@@ -440,12 +445,12 @@ func TestRepositoryTokenIsolation(t *testing.T) {
 				"running with a NULL lease": {
 					seedJob(t, pool, orgA.ID, seedRepo(t, pool, orgA, "null-lease", instA, 1103353673),
 						"running", ownerA, nil), ownerA},
-				"malformed id":   {"not-a-uuid", ownerA},
-				"upper-hex id":   {upperHex(jobA), ownerA},
-				"braced id":      {"{" + jobA + "}", ownerA},
-				"undashed id":    {strings.ReplaceAll(jobA, "-", ""), ownerA},
-				"urn id":         {"urn:uuid:" + jobA, ownerA},
-				"empty id":       {"", ownerA},
+				"malformed id": {"not-a-uuid", ownerA},
+				"upper-hex id": {upperHex(jobA), ownerA},
+				"braced id":    {"{" + jobA + "}", ownerA},
+				"undashed id":  {strings.ReplaceAll(jobA, "-", ""), ownerA},
+				"urn id":       {"urn:uuid:" + jobA, ownerA},
+				"empty id":     {"", ownerA},
 			}
 			for name, tc := range cases {
 				status, headers, body := post(t, server.URL, tokenPath(tc.id), leaseBody(tc.owner))
@@ -511,6 +516,13 @@ func TestRepositoryTokenIsolation(t *testing.T) {
 				"no lease field":   `{}`,
 				"empty body":       ``,
 				"wrong value type": `{"lease_owner": 42}`,
+				// The exact shape, not a lenient decode (N4): a second
+				// key, a repeated key and trailing bytes are all refused,
+				// even when the lease owner in them is the right one.
+				"unknown field":  `{"lease_owner": ` + strconvQuote(ownerA) + `, "job": "x"}`,
+				"duplicate key":  `{"lease_owner": "wrong", "lease_owner": ` + strconvQuote(ownerA) + `}`,
+				"trailing bytes": leaseBody(ownerA) + ` trailing`,
+				"two objects":    leaseBody(ownerA) + leaseBody(ownerA),
 			} {
 				status, headers, body := post(t, server.URL, tokenPath(jobA), raw)
 				require.Equal(t, http.StatusBadRequest, status, "%s: body=%s", name, body)

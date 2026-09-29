@@ -392,12 +392,18 @@ func (c *Client) RepositoryToken(ctx context.Context, installationID, githubRepo
 		"repository_ids": []int64{githubRepoID},
 		"permissions":    map[string]string{"contents": "read"},
 	}
+	// Permissions and Repositories stay nil when GitHub omits the field
+	// and are non-nil (possibly empty) when it sends one, so the errors
+	// below can say WHICH happened. 22-05's live proof needs that: "no
+	// permissions object" and "contents is not read" are different
+	// conversations with the API.
 	var out struct {
 		Token        string            `json:"token"`
 		ExpiresAt    time.Time         `json:"expires_at"`
 		Permissions  map[string]string `json:"permissions"`
 		Repositories []struct {
-			ID int64 `json:"id"`
+			ID       int64  `json:"id"`
+			FullName string `json:"full_name"`
 		} `json:"repositories"`
 	}
 	endpoint := fmt.Sprintf("%s/app/installations/%d/access_tokens", c.baseURL, installationID)
@@ -417,12 +423,23 @@ func (c *Client) RepositoryToken(ctx context.Context, installationID, githubRepo
 	}
 
 	// The scope, as GitHub reports it. Fail closed on anything wider than
-	// what was asked for.
+	// what was asked for, and say which of the four things went wrong.
+	if out.Repositories == nil {
+		return ScopedToken{}, fmt.Errorf(
+			"github: installation %d returned no repositories field for a request scoped to "+
+				"repository %d; the token may be unscoped, refusing to hand it out",
+			installationID, githubRepoID)
+	}
 	if len(out.Repositories) != 1 || out.Repositories[0].ID != githubRepoID {
 		return ScopedToken{}, fmt.Errorf(
-			"github: installation %d returned a token whose scope is not the one repository %d "+
-				"(%d repositories listed); refusing to hand it out",
-			installationID, githubRepoID, len(out.Repositories))
+			"github: installation %d returned a token listing %d repositories, not exactly the "+
+				"one requested (%d); refusing to hand it out",
+			installationID, len(out.Repositories), githubRepoID)
+	}
+	if out.Permissions == nil {
+		return ScopedToken{}, fmt.Errorf(
+			"github: installation %d returned no permissions object; cannot confirm the token is "+
+				"contents:read, refusing to hand it out", installationID)
 	}
 	if got := out.Permissions["contents"]; got != "read" {
 		return ScopedToken{}, fmt.Errorf(
@@ -437,11 +454,23 @@ func (c *Client) RepositoryToken(ctx context.Context, installationID, githubRepo
 		}
 	}
 
+	// `GET /repositories/{id}` is the by-id alias of `GET /repos/{owner}/{repo}`.
+	// It is what the rest of GitHub's API itself links to (`url` fields),
+	// but it is not documented as an endpoint of its own. If it ever
+	// stops answering, the fallback is `GET /repos/{full_name}` with
+	// `out.Repositories[0].FullName` from the mint reply, which names the
+	// repository as it was at mint time — a moment earlier, so a rename
+	// in between is the only way it can miss. 22-05's live proof is what
+	// tells us whether the alias holds.
 	var repo Repository
 	lookup := fmt.Sprintf("%s/repositories/%d", c.baseURL, githubRepoID)
 	if err := c.do(ctx, http.MethodGet, lookup, out.Token, &repo); err != nil {
+		// Redacted BY VALUE as well as by prefix: request already redacts
+		// the `ghs_` shape, and this is the belt for a token GitHub some
+		// day issues under a prefix that list does not know.
 		return ScopedToken{}, fmt.Errorf(
-			"github: repository %d is not reachable with its scoped token: %w", githubRepoID, err)
+			"github: repository %d is not reachable with its scoped token: %s",
+			githubRepoID, redactValues(err.Error(), out.Token))
 	}
 	if repo.ID != githubRepoID {
 		return ScopedToken{}, fmt.Errorf(
@@ -835,14 +864,38 @@ func (c *Client) redactSecrets(s string) string {
 }
 
 // redactValues removes exact strings, for secrets with no recognisable
-// shape. Short values are skipped: redacting a two-character string would
-// shred the surrounding text without protecting anything.
+// shape — and any run of at least eight characters that is a PREFIX of
+// one.
+//
+// The prefix rule is not a refinement. The text this is applied to is a
+// 300-byte snippet of an upstream body, so an echoed secret is routinely
+// cut off, and a cut-off secret is most of a secret: measured while
+// applying PR #52's review (N1), a 387-character token echoed by a failing
+// lookup survived an exact-match redaction with its first 270 characters
+// intact. Anchoring on the first eight characters and extending the match
+// as far as the text and the secret agree catches the truncated echo too.
+//
+// Short values are skipped: redacting a two-character string would shred
+// the surrounding text without protecting anything.
 func redactValues(s string, values ...string) string {
+	const anchorLen = 8
 	for _, v := range values {
-		if len(v) < 8 {
+		if len(v) < anchorLen {
 			continue
 		}
-		s = strings.ReplaceAll(s, v, "[REDACTED]")
+		anchor := v[:anchorLen]
+		for {
+			i := strings.Index(s, anchor)
+			if i < 0 {
+				break
+			}
+			j, k := i, 0
+			for j < len(s) && k < len(v) && s[j] == v[k] {
+				j++
+				k++
+			}
+			s = s[:i] + "[REDACTED]" + s[j:]
+		}
 	}
 	return s
 }

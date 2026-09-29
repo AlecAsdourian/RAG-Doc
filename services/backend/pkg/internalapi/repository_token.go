@@ -23,6 +23,19 @@
 // That is far narrower than the App private key, which never leaves this
 // process.
 //
+// THE LEASE GATES ISSUANCE, NOT VALIDITY (PR #52's review, L1, measured).
+// Once the lease expires this route refuses, but a token it already issued
+// stays valid for GitHub's full hour; nothing here can shorten it. 22-05
+// revokes the token itself — `DELETE /installation/token`, authenticated
+// by the token being revoked, no App key needed — when the fetch ends and
+// on `LeaseLost`, so the credential's life is the fetch, not the hour.
+//
+// WHAT THE NETWORK POSITION IS WORTH. On a private compose network the
+// lease owner plus reachability is the whole authentication, and the
+// review ruled that sufficient for v1. If the worker and the backend ever
+// sit on different hosts, the route needs a bearer secret or mTLS in
+// front of it; Phase 24 carries that.
+//
 // EVERY RESPONSE FROM THE ROUTE CARRIES `X-Rag-Internal: repository-token/1`,
 // and the 404 body is fixed. The worker treats a 404 as "the lease is not
 // mine" ONLY when the marker is present; a 404 from anything else — chi's
@@ -218,11 +231,8 @@ func (h *Handler) Mint(w http.ResponseWriter, r *http.Request) {
 	// The body. A malformed one is 400, NOT 404: it is a worker bug or a
 	// misconfiguration, and disguising it as "the lease is gone" would make
 	// the job die quietly after five lease expiries with nothing recorded.
-	var body struct {
-		LeaseOwner string `json:"lease_owner"`
-	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, maxBodyBytes)).Decode(&body); err != nil ||
-		strings.TrimSpace(body.LeaseOwner) == "" {
+	leaseOwner, ok := parseLeaseBody(r.Body)
+	if !ok {
 		writeJSON(w, http.StatusBadRequest, `{"error":"bad_request"}`)
 		return
 	}
@@ -237,7 +247,7 @@ func (h *Handler) Mint(w http.ResponseWriter, r *http.Request) {
 
 	// 1. The lease. Pre-tenant, on the pool: see liveLeaseSQL.
 	var orgID, repoID string
-	err := h.pool.QueryRow(ctx, liveLeaseSQL, id, body.LeaseOwner).Scan(&orgID, &repoID)
+	err := h.pool.QueryRow(ctx, liveLeaseSQL, id, leaseOwner).Scan(&orgID, &repoID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		refuse(w)
 		return
@@ -327,6 +337,50 @@ func (h *Handler) Mint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, string(out))
+}
+
+// parseLeaseBody accepts exactly `{"lease_owner": "<non-empty string>"}`
+// and nothing else: no other key, no repeated key, no trailing bytes.
+//
+// A plain json.Decoder accepts trailing data and takes the last of two
+// `lease_owner` keys, which is harmless here and still not this protocol
+// (PR #52's review, N4). Walking the tokens costs nothing and makes the
+// accepted shape exactly the documented one.
+func parseLeaseBody(r io.Reader) (string, bool) {
+	dec := json.NewDecoder(io.LimitReader(r, maxBodyBytes))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return "", false
+	}
+	var owner string
+	seen := false
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return "", false
+		}
+		key, isString := keyTok.(string)
+		if !isString || key != "lease_owner" || seen {
+			return "", false
+		}
+		seen = true
+		// Decode into a string: a number, null-as-empty, an object or an
+		// array all fail here or below.
+		if err := dec.Decode(&owner); err != nil {
+			return "", false
+		}
+	}
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('}') {
+		return "", false
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		// Anything after the object — a second object, garbage — is not
+		// this protocol either.
+		return "", false
+	}
+	if !seen || strings.TrimSpace(owner) == "" {
+		return "", false
+	}
+	return owner, true
 }
 
 // refuse writes THE 404. One function so there is one body.

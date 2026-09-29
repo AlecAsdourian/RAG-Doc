@@ -251,7 +251,7 @@ Plans:
 - pgvector availability and version on the chosen host (0.8.x is needed for iterative scans);
 - whether the migration role may `CREATE EXTENSION vector` (the extension is not trusted, so it needs a superuser or the host's admin role);
 - a container `--shm-size` large enough for HNSW index builds;
-- keeping 22-04's token route on an internal-only listener.
+- keeping 22-04's token route on an internal-only listener (PR #52's review ruled network position plus the lease owner sufficient for v1 on a private compose network; if the worker and the backend ever sit on different hosts, the route needs a bearer secret or mTLS in front of it).
 **Plans:** TBD (target 5 plans)
 
 Plans:

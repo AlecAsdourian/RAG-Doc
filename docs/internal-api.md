@@ -40,6 +40,14 @@ matter of middleware ordering; on a separate listener it is a matter of
 **network reachability**, which a deployment can enforce and audit.
 
 - It binds **`INTERNAL_ADDR`**, default `127.0.0.1:8081`.
+- **It refuses to bind every interface.** `:8081`, `0.0.0.0:8081`, `[::]:8081`
+  and the `inet_aton` shorthands (`0:8081`) stop the process at startup, because
+  on a platform that publishes whatever a process listens on they are a public
+  token route (PR #52's review, L3). Bind loopback, or the compose service name
+  (`INTERNAL_ADDR=backend:8081`, which resolves to the container's own address),
+  or set `INTERNAL_ADDR_ALLOW_ALL_INTERFACES=true` and accept a WARN on every
+  start. `internalapi.CheckListenAddr` is the judge and `listen_addr_test.go`
+  pins the spellings.
 - In compose it is exposed on the compose network only. **It is never in
   `ports:`.** (22-05 adds the compose wiring; 22-04 adds none.)
 - **Phase 24 carries "keep the token route internal-only" as a deployment
@@ -155,6 +163,19 @@ narrower than the App key, which never leaves the backend. Phase 24's
 deployment keeps the listener unreachable from anything but the workers, which
 is what bounds the risk to that process.
 
+**The lease gates issuance, not validity.** Measured in PR #52's review (L1):
+once the lease expires the route refuses, but a token it already issued stays
+valid for GitHub's full hour, and nothing on this side can shorten it. So
+**22-05 revokes the token** — `DELETE /installation/token`, authenticated by
+the token being revoked, no App key involved — when the fetch ends and on
+`LeaseLost`, so the credential's life is the fetch rather than the hour.
+
+**What the network position is worth.** On a private compose network, the
+lease owner plus reachability is the whole authentication, and the review ruled
+that sufficient for v1. If the worker and the backend ever sit on different
+hosts, the route needs a bearer secret or mTLS in front of it; Phase 24 carries
+that requirement.
+
 ---
 
 ## The worker's side
@@ -166,6 +187,16 @@ or raises one of: `TokenRefused` (marked 404), `InternalApiMisrouted`
 `TokenRequestFailed` (a marked response the client does not accept, or a
 transport failure — an ordinary, retried failure). Messages carry the internal
 API's host and a status, never the lease owner, never a token.
+
+**The token client ignores proxy variables.** `httpx` honours `HTTP_PROXY` /
+`HTTPS_PROXY` / `ALL_PROXY` by default; this request is plain HTTP on the
+compose network and carries the lease owner in its body and the token in its
+reply, and a forward proxy relays headers, so the marker would survive and
+nothing would fail loudly (PR #52's review, L2). The client is built with
+`trust_env=False`, and `test_the_token_client_ignores_proxy_environment_variables`
+measures it against a real recording proxy. The fetcher's GitHub client keeps
+the default on purpose: an egress proxy for GitHub is a legitimate deployment,
+and that traffic is HTTPS through a CONNECT tunnel the proxy cannot read.
 
 `workers.fetch.archive.fetch_repository(token, job_id=…, workdir=…)` then
 resolves the default branch to a full SHA, downloads the tarball of **that

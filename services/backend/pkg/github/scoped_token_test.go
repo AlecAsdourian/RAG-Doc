@@ -30,6 +30,9 @@ func TestLongTokenHasTheMeasuredShape(t *testing.T) {
 	require.True(t, strings.HasPrefix(longToken, "ghs_"))
 }
 
+// absentField tells scopedFake to leave a field out of the mint reply.
+const absentField = "ABSENT"
+
 // scopedFake is a fake GitHub for RepositoryToken's two calls, recording
 // what it was asked and answering what it is told to.
 type scopedFake struct {
@@ -75,10 +78,22 @@ func (f *scopedFake) server(t *testing.T) *httptest.Server {
 			if perms == "" {
 				perms = `{"contents":"read","metadata":"read"}`
 			}
+			// absentField makes the fake OMIT a field, which is a different
+			// response from sending it empty, and the client tells them apart.
+			fields := []string{
+				fmt.Sprintf(`"token":%q`, f.token),
+				fmt.Sprintf(`"expires_at":%q`, time.Now().Add(time.Hour).UTC().Format(time.RFC3339)),
+				`"repository_selection":"selected"`,
+			}
+			if perms != absentField {
+				fields = append(fields, `"permissions":`+perms)
+			}
+			if repos != absentField {
+				fields = append(fields, `"repositories":`+repos)
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
-			fmt.Fprintf(w, `{"token":%q,"expires_at":%q,"permissions":%s,"repository_selection":"selected","repositories":%s}`,
-				f.token, time.Now().Add(time.Hour).UTC().Format(time.RFC3339), perms, repos)
+			fmt.Fprintf(w, "{%s}", strings.Join(fields, ","))
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repositories/"):
 			f.lookupAuth = append(f.lookupAuth, r.Header.Get("Authorization"))
 			f.lookupPath = append(f.lookupPath, r.URL.Path)
@@ -170,17 +185,21 @@ func TestRepositoryToken_NeverCaches(t *testing.T) {
 // TestRepositoryToken_RefusesAScopeWiderThanAsked fails closed on what
 // GitHub REPORTS the token carries, rather than trusting the request.
 func TestRepositoryToken_RefusesAScopeWiderThanAsked(t *testing.T) {
+	// Each refusal names its own cause, so 22-05's live proof can read
+	// which of them the real API produced if the first mint is refused.
 	cases := []struct {
 		name         string
 		repositories string
 		permissions  string
 		want         string
 	}{
-		{"two repositories", `[{"id":7},{"id":8}]`, "", "not the one repository"},
-		{"a different repository", `[{"id":8}]`, "", "not the one repository"},
-		{"no repositories listed", `[]`, "", "not the one repository"},
+		{"two repositories", `[{"id":7},{"id":8}]`, "", "listing 2 repositories, not exactly the one requested (7)"},
+		{"a different repository", `[{"id":8}]`, "", "listing 1 repositories, not exactly the one requested (7)"},
+		{"no repositories listed", `[]`, "", "listing 0 repositories"},
+		{"repositories field absent", absentField, "", "no repositories field"},
 		{"contents write", "", `{"contents":"write","metadata":"read"}`, `contents="write"`},
 		{"no contents at all", "", `{"metadata":"read"}`, `contents=""`},
+		{"permissions object absent", "", absentField, "no permissions object"},
 		{"an extra permission", "", `{"contents":"read","metadata":"read","issues":"read"}`, "issues=read"},
 	}
 	for _, tc := range cases {
@@ -254,6 +273,52 @@ func TestRepositoryToken_NeverLeaksCredentials(t *testing.T) {
 			})
 		})
 	}
+}
+
+// TestRepositoryToken_LookupErrorRedactsTheTokenByValue is the belt under
+// the prefix-based braces: a token under a prefix redactSecrets does not
+// know, echoed by the failing lookup, must still not reach the error.
+// Without redactValues on that path this leaks, which is what makes the
+// mutation observable.
+func TestRepositoryToken_LookupErrorRedactsTheTokenByValue(t *testing.T) {
+	unknownPrefix := "zz_" + strings.Repeat("Q7wErTyU", 48)[:383]
+	fake := &scopedFake{token: unknownPrefix, repoID: 7,
+		lookupStatus: http.StatusBadGateway, lookupEchoTok: true}
+	c, err := NewClient("4880866", writeTestKey(t), WithBaseURL(fake.server(t).URL))
+	require.NoError(t, err)
+
+	_, err = c.RepositoryToken(context.Background(), 1, 7)
+	require.Error(t, err)
+	// The visible PREFIX, not the whole token: request() keeps 300 bytes of
+	// the body, so the echo is truncated, and an exact-match redaction let
+	// 270 characters of it through on this test's first run.
+	require.NotContains(t, err.Error(), unknownPrefix[:32],
+		"a token of a shape the prefix list does not know must be redacted by value, "+
+			"truncated echo included")
+	require.Contains(t, err.Error(), "[REDACTED]")
+	require.Contains(t, err.Error(), "502")
+}
+
+// TestRedactValues_CoversATruncatedEcho pins the prefix rule on its own.
+func TestRedactValues_CoversATruncatedEcho(t *testing.T) {
+	secret := "zz_" + strings.Repeat("Q7wErTyU", 48)[:383]
+
+	whole := redactValues("bearer "+secret+" rejected", secret)
+	require.Equal(t, "bearer [REDACTED] rejected", whole)
+
+	truncated := redactValues("<html>bearer "+secret[:270], secret)
+	require.Equal(t, "<html>bearer [REDACTED]", truncated,
+		"an echo cut off mid-token must be redacted from the first eight characters on")
+
+	twice := redactValues(secret[:40]+" and again "+secret[:100]+"!", secret)
+	require.Equal(t, "[REDACTED] and again [REDACTED]!", twice)
+
+	require.Equal(t, "nothing here", redactValues("nothing here", secret),
+		"text without the anchor is untouched")
+	require.Equal(t, "zz_Q7wE short", redactValues("zz_Q7wE short", secret),
+		"fewer than eight matching characters is not an echo")
+	require.Equal(t, "ab ab", redactValues("ab ab", "ab"),
+		"a value shorter than eight characters is never used")
 }
 
 // TestNewClientFromEnv pins the three shapes main.go relies on.

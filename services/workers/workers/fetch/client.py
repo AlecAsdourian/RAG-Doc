@@ -156,9 +156,23 @@ def request_token(
     host = _host(base)
     url = f"{base}/internal/jobs/{canonical_job}/repository-token"
 
+    # ⚠ trust_env=False, AND IT IS LOAD-BEARING (PR #52's review, L2).
+    # httpx defaults to trust_env=True, which honours HTTP_PROXY /
+    # HTTPS_PROXY / ALL_PROXY from the environment. This request is plain
+    # HTTP on the compose network and carries the lease owner in its body
+    # and the token in its reply; through a forward proxy both would
+    # transit the proxy in the clear -- and because a proxy relays headers,
+    # the marker would survive and nothing would fail loudly. So this one
+    # client reads no proxy from the environment. The fetcher's client
+    # (workers.fetch.archive) keeps the default on purpose: an egress proxy
+    # for GitHub is a legitimate deployment, and its traffic is HTTPS
+    # through a CONNECT tunnel the proxy cannot read.
     try:
         with httpx.Client(
-            transport=transport, timeout=timeout, follow_redirects=False
+            transport=transport,
+            timeout=timeout,
+            follow_redirects=False,
+            trust_env=False,
         ) as client:
             response = client.post(
                 url,

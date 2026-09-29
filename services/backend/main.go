@@ -37,6 +37,20 @@ func main() {
 		logLevel = slog.LevelDebug
 	}
 
+	// One slog logger for everything outside the public router's httplog:
+	// this file's warnings and the internal listener, in the same format
+	// LOG_FORMAT gives the public side, so a deployment reading JSON does
+	// not get one text line per repository token in the middle of it.
+	logOpts := &slog.HandlerOptions{Level: logLevel}
+	var logHandler slog.Handler
+	if logJSON {
+		logHandler = slog.NewJSONHandler(os.Stderr, logOpts)
+	} else {
+		logHandler = slog.NewTextHandler(os.Stderr, logOpts)
+	}
+	logger := slog.New(logHandler)
+	slog.SetDefault(logger)
+
 	// Connect to PostgreSQL
 	ctx := context.Background()
 	dbpool, err := pgxpool.New(ctx, databaseURL)
@@ -131,9 +145,31 @@ func main() {
 		if internalAddr == "" {
 			internalAddr = internalapi.DefaultAddr
 		}
+		// ⚠ REFUSE TO BIND EVERY INTERFACE unless told to in so many
+		// words. `:8081` on a platform that publishes whatever a process
+		// listens on is a public token route (PR #52's review, L3). Bind
+		// loopback, or the compose service name, or set the override and
+		// accept the warning.
+		allInterfaces, err := internalapi.CheckListenAddr(internalAddr)
+		if err != nil {
+			log.Fatalf("INTERNAL_ADDR %q refused: %v\n", internalAddr, err)
+		}
+		if allInterfaces {
+			if os.Getenv(internalapi.AllInterfacesOverrideEnv) != "true" {
+				log.Fatalf("INTERNAL_ADDR %q binds every interface, and the token route must "+
+					"never be reachable from outside the worker's network; bind loopback or the "+
+					"compose service name (INTERNAL_ADDR=backend:8081), or set %s=true and keep "+
+					"the address unpublished\n", internalAddr, internalapi.AllInterfacesOverrideEnv)
+			}
+			slog.Warn("the internal API binds EVERY interface by explicit override; "+
+				"this address must never be published, or anyone who can read a lease owner "+
+				"can mint repository tokens",
+				slog.String("internal_addr", internalAddr),
+				slog.String("override", internalapi.AllInterfacesOverrideEnv))
+		}
 		internal = &http.Server{
 			Addr:         internalAddr,
-			Handler:      internalapi.NewRouter(dbpool, githubClient, slog.Default()),
+			Handler:      internalapi.NewRouter(dbpool, githubClient, logger),
 			ReadTimeout:  15 * time.Second,
 			WriteTimeout: 60 * time.Second,
 			IdleTimeout:  120 * time.Second,
