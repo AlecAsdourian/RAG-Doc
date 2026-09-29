@@ -43,7 +43,12 @@ jobs:
     # let these services be dropped.
     services:
       postgres:
-        image: postgres:16-alpine
+        # pgvector, pinned by digest: the same reference as the Go harness
+        # (container.go), the Python conftest and docker-compose.yml.
+        # PostgreSQL 16.15, pgvector 0.8.6. The "Apply migrations" step
+        # below proves the image, because migration 000016 creates the
+        # `vector` extension and fails on an image without it.
+        image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
         env:
           POSTGRES_USER: coderag
           POSTGRES_PASSWORD: coderag

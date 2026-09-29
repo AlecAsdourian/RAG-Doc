@@ -27,11 +27,8 @@ package jobs
 import (
 	"context"
 	"fmt"
-	"net"
-	"net/url"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -40,7 +37,6 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/source/file"       // source
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/testing/isolation"
@@ -73,7 +69,11 @@ func TestBackfillIngestionJobs_GivesAJobToEveryStrandedRepository(t *testing.T) 
 	ctx := context.Background()
 	pool := isolation.SetupTestDB(t)
 
-	dsn, dbName := scratchDatabase(t, pool)
+	// Owned and migrated by the container SUPERUSER, deliberately: see the
+	// header for what that shape proves and what it leaves to the seeded
+	// gate in pkg/testing/isolation.
+	scratch := isolation.ScratchDatabase(t, pool, isolation.SuperuserRole)
+	dsn, dbName := scratch.OwnerDSN, scratch.Name
 	m := openMigrator(t, dsn)
 
 	// 1. The schema as it stood before this plan.
@@ -272,54 +272,11 @@ func countEligible(all []*seededRepo) int {
 }
 
 // =====================================================================
-// The scratch database
+// The migrator
 // =====================================================================
-
-// scratchDatabase creates an empty database inside the harness container
-// and returns a DSN for it and its name.
 //
-// The harness container, not a second one: what this test needs is a
-// database at a DIFFERENT MIGRATION VERSION, which costs a
-// `CREATE DATABASE` rather than a container start.
-func scratchDatabase(t *testing.T, pool *pgxpool.Pool) (string, string) {
-	t.Helper()
-	ctx := context.Background()
-
-	cfg := pool.Config().ConnConfig
-	name := "backfill_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:16]
-
-	// CREATE DATABASE cannot run inside a transaction, so this is a plain
-	// Exec on a hijacked superuser connection.
-	isolation.WithSuperuserConn(t, pool, func(conn *pgx.Conn) {
-		t.Helper()
-		if _, err := conn.Exec(ctx, "CREATE DATABASE "+name); err != nil {
-			t.Fatalf("create scratch database: %v", err)
-		}
-	})
-	t.Cleanup(func() {
-		isolation.WithSuperuserConn(t, pool, func(conn *pgx.Conn) {
-			// Anything still connected would make the drop fail, and a
-			// leaked database is a slow leak on a container that is reused
-			// between runs.
-			_, _ = conn.Exec(context.Background(),
-				`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1`,
-				name)
-			if _, err := conn.Exec(context.Background(),
-				"DROP DATABASE IF EXISTS "+name); err != nil {
-				t.Logf("could not drop scratch database %s: %v", name, err)
-			}
-		})
-	})
-
-	dsn := (&url.URL{
-		Scheme:   "postgres",
-		User:     url.UserPassword(cfg.User, cfg.Password),
-		Host:     net.JoinHostPort(cfg.Host, strconv.Itoa(int(cfg.Port))),
-		Path:     "/" + name,
-		RawQuery: "sslmode=disable",
-	}).String()
-	return dsn, name
-}
+// The scratch database itself comes from isolation.ScratchDatabase, lifted
+// out of this file in 22-01 so the seeded-migration gate shares it.
 
 func openMigrator(t *testing.T, dsn string) *migrate.Migrate {
 	t.Helper()

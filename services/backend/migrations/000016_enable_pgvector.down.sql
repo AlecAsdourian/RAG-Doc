@@ -1,0 +1,21 @@
+-- Reverses 000016. Nothing at this version uses the type; 22-02's 000017,
+-- which does, drops its own columns and indexes on the way down first.
+--
+-- Dropping an extension takes its owner or a superuser. In the deployment
+-- shape the operator created it (see the up migration), so rolling back
+-- past 16 as the non-superuser table owner fails here with 42501, `must be
+-- owner of extension vector` (measured 2026-09-17, 22-01), and needs the
+-- operator again. That is the honest failure: the owner never had the
+-- extension to give back. As a superuser (compose, CI, the test harnesses)
+-- it succeeds.
+--
+-- WHAT THAT FAILURE LEAVES BEHIND, because an operator sees only this:
+-- `schema_migrations` reads 15, DIRTY, and the extension is STILL
+-- INSTALLED. golang-migrate records the target version as dirty before it
+-- runs a file, and the DROP rolled back with the file. Two ways out, both
+-- pinned by TestMigration000016NeedsTheExtensionPreCreated:
+--   - `migrate force 16`: abandon the rollback. The extension stays, and
+--     16 is what the database has.
+--   - drop the extension as the operator, then `migrate force 15`: finish
+--     the rollback by hand.
+DROP EXTENSION IF EXISTS vector;

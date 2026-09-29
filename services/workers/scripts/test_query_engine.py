@@ -204,9 +204,11 @@ def main():
     # Define test queries
     test_queries = [
         {
-            "query": "vector database client",
-            "hint": "vectordb/client.go",
-            "description": "Lexical match - should find Go vector DB client"
+            # test_ingestion.py's Go sample is pkg/github/client.go since
+            # 22-01 deleted pkg/vectordb.
+            "query": "GitHub App installation client",
+            "hint": "github/client.go",
+            "description": "Lexical match - should find the Go GitHub App client"
         },
         {
             "query": "semantic chunking",

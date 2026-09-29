@@ -2,7 +2,11 @@ version: '3.8'
 
 services:
   postgres:
-    image: postgres:16-alpine
+    # pgvector (22-01), pinned by digest like the test harnesses and CI.
+    # ⚠ An existing postgres_data volume was initialised by the Alpine image
+    # (musl); this one is Debian (glibc). See docs/local-development.md,
+    # "The Postgres image", before starting it on an old volume.
+    image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
     ports:
       - "5434:5432"
     environment:

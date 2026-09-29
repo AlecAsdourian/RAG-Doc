@@ -24,6 +24,17 @@ _MIGRATIONS_DIR = (
 
 _APP_ROLE = "rag_doc_app"
 
+# The same pinned image as the Go harness (`container.go`'s postgresImage),
+# backend-ci.yml and docker-compose.yml: PostgreSQL 16.15 with pgvector 0.8.6.
+# Migration 000016 creates the `vector` extension, so an image without it
+# fails at migration time rather than at the first vector query. Unlike the
+# Go harness, this fixture never reuses a container across sessions, so it
+# has no stale-container trap to rename its way out of.
+_POSTGRES_IMAGE = (
+    "pgvector/pgvector:pg16"
+    "@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b"
+)
+
 # Test superuser account inside the container. Matches the Go harness so a
 # developer switching between the two doesn't have to relearn conventions.
 _PG_USER = "isolation"
@@ -41,7 +52,7 @@ def test_db_container() -> Iterator[PostgresContainer]:
     per-session startup at ~5s is already tolerable.
     """
     container = PostgresContainer(
-        "postgres:16-alpine",
+        _POSTGRES_IMAGE,
         username=_PG_USER,
         password=_PG_PASS,
         dbname=_PG_DB,

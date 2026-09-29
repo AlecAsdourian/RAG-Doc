@@ -14,9 +14,11 @@
 --   - `idx_ingestion_jobs_one_live_per_repo` makes "two live jobs for one
 --     repository" unrepresentable. That is the ISS-016 fix, in the schema.
 --   - `ingestion_jobs_repo_tenant_fk` makes a job filed under the wrong
---     tenant unrepresentable. Foreign-key checks run with row-level
+--     tenant unrepresentable. Per-row foreign-key checks run with row-level
 --     security bypassed, so it holds whatever tenant context the writer
---     has, and survives the trigger below being disabled or dropped.
+--     has, and survives the trigger below being disabled or dropped. It is
+--     declared inside CREATE TABLE, for the reason section 4 gives
+--     (ISS-031).
 --   - `trg_ingestion_jobs_tenant` provides the MESSAGE, not the guarantee.
 --     A bare foreign-key violation names a constraint, not the problem.
 --
@@ -115,7 +117,13 @@ CREATE TABLE ingestion_jobs (
   -- 21-06 writes `updated_at = NOW()` explicitly, as the statements in
   -- 21-CONTEXT and 21-RESEARCH already do. A trigger here would be a
   -- second writer of a column those statements already set.
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+  -- The tenant guarantee. Section 4 says what it guarantees and why it is
+  -- declared HERE, with the table, and never by a later ALTER TABLE.
+  CONSTRAINT ingestion_jobs_repo_tenant_fk
+    FOREIGN KEY (repository_id, organization_id)
+    REFERENCES repositories (id, organization_id) ON DELETE CASCADE
 );
 
 -- =====================================================================
@@ -149,16 +157,101 @@ CREATE UNIQUE INDEX idx_ingestion_jobs_one_live_per_repo
 -- 4. The guarantee: a mismatched tenant is unrepresentable
 -- =====================================================================
 --
--- Not merely rejected. Foreign-key checks run with row-level security
--- bypassed, so no tenant context and no filtered read can let a mismatched
--- pair through, and the trigger in section 5 being disabled, dropped or
--- buggy leaves this standing.
+-- `ingestion_jobs_repo_tenant_fk`, declared inside CREATE TABLE in
+-- section 1. It references `repositories_id_org_key`, added by 000013
+-- (21-01).
 --
--- It references `repositories_id_org_key`, added by 000013 (21-01).
-ALTER TABLE ingestion_jobs
-  ADD CONSTRAINT ingestion_jobs_repo_tenant_fk
-  FOREIGN KEY (repository_id, organization_id)
-  REFERENCES repositories (id, organization_id) ON DELETE CASCADE;
+-- Not merely rejected. PER-ROW foreign-key checks run with row-level
+-- security bypassed, so no tenant context and no filtered read can let a
+-- mismatched pair through, and the trigger in section 5 being disabled,
+-- dropped or buggy leaves this standing.
+--
+-- ⚠ WHY IT IS DECLARED WITH THE TABLE (ISS-031, fixed in 22-01). Per-row
+-- checks bypass row-level security; the VALIDATION `ALTER TABLE ... ADD
+-- CONSTRAINT` runs does NOT. It is one query joining this table to
+-- `repositories` as the migrating role. In the deployment shape that role
+-- owns `repositories`, which forces row-level security on its owner, so
+-- the query reads it through the tenant policy. 000013's backfill loop
+-- leaves `app.current_tenant = ''` on the migrating session once it
+-- commits (ISS-013), the policy evaluates `''::uuid`, and this file, when
+-- it added the key with ALTER TABLE, failed with 22P02 and left
+-- `schema_migrations` at 14, dirty. Measured on a seeded database owned by
+-- a NOSUPERUSER NOBYPASSRLS role and migrated in one session. A superuser
+-- bypasses row-level security even under FORCE, and an empty database
+-- never sets the tenant, which is why neither CI nor the harnesses saw it.
+-- A key declared with its table has no rows to validate, so no validation
+-- query runs and the setting is never read.
+--
+-- ⚠ THIS EDITS A MIGRATION THAT HAD ALREADY SHIPPED, which is acceptable
+-- only because nothing was deployed. golang-migrate never re-applies a
+-- recorded version, so a database that already applied 000014 keeps the
+-- constraint it has, and 22-01 measured that constraint identical to this
+-- one: the two paths' catalogs match, `convalidated` included. Only
+-- databases below 14 take the new path. A database the OLD form left at
+-- 14, dirty (only ephemeral ones can be: the fact-check's, the planner's)
+-- holds no `ingestion_jobs` table at all, because the whole file rolled
+-- back. Recover it with `migrate force 13` and then `up`. NEVER `force
+-- 14`: it records a table that does not exist, and 000015 then fails on
+-- it with 42P01 (both measured in 22-01). After the first production
+-- deploy the escape of editing this file is gone, and the class has to be
+-- handled by each migration as it is written. Hence the rule:
+--
+--   - A key on a NEW table goes INSIDE CREATE TABLE. No rows, no
+--     validation query.
+--   - A key on an EXISTING table, for a column the migration ADDS: add
+--     the key BEFORE any tenant is set in the file, while the column is
+--     still NULL, and fill the column afterwards under each organization's
+--     own tenant. The validation has nothing to check (a row with a NULL
+--     key column is skipped), and every value the backfill writes is
+--     checked per row with row-level security bypassed. 000013 has this
+--     shape since 22-01. The same key added AFTER its loop validated under
+--     the last organization's tenant and passed a backfill that filed one
+--     organization's repositories under another (ISS-031, MX13); above the
+--     loop, that backfill fails at 13 with 23503.
+--   - A key over data ALREADY THERE, where the key's table OR THE TABLE IT
+--     REFERENCES forces row-level security: the validation is one query
+--     joining the two, and as the owner each side is read through its own
+--     policy, whatever the tenant. NULL (a fresh session) hides the key's
+--     table's rows, so violating rows go unchecked (measured in 22-01:
+--     eight violating rows, version 18 clean, `convalidated = true`), and
+--     hides the referenced table's rows, so CORRECT rows fail (measured:
+--     eight correct pairs keyed to `repositories`, 23503 at 18); an
+--     organization's id shows one organization's rows on each side; ''
+--     fails with 22P02. The referenced side is this file's own original
+--     failure: `ingestion_jobs` had no policy and `repositories` did.
+--     There is no tenant to set that makes it correct. Lift FORCE, for
+--     that one statement, on EVERY table the validation reads that has
+--     it, the key's table and the referenced table, as 000012 does for its
+--     backfill, before any tenant is set: the owner then reads every row
+--     on both sides (measured: the eight correct pairs pass with FORCE
+--     lifted on `repositories`; the eight violating rows fail with 23503
+--     with it lifted on their own table), and ALTER TABLE's ACCESS
+--     EXCLUSIVE lock closes the window until the transaction ends. Put
+--     FORCE back in the same file: the gate fails if any table with
+--     row-level security is left without it after the up.
+--   - Never rely on the tenant an earlier loop left behind, and never set
+--     a sentinel tenant (a valid id no organization has) to make a
+--     validation pass. It makes the validation see zero rows and pass
+--     vacuously.
+--
+-- WHAT pkg/testing/isolation/migration_seeded_test.go CAN SEE OF THIS. It
+-- migrates a seeded database from version 10 as a non-superuser owner, in
+-- one session from 12 on:
+--   - the '' this file's predecessor inherited from 000013 made the ALTER
+--     TABLE form of this key fail there with 22P02. That half is loud only
+--     because 13 and 15 run inside its one session;
+--   - its tenant audit fails any ALTER TABLE that leaves a foreign key
+--     validated under a non-empty tenant, or on a forced-RLS table with
+--     rows to check, in any version. That catches a sentinel, the 000013
+--     instance above and the fresh-session case, and it does not depend on
+--     the session. The FORCE-lifted form is not flagged: FORCE is off at
+--     that moment, which is the point of it;
+--   - beside the audit, it fails if any table with row-level security is
+--     left without FORCE after the up (a lift that never came back), and
+--     if any foreign key is left NOT VALID (a key whose rows were never
+--     checked, which runs no validation for the audit to see).
+-- It cannot see DML that inherits a tenant beyond what 000013's and
+-- 000015's outcome assertions cover, nor a validating trigger's reads.
 
 -- =====================================================================
 -- 5. The message
