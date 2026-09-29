@@ -300,13 +300,36 @@ VERDICT: PASS (0 UNEXPLAINED)
 **The verdict: PASS.** Not one of the 130 questions changed its file rank or
 its symbol rank, so no class had to explain anything, and every aggregate is
 identical under the two read paths. The rule's classes stayed in the
-definition, unused.
+definition, unused. **Stated in the terms of what was measured:** the storage
+move, judged by exact search on both sides (Qdrant below its
+`full_scan_threshold`, pgvector on plans that never touched the HNSW index,
+on repositories of at most 2,816 chunks), changed no ranking on 130
+vector-leg questions; the keyword leg was empty for 120 of them (ISS-029).
+HNSW-served rankings are not judged here; they are 22.1-05's.
+
+**Re-judged after PR #53's review (2026-09-29)**, with the hardened
+`compare_runs.py` that recomputes every record's ranks from its own final
+list, refuses a record whose ranks disagree, requires the final lists of a
+class-(c) question to differ only by tied chunks, and holds the exact list
+to a run's standard (role, model, repository): the same 260 records give
+the same line, `differing questions: 0   (a)=0   (b)=0   (c)=0
+UNEXPLAINED=0`, `VERDICT: PASS (0 UNEXPLAINED)`, exit 0, with no record
+refused — all 260 recorded ranks are what their final lists give. The
+records predate the `exact_paths` header field, so the script prints that it
+assumed the harness's rule (`self` by substring, benchmark corpora exactly);
+a wrong assumption would have been refused, not passed.
 
 **What the information lines add, read and not judged.**
 - The Qdrant score and the pgvector score of the same chunk for the same
-  query differ by at most **6.0e-07** across 6,395 pairs, three orders of
-  magnitude inside the 1e-5 tolerance and exactly the float32-accumulation
-  difference the review predicted; the ranks they induce agreed everywhere.
+  query differ by at most **6.03e-07** across 6,395 pairs, none above 1e-6,
+  three orders of magnitude inside the 1e-5 tolerance and exactly the
+  float32-accumulation difference the review predicted; the ranks they
+  induce agreed everywhere. **For the retrieval-quality track, from PR #53's
+  review (reviewer A, 2026-09-29):** 1e-5 was about 16× generous, harmless
+  here because no adjacent pair within it changed a rank; the track should
+  fix its vector-score tolerance at about **2e-6**, from this measurement,
+  dated, **before** its next rule is written, so that a tolerance is never
+  chosen with a difference in view.
 - The **full** boosted rankings (all ~50–100 chunks, scores compared) agree
   on 40/40 `self`, 39/45 miniflux and 25/45 mealie questions. The 6 and 20
   that differ are the questions whose vector top 50 now contains
