@@ -2,7 +2,7 @@
 # Start all development services in a tmux session
 # Usage: bash scripts/dev-tmux.sh
 #
-# Docker runs: postgres, qdrant, redis, backend (Go), rag-api (Python)
+# Docker runs: postgres, redis, backend (Go), rag-api (Python)
 # Native runs: frontend (Vite) — for fast HMR during UI development
 #
 # Panes layout:
@@ -24,7 +24,7 @@ tmux has-session -t "$SESSION" 2>/dev/null && tmux kill-session -t "$SESSION"
 
 # Create session — docker compose for infra + backend + workers
 tmux new-session -d -s "$SESSION" -n "dev" -c "$ROOT"
-tmux send-keys -t "$SESSION" "docker compose up --build postgres qdrant redis backend rag-api" C-m
+tmux send-keys -t "$SESSION" "docker compose up --build postgres redis backend rag-api" C-m
 
 # Split for frontend (native for fast HMR)
 sleep 1

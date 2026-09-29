@@ -1,0 +1,8 @@
+--- --ingest on the already-indexed miniflux corpus (must refuse, exit 1):
+miniflux is already indexed (runs=1, chunks=2134); re-indexing without --clear would mix two indexes (ISS-027)
+exit code: 1
+--- --clear self:
+[*] cleared self: runs=0 chunks=0
+exit code: 0
+--- rows left for self, as the superuser:
+0|0|4950
