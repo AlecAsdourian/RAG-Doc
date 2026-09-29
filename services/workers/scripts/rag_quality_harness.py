@@ -897,8 +897,7 @@ def do_measure(corpus: Corpus, set_name: str, top_k: int, boost_config=None,
     # boost_config goes straight to QueryEngine -> MetadataBooster, which merges
     # it over DEFAULT_CONFIG. Lets a ranking variant be measured without editing
     # library code, so several variants can run side by side against one build.
-    engine = QueryEngine(postgres_conn=PG, qdrant_url=QDRANT, openai_api_key=OPENAI,
-                         boost_config=boost_config)
+    engine = QueryEngine(postgres_conn=PG, openai_api_key=OPENAI, boost_config=boost_config)
     model = engine.vector_retriever.embedding_generator.model
     if query_vectors is not None:
         # Embed whatever is missing through the engine's own client, BEFORE the
@@ -1089,7 +1088,7 @@ if __name__ == "__main__":
         questions = [q for q in corpus.questions if a.set == "all" or q["set"] == a.set]
         if not OPENAI:
             sys.exit("OPENAI_API_KEY not set (needed to embed any question the cache is missing)")
-        engine = QueryEngine(postgres_conn=PG, qdrant_url=QDRANT, openai_api_key=OPENAI)
+        engine = QueryEngine(postgres_conn=PG, openai_api_key=OPENAI)
         model = engine.vector_retriever.embedding_generator.model
         embedded = query_vectors.ensure(
             questions, engine.vector_retriever.embedding_generator.client.generate_embeddings_batch,
