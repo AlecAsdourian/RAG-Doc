@@ -1268,11 +1268,9 @@ func seedSiblingRepository(t *testing.T, pool *pgxpool.Pool, org *isolation.Test
 			RETURNING id::text`, repoID).Scan(&runID); err != nil {
 			return err
 		}
-		if err := tx.QueryRow(bg, `
-			INSERT INTO chunks
-			  (ingestion_run_id, repository_id, file_path, start_line, end_line, content, content_hash)
-			VALUES ($1, $2, 'sibling.go', 1, 2, 'package main', repeat('d', 64))
-			RETURNING id::text`, runID, repoID).Scan(&chunkID); err != nil {
+		if err := tx.QueryRow(bg, isolation.TestChunkInsertSQL,
+			org.ID, runID, repoID, "sibling.go", 1, 2, "package main", strings.Repeat("d", 64),
+		).Scan(&chunkID); err != nil {
 			return err
 		}
 		if err := tx.QueryRow(bg, `
@@ -1327,13 +1325,9 @@ func seedIngestedContent(t *testing.T, pool *pgxpool.Pool, org *isolation.TestOr
 
 		var chunkID string
 		for i := 0; i < chunks; i++ {
-			if err := tx.QueryRow(bg, `
-				INSERT INTO chunks
-				  (ingestion_run_id, repository_id, file_path, start_line, end_line,
-				   content, content_hash)
-				VALUES ($1, $2, $3, 1, 2, 'package main', repeat('b', 64))
-				RETURNING id::text`,
-				runID, org.RepoID, fmt.Sprintf("main%d.go", i)).Scan(&chunkID); err != nil {
+			if err := tx.QueryRow(bg, isolation.TestChunkInsertSQL,
+				org.ID, runID, org.RepoID, fmt.Sprintf("main%d.go", i), 1, 2, "package main", strings.Repeat("b", 64),
+			).Scan(&chunkID); err != nil {
 				return fmt.Errorf("chunk %d: %w", i, err)
 			}
 		}

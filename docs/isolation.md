@@ -189,16 +189,28 @@ Every function that reads or writes a tenant-scoped table takes an
 ```python
 from workers.db import require_tenant
 
-def insert_chunks(conn, organization_id, chunks, repository_id, ingestion_run_id):
+def insert_chunks(conn, organization_id, chunks, repository_id, ingestion_run_id,
+                  embeddings, embedding_model):
     """Batch-insert chunks under the caller's tenant scope."""
     with require_tenant(conn, organization_id) as cur:
         cur.executemany(
-            "INSERT INTO chunks (id, ingestion_run_id, repository_id, "
-            "file_path, start_line, end_line, content, content_hash) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            "INSERT INTO chunks (id, organization_id, ingestion_run_id, repository_id, "
+            "file_path, start_line, end_line, content, content_hash, "
+            "embedding, embedding_model) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s)",
             [(...) for c in chunks],
         )
 ```
+
+Since migration 000017 a chunk row names its tenant explicitly: `chunks`
+is partitioned by `organization_id` and nothing fills the column in (a
+`BEFORE` trigger cannot route a row to another partition), so every
+writer supplies it, and the composite key `chunks_repo_tenant_fk` refuses
+a value that is not the repository's. The row also carries its vector and
+the model that produced it, read from the generator. The real writer is
+`PostgresWriter.insert_chunks`; Go tests use
+`isolation.TestChunkInsertSQL` and Python tests
+`tests.isolation.fixtures.TEST_CHUNK_INSERT_SQL`.
 
 Read paths look the same — `require_tenant` yields a cursor bound to a
 tenant-scoped transaction; RLS silently filters `SELECT` results to
