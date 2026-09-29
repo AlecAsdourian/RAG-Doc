@@ -189,7 +189,7 @@ Plans:
   - Qdrant removed from code, compose, dependencies and the harness;
   - a benchmark equivalence gate on the same ada-002 vectors.
   **Executed 2026-09-29, in review as PR #53:** the rule was committed before the first measurement; the Qdrant-era baseline was recorded completely on one scratch database with the query vectors embedded once; the pgvector read path was measured against the same database and vectors as `rag_doc_app`; `compare_runs.py` found **no question differing** in file or symbol rank (0 UNEXPLAINED, exit 0) and identical aggregates; then Qdrant was retired everywhere. Both plan-shape proofs (HNSW eligibility, the breadcrumb GIN index) are tests. See `22-03-SUMMARY.md` and `22-03-equivalence.md`.
-- [ ] 22-04: fetching a repository safely:
+- [x] 22-04: fetching a repository safely — **executed 2026-09-29, in review as PR #52** (`22-04-SUMMARY.md`: every guard mutation-checked, the mealie measurement, and a real leak found by the log-capture test — `httpx` logs the download link at INFO — now guarded):
   - the backend mints a one-hour, one-repository, read-only token, checked against the job lease — **the App key never enters the worker** (U4);
   - an archive fetch through the GitHub API (U5);
   - v1 caps (U6) and a secret-file deny-list (U7);
@@ -252,7 +252,7 @@ Plans:
 - pgvector availability and version on the chosen host (0.8.x is needed for iterative scans);
 - whether the migration role may `CREATE EXTENSION vector` (the extension is not trusted, so it needs a superuser or the host's admin role);
 - a container `--shm-size` large enough for HNSW index builds;
-- keeping 22-04's token route on an internal-only listener.
+- keeping 22-04's token route on an internal-only listener (PR #52's review ruled network position plus the lease owner sufficient for v1 on a private compose network; if the worker and the backend ever sit on different hosts, the route needs a bearer secret or mTLS in front of it).
 **Plans:** TBD (target 5 plans)
 
 Plans:

@@ -4,6 +4,16 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 ## Open Enhancements
 
+### ISS-037: The Go isolation harness's single reuse-by-name container collides across parallel worktrees at different migration versions
+
+**Found:** 2026-09-29, during 22-04 (PR #52), while 22-02 ran in a sibling worktree. Filed at PR #52's review (L8).
+**Owner:** 22-05, as its first task.
+**Severity:** medium — a fleet-workflow hazard; no product impact.
+
+**What happens.** `pkg/testing/isolation/container.go` names ONE container (`containerName`, :34) and reuses it by name (`WithReuseByName`, :120), so every worktree on a host shares it. When 22-02's run migrated the shared container to 000017 while 22-04's tree was still at 000016, golang-migrate refused every 22-04 run with `no migration found for version 17: read down for version 17 .: file does not exist` — the harness applies its own tree's migrations to a database already past them. 22-04 worked around it with a local, uncommitted rename of the constant until `main` (with 000017) was merged. The next pair of parallel plans with different newest migrations hits it again.
+
+**Fix, recommended by the review and adopted:** derive the container name from the worktree by default — `containerName + "-" + shortHash(worktreeRoot)` — with `ISOLATION_CONTAINER_NAME` as an override. **Not an env-only override**: that recreates the collision the first time someone forgets to set it. Cost: one Postgres container per worktree; the harness removes nothing, so stale ones are `docker rm -f`'d by hand as today. `docs/local-development.md`'s "The Postgres image" section names the container and needs the derived form.
+
 ### ISS-036: `chunks.ingestion_run_id` and `chunks.symbol_id` carry no tenancy, so a tenant can cite another tenant's run or symbol on its own row
 
 - **Discovered:** 2026-09-29, by the reviewer session on PR #49 (22-02), measured in the deployment shape (a `NOSUPERUSER NOBYPASSRLS` owner, FORCE RLS everywhere) as `rag_doc_app`.

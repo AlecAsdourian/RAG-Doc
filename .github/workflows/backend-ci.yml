@@ -193,4 +193,10 @@ jobs:
         # seconds; the alternative was a follow-up that had to survive a plan
         # boundary to get done. 21-03's barrier race test and 21-06's worker
         # pool both land in that package.
-        run: go test -race ./pkg/api/... ./pkg/db/... ./pkg/jobs/... ./pkg/testing/... -count=1 -p 1 -timeout 15m
+        #
+        # ./pkg/internalapi/... and ./pkg/github/... were added in 22-04: the
+        # internal listener's tests drive a real server from several
+        # goroutines against a log sink, and the GitHub client's
+        # per-installation mint lock is proven by 25 concurrent callers.
+        # Together they add a few seconds.
+        run: go test -race ./pkg/api/... ./pkg/db/... ./pkg/jobs/... ./pkg/testing/... ./pkg/internalapi/... ./pkg/github/... -count=1 -p 1 -timeout 15m

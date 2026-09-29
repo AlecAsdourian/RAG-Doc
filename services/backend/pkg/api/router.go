@@ -51,8 +51,8 @@ type Config struct {
 	FrontendURL         string
 
 	// GitHubRepositories overrides the GitHub client the repositories
-	// handler talks to. Left nil in production, where the client is built
-	// from GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY_PATH below.
+	// handler talks to. Left nil in production, where GitHubClient below
+	// serves the handler.
 	//
 	// A seam rather than a fourth NewRouterWith… constructor. Without it
 	// nothing can exercise POST /api/repositories past its first
@@ -60,6 +60,18 @@ type Config struct {
 	// — which is how that endpoint's entire persist path shipped with no
 	// test over it.
 	GitHubRepositories handlers.InstallationRepositoryLister
+
+	// GitHubClient is the App client, built ONCE by main.go from
+	// GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY_PATH and shared with the
+	// internal listener (pkg/internalapi), which mints repository tokens
+	// with it. Until 22-04 this router built its own from the environment;
+	// a client built here could not reach the second listener.
+	//
+	// nil is the degraded shape every test and most dev checkouts have:
+	// repository connection and the GitHub webhook receiver are
+	// unavailable, everything else works. main.go says so at WARN; this
+	// router does not repeat the warning.
+	GitHubClient *github.Client
 }
 
 // NewRouter creates a Chi router with middleware chain and route groups.
@@ -166,26 +178,18 @@ func NewRouterWithValidatorAndAdmin(
 	// express. See 20-01-DESIGN.md.
 	tenantScoper := db.NewTenantScoper(dbpool)
 
-	// GitHub App client. Optional at construction, matching the Supabase
-	// admin client above: without credentials we warn loudly and run
-	// degraded rather than refusing to boot, so tests and offline dev
-	// still work. Degraded means repository connection and the webhook
-	// receiver cannot function — everything else is unaffected.
+	// GitHub App client. Optional, matching the Supabase admin client
+	// above: without it the router runs degraded rather than refusing to
+	// boot, so tests and offline dev still work. Degraded means repository
+	// connection and the webhook receiver cannot function — everything
+	// else is unaffected.
 	//
-	// A malformed key is NOT degraded-and-continue. NewClient fails on it,
-	// and a deployment that has credentials but cannot use them should say
-	// so at startup rather than at the first repository connect.
-	var githubClient *github.Client
-	if appID, keyPath := os.Getenv("GITHUB_APP_ID"), os.Getenv("GITHUB_APP_PRIVATE_KEY_PATH"); appID != "" && keyPath != "" {
-		gh, err := github.NewClient(appID, keyPath)
-		if err != nil {
-			panic("api: GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY_PATH are set but unusable: " + err.Error())
-		}
-		githubClient = gh
-	} else {
-		slog.Warn("GITHUB_APP_ID or GITHUB_APP_PRIVATE_KEY_PATH unset; " +
-			"repository connection and GitHub webhooks are unavailable")
-	}
+	// It arrives through cfg since 22-04. main.go builds it once with
+	// github.NewClientFromEnv, which keeps the fail-closed half of the old
+	// behaviour (credentials set but unusable stop the process) and hands
+	// the same client to the internal listener. A malformed key therefore
+	// still never reaches this router.
+	githubClient := cfg.GitHubClient
 	// Repository CRUD. Takes the scoper, NOT dbpool — see 20-01-DESIGN.md.
 	//
 	// The handler takes an interface, and a nil *github.Client assigned to
