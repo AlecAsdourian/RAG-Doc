@@ -407,9 +407,16 @@ func requireTenantViolation(t *testing.T, err error, op, table string) {
 // for why both are acceptable on UPDATE/DELETE.
 //
 // The message-shape assertions matter: they pin the error to one of the
-// two known isolation paths (trigger raise, or RLS ”::uuid cast on the
-// empty-string GUC). An unrelated 42501 or 22P02 from some future bug
-// would fail here rather than silently satisfy the test.
+// two known isolation paths (the trigger's raise, or RLS casting the
+// empty-string GUC to uuid). An unrelated 42501 or 22P02 from some future
+// bug would fail here rather than silently satisfy the test.
+//
+// (This doc comment once spelled the cast out with two apostrophes. gofmt
+// rewrites a pair of apostrophes, and a pair of backquotes, in a DOC
+// comment into curly quotes, measured on go1.25, and the right curly quote
+// is a byte cp1252 cannot decode, which crashed the isolation scanner on
+// Windows. Body comments are left alone; a doc comment must not carry
+// either pair, so this one names them instead of writing them.)
 func requireIsolationRefusal(t *testing.T, err error) {
 	t.Helper()
 	require.Error(t, err)

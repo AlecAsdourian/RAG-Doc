@@ -70,12 +70,14 @@ key-decisions:
   - "The drift query treats an orphan (a chunk or symbol whose repository is gone) as drift too: a row with no repository has no truth to agree with, and only a disabled key can produce one"
   - "No pgvector client package: the text form round-trips exactly up to the float4 storage, measured, once the OUTPUT is read back as float32"
   - "The writer's return value keeps one chunk id per content hash (the Qdrant upsert still consumes it until 22-03); every duplicate row is written"
-  - "The pre-existing probe test's migrations moved from 000017/000018 to 000018/000019, numbered from partitionedChunksVersion so the next migration does not collide again"
+  - "The pre-existing probe test's migrations are numbered from the newest migration IN THE DIRECTORY at run time (newestMigrationVersion + 1 / + 2). A constant collided twice: the original 000017/000018 with this plan's migration, then this plan's first fix, partitionedChunksVersion + 1 / + 2, with 22-03's 000018 (PR #49's review, minor 2)"
+  - "The drift query has four arms, not two: a chunk citing a run or a symbol of another repository is drift too, because the single-column keys carry no tenancy (ISS-036, PR #49's review, minor 3). The composite keys that close it belong to 22.1-01"
 
 issues-closed: [ISS-031]
-issues-updated: [ISS-035]
-review: "PR #49, open."
-duration: ~9h
+issues-updated: [ISS-035, ISS-027]
+issues-filed: [ISS-036]
+review: "PR #49 — APPROVE WITH NITS, no critical and no important findings; every claim reproduced on the reviewer's own scratch pgvector. Four minors and five nits, all applied at the user's choice (the second section of this summary), plus the merge of PR #50's acceptance criteria and review checklist."
+duration: ~9h, plus ~3h applying PR #49's review
 completed: 2026-09-29
 ---
 
@@ -259,9 +261,12 @@ longer exists; its feedback surviving. The one-session `up` from 12 to 17
 takes 437–801 ms across runs; the whole test 0.9–1.3 s.
 
 **`TestForeignKeyValidationReadsTheReferencedTable`** (22-01) numbered its
-probe migrations 000017 and 000018, which now collide with the real
-000017 ("duplicate migration file"). They are `partitionedChunksVersion +
-1` and `+ 2`, so the next migration cannot collide either.
+probe migrations 000017 and 000018, which collided with the real 000017
+("duplicate migration file"). This plan first moved them to
+`partitionedChunksVersion + 1` and `+ 2`, which PR #49's review pointed out
+collides with precisely the next migration, 22-03's 000018. They are now
+`newestMigrationVersion(t, migrationsDir()) + 1` and `+ 2`, read at run
+time; the proof is in the review section below.
 
 ## Every writer of `chunks`
 
@@ -446,6 +451,143 @@ call was made.
    with the rule text intact; ISS-035's line about 000017 is brought
    current. Both at the direction that came with this plan.
 
+## PR #49's review (APPROVE WITH NITS), applied 2026-09-29
+
+The reviewer re-ran every claim above on their own scratch pgvector and
+they held; nothing they tried crossed the tenant boundary. Four minors and
+five nits, all applied at the user's choice, in `4185f4c`; `main` (PR #50,
+the acceptance criteria and the review checklist) merged in `7e0797c`.
+
+**Minor 1, a curly quote, and where it came from.** The docs-only commit
+`d0d9b96` had turned `''::uuid` into `”::uuid` (`E2 80 9D`) in a comment at
+`db_assertion_test.go:410`, the one cp1252-undecodable byte in the diff,
+which on Windows killed `scripts/ci/check-isolation-tests.py`'s reader
+thread and surfaced as `'NoneType' object has no attribute 'splitlines'`.
+**The byte was gofmt's.** The first fix reverted it byte-exactly, ran
+`gofmt -w`, and committed a file identical to HEAD: the curly quote was
+back before the commit. Measured on a probe file with go1.25.5: `gofmt`
+rewrites `''` to `”` and ` `` ` to `“` inside **doc comments** (the
+comment on a declaration, since Go 1.19's doc-comment reformatting), even
+inside a backtick span, and leaves body comments alone. That comment is
+`requireIsolationRefusal`'s doc comment, so the ASCII pair can never
+survive there. The durable fix is the one committed: the sentence is
+rephrased without the pair ("RLS casting the empty-string GUC to uuid"),
+the doc comment says why, and `run_diff` decodes with `encoding="utf-8",
+errors="replace"`, so the scanner reads the same on every platform
+whatever a doc comment holds. The fleet checklist gained the rule.
+**Measured on Windows** (`PYTHONUTF8` unset, `locale.getpreferredencoding()`
+= `cp1252`): the old scanner against the old HEAD reproduces the crash;
+the hardened scanner against the same diff passes; the scanner against
+the fixed branch passes, and the Go+Python diff decodes as cp1252 again.
+
+**Minor 2, the probe numbering.** Now `newestMigrationVersion(t,
+migrationsDir()) + 1 / + 2` at run time. **Proved:** a throwaway
+`000018_throwaway_probe_collision.{up,down}.sql` placed beside the
+committed migrations, the harness container removed first so the harness
+rebuilt with the file present; the test passed with its probes at
+000019/000020, `nothing lifted: 23503 … probe_children_repo_tenant_fk`
+still measured; the throwaway removed (tree clean) and the container
+removed again, since its recorded version 18 no longer had a file.
+
+**Minor 3, the single-column keys carry no tenancy** (measured by the
+reviewer in the deployment shape, and now pinned here): per-row
+foreign-key checks run with row-level security bypassed, so as the app
+role under tenant A, with nothing lifted, a chunk of A's repository citing
+**B's run** is accepted, and one citing **B's symbol** is accepted. Not a
+breach: A mis-files its own row and B cannot read it. But B deleting its
+run then cascades into A's partition, and B deleting its symbol nulls A's
+chunk, and neither composite key notices, because both are keyed on the
+repository. So:
+- `CheckChunkTenantDrift` has **four arms** and tags each row
+  `<table>:<id>:<reason>`: `:tenant` (organization not the repository's,
+  or no repository), `:run` (the run belongs to another repository, or is
+  gone) and `:symbol` (the same for the symbol). Ordered in the `"C"`
+  collation through a subquery, byte by byte, so Go's sort agrees;
+  `ORDER BY 1 COLLATE "C"` is not that (the ordinal is an integer, `42804`,
+  which the first run found).
+- `TestChunksPartition_TheSingleColumnKeysCarryNoTenancy` writes both
+  rows as the app role in one never-committed transaction, switches back
+  to the superuser, and asserts the check reports exactly `[chunks:<id>:run,
+  chunks:<id>:symbol]`; then, as B, deletes the run and the symbol and
+  asserts A's chunk is gone and A's other chunk's `symbol_id` is NULL.
+- The replica-mode pin and the scratch-database self-test now expect the
+  richer output (a misfiled chunk whose run is its tenant's own is
+  reported as `:tenant` **and** `:run`), and the self-test manufactures the
+  within-tenant cases too: a chunk citing a run of A's other repository,
+  and one citing a symbol of A's other repository.
+- 000017's header records why per-row checks bypass RLS and what that
+  does to the two keys; `docs/isolation.md` states it; **ISS-036** carries
+  the fix, composite keys `(ingestion_run_id, repository_id)` and
+  `(symbol_id, repository_id)` with `UNIQUE (id, repository_id)` on the
+  referenced tables, scheduled for 22.1-01 (`22-CONTEXT.md`'s 22.1-01 row
+  points at it), with the ISS-031 wrinkle named: by then every table the
+  validation reads holds rows and forces RLS, the parent's validation reads
+  every partition through its own policy, so the FORCE lift has to cover
+  all of them or the key needs a rows-free moment.
+
+**Minor 4, the down's stale comment.** The down ends with `COMMENT ON
+COLUMN retrievals.chunk_id IS NULL` (000004 set none). Re-run: at 17 the
+comment is 000017's; after `down 1`, `<none>` with the key `NOT VALID`;
+after `up`, 000017's again; `down -all` and `up` clean.
+
+**Nits.** (5) `docs/isolation.md` carries the bulk-load limit: replica
+mode and `DISABLE TRIGGER` accept a misfiled row, loading that way is
+forbidden, the drift check is the guard, and the app role cannot reach
+either bypass nor `TRUNCATE`, all `42501` (re-measured:
+`permission denied to set parameter "session_replication_role"`, `must be
+owner of table chunks` / `chunks_p3` / `symbols`). (6)
+`pkg/auth/testing.go`'s cleanup deletes `symbols` too, with the reason. (7)
+The gate has a subtest that writes in the deployment shape, as
+`rag_doc_app` under alpha's tenant after a re-grant: a chunk of alpha's
+repository is written and routed to a partition, a chunk citing bravo's
+repository gets `23503 chunks_repo_tenant_fk`, a symbol is written, the
+transaction commits, the superuser counts one chunk and the drift check is
+empty. (8) `test_harness.py` asserts the catalog through the psycopg2 path:
+`(64, 64, 64, 64, 64)` partitions / RLS / FORCE / policy / trigger,
+`(65, 1)` policies / distinct expressions, `symbols` secured. (9)
+`TestDeleteReportsTheWholeCascade` reads the doomed chunk ids before the
+delete and asserts, as the superuser, that chunks by id, retrievals citing
+them and feedback on those retrievals are all 0 afterwards. And ISS-027
+has the line for 22-05: deleting superseded chunks is the event that
+creates retrievals whose chunk no longer exists, and `write_results` must
+handle them consciously.
+
+**The review round's mutations** (the same discipline: committed first,
+each mutation proven landed, restored with `git checkout --`, tree clean
+after each; migration mutations from scratch copies):
+
+| # | Mutation | Expected | Result |
+|---|---|---|---|
+| M12 | both new drift arms neutered (`WHERE false AND (...)`) | the single-column test fails | **killed** by three tests: `TheSingleColumnKeysCarryNoTenancy` (`expected [chunks:…:run chunks:…:symbol], actual []`), `TheKeyDoesNotHoldUnderReplicaMode` and `DriftCheckDetectsDrift` (the `:run` entry missing) |
+| M12' | only the `:run` arm neutered | | **killed** by the same three |
+| M12'' | only the `:symbol` arm neutered | | **killed** by `TheSingleColumnKeysCarryNoTenancy` and `DriftCheckDetectsDrift`; the replica pin, which sets no symbol, correctly does not notice |
+| M13 | `chunks_repo_tenant_fk` removed (M6's copy), through the gate | the deployment-shape write accepts the misfiled row | **killed**: the key-exists subtest and the new subtest, `An error is expected but got nil` on the misfiled insert |
+| M14 | the parent's policy in `EXISTS` form (M7's copy), through the gate | | **killed**: the policy-shape subtest and the new subtest, whose correct app-role write is refused with `new row violates row-level security policy for table "chunks"` |
+
+**One process finding:** the scratchpad this session writes to is shared
+with other sessions. Its `mutate.py` was replaced mid-run by another
+session's script of the same name with a different interface, so the first
+M12/M13 run mutated nothing and reported `ok`; the tool that prints the
+original-absent / mutated-present proof is what showed it (a traceback
+instead of counts). The tool now has a unique name, and the run above is
+the one with the proof lines.
+
+**Re-verified after the review and the merge of `main`**, in CI's shape,
+on a fresh harness container for the changed migration: `go build`,
+`go vet`, gofmt (LF-normalized) and `go mod tidy` clean; `go test ./...
+-count=1 -p 1` **578 passed, 1 failed (the CRLF test), 4 skipped**
+(pre-existing), the two new tests being the single-column-key test and
+the gate's deployment-shape write; the package-parallelism step the same;
+the gate, the extension test and the probe test `-count=3`, all pass, no
+scratch database left behind; up, down 1, up, down -all, up with the
+`migrate` CLI, the column comment gone after the down and back after the
+up; `pytest tests/ workers/ -q` **292 passed**; the isolation scanner
+`PASS` on Windows under the cp1252 locale, and every Go and Python file
+this PR touches byte-scanned clean after `gofmt -w` (no
+cp1252-undecodable byte, no curly quote). The race step was not re-run
+locally; the changes since it ran are tests, a query and doc comments,
+and CI's race step covers them.
+
 ## What 22-03 inherits
 
 - **`chunks.embedding` is there for every row, with `embedding_model`.**
@@ -453,8 +595,23 @@ call was made.
   `require_tenant`, with the query vector as a bound parameter and
   `hnsw.iterative_scan` set (P5); it must refuse a query whose model is not
   the rows' (P4).
-- **Read vectors back as float32.** pgvector's text output is
-  float32-shortest; parsed as doubles the values look changed.
+- **Vectors, confirmed by the review with the consequences spelled out.**
+  The **input** side stays as it is: `%s::vector` with `repr(float(x))`
+  loses nothing beyond the server's rounding to float32, measured on
+  1,536 values. Any code that **reads `embedding` back** must decode
+  through float32 (`np.float32` per element, or
+  `pgvector.psycopg2.register_vector`, which returns float32 arrays; a Go
+  reader through pgx also receives text unless a codec is registered) and
+  compare against `float32(sent)`, never against the double it sent:
+  pgvector prints each float4 as the shortest decimal that round-trips as
+  float32 (`'[-0.99951171875,0.1,0.3,0.123456789]'::vector::text` is
+  `[-0.9995117,0.1,0.3,0.12345679]`, and `float('-0.9995117') ==
+  -0.99951171875` is False while `float(np.float32('-0.9995117'))` equals
+  it). **The equivalence rule** must compare rank lists, and scores only
+  with a float32-scale tolerance, never exact equality: both stores hold
+  float32, but pgvector's `<=>` and Qdrant's cosine accumulate
+  differently, so exact score equality fails on rounding alone. Write
+  that into the rule before measuring.
 - **The keyword leg's breadcrumb expression has its index now,
   `COALESCE(breadcrumb, '')`.** 22-03 owns proving the plan uses it.
 - **The Qdrant upsert is still in `IngestionPipeline`**, commented as
@@ -463,4 +620,10 @@ call was made.
   legs with no `organization_id` in the SQL. Keep the SQL that way.
 - **Every writer supplies `organization_id`**; 22-05's `write_results`
   inside `complete()`'s transaction must too, and `AssertNoChunkTenantDrift`
-  belongs at the end of its tests.
+  belongs at the end of its tests. Its run and symbol references must be
+  the repository's own (ISS-036): the keys do not check that, the drift
+  query does.
+- **For 22-05, from ISS-027:** replacing a repository's chunks is the event
+  that leaves retrievals citing chunks that no longer exist; decide what
+  `write_results` does with them.
+- **For 22.1-01:** ISS-036's composite keys, under ISS-031's rule.

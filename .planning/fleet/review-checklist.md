@@ -84,7 +84,10 @@ verdict says whether that evidence holds. Neither is optional.
   can spin forever; a connect with no timeout can hang past every give-up rule.
 - **Control characters and encodings.** NUL bytes break psycopg2 writes; a smart
   quote in a source file breaks a cp1252 subprocess. Decode subprocess output as
-  UTF-8 explicitly.
+  UTF-8 explicitly. **Never write `''` or ` `` ` in a Go doc comment:** gofmt
+  rewrites them to curly quotes there (measured on go1.25, PR #49), so the ASCII
+  form cannot survive a `gofmt -w`, and the curly quote is the byte cp1252
+  cannot decode. Body comments are left alone; rephrase the doc comment.
 - **One flag, one meaning.** "Shut down" and "you lost your lease" are different
   events and need different signals.
 
