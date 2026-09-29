@@ -61,11 +61,20 @@ package isolation
 //     column is still NULL has nothing to check, so neither is flagged: a
 //     new-column key added BEFORE a backfill loop (000013's shape since
 //     22-01) passes, while the same key added AFTER the loop is flagged by
-//     both (a) and (b). A key over existing data added with FORCE lifted
-//     for that statement (000012's pattern, the rule's answer for that
-//     case) is not flagged either: FORCE is off at that moment, which is
-//     the point, and the validation then reads every row (measured: eight
-//     violating rows fail it with 23503 where the FORCE-on form passed).
+//     both (a) and (b). A key over existing data added with FORCE lifted,
+//     for that statement, on every table the validation reads that has it
+//     (000012's pattern, the rule's answer for that case) is not flagged
+//     either: FORCE is off at that moment, which is the point, and the
+//     validation then reads every row. The validation is one query joining
+//     the key's table to the table it REFERENCES, and each side is read
+//     through its own policy, so the lift has to cover both. Measured:
+//     eight violating rows fail their key with 23503 once FORCE is off
+//     their own table, where the FORCE-on form had passed; and a plain
+//     table holding eight CORRECT pairs keyed to `repositories` fails with
+//     23503 in a fresh session while `repositories` keeps FORCE (its rows
+//     are hidden, so every pair looks missing), and passes with FORCE
+//     lifted on `repositories`. TestForeignKeyValidationReadsTheReferencedTable
+//     pins the second pair, against the table 22-02's keys will reference.
 //     SET NOT NULL, CHECK and UNIQUE validations scan the heap directly and
 //     are not subject to row-level security, so they are deliberately not
 //     the audit's business (measured: on the poisoned session, a violating
@@ -76,6 +85,24 @@ package isolation
 //     validated repositories_project_org_fkey after its loop, under the last
 //     organization's tenant, and the audit flags exactly that (M10). An
 //     exemption is where the next instance would hide.
+//     Two limits of (b), stated. It would also flag a FORCE table whose
+//     policy shows the owner every row (a `USING (true)` policy), where the
+//     validation was in fact complete; none exists, every policy here is
+//     tenant-scoped. And it encodes the premise that the OWNER migrates,
+//     which assertDeploymentShape pins: FORCE is what subjects an owner to
+//     its policies, while a non-owner, non-BYPASSRLS migrating role is
+//     subject to them on any table with row-level security enabled, FORCE
+//     or not. If Phase 24 migrates as such a role, (b) should test
+//     relrowsecurity alone (ISS-031 carries the note).
+//
+//  3. TWO ASSERTIONS BESIDE THE AUDIT, for what watching validations cannot
+//     see. Every table with row-level security still forces it after the
+//     up, and the set of tables that forced it before the up still does:
+//     the rule invites lifting FORCE for a statement, and a lift that never
+//     came back would otherwise survive every test in the repository. And
+//     no foreign key is left NOT VALID: a key added `NOT VALID` and never
+//     validated runs no validation, so the audit has nothing to record,
+//     while its existing rows go unchecked.
 //
 // WHAT IT CANNOT SEE. DML in a later migration that inherits the session's
 // tenant instead of setting its own: under '' it fails loudly here, but
@@ -181,6 +208,7 @@ func TestMigrationsApplyToASeededDatabase(t *testing.T) {
 	db, super := seedDeploymentShape(t, pool, dir)
 
 	before := snapshotSeededRows(t, super)
+	forcedBefore := forcedRowLevelSecurityTables(t, super)
 	seededChunks := countOf(t, super, `SELECT count(*) FROM chunks`)
 	require.Equal(t, 3, seededChunks, "premise: the seed's chunks, in two organizations")
 	require.GreaterOrEqual(t, countOf(t, super, `
@@ -197,8 +225,11 @@ func TestMigrationsApplyToASeededDatabase(t *testing.T) {
 		if sqlStateOf(err) == "22P02" {
 			hint = "\n\nTHE ISS-031 CLASS: a migration validated a constraint or evaluated " +
 				"a row-level-security policy on a session whose app.current_tenant an " +
-				"earlier migration left at ''. Declare foreign keys inside CREATE TABLE, " +
-				"and never rely on the session's tenant. See this file's header and ISS-031."
+				"earlier migration left at '', or validated a foreign key against a " +
+				"forced-RLS table with FORCE still on. Declare foreign keys inside CREATE TABLE, " +
+				"never rely on the session's tenant, and for a key over existing data lift " +
+				"FORCE for that statement on every table the validation reads: the key's " +
+				"table and the table it references. See this file's header and ISS-031."
 		}
 		t.Fatalf("migrating a seeded database from %d to %d as %s, in one session, failed "+
 			"and left schema_migrations at %d (dirty=%v): %s%s",
@@ -223,6 +254,16 @@ func TestMigrationsApplyToASeededDatabase(t *testing.T) {
 		require.Empty(t, flaggedForeignKeyValidations(t, super),
 			"an ALTER TABLE validated a foreign key in a shape the rule forbids; "+
 				"see this file's header, 000014's section 4 and ISS-031")
+	})
+
+	t.Run("every table with row-level security still forces it on its owner", func(t *testing.T) {
+		assertForcedRowLevelSecurityIntact(t, super, forcedBefore)
+	})
+
+	t.Run("no foreign key was left NOT VALID", func(t *testing.T) {
+		require.Empty(t, notValidForeignKeys(t, super),
+			"a foreign key added NOT VALID was never validated, so its existing rows "+
+				"went unchecked and the audit had nothing to record")
 	})
 
 	t.Run("000013 filled every repository's organization_id from its project", func(t *testing.T) {
@@ -389,6 +430,105 @@ func TestMigration000016NeedsTheExtensionPreCreated(t *testing.T) {
 	require.False(t, extensionInstalled(t, super))
 }
 
+// TestForeignKeyValidationReadsTheReferencedTable pins the rule's clause for
+// a key over data already there, against the table 22-02's keys will
+// reference. A foreign key's validation is one query joining the key's table
+// to the referenced table, and as the owner each side is read through its
+// own policy. So a plain table holding every seeded repository's CORRECT
+// (id, organization_id) pair, keyed to `repositories` in a fresh session
+// (tenant NULL, the shape of every deploy after the first):
+//
+//   - with nothing lifted, fails with 23503: `repositories` shows the owner
+//     no rows, so every correct pair is reported missing. Loud, and wrong;
+//   - with FORCE lifted on `repositories` for that one statement, passes,
+//     with FORCE back on, nothing flagged and the key validated.
+//
+// ISS-031's first instance was this shape: `ingestion_jobs` had no policy
+// and `repositories` did. Lifting FORCE on the key's own table alone changes
+// nothing here, because it has no policy to lift.
+func TestForeignKeyValidationReadsTheReferencedTable(t *testing.T) {
+	ctx := context.Background()
+	pool := SetupTestDB(t)
+
+	// 000017: the probe table, filled under each organization's tenant with
+	// that organization's pairs, so every row is correct by construction.
+	const fill = `
+CREATE TABLE probe_children (
+  repository_id   UUID NOT NULL,
+  organization_id UUID NOT NULL
+);
+DO $$
+DECLARE org RECORD;
+BEGIN
+  FOR org IN SELECT id FROM public.organizations LOOP
+    PERFORM set_config('app.current_tenant', org.id::text, true);
+    INSERT INTO public.probe_children (repository_id, organization_id)
+    SELECT r.id, r.organization_id FROM public.repositories r WHERE r.organization_id = org.id;
+  END LOOP;
+END $$;
+`
+	const key = `ALTER TABLE probe_children
+  ADD CONSTRAINT probe_children_repo_tenant_fk
+  FOREIGN KEY (repository_id, organization_id)
+  REFERENCES repositories (id, organization_id);`
+
+	cases := []struct {
+		name      string
+		migration string
+		wantState string // empty: the migration must pass
+	}{
+		{"nothing lifted", key, "23503"},
+		{"FORCE lifted on the referenced table for the statement",
+			"ALTER TABLE repositories NO FORCE ROW LEVEL SECURITY;\n" + key +
+				"\nALTER TABLE repositories FORCE ROW LEVEL SECURITY;", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := probeMigrationsDir(t, map[string]string{
+				"000017_probe_fill.up.sql":   fill,
+				"000017_probe_fill.down.sql": "DROP TABLE probe_children;",
+				"000018_probe_key.up.sql":    c.migration,
+				"000018_probe_key.down.sql":  "ALTER TABLE probe_children DROP CONSTRAINT probe_children_repo_tenant_fk;",
+			})
+			db, super := seedDeploymentShape(t, pool, dir)
+			forcedBefore := forcedRowLevelSecurityTables(t, super)
+
+			// One session to 17, as the gate would run it.
+			require.NoError(t, applyMigrationsTo(db.OwnerDSN, dir, 17))
+			require.Equal(t, 8, countOf(t, super, `SELECT count(*) FROM probe_children`),
+				"premise: one pair per seeded repository")
+			require.Zero(t, countOf(t, super, `
+				SELECT count(*) FROM probe_children p
+				WHERE NOT EXISTS (SELECT 1 FROM repositories r
+				                  WHERE r.id = p.repository_id AND r.organization_id = p.organization_id)`),
+				"premise: every pair is correct, read as the superuser")
+
+			// A FRESH session for 18: its own migrate instance, tenant NULL.
+			err := applyMigrationsTo(db.OwnerDSN, dir, 18)
+			version, dirty := migrationVersion(t, super)
+			if c.wantState != "" {
+				require.Error(t, err, "the validation read repositories through its policy and saw nothing")
+				require.Equal(t, c.wantState, sqlStateOf(err), describeMigrationError(err))
+				require.Equal(t, int64(18), version)
+				require.True(t, dirty)
+				t.Logf("%s: %s", c.name, describeMigrationError(err))
+			} else {
+				require.NoError(t, err, "with FORCE lifted on repositories the validation read every pair")
+				require.Equal(t, int64(18), version)
+				require.False(t, dirty)
+				var validated bool
+				require.NoError(t, super.QueryRow(ctx,
+					`SELECT convalidated FROM pg_constraint WHERE conname = 'probe_children_repo_tenant_fk'`,
+				).Scan(&validated))
+				require.True(t, validated)
+				require.Empty(t, notValidForeignKeys(t, super))
+			}
+			assertForcedRowLevelSecurityIntact(t, super, forcedBefore)
+			require.Empty(t, flaggedForeignKeyValidations(t, super))
+		})
+	}
+}
+
 // TestMigrationSchemaMatchesBaseline compares the schema two migrations
 // directories build, as catalog dumps. It is a proof tool, not a gate: it
 // skips unless RAG_DOC_SCHEMA_BASELINE_MIGRATIONS names the second
@@ -434,6 +574,26 @@ func gateMigrationsDir(t *testing.T) string {
 		return dir
 	}
 	return migrationsDir()
+}
+
+// probeMigrationsDir copies the committed migrations into a temporary
+// directory and adds the given files to it, so a test can run a probe
+// migration after the real ones without touching the committed set.
+func probeMigrationsDir(t *testing.T, extra map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	files, err := filepath.Glob(filepath.Join(migrationsDir(), "*.sql"))
+	require.NoError(t, err)
+	require.NotEmpty(t, files)
+	for _, f := range files {
+		body, err := os.ReadFile(f)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, filepath.Base(f)), body, 0o600))
+	}
+	for name, body := range extra {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600))
+	}
+	return dir
 }
 
 // seedDeploymentShape builds the database the gate runs on and returns it
@@ -585,6 +745,59 @@ func assertDeploymentShape(t *testing.T, super *pgx.Conn, dbName string) {
 	require.True(t, rls && force, "premise: repositories forces row-level security on its owner")
 }
 
+// forcedRowLevelSecurityTables lists the public tables whose owner is
+// subject to their own policies: row-level security enabled AND forced.
+func forcedRowLevelSecurityTables(t *testing.T, super *pgx.Conn) []string {
+	t.Helper()
+	rows, err := super.Query(context.Background(), `
+		SELECT relname FROM pg_class
+		WHERE relnamespace = 'public'::regnamespace AND relkind IN ('r', 'p')
+		  AND relrowsecurity AND relforcerowsecurity
+		ORDER BY relname`)
+	require.NoError(t, err)
+	tables, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	require.NoError(t, err)
+	return tables
+}
+
+// assertForcedRowLevelSecurityIntact fails if any table has row-level
+// security enabled without FORCE, or if a table that forced it before the
+// migrations ran no longer does. The rule lets a migration lift FORCE for
+// one statement; this is what notices a lift that never came back, or a
+// table whose row-level security was switched off altogether.
+func assertForcedRowLevelSecurityIntact(t *testing.T, super *pgx.Conn, forcedBefore []string) {
+	t.Helper()
+	rows, err := super.Query(context.Background(), `
+		SELECT relname FROM pg_class
+		WHERE relnamespace = 'public'::regnamespace AND relkind IN ('r', 'p')
+		  AND relrowsecurity AND NOT relforcerowsecurity
+		ORDER BY relname`)
+	require.NoError(t, err)
+	unforced, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	require.NoError(t, err)
+	require.Empty(t, unforced,
+		"tables with row-level security enabled but no longer FORCEd: a migration lifted "+
+			"FORCE and did not put it back, so the owner now bypasses their policies")
+
+	require.Empty(t, missingFrom(forcedBefore, forcedRowLevelSecurityTables(t, super)),
+		"tables that forced row-level security before the migrations ran and do not now")
+}
+
+// notValidForeignKeys lists the public foreign keys left NOT VALID: added
+// without a validation and never validated afterwards.
+func notValidForeignKeys(t *testing.T, super *pgx.Conn) []string {
+	t.Helper()
+	rows, err := super.Query(context.Background(), `
+		SELECT conrelid::regclass::text || '.' || conname
+		FROM pg_constraint
+		WHERE connamespace = 'public'::regnamespace AND contype = 'f' AND NOT convalidated
+		ORDER BY 1`)
+	require.NoError(t, err)
+	keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	require.NoError(t, err)
+	return keys
+}
+
 // =====================================================================
 // The tenant audit
 // =====================================================================
@@ -603,8 +816,11 @@ func assertDeploymentShape(t *testing.T, super *pgx.Conn, dbName string) {
 // keys were already validated. gate_audit.record runs after it and looks at
 // each foreign key the command left validated that was not before. It counts
 // the key's table WITHOUT `ONLY`, so a key on a partitioned parent sees its
-// partitions' rows. golang-migrate records `version = N, dirty` before it
-// runs file N, so the version read here is the file that ran the command.
+// partitions' rows. A row counts when every key column is non-NULL, which is
+// MATCH SIMPLE's rule (every key in this schema); a MATCH FULL key would also
+// reject partly-NULL rows, which this count skips. golang-migrate records
+// `version = N, dirty` before it runs file N, so the version read here is
+// the file that ran the command.
 const tenantAuditSQL = `
 CREATE SCHEMA gate_audit;
 

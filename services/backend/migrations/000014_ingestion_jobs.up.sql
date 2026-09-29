@@ -208,17 +208,27 @@ CREATE UNIQUE INDEX idx_ingestion_jobs_one_live_per_repo
 --     the last organization's tenant and passed a backfill that filed one
 --     organization's repositories under another (ISS-031, MX13); above the
 --     loop, that backfill fails at 13 with 23503.
---   - A key over data ALREADY THERE, on a table with forced row-level
---     security: the owner's validation is filtered whatever the tenant.
---     NULL (a fresh session) sees no rows and marks the key valid over rows
---     that violate it (measured in 22-01: eight violating rows, version 18
---     clean, `convalidated = true`); an organization's id sees that
---     organization's rows; '' fails with 22P02. There is no tenant to set
---     that makes it correct. Lift FORCE for that one statement, as 000012
---     does for its backfill, before any tenant is set: the owner then reads
---     every row (measured: the same key over the same eight rows fails with
---     23503), and ALTER TABLE's ACCESS EXCLUSIVE lock closes the window
---     until the transaction ends.
+--   - A key over data ALREADY THERE, where the key's table OR THE TABLE IT
+--     REFERENCES forces row-level security: the validation is one query
+--     joining the two, and as the owner each side is read through its own
+--     policy, whatever the tenant. NULL (a fresh session) hides the key's
+--     table's rows, so violating rows go unchecked (measured in 22-01:
+--     eight violating rows, version 18 clean, `convalidated = true`), and
+--     hides the referenced table's rows, so CORRECT rows fail (measured:
+--     eight correct pairs keyed to `repositories`, 23503 at 18); an
+--     organization's id shows one organization's rows on each side; ''
+--     fails with 22P02. The referenced side is this file's own original
+--     failure: `ingestion_jobs` had no policy and `repositories` did.
+--     There is no tenant to set that makes it correct. Lift FORCE, for
+--     that one statement, on EVERY table the validation reads that has
+--     it, the key's table and the referenced table, as 000012 does for its
+--     backfill, before any tenant is set: the owner then reads every row
+--     on both sides (measured: the eight correct pairs pass with FORCE
+--     lifted on `repositories`; the eight violating rows fail with 23503
+--     with it lifted on their own table), and ALTER TABLE's ACCESS
+--     EXCLUSIVE lock closes the window until the transaction ends. Put
+--     FORCE back in the same file: the gate fails if any table with
+--     row-level security is left without it after the up.
 --   - Never rely on the tenant an earlier loop left behind, and never set
 --     a sentinel tenant (a valid id no organization has) to make a
 --     validation pass. It makes the validation see zero rows and pass
@@ -235,7 +245,11 @@ CREATE UNIQUE INDEX idx_ingestion_jobs_one_live_per_repo
 --     rows to check, in any version. That catches a sentinel, the 000013
 --     instance above and the fresh-session case, and it does not depend on
 --     the session. The FORCE-lifted form is not flagged: FORCE is off at
---     that moment, which is the point of it.
+--     that moment, which is the point of it;
+--   - beside the audit, it fails if any table with row-level security is
+--     left without FORCE after the up (a lift that never came back), and
+--     if any foreign key is left NOT VALID (a key whose rows were never
+--     checked, which runs no validation for the audit to see).
 -- It cannot see DML that inherits a tenant beyond what 000013's and
 -- 000015's outcome assertions cover, nor a validating trigger's reads.
 
