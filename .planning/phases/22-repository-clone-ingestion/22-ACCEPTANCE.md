@@ -70,6 +70,18 @@ Query vectors were embedded once and cached, and both runs used them (hash
 verified). Vector read-backs are decoded as `float32`; comparisons use a
 float32-scale tolerance. *Evidence:* `22-03-equivalence.md` committed first; the
 `compare_runs.py` output and exit code. *Advanced by 22-03.*
+*Qualified 2026-09-29, from PR #53's reviewer A:* what was measured is **"the
+storage move, judged by exact search on both sides, changed no ranking on 130
+vector-leg questions."** At benchmark size (≤ 2,816 chunks per repository) the
+planner served the pgvector leg by exact scans, never HNSW, and the keyword leg
+was empty for 120 of 130 questions (ISS-029). Rankings served by HNSW at scale
+are **22.1-05's** to prove, not this criterion's. "Read-backs decoded as
+`float32`" does not apply to the read path, which reads a float8 distance and no
+vector; it applies to the harness's exact-list computation, which uses the same
+server-side operator on the same literal. The cross-store score difference was
+≤ 6.03e-07 over 6,395 pairs against a pre-committed 1e-5 tolerance; the quality
+track should fix its tolerance at about 2e-6 from that measurement, dated, before
+its next rule.
 
 **A7 — Qdrant is retired.** No runtime dependency remains: not in
 `requirements.txt`, compose, `.env.example`, the frontend, the routes or the
