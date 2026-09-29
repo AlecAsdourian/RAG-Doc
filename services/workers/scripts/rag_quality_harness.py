@@ -89,15 +89,16 @@ Ranking knobs usable here: the BOOST_* environment variables QueryEngine reads,
 and --boost-config, which reaches every MetadataBooster weight including the
 ones no environment variable exposes.
 
-RE-INDEXING NEEDS --clear (ISS-027). Earlier runs' vectors stay searchable, so
+RE-INDEXING NEEDS --clear (ISS-027). Earlier runs' chunks stay searchable, so
 --ingest refuses a corpus that is already indexed unless --clear comes with it.
---clear deletes that corpus's Qdrant points and ingestion runs, and nothing else.
+--clear deletes that corpus's ingestion runs and, through the cascade, their
+chunks and vectors, and nothing else.
 
---ingest AND --clear REFUSE COMPOSE'S STORES. DATABASE_URL defaults to compose's
-Postgres on port 5434 and QDRANT_URL to compose's Qdrant on 6333, and neither is
-a scratch store: the harness writes and deletes. Both flags exit before touching
-anything when the configured port is compose's, unless --allow-compose is passed
-deliberately (22-03).
+--ingest AND --clear REFUSE COMPOSE'S POSTGRES. DATABASE_URL defaults to
+compose's Postgres on port 5434, which is not a scratch store: the harness
+writes and deletes. Both flags exit before touching anything when the
+configured port is compose's, unless --allow-compose is passed deliberately
+(22-03).
 
 RECORDING A RUN FOR THE STORAGE-MOVE EQUIVALENCE GATE (22-03). The gate compares
 retrieval over the same chunks and the same query vectors under two read paths,
@@ -114,10 +115,11 @@ so a recorded run needs more than final ranks:
     --exact FILE           the exact-search reference: each question's nearest
                            chunks by cosine distance with index scans off, from
                            the cached vector, plus every chunk tied with the 50th.
-    --qdrant-ids FILE      every point Qdrant holds for the corpus (Task 1 only).
 
     scripts/rag_benchmarks/compare_runs.py judges two recorded runs under the
     rule in .planning/phases/22-repository-clone-ingestion/22-03-equivalence.md.
+    (The Qdrant point set it also reads, --qdrant-ids, was recorded before Qdrant
+    was retired and cannot be recorded again; the committed files are the record.)
 
 Ingestion costs OpenAI credits; measurement is cheap and re-runnable.
 """
@@ -139,8 +141,6 @@ from uuid import UUID, uuid5
 import psycopg2
 from dotenv import load_dotenv
 from psycopg2.extensions import parse_dsn
-from qdrant_client import QdrantClient
-from qdrant_client.models import FieldCondition, Filter, FilterSelector, MatchValue
 
 load_dotenv()
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -150,14 +150,11 @@ from workers.db import require_tenant  # noqa: E402
 from workers.pipeline.ingestion_pipeline import IngestionPipeline  # noqa: E402
 from workers.retrieval.query_engine import QueryEngine  # noqa: E402
 
-# The defaults are compose's stores. --ingest and --clear refuse them without
+# The default is compose's Postgres. --ingest and --clear refuse it without
 # --allow-compose (refuse_compose below); --measure only reads.
 DEFAULT_PG = "postgresql://coderag:coderag@127.0.0.1:5434/coderag"
-DEFAULT_QDRANT = "http://localhost:6333"
 PG = os.getenv("DATABASE_URL", DEFAULT_PG)
-QDRANT = os.getenv("QDRANT_URL", DEFAULT_QDRANT)
 OPENAI = os.getenv("OPENAI_API_KEY")
-QDRANT_COLLECTION = "code_embeddings"  # QdrantWriter's default
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 BENCHMARKS_DIR = Path(__file__).parent / "rag_benchmarks"
@@ -229,8 +226,10 @@ TUNING = [
      "services/workers/workers/chunker/metadata_builder"),
     ("how are chunks written to the database",
      "services/workers/workers/storage/postgres_writer"),
+    # Until 22-03 this expected qdrant_writer; vectors are stored by the
+    # Postgres writer now (the same file the previous question expects).
     ("how are vectors stored for similarity search",
-     "services/workers/workers/storage/qdrant_writer"),
+     "services/workers/workers/storage/postgres_writer"),
     ("what orchestrates the whole ingestion flow",
      "services/workers/workers/pipeline/ingestion_pipeline"),
     ("how does a worker scope its database writes to one tenant",
@@ -489,44 +488,36 @@ def ensure_fixtures(corpus: Corpus) -> None:
     conn.close()
 
 
-def _repository_filter(corpus: Corpus) -> Filter:
-    return Filter(must=[FieldCondition(key="repository_id",
-                                       match=MatchValue(value=str(corpus.repository_id)))])
-
-
 def indexed_state(corpus: Corpus) -> Tuple[int, int]:
-    """(ingestion runs, Qdrant points) currently stored for this corpus."""
+    """(ingestion runs, chunks) currently stored for this corpus, under the harness tenant."""
     conn = psycopg2.connect(PG)
     try:
         with require_tenant(conn, ORG) as cur:
             cur.execute("SELECT count(*) FROM ingestion_runs WHERE repository_id = %s",
                         (str(corpus.repository_id),))
             runs = cur.fetchone()[0]
+            cur.execute("SELECT count(*) FROM chunks WHERE repository_id = %s",
+                        (str(corpus.repository_id),))
+            chunks = cur.fetchone()[0]
     finally:
         conn.close()
-    client = QdrantClient(url=QDRANT)
-    if QDRANT_COLLECTION not in [c.name for c in client.get_collections().collections]:
-        return runs, 0
-    points = client.count(QDRANT_COLLECTION, count_filter=_repository_filter(corpus), exact=True).count
-    return runs, points
+    return runs, chunks
 
 
 def do_clear(corpus: Corpus) -> None:
-    client = QdrantClient(url=QDRANT)
-    if QDRANT_COLLECTION in [c.name for c in client.get_collections().collections]:
-        client.delete(QDRANT_COLLECTION, points_selector=FilterSelector(filter=_repository_filter(corpus)),
-                      wait=True)
+    """Delete the corpus's ingestion runs; their chunks, vectors included, go with them."""
     conn = psycopg2.connect(PG)
     try:
         with require_tenant(conn, ORG) as cur:
-            # A run's chunks go with it (chunks.ingestion_run_id ON DELETE CASCADE).
+            # A run's chunks go with it (chunks.ingestion_run_id ON DELETE CASCADE),
+            # and since 000017 a chunk's vector is a column of the chunk.
             cur.execute("DELETE FROM ingestion_runs WHERE repository_id = %s",
                         (str(corpus.repository_id),))
     finally:
         conn.close()
-    runs, points = indexed_state(corpus)
-    print(f"[*] cleared {corpus.name}: runs={runs} points={points}")
-    if runs or points:
+    runs, chunks = indexed_state(corpus)
+    print(f"[*] cleared {corpus.name}: runs={runs} chunks={chunks}")
+    if runs or chunks:
         sys.exit("clear did not remove everything")
 
 
@@ -540,7 +531,7 @@ def do_ingest(corpus: Corpus) -> None:
     ensure_fixtures(corpus)
     print("[*] fixtures ready")
 
-    pipeline = IngestionPipeline(postgres_conn=PG, qdrant_url=QDRANT, openai_api_key=OPENAI)
+    pipeline = IngestionPipeline(postgres_conn=PG, openai_api_key=OPENAI)
     stats = pipeline.process_files(
         files=files, organization_id=ORG, repository_id=corpus.repository_id,
         commit_sha=corpus.commit, branch="main")
@@ -556,15 +547,14 @@ def do_ingest(corpus: Corpus) -> None:
 
 # ---------------------------------------------------------------------------
 # 22-03: the storage-move equivalence gate. Added BEFORE the Qdrant-era
-# baseline was recorded, so both sides of the gate are measured by the same
-# code. Everything here is measurement, not retrieval: the guard that keeps
-# writes off compose, the cached query vectors, the pin that makes the engine
-# use them, the identity of the measuring connection, the exact-search
-# reference and the Qdrant point set.
+# baseline was recorded, so both sides of the gate were measured by the same
+# code, and kept for the retrieval-quality track. Everything here is
+# measurement, not retrieval: the guard that keeps writes off compose, the
+# cached query vectors, the pin that makes the engine use them, the identity
+# of the measuring connection and the exact-search reference.
 # ---------------------------------------------------------------------------
 
 COMPOSE_POSTGRES_PORT = 5434
-COMPOSE_QDRANT_PORT = 6333
 EXACT_LIMIT = 50
 # Rows past the 50th are fetched so that every chunk tied with the 50th (within
 # the vector tolerance 22-03-equivalence.md fixes) is recorded too.
@@ -596,29 +586,27 @@ def dsn_port(dsn: str) -> Optional[int]:
     return int(port) if port else 5432
 
 
-def compose_targets(pg_dsn: str, qdrant_url: str) -> List[str]:
+def compose_targets(pg_dsn: str) -> List[str]:
     """Which of compose's stores the configuration points at, by port."""
     targets = []
     if dsn_port(pg_dsn) == COMPOSE_POSTGRES_PORT:
         targets.append(f"Postgres on port {COMPOSE_POSTGRES_PORT}")
-    if urlparse(qdrant_url).port == COMPOSE_QDRANT_PORT:
-        targets.append(f"Qdrant on port {COMPOSE_QDRANT_PORT}")
     return targets
 
 
-def refuse_compose(action: str, pg_dsn: str, qdrant_url: str, allow_compose: bool) -> None:
-    """--ingest and --clear write; on compose's ports they refuse unless told otherwise.
+def refuse_compose(action: str, pg_dsn: str, allow_compose: bool) -> None:
+    """--ingest and --clear write; on compose's port they refuse unless told otherwise.
 
     Runs before anything is touched. Port 5434 is docker-compose.yml's Postgres
-    mapping and 6333 its Qdrant, and on a developer machine those ports may be
-    bound by another project's container entirely; a scratch container on a
-    free port is what the benchmark should use.
+    mapping, and on a developer machine it may be bound by another project's
+    container entirely; a scratch container on a free port is what the
+    benchmark should use.
     """
-    targets = compose_targets(pg_dsn, qdrant_url)
+    targets = compose_targets(pg_dsn)
     if targets and not allow_compose:
         sys.exit(
             f"--{action} refused: {' and '.join(targets)}: compose's (docker-compose.yml), "
-            "not a scratch store. Point DATABASE_URL/QDRANT_URL at a scratch container, "
+            "not a scratch store. Point DATABASE_URL at a scratch container, "
             "or pass --allow-compose to write to compose deliberately."
         )
 
@@ -726,13 +714,13 @@ def connection_identity(conn) -> dict:
 
 
 def measuring_connections(engine: QueryEngine) -> Dict[str, dict]:
-    """The identity of every Postgres connection the engine measures through."""
+    """The identity of every Postgres connection the engine measures through: both legs."""
     engine.fts_retriever.connect()
-    out = {"fts": connection_identity(engine.fts_retriever.conn)}
-    if hasattr(engine.vector_retriever, "connect"):
-        engine.vector_retriever.connect()
-        out["vector"] = connection_identity(engine.vector_retriever.conn)
-    return out
+    engine.vector_retriever.connect()
+    return {
+        "fts": connection_identity(engine.fts_retriever.conn),
+        "vector": connection_identity(engine.vector_retriever.conn),
+    }
 
 
 def database_facts() -> dict:
@@ -859,30 +847,6 @@ def do_exact(corpus: Corpus, questions: List[dict], vectors: QueryVectors, model
           + (f"; WARNING {incomplete} tie tails may be incomplete" if incomplete else ""))
 
 
-def do_qdrant_ids(corpus: Corpus, out: Path) -> None:
-    """Every point Qdrant holds for the corpus. Class (a) is defined by this set."""
-    client = QdrantClient(url=QDRANT)
-    ids: List[str] = []
-    offset = None
-    while True:
-        points, offset = client.scroll(
-            QDRANT_COLLECTION, scroll_filter=_repository_filter(corpus), limit=1000,
-            with_payload=False, with_vectors=False, offset=offset,
-        )
-        ids.extend(str(p.id) for p in points)
-        if offset is None:
-            break
-    chunks = visible_chunks(corpus)
-    out.write_text(json.dumps({
-        "corpus": corpus.name, "repository_id": str(corpus.repository_id),
-        "collection": QDRANT_COLLECTION, "count": len(ids), "postgres_chunks": chunks,
-        "harness_commit": harness_commit(),
-        "recorded_at": datetime.now(timezone.utc).isoformat(), "ids": sorted(ids),
-    }, indent=1), encoding="utf-8")
-    print(f"[*] {corpus.name}: {len(ids)} Qdrant points, {chunks} chunks in Postgres "
-          f"({chunks - len(ids)} without a point) -> {out}")
-
-
 def _score(ranks: List[Optional[int]]) -> dict:
     found = [r for r in ranks if r]
     total = len(ranks)
@@ -924,12 +888,12 @@ def do_measure(corpus: Corpus, set_name: str, top_k: int, boost_config=None,
             "set": set_name, "top_k": top_k, "boost_config": boost_config,
             "harness_commit": harness_commit(),
             "recorded_at": datetime.now(timezone.utc).isoformat(),
-            "vector_backend": "qdrant" if hasattr(engine.vector_retriever, "qdrant_writer") else "pgvector",
+            "vector_backend": "pgvector",
             "embedding_model": model, "database": database_facts(),
             "connections": connections, "chunks_visible": visible_chunks(corpus),
             "explain": (
                 explain_legs(engine, corpus, query_vectors.vector(questions[0]["id"]))
-                if questions and hasattr(engine.vector_retriever, "conn") else None
+                if questions else None
             ),
         }
         recorder = record.open("w", encoding="utf-8")
@@ -1033,7 +997,8 @@ if __name__ == "__main__":
     ap.add_argument("--check", action="store_true",
                     help="check the questions against the corpus offline: no database, OpenAI or retrieval")
     ap.add_argument("--clear", action="store_true",
-                    help="delete this corpus's Qdrant points and ingestion runs (ISS-027)")
+                    help="delete this corpus's ingestion runs and, through the cascade, its chunks "
+                         "and vectors (ISS-027)")
     ap.add_argument("--ingest", action="store_true")
     ap.add_argument("--measure", action="store_true")
     ap.add_argument("--set", choices=["all", *QUESTION_SETS], default="tuning")
@@ -1044,8 +1009,8 @@ if __name__ == "__main__":
     ap.add_argument("--json-out", type=Path, default=None,
                     help="also write per-question ranks and the summary as JSON")
     ap.add_argument("--allow-compose", action="store_true",
-                    help="let --ingest and --clear write to compose's Postgres (port 5434) or "
-                         "Qdrant (6333); without it they refuse")
+                    help="let --ingest and --clear write to compose's Postgres (port 5434); "
+                         "without it they refuse")
     ap.add_argument("--query-vectors", type=Path, default=None,
                     help="JSON cache of question id -> query vector; a missing question is "
                          "embedded once and written back, and the run uses the cached vector")
@@ -1056,17 +1021,15 @@ if __name__ == "__main__":
     ap.add_argument("--exact", type=Path, default=None,
                     help="write each question's exact-search nearest chunks (index scans off) "
                          "from the cached vectors (needs --query-vectors)")
-    ap.add_argument("--qdrant-ids", type=Path, default=None,
-                    help="write the set of Qdrant point ids held for this corpus")
     a = ap.parse_args()
 
     corpus = load_corpus(a.corpus, a.corpora_dir)
     if (a.ingest or a.measure) and not OPENAI:
         sys.exit("OPENAI_API_KEY not set")
-    # The guard runs before anything is touched: compose's stores are not scratch.
+    # The guard runs before anything is touched: compose's Postgres is not scratch.
     for action in ("clear", "ingest"):
         if getattr(a, action):
-            refuse_compose(action, PG, QDRANT, a.allow_compose)
+            refuse_compose(action, PG, a.allow_compose)
     if (a.exact or a.record) and a.query_vectors is None:
         sys.exit("--exact and --record need --query-vectors")
     query_vectors = QueryVectors(a.query_vectors) if a.query_vectors else None
@@ -1077,13 +1040,11 @@ if __name__ == "__main__":
     if a.clear:
         do_clear(corpus)
     if a.ingest:
-        runs, points = indexed_state(corpus)
-        if runs or points:
-            sys.exit(f"{corpus.name} is already indexed (runs={runs}, points={points}); re-indexing "
+        runs, chunks = indexed_state(corpus)
+        if runs or chunks:
+            sys.exit(f"{corpus.name} is already indexed (runs={runs}, chunks={chunks}); re-indexing "
                      "without --clear would mix two indexes (ISS-027)")
         do_ingest(corpus)
-    if a.qdrant_ids:
-        do_qdrant_ids(corpus, a.qdrant_ids)
     if a.exact:
         questions = [q for q in corpus.questions if a.set == "all" or q["set"] == a.set]
         if not OPENAI:
@@ -1100,5 +1061,5 @@ if __name__ == "__main__":
         if do_measure(corpus, a.set, a.top_k, a.boost_config, a.json_out,
                       query_vectors=query_vectors, record=a.record)["errors"]:
             sys.exit(2)
-    if not (a.fetch or a.check or a.clear or a.ingest or a.measure or a.exact or a.qdrant_ids):
+    if not (a.fetch or a.check or a.clear or a.ingest or a.measure or a.exact):
         ap.print_help()

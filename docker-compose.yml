@@ -45,13 +45,10 @@ services:
       - ./services/workers:/app
     environment:
       - DATABASE_URL=postgres://coderag:coderag@postgres:5432/coderag?sslmode=disable
-      - QDRANT_URL=http://qdrant:6333
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - REDIS_URL=redis://redis:6379
     depends_on:
       postgres:
-        condition: service_healthy
-      qdrant:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -78,18 +75,9 @@ services:
     environment:
       - ENV=development
 
-  qdrant:
-    image: qdrant/qdrant:latest
-    ports:
-      - "6333:6333"
-      - "6334:6334"
-    volumes:
-      - qdrant_data:/qdrant/storage
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:6333/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+  # The qdrant service was retired in 22-03: vectors live in the pgvector
+  # Postgres above. An existing `testtgsd_qdrant_data` volume is left alone;
+  # see docs/local-development.md, "Qdrant is gone", to remove it.
 
   redis:
     image: redis:7-alpine
@@ -103,4 +91,3 @@ services:
 
 volumes:
   postgres_data:
-  qdrant_data:

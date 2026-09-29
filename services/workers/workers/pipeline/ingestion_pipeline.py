@@ -7,7 +7,7 @@ from uuid import UUID
 
 from workers.chunker import SemanticChunker, Chunk
 from workers.embeddings import EmbeddingGenerator
-from workers.storage import PostgresWriter, QdrantWriter
+from workers.storage import PostgresWriter
 
 logger = logging.getLogger(__name__)
 
@@ -18,21 +18,21 @@ class IngestionPipeline:
     def __init__(
         self,
         postgres_conn: str,
-        qdrant_url: str = "http://localhost:6333",
         openai_api_key: str = None,
     ):
         """
         Initialize ingestion pipeline.
 
         Args:
-            postgres_conn: Postgres connection string
-            qdrant_url: Qdrant server URL
+            postgres_conn: Postgres connection string. Chunks and their
+                vectors are stored there, together, under the tenant's
+                row-level security (DECISIONS.md D2; Qdrant was retired in
+                22-03 after the storage-move equivalence gate passed).
             openai_api_key: OpenAI API key (or uses OPENAI_API_KEY env var)
         """
         self.chunker = SemanticChunker()
         self.embedding_gen = EmbeddingGenerator(api_key=openai_api_key)
         self.postgres = PostgresWriter(postgres_conn)
-        self.qdrant = QdrantWriter(qdrant_url)
 
         logger.info("Ingestion pipeline initialized")
 
@@ -130,9 +130,11 @@ class IngestionPipeline:
 
             # Step 4: Store chunks in Postgres, each with its vector and the
             # model that produced it (migration 000017). The model name comes
-            # from the generator, so a model change here is one line.
+            # from the generator, so a model change here is one line. Every
+            # duplicate-content chunk gets its hash's vector too; there is no
+            # second store to keep one point per hash for.
             logger.info(f"Storing {len(all_chunks)} chunks in Postgres...")
-            content_hash_to_chunk_id = self.postgres.insert_chunks(
+            self.postgres.insert_chunks(
                 organization_id,
                 all_chunks,
                 ingestion_run_id,
@@ -140,65 +142,9 @@ class IngestionPipeline:
                 embeddings=content_hash_to_embedding,
                 embedding_model=self.embedding_gen.model,
             )
-            logger.info(f"✓ Stored {len(all_chunks)} chunks in Postgres")
+            logger.info(f"✓ Stored {len(all_chunks)} chunks with their vectors in Postgres")
 
-            # Step 5: Store embeddings in Qdrant.
-            #
-            # KEPT UNTIL 22-03, DELIBERATELY (22-CONTEXT P15). Between 22-02
-            # and 22-03 every vector is written to BOTH stores from the one
-            # embedding call above: 22-03's equivalence gate compares
-            # retrieval over the same vectors in Postgres and Qdrant, and
-            # retires Qdrant only after it passes. Nothing reads the Postgres
-            # vectors until then. Note the gap this step keeps: Qdrant holds
-            # one point per content hash, so duplicate-content chunks have no
-            # point here, while Postgres now holds every chunk's vector.
-            logger.info("Storing embeddings in Qdrant...")
-
-            # Map chunk_id → embedding
-            chunk_id_to_embedding = {}
-            chunk_id_to_metadata = {}
-
-            import hashlib
-
-            for chunk in all_chunks:
-                # Compute content hash same way as PostgresWriter (raw content)
-                content_hash = hashlib.sha256(chunk.content.encode("utf-8")).hexdigest()
-
-                if content_hash in content_hash_to_chunk_id:
-                    chunk_id = content_hash_to_chunk_id[content_hash]
-
-                    if content_hash in content_hash_to_embedding:
-                        chunk_id_to_embedding[chunk_id] = content_hash_to_embedding[
-                            content_hash
-                        ]
-                        chunk_id_to_metadata[chunk_id] = {
-                            "chunk_id": chunk_id,
-                            "repository_id": repository_id,
-                            "file_path": chunk.file_path,
-                            "language": chunk.language,
-                            "chunk_type": chunk.chunk_type,
-                            "breadcrumb": chunk.metadata.get("breadcrumb", ""),
-                        }
-
-            print(f"[DEBUG] Prepared {len(chunk_id_to_embedding)} embeddings for Qdrant upsert")
-            print(f"[DEBUG] content_hash_to_embedding has {len(content_hash_to_embedding)} items")
-            print(f"[DEBUG] content_hash_to_chunk_id has {len(content_hash_to_chunk_id)} items")
-
-            # Show sample hashes for debugging
-            if content_hash_to_embedding:
-                sample_hash_emb = list(content_hash_to_embedding.keys())[0]
-                print(f"[DEBUG] Sample embedding hash: {sample_hash_emb[:32]}...")
-            if content_hash_to_chunk_id:
-                sample_hash_chunk = list(content_hash_to_chunk_id.keys())[0]
-                print(f"[DEBUG] Sample chunk hash: {sample_hash_chunk[:32]}...")
-
-            vectors_stored = self.qdrant.upsert_embeddings(
-                chunk_id_to_embedding, chunk_id_to_metadata
-            )
-            print(f"[DEBUG] Upserted {vectors_stored} vectors to Qdrant")
-            logger.info(f"✓ Stored {vectors_stored} vectors in Qdrant")
-
-            # Step 6: Complete ingestion run
+            # Step 5: Complete ingestion run
             self.postgres.complete_ingestion_run(
                 organization_id, ingestion_run_id, len(all_chunks)
             )

@@ -22,47 +22,41 @@ sys.modules["rag_quality_harness"] = harness
 _spec.loader.exec_module(harness)
 
 SCRATCH_PG = "postgresql://user:hunter2@127.0.0.1:55432/scratch"
-SCRATCH_QDRANT = "http://127.0.0.1:56333"
 COMPOSE_PG = "postgresql://coderag:hunter2@127.0.0.1:5434/coderag"
 
 
 class TestComposeGuard:
-    """--ingest and --clear refuse compose's ports without --allow-compose (A7)."""
+    """--ingest and --clear refuse compose's port without --allow-compose (A7)."""
 
     @pytest.mark.parametrize("action", ["ingest", "clear"])
     def test_refuses_compose_postgres_by_port(self, action):
         with pytest.raises(SystemExit) as raised:
-            harness.refuse_compose(action, COMPOSE_PG, SCRATCH_QDRANT, allow_compose=False)
+            harness.refuse_compose(action, COMPOSE_PG, allow_compose=False)
         message = str(raised.value)
         assert f"--{action} refused" in message
         assert "5434" in message and "--allow-compose" in message
         assert "hunter2" not in message, "the refusal must not echo the DSN"
 
-    def test_refuses_compose_qdrant_by_port(self):
-        with pytest.raises(SystemExit) as raised:
-            harness.refuse_compose("clear", SCRATCH_PG, "http://localhost:6333", allow_compose=False)
-        assert "6333" in str(raised.value)
-
-    def test_the_harness_defaults_are_compose_and_are_refused(self):
-        """The defaults point at compose (port 5434, 6333); the guard must catch exactly that."""
+    def test_the_harness_default_is_compose_and_is_refused(self):
+        """The default DSN points at compose (port 5434); the guard must catch exactly that."""
         assert harness.dsn_port(harness.DEFAULT_PG) == 5434
         with pytest.raises(SystemExit) as raised:
-            harness.refuse_compose("ingest", harness.DEFAULT_PG, harness.DEFAULT_QDRANT, allow_compose=False)
-        assert "5434" in str(raised.value) and "6333" in str(raised.value)
+            harness.refuse_compose("ingest", harness.DEFAULT_PG, allow_compose=False)
+        assert "5434" in str(raised.value)
 
     def test_allow_compose_lets_it_through(self):
-        harness.refuse_compose("ingest", COMPOSE_PG, "http://localhost:6333", allow_compose=True)
+        harness.refuse_compose("ingest", COMPOSE_PG, allow_compose=True)
 
     def test_scratch_ports_pass(self):
-        harness.refuse_compose("ingest", SCRATCH_PG, SCRATCH_QDRANT, allow_compose=False)
-        harness.refuse_compose("clear", SCRATCH_PG + "?options=-c%20role%3Drag_doc_app", SCRATCH_QDRANT,
-                               allow_compose=False)
+        harness.refuse_compose("ingest", SCRATCH_PG, allow_compose=False)
+        harness.refuse_compose("clear", SCRATCH_PG + "?options=-c%20role%3Drag_doc_app", allow_compose=False)
 
     def test_port_parsing_handles_url_and_keyword_forms(self):
         assert harness.dsn_port("postgresql://u:p@h:5434/db?options=-c%20role%3Drag_doc_app") == 5434
         assert harness.dsn_port("host=h port=5434 dbname=db user=u") == 5434
         assert harness.dsn_port("postgresql://u:p@h/db") == 5432
-        assert harness.compose_targets("postgresql://u:p@h:5434/db", "http://h:7333") == ["Postgres on port 5434"]
+        assert harness.compose_targets("postgresql://u:p@h:5434/db") == ["Postgres on port 5434"]
+        assert harness.compose_targets("postgresql://u:p@h:5433/db") == []
 
 
 class TestQueryVectors:
