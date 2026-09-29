@@ -497,10 +497,10 @@ touched, the compose volume never touched.
 | Check | Result |
 |---|---|
 | `go build ./...`, `go vet ./...`, `go mod tidy -diff`, gofmt on every changed Go file | clean |
-| `go test ./... -count=1 -p 1` | see the report; every package `ok` except `pkg/api/handlers`, whose only failure is `TestSignatureComparisonIsConstantTime`, the known CRLF artefact |
+| `go test ./... -count=1 -p 1` | every package `ok` except `pkg/api/handlers`, whose only failure is `TestSignatureComparisonIsConstantTime`, the known CRLF artefact. **480 tests and subtests passed, 1 failed (that one), 4 skipped**: three pre-existing `pkg/auth` supersessions, and the schema tool with no baseline set. The gate: `4 migrations from 12 in one session in 94ms` |
 | CI's package-parallelism step | same |
-| `-race` in `golang:1.25` with the Docker socket and `TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal`, CI's package list | same, 0 data races |
-| `pytest tests/ workers/ -q` (`REDIS_URL` on db 15, `OPENAI_API_KEY=sk-test-dummy`, no `DATABASE_URL`, no reachable `.env`, fresh venv from `requirements.txt`) | 284 passed |
+| `-race` in `golang:1.25` (go1.25.14) with the Docker socket and `TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal`, CI's package list | same, 0 data races |
+| `pytest tests/ workers/ -q` (`REDIS_URL` on db 15, `OPENAI_API_KEY=sk-test-dummy`, no `DATABASE_URL`, no reachable `.env`, fresh venv from `requirements.txt`) | **284 passed** |
 | up, down, up with the `migrate` CLI as the superuser on a fresh `pgvector/pgvector:pg16` database | up to 16, clean; `down -all` leaves no tables, functions or extension; up again to 16, clean, both keys validated |
 | `docker compose config` | the pgvector image; `docker ps` identical before and after |
 | gate and extension test, `-count=3` | six passes; no scratch database left behind |
