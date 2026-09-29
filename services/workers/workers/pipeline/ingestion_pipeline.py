@@ -128,14 +128,30 @@ class IngestionPipeline:
                 f"✓ Generated {len(content_hash_to_embedding)} embeddings"
             )
 
-            # Step 4: Store chunks in Postgres
+            # Step 4: Store chunks in Postgres, each with its vector and the
+            # model that produced it (migration 000017). The model name comes
+            # from the generator, so a model change here is one line.
             logger.info(f"Storing {len(all_chunks)} chunks in Postgres...")
             content_hash_to_chunk_id = self.postgres.insert_chunks(
-                organization_id, all_chunks, ingestion_run_id, repository_id
+                organization_id,
+                all_chunks,
+                ingestion_run_id,
+                repository_id,
+                embeddings=content_hash_to_embedding,
+                embedding_model=self.embedding_gen.model,
             )
             logger.info(f"✓ Stored {len(all_chunks)} chunks in Postgres")
 
-            # Step 5: Store embeddings in Qdrant
+            # Step 5: Store embeddings in Qdrant.
+            #
+            # KEPT UNTIL 22-03, DELIBERATELY (22-CONTEXT P15). Between 22-02
+            # and 22-03 every vector is written to BOTH stores from the one
+            # embedding call above: 22-03's equivalence gate compares
+            # retrieval over the same vectors in Postgres and Qdrant, and
+            # retires Qdrant only after it passes. Nothing reads the Postgres
+            # vectors until then. Note the gap this step keeps: Qdrant holds
+            # one point per content hash, so duplicate-content chunks have no
+            # point here, while Postgres now holds every chunk's vector.
             logger.info("Storing embeddings in Qdrant...")
 
             # Map chunk_id → embedding

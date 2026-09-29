@@ -14,6 +14,22 @@ from typing import Any, Callable, Optional
 
 from workers.db import require_tenant
 
+# The chunk row a raw test insert writes, since migration 000017 (22-02):
+# the tenant explicitly (nothing fills organization_id in on a partitioned
+# table), and a fixed NON-ZERO vector with the model that "produced" it.
+# Mirrors Go's isolation.TestChunkInsertSQL; the eight parameters are
+# (organization_id, ingestion_run_id, repository_id, file_path, start_line,
+# end_line, content, content_hash). Tests that go through PostgresWriter
+# pass a real embeddings map instead.
+TEST_EMBEDDING_SQL = "array_fill(0.01::real, ARRAY[1536])::vector"
+TEST_EMBEDDING_MODEL = "test-fixed"
+TEST_CHUNK_INSERT_SQL = (
+    "INSERT INTO chunks ("
+    "organization_id, ingestion_run_id, repository_id, file_path, start_line, end_line, "
+    "content, content_hash, embedding, embedding_model"
+    f") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, {TEST_EMBEDDING_SQL}, '{TEST_EMBEDDING_MODEL}')"
+)
+
 
 @dataclass
 class TestOrg:
@@ -118,6 +134,11 @@ def cleanup_org(conn: Any, org: TestOrg) -> None:
         ("DELETE FROM queries WHERE project_id = %s", (org.project_id,)),
         (
             "DELETE FROM chunks WHERE repository_id IN (SELECT id FROM repositories WHERE project_id = %s)",
+            (org.project_id,),
+        ),
+        # 000017 (22-02). Cascades from repositories anyway; explicit like chunks.
+        (
+            "DELETE FROM symbols WHERE repository_id IN (SELECT id FROM repositories WHERE project_id = %s)",
             (org.project_id,),
         ),
         (

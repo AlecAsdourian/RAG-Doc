@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from workers.db import require_tenant
-from tests.isolation.fixtures import assert_no_cross_tenant_leak
+from tests.isolation.fixtures import TEST_CHUNK_INSERT_SQL, assert_no_cross_tenant_leak
 
 
 def test_with_two_orgs_creates_two_orgs_with_distinct_ids(with_two_orgs):
@@ -81,13 +81,8 @@ def test_assert_no_cross_tenant_leak_catches_a_real_leak(db_conn, with_two_orgs)
         )
         run_id = str(cur.fetchone()[0])
         cur.execute(
-            """
-            INSERT INTO chunks (
-                ingestion_run_id, repository_id, file_path, start_line, end_line,
-                content, content_hash
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """,
-            (run_id, org_a.repo_id, "leak-probe.md", 1, 2, "orange marmalade", "h-leak"),
+            TEST_CHUNK_INSERT_SQL,
+            (org_a.id, run_id, org_a.repo_id, "leak-probe.md", 1, 2, "orange marmalade", "h-leak"),
         )
 
     # Under tenant B, "observe" would report false (no leak) if we obey
@@ -125,13 +120,8 @@ def test_assert_no_cross_tenant_leak_passes_when_isolated(db_conn, with_two_orgs
         )
         run_id = str(cur.fetchone()[0])
         cur.execute(
-            """
-            INSERT INTO chunks (
-                ingestion_run_id, repository_id, file_path, start_line, end_line,
-                content, content_hash
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """,
-            (run_id, org_a.repo_id, "isolated.md", 1, 2, "unique-string-42", "h-iso"),
+            TEST_CHUNK_INSERT_SQL,
+            (org_a.id, run_id, org_a.repo_id, "isolated.md", 1, 2, "unique-string-42", "h-iso"),
         )
 
     def observe_as_b(cur):
