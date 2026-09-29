@@ -188,7 +188,7 @@ Plans:
   - fusion stays in Python;
   - Qdrant removed from code, compose, dependencies and the harness;
   - a benchmark equivalence gate on the same ada-002 vectors.
-- [ ] 22-04: fetching a repository safely:
+- [x] 22-04: fetching a repository safely — **executed 2026-09-29, in review as PR #52** (`22-04-SUMMARY.md`: every guard mutation-checked, the mealie measurement, and a real leak found by the log-capture test — `httpx` logs the download link at INFO — now guarded):
   - the backend mints a one-hour, one-repository, read-only token, checked against the job lease — **the App key never enters the worker** (U4);
   - an archive fetch through the GitHub API (U5);
   - v1 caps (U6) and a secret-file deny-list (U7);
