@@ -298,6 +298,58 @@ def test_other_unsafe_spellings_are_refused(tmp_path, name: str) -> None:
     assert_nothing_outside_dest(tmp_path)
 
 
+@pytest.mark.parametrize(
+    "char",
+    ["\n", "\r", "\t", "\x01", "\x1b", "\x7f", "\x85", "\x9b"],
+    ids=["LF", "CR", "TAB", "SOH", "ESC", "DEL", "NEL", "CSI"],
+)
+def test_a_control_character_in_a_member_name_is_refused(tmp_path, char: str) -> None:
+    # PR #58's review, A-L1: a file name is customer-controlled text that
+    # reaches plain-text log lines (the chunker logs the path it chunks) and
+    # `chunks.file_path`. A newline in one forged a whole log record
+    # (measured by the review). C0, DEL and C1 are all refused -- NEL
+    # (U+0085) is a line break to `str.splitlines()`, and CSI (U+009B)
+    # starts a terminal escape sequence.
+    name = f"{TOP}/src/x{char}2026-09-29 20:17:10,248 INFO job FORGED: complete.py"
+    archive = write(tmp_path, build([regular("src/a.py"), Member(name, b"x = 1\n")]))
+    members = listing(archive)
+    assert name in members and members[name].isreg(), "premise: the hostile member is in the archive"
+
+    stats, files, _, dest = run(tmp_path, archive)
+    assert stats.skipped.get("unsafe_path") == 1, stats.skipped
+    assert [f.path for f in files] == ["src/a.py"]
+    assert everything_under(dest) == ["src/a.py"]
+    assert_nothing_outside_dest(tmp_path)
+
+
+def test_a_control_character_in_a_directory_name_is_refused_too(tmp_path) -> None:
+    name = f"{TOP}/sr\nc/forged.py"
+    archive = write(tmp_path, build([regular("src/a.py"), Member(name, b"x = 1\n")]))
+    assert name in listing(archive), "premise"
+
+    stats, files, _, dest = run(tmp_path, archive)
+    assert stats.skipped.get("unsafe_path") == 1, stats.skipped
+    assert everything_under(dest) == ["src/a.py"]
+
+
+def test_a_name_that_is_merely_not_ascii_is_still_extracted(tmp_path) -> None:
+    # The refusal is exactly Unicode category Cc, not "anything unusual": a
+    # real tree may hold non-ASCII names, and they are indexed as before.
+    archive = write(tmp_path, build([regular("src/café.py"), regular("docs/日本.md", b"# hi\n")]))
+    stats, files, _, dest = run(tmp_path, archive)
+    assert "unsafe_path" not in stats.skipped, stats.skipped
+    assert sorted(f.path for f in files) == ["docs/日本.md", "src/café.py"]
+
+
+def test_a_top_level_name_with_a_trailing_newline_is_described_not_printed() -> None:
+    # PR #58's review, A-N1: `$` also matches just before a trailing newline,
+    # so the plain-name check is a full match.
+    assert archive_module._describe_top_level("acme-widgets-abc") == "'acme-widgets-abc'"
+    assert archive_module._describe_top_level("acme-widgets-abc\n") == (
+        "(a 17-character name, not printed)"
+    )
+
+
 def test_a_second_top_level_directory_is_refused(tmp_path) -> None:
     # GitHub's archives have exactly one. A member under another top-level
     # name is not from the archive we asked for.

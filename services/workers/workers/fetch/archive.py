@@ -102,6 +102,7 @@ import stat
 import tarfile
 import tempfile
 import time
+import unicodedata
 import uuid
 import zlib
 from collections import Counter
@@ -472,9 +473,28 @@ class _CountingReader:
         return data
 
 
+def _has_control_character(name: str) -> bool:
+    """True when `name` holds a C0 or C1 control character or DEL.
+
+    Exactly Unicode category `Cc`: U+0000-U+001F, U+007F and U+0080-U+009F.
+    """
+    return any(unicodedata.category(ch) == "Cc" for ch in name)
+
+
 def _unsafe(name: str) -> bool:
     """True for any member name that must not be joined to a directory."""
     if not name or "\x00" in name or "\\" in name:
+        return True
+    # ⚠ NO CONTROL CHARACTER, ANYWHERE IN THE NAME (PR #58's review, A-L1).
+    # A file name is customer-controlled text that the worker writes into
+    # plain-text log lines (the chunker logs the path it is chunking) and
+    # into `chunks.file_path`, which every UI shows. Measured: a member named
+    # `app/x\n2026-09-29 ... INFO workers.jobs.transitions job FORGED:
+    # complete.py` was extracted, indexed, and logged with its raw newline --
+    # a tenant forging the worker's log. Refused here, counted `unsafe_path`,
+    # so no such name reaches the disk, a log line or a row. A tab is refused
+    # too: it is a control character, and no real source tree needs one.
+    if _has_control_character(name):
         return True
     try:
         name.encode("utf-8")
@@ -796,7 +816,9 @@ def _describe_top_level(name: str) -> str:
     It is archive-controlled text, so it is printed only when it is the kind
     of name GitHub builds; anything else is described by its length alone.
     """
-    if _PRINTABLE_TOP_LEVEL.match(name):
+    # `fullmatch`, not `match`: `$` also matches just before a trailing
+    # newline (PR #58's review, A-N1). `repr()` would have escaped it anyway.
+    if _PRINTABLE_TOP_LEVEL.fullmatch(name):
         return repr(name)
     return f"(a {len(name)}-character name, not printed)"
 
