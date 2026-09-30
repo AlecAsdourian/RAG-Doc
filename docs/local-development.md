@@ -276,11 +276,76 @@ a `KEY=VALUE` list:
 which has neither problem. The inconsistency is known.)
 
 **docker-compose's `backend` service does not pass these through.** It
-sets only `ENV`, `DATABASE_URL` and `RAG_SERVICE_URL` — no `SUPABASE_*`,
-no `REDIS_URL`, no `GITHUB_APP_*` — and the router panics without
-`SUPABASE_WEBHOOK_SECRET`, so `docker compose up backend` does not
+sets only `ENV`, `DATABASE_URL`, `RAG_SERVICE_URL` and `INTERNAL_ADDR` — no
+`SUPABASE_*`, no `REDIS_URL`, no `GITHUB_APP_*` — and the router panics
+without `SUPABASE_WEBHOOK_SECRET`, so `docker compose up backend` does not
 currently start. Run the backend directly, as above; compose is for
-Postgres and Redis.
+Postgres and Redis. Putting secrets into compose is Phase 24's.
+
+## The ingestion worker
+
+`python -m workers` claims jobs from the queue and runs the `full_ingest`
+handler: fetch a repository's archive through the backend's internal token
+route, parse, embed and store it (22-05; `docs/api-ingestion-jobs.md` is the
+authority for how a job ends). It needs, and refuses to start without:
+
+- `DATABASE_URL` — the application Postgres. **Outside local development it
+  must log in as a `NOSUPERUSER NOBYPASSRLS` role**, as 22-05's live proof did
+  (`rag_doc_app`): a superuser bypasses row-level security. Compose's
+  `coderag` is a superuser, so tenant isolation is **not** exercised under
+  compose (`docs/api-ingestion-jobs.md`, "What a deployed worker needs");
+- `INTERNAL_API_URL` — the backend's **internal** listener
+  (`INTERNAL_ADDR`, default `127.0.0.1:8081`), **never** the public API on
+  8080. Pointed at the public router it gets chi's unmarked 404 and every job
+  fails loudly with `InternalApiMisrouted`;
+- `OPENAI_API_KEY` — every chunk is embedded before it is stored.
+
+It **never** needs the GitHub App key: the backend mints it a
+one-repository, read-only, one-hour token per job, and the worker revokes it
+when the fetch ends (`docs/internal-api.md`). The internal listener only
+starts when the backend has the App credentials.
+
+**The operating numbers are provisional until 22.1-05 measures them** (P16),
+and each has an override: `max_job_duration` two hours
+(`WORKER_MAX_JOB_DURATION_SECONDS`), the heartbeat's `statement_timeout`
+fifteen seconds (`WORKER_HEARTBEAT_STATEMENT_TIMEOUT_MS`), and two worker
+processes (`WORKER_REPLICAS`, read by compose).
+
+**Give each worker process about 1 GB of free disk** in `WORKER_WORKDIR`
+(default: the system temporary directory's `rag-doc-worker`). The archive
+(up to U6's 500 MB) is kept until extraction ends, and the extracted tree can
+reach 500 MB plus one file (1 MB) before the expansion counters stop it: a
+dense decompression bomb is stopped *at* the cap, not before it (22-04).
+Job directories are removed when each fetch ends, and a crashed run's are
+swept when the next worker starts.
+
+**Under compose the worker is behind a profile, `ingest`, and a plain
+`docker compose up` never starts it.** With the backend not starting under
+compose, a worker that did would claim the queued jobs, fail to reach the
+token route, and walk every one of them to `dead`. Start it deliberately, once
+the backend's internal listener is up on the compose network:
+
+```bash
+docker compose --profile ingest up workers
+```
+
+**Stopping it takes up to two minutes, on purpose.** `stop_grace_period: 2m`
+gives a worker time to finish the stretch it is in and hand its job back with
+the attempt; Docker's default ten seconds would SIGKILL it mid-stage. A
+killed worker runs no `finally`: its job stays `running` until the lease
+lapses (five minutes) and is then reclaimed at the cost of an attempt, and its
+token is not revoked — it dies with the process, and GitHub ends it within the
+hour. `restart: on-failure:5` restarts a worker that exited 1 (the database
+stayed unreachable) and stops after five, so a refusal (exit 2, for example
+`OPENAI_API_KEY` unset on the host) does not loop. The reasons for both values
+are beside them in `docker-compose.yml`.
+
+**⚠ `docker compose config` prints secrets.** The resolved configuration
+interpolates `${OPENAI_API_KEY}` from your shell, so `docker compose
+--profile ingest config` shows your real key if it is exported. Do not paste
+its output anywhere; read service names with `--services` instead.
+`services/workers/tests/test_compose_environment.py` reads the resolved
+environment for the same checks and extracts variable **names** only.
 
 ## Verify
 

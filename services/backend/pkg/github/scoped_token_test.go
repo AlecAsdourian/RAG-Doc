@@ -138,6 +138,14 @@ func TestRepositoryToken_ScopesToOneRepositoryReadOnly(t *testing.T) {
 	require.True(t, scoped.Private)
 	require.WithinDuration(t, time.Now().Add(time.Hour), scoped.ExpiresAt, 2*time.Minute)
 
+	// The scope GitHub REPORTED, as the checks accepted it (22-05): what the
+	// internal route logs on every mint, and what the live proof records.
+	require.Equal(t, []int64{1103353668}, scoped.ReportedRepositoryIDs)
+	require.Equal(t, map[string]string{"contents": "read", "metadata": "read"}, scoped.ReportedPermissions)
+	require.Equal(t, "1103353668", scoped.ReportedRepositoryIDList())
+	require.Equal(t, "contents:read,metadata:read", scoped.ReportedPermissionList(),
+		"name:level pairs, sorted by name")
+
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
 	require.Len(t, fake.mintBodies, 1)
@@ -201,6 +209,9 @@ func TestRepositoryToken_RefusesAScopeWiderThanAsked(t *testing.T) {
 		{"no contents at all", "", `{"metadata":"read"}`, `contents=""`},
 		{"permissions object absent", "", absentField, "no permissions object"},
 		{"an extra permission", "", `{"contents":"read","metadata":"read","issues":"read"}`, "issues=read"},
+		// PR #58's review, A-N2: GitHub adds metadata at read; any other
+		// level is wider than asked for.
+		{"metadata above read", "", `{"contents":"read","metadata":"write"}`, "metadata=write"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

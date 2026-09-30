@@ -562,6 +562,19 @@ def test_a_declared_content_length_over_the_cap_is_rejected_before_reading(tmp_p
     assert pulled == [], "the body was never read: the declared length was enough to refuse"
 
 
+def test_fetch_accepts_the_full_sha_directory_a_private_repository_is_archived_under(tmp_path) -> None:
+    # 22-05's live proof found GitHub archiving a PRIVATE repository under
+    # `{owner}-{repo}-{sha}` with the full SHA; the fetcher tells the
+    # extractor both measured names (see `expected_top_levels_for`).
+    gh = FakeGitHub(make_archive({"src/a.py": b"print(1)\n"}, top=f"acme-widgets-{SHA}"))
+    with fetch_repository(
+        token_for(), job_id=JOB_ID, workdir=str(tmp_path), api_base="https://api.github.test", transport=gh.transport()
+    ) as tree:
+        assert [f.path for f in tree.files] == ["src/a.py"]
+        assert tree.extract is not None and tree.extract.top_level == f"acme-widgets-{SHA}"
+    assert job_dirs(tmp_path) == []
+
+
 def test_an_archive_under_the_wrong_top_level_directory_is_a_plain_failure(tmp_path) -> None:
     # PR #52's review, L5: the fetcher tells the extractor what GitHub must
     # have named the directory, `{owner}-{repo}-{sha7}`, and anything else

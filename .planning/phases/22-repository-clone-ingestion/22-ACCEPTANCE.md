@@ -116,6 +116,18 @@ connect → queue → worker → pgvector → `/search`, in a scratch database, 
 process running as `rag_doc_app`, and a search returns the expected file. Compose
 is never touched. *Evidence:* the live-proof record in `22-05-SUMMARY.md`.
 *Advanced by 22-05; this is the phase's headline.*
+*Qualified 2026-09-29, from PR #58's reviewer B:* what ran live is **"connect-
+shaped" → queue → worker → pgvector → the RAG API's `/search`.** The
+installation and repository rows were **seeded** as `rag_doc_app` in the shape
+the connect path writes them, and the job was enqueued with the producer's own
+statement, `ENQUEUE_UPSERT_SQL`, plus its `pending` projection
+(`22-05-live-proof.md`, "Run 2: setup"; the plan said so in advance, Task 3
+step 3). The real connect path — the install callback, then
+`POST /api/repositories` with a Supabase session — did not run live; it is
+**Phases 20–21's tests'**. `/search` is the **RAG API's**, called directly; the
+backend's relay in front of it is **`search_isolation_test.go`'s**. From the
+queue onward everything ran for real: the worker, the internal token route,
+GitHub, OpenAI, pgvector and the RAG API, every process as `rag_doc_app`.
 
 **A11 — The phase leaves honest records.** Every SUMMARY states what was measured
 and what was inferred; every "does NOT pin" item is carried to the phase-level

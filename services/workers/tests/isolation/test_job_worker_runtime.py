@@ -62,8 +62,15 @@ from psycopg2.extras import RealDictCursor
 
 from workers.db import require_tenant
 from workers.jobs import Unfinished, Worker, claim, new_worker_id
-from workers.jobs.runtime import CONNECT_TIMEOUT_SECONDS
-from workers.jobs.transitions import ENQUEUE_UPSERT_SQL
+from workers.jobs.runtime import (
+    CONNECT_TIMEOUT_SECONDS,
+    HEARTBEAT_APPLICATION_NAME,
+    LOOP_APPLICATION_NAME,
+    InstallationSuspended,
+    InstallationUninstalled,
+    Rejected,
+)
+from workers.jobs.transitions import ENQUEUE_UPSERT_SQL, LeaseLost
 
 # Same decade-in-the-past epoch `test_job_transitions.py` and 21-03 use, and
 # for the same reason: the claim query has no repository filter, because
@@ -1550,7 +1557,7 @@ def test_a_worker_whose_connection_dies_reconnects_and_claims_the_next_job(
 
 
 def test_an_unreachable_database_is_retried_and_then_gives_up_with_exit_1(
-    monkeypatch, caplog
+    monkeypatch, caplog, tmp_path
 ):
     """The FIRST connect goes through the reconnect policy like every other.
 
@@ -1599,12 +1606,18 @@ def test_an_unreachable_database_is_retried_and_then_gives_up_with_exit_1(
 
     # And the entrypoint turns that into a non-zero exit, so a supervisor
     # can restart the process. Exit 1, not 2: 2 means "this build is
-    # configured not to run", which no restart fixes.
+    # configured not to run", which no restart fixes. Since 22-05 the
+    # entrypoint also needs the ingest configuration before it gets as far
+    # as the database, and sweeps its workdir at startup, so both are
+    # given (the workdir a private temporary one).
     previous = {
         sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)
     }
     monkeypatch.setitem(handlers_module.REGISTRY, "full_ingest", lambda ctx: None)
     monkeypatch.setenv("DATABASE_URL", unreachable)
+    monkeypatch.setenv("INTERNAL_API_URL", "http://backend:8081")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-dummy")
+    monkeypatch.setenv("WORKER_WORKDIR", str(tmp_path))
     try:
         assert workers_main() == 1
     finally:
@@ -2005,33 +2018,480 @@ def test_a_handler_that_raises_fails_the_job_with_a_redacted_error(
 
 
 # =====================================================================
+# The endings 22-05 added (the module docstring's "THE ENDINGS")
+# =====================================================================
+
+
+def _settled(row: dict) -> bool:
+    """A job this worker has written an ending for.
+
+    ⚠ `last_error` IS PART OF IT: the seeded row is already `queued` with no
+    lease, so without it this would hold before the worker had claimed
+    anything, and every assertion would be about the seed.
+    """
+    return (
+        row["last_error"] is not None
+        and row["lease_owner"] is None
+        and row["state"] != "running"
+    )
+
+
+@pytest.mark.parametrize(
+    "raised, state, attempts, sync_state",
+    [
+        # A U6 cap: dead in ONE attempt, not five 500 MB retries.
+        (lambda: Rejected("archive exceeds 500 MB"), "dead", 1, "failed"),
+        # Mid-run suspension: the claim-time ending -- deferred, attempt
+        # handed back, the projection left alone (`syncing`, since
+        # mark_started ran; the documented hour).
+        (lambda: InstallationSuspended("suspended mid-run"), "queued", 0, "syncing"),
+        # Mid-run uninstall: the claim-time ending -- abandoned.
+        (lambda: InstallationUninstalled("uninstalled mid-run"), "superseded", 1, "never_synced"),
+        # Anything else: an ordinary failure, retried.
+        (lambda: RuntimeError("an ordinary failure"), "queued", 1, "failed"),
+    ],
+    ids=["rejected", "suspended", "uninstalled", "other"],
+)
+def test_each_handler_exception_takes_its_ending(
+    conn, app_dsn, with_two_orgs, raised, state, attempts, sync_state
+):
+    """The runtime half of the endings table, with a handler that only raises.
+
+    The ingest handler's half -- WHICH exception each real situation
+    raises -- is `tests/ingest/test_handler.py`, and the two meet end to end
+    in `tests/isolation/test_ingest_end_to_end.py`.
+    """
+    org, _ = with_two_orgs
+    link_installation(conn, org)
+    job_id = seed_job(conn, org)
+    backdate(conn, job_id)
+    assert_only_claimable(conn, job_id)
+
+    def raising(ctx):
+        raise raised()
+
+    worker = build_worker(
+        app_dsn, {"full_ingest": raising}, suspended_defer=timedelta(minutes=60)
+    )
+    with running(worker):
+        row = job_when(conn, job_id, _settled, "the job's ending")
+
+    assert row["state"] == state, row
+    assert row["attempts"] == attempts, row
+    assert row["last_error"], "every ending says why"
+    assert repo_row(conn, org.id, org.repo_id)["sync_state"] == sync_state
+    if state == "queued" and attempts == 0:
+        delay = query(
+            conn,
+            "SELECT EXTRACT(EPOCH FROM (run_after - updated_at)) AS s FROM ingestion_jobs WHERE id = %s",
+            (job_id,),
+        )[0]["s"]
+        assert abs(float(delay) - 3600.0) < 5.0, "a mid-run suspension waits the hour"
+
+
+def test_a_lease_lost_raised_by_the_handler_writes_nothing(conn, app_dsn, with_two_orgs):
+    """`LeaseLost` from a handler -- a refused token, `should_abort()` -- is not a
+    failure, and above all not a completion: the job is left exactly as it
+    was, `running` under this worker's lease, for whoever reclaims it."""
+    org, _ = with_two_orgs
+    link_installation(conn, org)
+    job_id = seed_job(conn, org)
+    backdate(conn, job_id)
+    assert_only_claimable(conn, job_id)
+
+    ran = threading.Event()
+
+    def lost(ctx):
+        ran.set()
+        raise LeaseLost("the token route refused this job's lease")
+
+    # A lease far longer than the test and a heartbeat that never ticks, so
+    # nothing else touches the row while it is read.
+    worker = build_worker(
+        app_dsn, {"full_ingest": lost}, lease=timedelta(seconds=60), heartbeat=timedelta(seconds=120)
+    )
+    with running(worker):
+        assert ran.wait(timeout=SETTLE), "the handler never ran"
+        time.sleep(0.5)  # a write, if there were one, would land well within this
+        row = job_row(conn, job_id)
+
+    assert row["state"] == "running", "nothing may be written for a job that is not ours"
+    assert row["lease_owner"] == worker.worker_id
+    assert row["last_error"] is None
+    assert row["attempts"] == 1
+    # Take this test's own job out of the live set, so no later test's
+    # worker reclaims it when the lease runs out.
+    sql(conn, "UPDATE ingestion_jobs SET state = 'superseded' WHERE id = %s", (job_id,))
+
+
+def test_a_write_results_that_raises_fails_the_job_instead_of_stranding_it(
+    conn, app_dsn, with_two_orgs, caplog
+):
+    """`write_results` raising inside `complete()` is settled, not left `running`.
+
+    ⚠ FOUND WRITING 22-05. Phase 21's callbacks were one INSERT; the ingest
+    handler's replaces a repository's chunks, which can fail. Before this,
+    an exception from `complete` escaped `_invoke`, the loop logged it and
+    moved on, and the job sat `running` until its lease expired -- then was
+    reclaimed, raised again, and reached `dead` through the sweeper with
+    `last_error` NULL. Now the transaction rolls back (the results with the
+    completion) and the job fails with its reason.
+
+    The runtime's warning for it is read as a `LogRecord` too (PR #58's
+    review, B-L2): the exception's text reaches it, so it must be redacted
+    there as surely as in `last_error`.
+    """
+    caplog.set_level(logging.WARNING, logger="workers.jobs.runtime")
+    org, _ = with_two_orgs
+    link_installation(conn, org)
+    job_id = seed_job(conn, org)
+    backdate(conn, job_id)
+    assert_only_claimable(conn, job_id)
+
+    sha = f"sha-wr-{job_id[:8]}"
+
+    def exploding_write(cur):
+        cur.execute(
+            "INSERT INTO ingestion_runs (repository_id, commit_sha, branch, status) "
+            "VALUES (%s, %s, 'main', 'processing')",
+            (org.repo_id, sha),
+        )
+        raise RuntimeError(f"the chunk insert failed near {FAKE_TOKEN}")
+
+    with running(build_worker(app_dsn, {"full_ingest": lambda ctx: exploding_write})):
+        row = job_when(conn, job_id, _settled, "the failure to be recorded")
+
+    assert row["state"] == "queued", "below max_attempts a failure re-queues (O2)"
+    assert row["attempts"] == 1
+    assert "RuntimeError" in (row["last_error"] or "")
+    assert FAKE_TOKEN not in row["last_error"]
+    assert runs_for(conn, org.id, sha) == [], "the results rolled back with the completion"
+    assert repo_row(conn, org.id, org.repo_id)["sync_state"] == "failed"
+
+    [warning] = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "workers.jobs.runtime"
+        and f"job {job_id}: the completion transaction raised" in r.getMessage()
+    ]
+    assert "the chunk insert failed near" in warning, "premise: the exception's text reached the line"
+    assert "[REDACTED]" in warning
+    assert FAKE_TOKEN not in warning
+
+
+# =====================================================================
+# The heartbeat's connection (22-05, P16)
+# =====================================================================
+
+
+def test_the_heartbeat_keeps_its_callers_identity(conn, app_dsn, with_two_orgs, monkeypatch):
+    """The `statement_timeout` is MERGED into the DSN's options, never replacing them.
+
+    ⚠ `psycopg2.connect(dsn, options=...)` REPLACES the DSN's `options`, and
+    `options` is where `app_dsn` sets `-c role=rag_doc_app` -- so a
+    replacing keyword would make the heartbeat's connection the container
+    SUPERUSER, which bypasses row-level security, and would drop an
+    operator's own options on the way. Nothing would fail: the beat's
+    UPDATE works either way. So the identity is read off the real
+    connections the worker opens -- every one of them, at the moment it is
+    opened, on the thread that opened it -- with an operator option
+    (`work_mem`) in the DSN to show that nothing else was dropped.
+    """
+    org, _ = with_two_orgs
+    link_installation(conn, org)
+    job_id = seed_job(conn, org)
+    backdate(conn, job_id)
+    assert_only_claimable(conn, job_id)
+
+    role_option = "options=-c%20role%3Drag_doc_app"
+    assert role_option in app_dsn, "premise: the fixture sets the role through options"
+    operator_dsn = app_dsn.replace(role_option, role_option + "%20-c%20work_mem%3D7MB")
+
+    identities: dict = {}
+    real_connect = psycopg2.connect
+
+    def identifying(*args, **kwargs):
+        connection = real_connect(*args, **kwargs)
+        with connection.cursor() as cur:
+            cur.execute(
+                "SELECT current_setting('application_name'), current_user, "
+                "current_setting('work_mem'), current_setting('statement_timeout')"
+            )
+            name, user, work_mem, statement_timeout = cur.fetchone()
+        connection.rollback()
+        identities.setdefault(name, (user, work_mem, statement_timeout))
+        return connection
+
+    monkeypatch.setattr(psycopg2, "connect", identifying)
+
+    def waits_for_the_heartbeat(ctx):
+        until(lambda: HEARTBEAT_APPLICATION_NAME in identities, "the heartbeat's connection")
+        return None
+
+    with running(build_worker(operator_dsn, {"full_ingest": waits_for_the_heartbeat})):
+        until(lambda: job_row(conn, job_id)["state"] == "completed", "completion")
+
+    loop_user, loop_work_mem, loop_timeout = identities[LOOP_APPLICATION_NAME]
+    beat_user, beat_work_mem, beat_timeout = identities[HEARTBEAT_APPLICATION_NAME]
+    assert beat_user == "rag_doc_app", (
+        f"the heartbeat connected as {beat_user!r}: its options REPLACED the DSN's, "
+        "so the role in them was lost"
+    )
+    assert beat_user == loop_user, "both connections must be the same role"
+    assert beat_work_mem == "7MB", "the operator's option was dropped from the heartbeat's"
+    assert loop_work_mem == "7MB"
+    assert beat_timeout == "15s", "P16: the heartbeat's statement_timeout"
+    assert loop_timeout == "0", "the loop's connection carries no statement_timeout"
+
+
+def test_the_heartbeat_keeps_an_identity_set_through_pgoptions(
+    conn, app_dsn, with_two_orgs, monkeypatch
+):
+    """The same guarantee when the role comes from `PGOPTIONS` (PR #58's review, A-N3).
+
+    libpq reads `PGOPTIONS` only for a connection string that carries no
+    `options` of its own. The merge used to add the heartbeat's
+    `statement_timeout` as the ONLY options, so libpq skipped `PGOPTIONS`
+    for that one connection -- and here, where `PGOPTIONS` is what sets the
+    role, the heartbeat would have connected as the role the DSN
+    AUTHENTICATES as: the container superuser, which bypasses row-level
+    security. Read off the real connections, as the test above does.
+    """
+    org, _ = with_two_orgs
+    link_installation(conn, org)
+    job_id = seed_job(conn, org)
+    backdate(conn, job_id)
+    assert_only_claimable(conn, job_id)
+
+    bare_dsn, _, query = app_dsn.partition("?")
+    assert query == "options=-c%20role%3Drag_doc_app", "premise: the role is the DSN's only option"
+    monkeypatch.setenv("PGOPTIONS", "-c role=rag_doc_app -c work_mem=7MB")
+
+    identities: dict = {}
+    real_connect = psycopg2.connect
+
+    def identifying(*args, **kwargs):
+        connection = real_connect(*args, **kwargs)
+        with connection.cursor() as cur:
+            cur.execute(
+                "SELECT current_setting('application_name'), current_user, "
+                "current_setting('work_mem'), current_setting('statement_timeout')"
+            )
+            name, user, work_mem, statement_timeout = cur.fetchone()
+        connection.rollback()
+        identities.setdefault(name, (user, work_mem, statement_timeout))
+        return connection
+
+    monkeypatch.setattr(psycopg2, "connect", identifying)
+
+    def waits_for_the_heartbeat(ctx):
+        until(lambda: HEARTBEAT_APPLICATION_NAME in identities, "the heartbeat's connection")
+        return None
+
+    with running(build_worker(bare_dsn, {"full_ingest": waits_for_the_heartbeat})):
+        until(lambda: job_row(conn, job_id)["state"] == "completed", "completion")
+
+    loop_user, loop_work_mem, _ = identities[LOOP_APPLICATION_NAME]
+    beat_user, beat_work_mem, beat_timeout = identities[HEARTBEAT_APPLICATION_NAME]
+    assert loop_user == "rag_doc_app" and loop_work_mem == "7MB", (
+        "premise: libpq applied PGOPTIONS to the loop's connection"
+    )
+    assert beat_user == "rag_doc_app", (
+        f"the heartbeat connected as {beat_user!r}: its options made libpq skip PGOPTIONS"
+    )
+    assert beat_work_mem == "7MB"
+    assert beat_timeout == "15s"
+
+
+def test_the_merged_options_follow_libpqs_pgoptions_rule(monkeypatch):
+    """`_merged_options_dsn` on its own, with and without `PGOPTIONS` (A-N3).
+
+    A DSN with no `options` starts from `PGOPTIONS`, as libpq would have; a
+    DSN that names `options` keeps them and ignores `PGOPTIONS`, which is
+    libpq's own rule; with neither, only the added option.
+    """
+    from psycopg2.extensions import parse_dsn
+
+    from workers.jobs.runtime import _merged_options_dsn
+
+    timeout = "-c statement_timeout=15000"
+    monkeypatch.setenv("PGOPTIONS", "-c work_mem=7MB")
+    assert parse_dsn(_merged_options_dsn("postgresql://u:p@h:5432/db", timeout))["options"] == (
+        "-c work_mem=7MB -c statement_timeout=15000"
+    )
+    named = "postgresql://u:p@h:5432/db?options=-c%20role%3Drag_doc_app"
+    assert parse_dsn(_merged_options_dsn(named, timeout))["options"] == (
+        "-c role=rag_doc_app -c statement_timeout=15000"
+    )
+    monkeypatch.delenv("PGOPTIONS")
+    assert parse_dsn(_merged_options_dsn("postgresql://u:p@h:5432/db", timeout))["options"] == timeout
+
+
+@pytest.mark.parametrize("bad", [timedelta(0), timedelta(milliseconds=-1)])
+def test_a_heartbeat_timeout_that_is_not_positive_is_refused(bad):
+    """A zero or negative timeout is refused, not quietly dropped (PR #58's review, B-N2).
+
+    `None` is how a caller asks for no timeout. A zero `timedelta` is falsy,
+    so the heartbeat's connection would be opened with no
+    `statement_timeout` at all -- the guard switched off without a word --
+    and in PostgreSQL `statement_timeout = 0` means none anyway.
+    """
+    with pytest.raises(ValueError, match="heartbeat_statement_timeout must be positive"):
+        Worker(
+            "postgresql://nobody@127.0.0.1:1/nothing",
+            {"full_ingest": lambda ctx: None},
+            heartbeat_statement_timeout=bad,
+        )
+
+
+def test_a_heartbeat_that_blocks_on_a_row_lock_times_out_and_gives_up(
+    conn, app_dsn, with_two_orgs, caplog
+):
+    """The failure 21-06 left open: a beat that BLOCKS raises nothing.
+
+    A second connection holds `SELECT ... FOR UPDATE` on the job row, so the
+    heartbeat's `UPDATE` waits on the lock. Without a `statement_timeout` it
+    waits for as long as the lock is held, and because the give-up rules are
+    evaluated at the top of the NEXT beat, neither ever runs: the handler
+    is never told, while the lease runs out underneath it. With the timeout
+    the beat raises `57014` (`QueryCanceled`), counts as a failure, and the
+    clock rule sets `should_abort()` one lease after the last beat landed.
+
+    Mutation: without the option this test fails on its own deadline --
+    the handler's patience runs out with `should_abort()` still False.
+    """
+    org, _ = with_two_orgs
+    link_installation(conn, org)
+    job_id = seed_job(conn, org)
+    backdate(conn, job_id)
+    assert_only_claimable(conn, job_id)
+    caplog.set_level(logging.WARNING, logger="workers.jobs.runtime")
+
+    beating = threading.Event()
+    observed: dict = {}
+    patience = 25.0
+
+    def cooperative(ctx):
+        if observed:
+            raise LeaseLost("already observed")  # a reclaim after the test: stop at once
+        beating.set()
+        started = time.monotonic()
+        while not ctx.should_abort() and time.monotonic() - started < patience:
+            time.sleep(0.02)
+        observed["aborted"] = ctx.should_abort()
+        observed["elapsed"] = time.monotonic() - started
+        raise LeaseLost("the heartbeat gave up")
+
+    worker = build_worker(
+        app_dsn,
+        {"full_ingest": cooperative},
+        heartbeat_statement_timeout=timedelta(milliseconds=300),
+    )
+    blocker = psycopg2.connect(app_dsn)
+    try:
+        with running(worker) as stop:
+            assert beating.wait(timeout=SETTLE), "the handler never started"
+            claimed_at = until(lambda: job_row(conn, job_id)["lease_expires_at"], "the claim")
+            until(
+                lambda: job_row(conn, job_id)["lease_expires_at"] > claimed_at,
+                "one heartbeat to land before the lock",
+            )
+            with blocker.cursor() as cur:
+                cur.execute("SELECT id FROM ingestion_jobs WHERE id = %s FOR UPDATE", (job_id,))
+                assert cur.fetchone() is not None, "premise: the blocker holds the job row"
+            until(lambda: observed.get("aborted") is not None, "the handler to stop")
+            # Stop the loop BEFORE releasing the row, so it cannot reclaim it.
+            stop.set()
+            blocker.rollback()
+    finally:
+        blocker.close()
+
+    assert observed["aborted"] is True, (
+        "the heartbeat blocked on the row lock and the handler was never told; "
+        "without statement_timeout a blocked beat is invisible to the give-up rules"
+    )
+    bound = LEASE.total_seconds() + 4 * HEARTBEAT.total_seconds() + 8.0
+    assert observed["elapsed"] < bound, (
+        f"the handler took {observed['elapsed']:.1f}s to be told; the lease is "
+        f"{LEASE.total_seconds()}s"
+    )
+    timeouts = [
+        r.getMessage()
+        for r in caplog.records
+        if "heartbeat failed" in r.getMessage() and "QueryCanceled" in r.getMessage()
+    ]
+    assert timeouts, "no beat was cancelled by statement_timeout (57014)"
+    assert "statement timeout" in timeouts[0]
+    sql(conn, "UPDATE ingestion_jobs SET state = 'superseded' WHERE id = %s", (job_id,))
+
+
+# =====================================================================
 # The entrypoint
 # =====================================================================
 
 
-@pytest.mark.parametrize("with_dsn", [False, True])
-def test_the_entrypoint_refuses_to_start_without_handlers(with_dsn):
-    """`python -m workers` exits 2 whatever the environment says.
+#: Runs the REAL `workers/__main__` with the registry emptied first.
+#: `main()` imports `REGISTRY` lazily, inside the function, so it sees the
+#: cleared map -- which is how the refusal stays testable once 22-05 filled
+#: the shipped registry.
+EMPTIED_REGISTRY_ENTRYPOINT = (
+    "import workers.jobs.handlers as h; h.REGISTRY.clear(); "
+    "import runpy; runpy.run_module('workers', run_name='__main__')"
+)
 
-    ⚠ BOTH RUNS MATTER, and the one WITH `DATABASE_URL` is the interesting
-    one. The order of the two checks in `__main__` is what makes the
-    compose service -- which has no `DATABASE_URL` -- print the message
-    about handlers rather than one about a missing DSN. If somebody swaps
-    them, the run without a DSN starts failing for the other reason and
-    this parametrisation is what says so.
-    """
-    env = dict(os.environ)
-    env.pop("DATABASE_URL", None)
-    if with_dsn:
-        env["DATABASE_URL"] = "postgresql://unused:unused@127.0.0.1:1/unused"
 
-    result = subprocess.run(
-        [sys.executable, "-m", "workers"],
+def _entrypoint(args: List[str], env: dict) -> "subprocess.CompletedProcess[bytes]":
+    return subprocess.run(
+        [sys.executable, *args],
         cwd=str(SERVICE_ROOT),
         env=env,
         capture_output=True,
         timeout=120,
     )
+
+
+def _entrypoint_env(**overrides: Optional[str]) -> dict:
+    """The test process's environment minus everything the worker reads."""
+    env = dict(os.environ)
+    for name in (
+        "DATABASE_URL",
+        "INTERNAL_API_URL",
+        "WORKER_WORKDIR",
+        "WORKER_MAX_JOB_DURATION_SECONDS",
+        "WORKER_HEARTBEAT_STATEMENT_TIMEOUT_MS",
+    ):
+        env.pop(name, None)
+    for name, value in overrides.items():
+        if value is None:
+            env.pop(name, None)
+        else:
+            env[name] = value
+    return env
+
+
+@pytest.mark.parametrize("with_dsn", [False, True])
+def test_the_entrypoint_refuses_to_start_without_handlers(with_dsn):
+    """An EMPTY registry exits 2 whatever the environment says.
+
+    ⚠ CHANGED DELIBERATELY IN 22-05 (fact-check a5). This test used to run
+    the plain `python -m workers` and relied on the shipped registry being
+    empty; 22-05 filled it, which would have broken the test for the right
+    reason. The refusal still matters -- it is what a build that has lost
+    its handlers says instead of claiming jobs and dead-lettering them
+    (21-06) -- so it now runs the real `__main__` with the registry CLEARED
+    first. The assertions and both parametrisations are unchanged.
+
+    ⚠ BOTH RUNS MATTER, and the one WITH `DATABASE_URL` is the interesting
+    one. The order of the checks in `__main__` is what makes a service with
+    no `DATABASE_URL` print the message about handlers rather than one
+    about a missing DSN. If somebody swaps them, the run without a DSN
+    starts failing for the other reason and this parametrisation says so.
+    """
+    env = _entrypoint_env(
+        DATABASE_URL="postgresql://unused:unused@127.0.0.1:1/unused" if with_dsn else None
+    )
+
+    result = _entrypoint(["-c", EMPTIED_REGISTRY_ENTRYPOINT], env)
     output = (result.stdout + result.stderr).decode("utf-8", errors="replace")
 
     assert result.returncode == 2, (
@@ -2042,3 +2502,127 @@ def test_the_entrypoint_refuses_to_start_without_handlers(with_dsn):
     assert "DATABASE_URL is not set" not in output, (
         "the configuration check ran before the handler check"
     )
+
+
+def test_the_entrypoint_refuses_without_a_dsn_once_handlers_exist():
+    """The second refusal, reachable only since 22-05 filled the registry.
+
+    The plain `python -m workers`, the shipped registry, no `DATABASE_URL`:
+    exit 2 with `NO_DSN_MESSAGE`, and never the handler message.
+    """
+    from workers.__main__ import NO_DSN_MESSAGE
+
+    result = _entrypoint(["-m", "workers"], _entrypoint_env())
+    output = (result.stdout + result.stderr).decode("utf-8", errors="replace")
+
+    assert result.returncode == 2, f"exit code {result.returncode}, not 2. Output:\n{output}"
+    assert NO_DSN_MESSAGE in output, output
+    assert "no job handlers registered" not in output, (
+        "the shipped registry is not empty; the handler check must pass"
+    )
+
+
+@pytest.mark.parametrize("missing", ["INTERNAL_API_URL", "OPENAI_API_KEY"])
+def test_the_entrypoint_refuses_without_the_ingest_configuration(tmp_path, missing):
+    """A worker that cannot reach the token route or OpenAI must not claim.
+
+    It would fail every job it claimed five times and dead-letter it --
+    the accident the handler refusal exists to prevent, one step later. So
+    `__main__` builds the ingest configuration after the DSN check and
+    refuses with exit 2 before connecting to anything (the DSN here points
+    at a port nothing listens on, so a worker that got as far as
+    connecting would exit 1 instead).
+    """
+    env = _entrypoint_env(
+        DATABASE_URL="postgresql://unused:unused@127.0.0.1:1/unused",
+        INTERNAL_API_URL="http://backend:8081",
+        OPENAI_API_KEY="sk-test-dummy",
+        WORKER_WORKDIR=str(tmp_path),
+    )
+    env.pop(missing, None)
+
+    result = _entrypoint(["-m", "workers"], env)
+    output = (result.stdout + result.stderr).decode("utf-8", errors="replace")
+
+    assert result.returncode == 2, f"exit code {result.returncode}, not 2. Output:\n{output}"
+    assert f"{missing} is not set" in output, output
+    assert "reconnect" not in output, "the worker tried the database before refusing"
+
+
+def test_the_deployed_worker_has_a_bound_and_never_warns_about_one(monkeypatch, caplog):
+    """P16: `__main__` builds the worker with two hours and fifteen seconds.
+
+    The unset-bound WARNING a bare `Worker` gives (see
+    `test_an_unset_max_job_duration_is_announced_rather_than_silent`) must
+    therefore never appear from the entrypoint. The worker built exactly as
+    `main()` builds it is run against a port nothing listens on, so it logs
+    its startup line, cannot claim anything, and gives up at once.
+    """
+    import workers.jobs.runtime as runtime_module
+    from workers.__main__ import build_worker as build_deployed_worker
+    from workers.jobs.handlers import REGISTRY
+
+    monkeypatch.setattr(runtime_module, "MAX_RECONNECT_ATTEMPTS", 1)
+    monkeypatch.setattr(runtime_module, "RECONNECT_BACKOFF_BASE", timedelta(seconds=0.01))
+    caplog.set_level(logging.INFO, logger="workers.jobs.runtime")
+
+    worker = build_deployed_worker("postgresql://nobody:nobody@127.0.0.1:1/nothing", REGISTRY, {})
+    assert worker.max_job_duration == timedelta(hours=2), "P16, provisional until 22.1-05"
+    assert worker.heartbeat_statement_timeout == timedelta(seconds=15)
+    assert sorted(worker._handlers) == ["full_ingest", "incremental"]
+
+    with pytest.raises(runtime_module.DatabaseUnavailable):
+        worker.run(threading.Event())
+
+    startup = [r.getMessage() for r in caplog.records if "starting: job_types=" in r.getMessage()]
+    assert startup and "max_job_duration=7200s" in startup[0], startup
+    assert "heartbeat_statement_timeout=15000ms" in startup[0], startup
+    assert not [
+        r for r in caplog.records if "no upper bound on handler runtime" in r.getMessage()
+    ], "the deployed worker must never run without a bound"
+
+    overridden = build_deployed_worker(
+        "postgresql://nobody:nobody@127.0.0.1:1/nothing",
+        REGISTRY,
+        {"WORKER_MAX_JOB_DURATION_SECONDS": "600", "WORKER_HEARTBEAT_STATEMENT_TIMEOUT_MS": "2500"},
+    )
+    assert overridden.max_job_duration == timedelta(minutes=10)
+    assert overridden.heartbeat_statement_timeout == timedelta(milliseconds=2500)
+
+    for bad in ("0", "-5", "two hours", "1.5"):
+        with pytest.raises(ValueError, match="WORKER_MAX_JOB_DURATION_SECONDS"):
+            build_deployed_worker("postgresql://x", REGISTRY, {"WORKER_MAX_JOB_DURATION_SECONDS": bad})
+
+
+def test_the_entrypoint_sweeps_stale_job_directories_once_before_it_runs(monkeypatch, tmp_path):
+    """Step 5 of `workers/__main__`, called in-process (PR #58's review, B-N2).
+
+    The sweep runs once, on the configured workdir, with a bound of one
+    `max_job_duration` plus one lease -- past which no job this host could
+    still be running has been alive that long -- and before the loop. The
+    database is a port nothing listens on, so `main()` then gives up and
+    returns 1; the signal handlers and the handler configuration are kept
+    out of the test process.
+    """
+    import workers.__main__ as entrypoint
+    import workers.fetch as fetch_module
+    import workers.ingest.handler as handler_module
+    import workers.jobs.runtime as runtime_module
+
+    swept: List[tuple] = []
+    monkeypatch.setattr(
+        fetch_module, "sweep_stale_workdirs", lambda workdir, older_than: swept.append((workdir, older_than)) or 0
+    )
+    monkeypatch.setattr(entrypoint, "_install_signal_handlers", lambda stop: None)
+    monkeypatch.setattr(handler_module, "_default", None)  # restored after `configure`
+    monkeypatch.setattr(runtime_module, "MAX_RECONNECT_ATTEMPTS", 1)
+    monkeypatch.setattr(runtime_module, "RECONNECT_BACKOFF_BASE", timedelta(seconds=0.01))
+    for name in ("WORKER_MAX_JOB_DURATION_SECONDS", "WORKER_HEARTBEAT_STATEMENT_TIMEOUT_MS"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://nobody:nobody@127.0.0.1:1/nothing")
+    monkeypatch.setenv("INTERNAL_API_URL", "http://backend:8081")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-dummy")
+    monkeypatch.setenv("WORKER_WORKDIR", str(tmp_path))
+
+    assert entrypoint.main([]) == 1, "an unreachable database is exit 1, after the sweep"
+    assert swept == [(str(tmp_path), timedelta(hours=2) + runtime_module.DEFAULT_LEASE)], swept

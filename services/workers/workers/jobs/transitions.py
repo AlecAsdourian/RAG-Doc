@@ -2,7 +2,8 @@
 
 This is the other half of `services/backend/pkg/jobs`. The Go side is the
 PRODUCER -- enqueue, and supersede-on-relink; this side is the CONSUMER --
-claim, start, complete, fail, defer, abandon, sweep and run resolution. The
+claim, start, complete, fail, reject (22-05), defer, abandon, sweep and run
+resolution. The
 two halves share one thing, and it is the point of the design: **the SQL**.
 Every statement below that also exists in Go was lifted from
 `pkg/jobs/schema_test.go` and `pkg/jobs/producer.go` as they stand on
@@ -105,6 +106,7 @@ transition is this module's:
 | complete                            | `synced`, + `last_synced_at = NOW()`|
 | fail, retrying (`queued`, att > 0)  | `failed`                            |
 | fail, `dead`                        | `failed`                            |
+| reject (a U6 cap; 22-05), `dead`    | `failed`                            |
 | defer (suspended installation)      | unchanged                           |
 | abandon (uninstalled, or none)      | `never_synced`                      |
 | superseded by a producer            | not written                         |
@@ -328,6 +330,28 @@ DEFER_SQL = """
 UPDATE ingestion_jobs
 SET state = 'queued', attempts = attempts - 1, run_after = NOW() + %s::interval,
     lease_owner = NULL, lease_expires_at = NULL, last_error = %s,
+    updated_at = NOW()
+WHERE id = %s AND lease_owner = %s AND state = 'running'"""
+
+# REJECT_SQL ends a job that can NEVER succeed as asked: a U6 hard cap
+# (22-05). %s last_error, %s id, %s lease_owner. It has no Go twin; nothing
+# on the producer side rejects.
+#
+# ⚠ `dead` IN ONE ATTEMPT, NOT `fail`'s BACKOFF. A cap is deterministic, so
+# `failSQL` would retry the same 500 MB download five times over about 81
+# minutes to reach the `dead` it was always going to reach. U6 says a job
+# over a hard cap "ends `dead`" with a plain reason; this writes exactly
+# that. `attempts` is left as the claim set it (1 on a first attempt), and
+# `run_after` is not moved: the row is terminal, and neither is a budget any
+# more.
+#
+# ⚠ FENCED LIKE EVERY TERMINAL WRITE, BOTH HALVES. A reclaimed worker
+# rejecting would dead-letter the new attempt's job; a superseded worker
+# (whose lease stays attached) would turn the supersede into `dead`.
+REJECT_SQL = """
+UPDATE ingestion_jobs
+SET state = 'dead', last_error = %s,
+    lease_owner = NULL, lease_expires_at = NULL,
     updated_at = NOW()
 WHERE id = %s AND lease_owner = %s AND state = 'running'"""
 
@@ -940,6 +964,34 @@ def fail(conn: Any, job: Job, worker_id: str, error: BaseException) -> str:
          sync_state="failed", retry_in=f"{delay.total_seconds():.0f}s",
          error_class=type(error).__name__)
     return new_state
+
+
+def reject(conn: Any, job: Job, worker_id: str, error: BaseException) -> None:
+    """End a job `dead` in ONE attempt: a U6 hard cap. TENANT-SCOPED.
+
+    22-05's fourth handler ending (`workers.jobs.runtime.Rejected`, which
+    `workers.fetch.FetchRejected` subclasses). See REJECT_SQL for why a cap
+    is not a `fail`. `last_error` goes through `sanitize_error`, like every
+    other rendering of an exception here, and the repository projects
+    `failed` -- the job's own state, `dead`, is what says it will not be
+    retried (the module docstring's projection table).
+
+    Raises:
+        LeaseLost: the job was reclaimed or superseded; nothing is written.
+    """
+    message = sanitize_error(error)
+
+    with require_tenant(conn, job.organization_id) as cur:
+        cur.execute(REJECT_SQL, (message, str(job.id), worker_id))
+        if cur.rowcount == 0:
+            raise LeaseLost(
+                f"job {job.id}: rejection matched no row -- the lease is not "
+                f"ours (reclaimed or superseded); worker={worker_id}"
+            )
+        cur.execute(PROJECT_FAILED_SQL, (str(job.repository_id),))
+
+    _log(logging.WARNING, "reject", job, worker_id, "running", "dead",
+         sync_state="failed", error_class=type(error).__name__)
 
 
 def defer(
