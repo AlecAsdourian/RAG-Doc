@@ -21,16 +21,31 @@ services:
       timeout: 5s
       retries: 5
 
+  # ⚠ COMPOSE DOES NOT START THE BACKEND TODAY: it panics without
+  # SUPABASE_WEBHOOK_SECRET, and the internal listener also needs the GitHub
+  # App credentials, none of which compose passes (docs/local-development.md,
+  # "Run the backend"). Run it directly. Secrets in compose are Phase 24's.
   backend:
     build: ./services/backend
     ports:
       - "8080:8080"
+    # The internal listener (22-04) serves the worker's repository-token
+    # route. It is reachable on the compose network ONLY: `expose`, NEVER
+    # `ports:` -- publishing it would let anyone who can read a lease owner
+    # mint repository tokens (docs/internal-api.md; Phase 24 keeps it so).
+    expose:
+      - "8081"
     volumes:
       - ./services/backend:/app
     environment:
       - ENV=development
       - DATABASE_URL=postgres://coderag:coderag@postgres:5432/coderag?sslmode=disable
       - RAG_SERVICE_URL=http://rag-api:8000
+      # The service name, which resolves to this container's own address on
+      # the compose network. Never a wildcard: the backend refuses `:8081`,
+      # `0.0.0.0:8081` and their spellings unless explicitly overridden, and
+      # the override is not used here (PR #52's review, L3).
+      - INTERNAL_ADDR=backend:8081
     depends_on:
       postgres:
         condition: service_healthy
@@ -58,12 +73,40 @@ services:
       timeout: 5s
       retries: 5
 
+  # The ingestion worker (22-05). ⚠ BEHIND THE `ingest` PROFILE, so a plain
+  # `docker compose up` never starts it: with the backend not starting (see
+  # above), it would claim the queued jobs 000015 backfilled, fail to reach
+  # the token route, and walk every one of them to `dead` -- the accident its
+  # fail-closed entrypoint exists to prevent. Start it deliberately with
+  # `docker compose --profile ingest up workers`, and only once the backend's
+  # internal listener is running. See docs/local-development.md.
+  #
+  # ⚠ IT NEVER HOLDS THE GITHUB APP KEY (U4): the backend mints it a
+  # one-repository, read-only, one-hour token per job, and
+  # services/workers/tests/test_compose_environment.py asserts that no
+  # GITHUB_APP_* or webhook secret appears in this environment.
   workers:
     build: ./services/workers
+    profiles: ["ingest"]
     volumes:
       - ./services/workers:/app
     environment:
       - ENV=development
+      # As compose's other services connect. The unprivileged role and its
+      # grants are Phase 24's; 22-05's live proof ran every process as
+      # rag_doc_app against a scratch database.
+      - DATABASE_URL=postgres://coderag:coderag@postgres:5432/coderag?sslmode=disable
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      # The backend's INTERNAL listener, never the public API on 8080.
+      - INTERNAL_API_URL=http://backend:8081
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # P16: two worker processes (four connections), PROVISIONAL UNTIL 22.1-05
+    # replaces it with a measured number. Each needs about 1 GB of free disk
+    # for its job directory (docs/local-development.md).
+    deploy:
+      replicas: ${WORKER_REPLICAS:-2}
 
   frontend:
     build: ./services/frontend
