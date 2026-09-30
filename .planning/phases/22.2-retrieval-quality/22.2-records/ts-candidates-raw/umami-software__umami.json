@@ -1,0 +1,112 @@
+{
+ "repo": "umami-software/umami",
+ "branch": "master",
+ "sha": "ec0ff50388c264ed8ce46f00967e92f7e71476ae",
+ "license": "MIT",
+ "archived": false,
+ "pushed_at": "2026-09-29T19:42:34Z",
+ "stars": 39088,
+ "truncated": false,
+ "counts": {
+  "ts": 559,
+  "test": 175,
+  "generated": 115,
+  "js": 18,
+  "tsx": 519,
+  "vendored": 7
+ },
+ "bytes": {
+  "ts": 1407974,
+  "test": 785510,
+  "generated": 1550345,
+  "js": 37488,
+  "tsx": 983455,
+  "vendored": 15051
+ },
+ "by_top": {
+  "src/app": {
+   "files": 547,
+   "bytes": 982965
+  },
+  "src/components": {
+   "files": 284,
+   "bytes": 440983
+  },
+  "src/queries": {
+   "files": 96,
+   "bytes": 407264
+  },
+  "src/lib": {
+   "files": 58,
+   "bytes": 203074
+  },
+  "src/openapi": {
+   "files": 13,
+   "bytes": 110808
+  },
+  "packages/mcp": {
+   "files": 32,
+   "bytes": 82786
+  },
+  "scripts/seed": {
+   "files": 11,
+   "bytes": 43507
+  },
+  "packages/api-client": {
+   "files": 7,
+   "bytes": 27688
+  },
+  "src/permissions": {
+   "files": 10,
+   "bytes": 23195
+  },
+  "src/tracker": {
+   "files": 1,
+   "bytes": 18471
+  },
+  "scripts/test-api.ts": {
+   "files": 1,
+   "bytes": 11113
+  },
+  "scripts/generate-api-client.ts": {
+   "files": 1,
+   "bytes": 9865
+  },
+  ".": {
+   "files": 5,
+   "bytes": 8394
+  },
+  "src/index.ts": {
+   "files": 1,
+   "bytes": 4384
+  },
+  "src/store": {
+   "files": 5,
+   "bytes": 3972
+  },
+  "scripts/generate-openapi-contracts.ts": {
+   "files": 1,
+   "bytes": 3755
+  },
+  "scripts/seed-data.ts": {
+   "files": 1,
+   "bytes": 3424
+  },
+  "docker/proxy.ts": {
+   "files": 1,
+   "bytes": 3239
+  },
+  "scripts/check-openapi.ts": {
+   "files": 1,
+   "bytes": 1623
+  },
+  "scripts/generate-openapi.ts": {
+   "files": 1,
+   "bytes": 700
+  },
+  "src/i18n": {
+   "files": 1,
+   "bytes": 219
+  }
+ }
+}

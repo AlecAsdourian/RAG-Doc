@@ -1,0 +1,745 @@
+{
+ "method": "GitHub REST API, unauthenticated, 2026-09-29: repos/{r}, commits/{default branch}, the recursive tree at that sha. Counts .ts/.tsx after excluding vendored directories (node_modules, dist, build, vendor, third_party, .next, out, coverage), generated files (.d.ts, *.generated.*, __generated__, /generated/, .gen.ts, .min.js), tests (test, tests, __tests__, e2e, __mocks__, cypress, playwright, fixtures, mocks, stories directories; *.test, *.spec, *.stories, *.e2e, *.cy files) and migrations/ directories. Sizes are blob sizes in bytes.",
+ "candidates": [
+  {
+   "repo": "shlinkio/shlink-web-client",
+   "branch": "develop",
+   "sha": "7101d5205d9758c31a16bd1f688292dd69a634ff",
+   "license": "MIT",
+   "archived": false,
+   "pushed_at": "2026-09-26T13:27:10Z",
+   "ts_files": 31,
+   "tsx_files": 31,
+   "ts_tsx_kib": 89,
+   "js_files": 0,
+   "test_files": 45,
+   "generated_files": 1,
+   "migration_files": 0,
+   "vendored_files": 0,
+   "top_dirs_by_size": {
+    "src/servers": {
+     "files": 22,
+     "bytes": 44137
+    },
+    "src/common": {
+     "files": 12,
+     "bytes": 15054
+    },
+    "src/serviceWorkerRegistration.ts": {
+     "files": 1,
+     "bytes": 5245
+    },
+    "src/utils": {
+     "files": 10,
+     "bytes": 5201
+    },
+    ".": {
+     "files": 4,
+     "bytes": 3886
+    },
+    "src/app": {
+     "files": 2,
+     "bytes": 3784
+    }
+   }
+  },
+  {
+   "repo": "louislam/dockge",
+   "branch": "master",
+   "sha": "f809ae192b571944ad773e9866d3e67064ae8043",
+   "license": "MIT",
+   "archived": false,
+   "pushed_at": "2026-04-25T02:28:26Z",
+   "ts_files": 40,
+   "tsx_files": 0,
+   "ts_tsx_kib": 185,
+   "js_files": 2,
+   "test_files": 0,
+   "generated_files": 2,
+   "migration_files": 3,
+   "vendored_files": 0,
+   "top_dirs_by_size": {
+    "frontend/src": {
+     "files": 8,
+     "bytes": 33366
+    },
+    "backend/dockge-server.ts": {
+     "files": 1,
+     "bytes": 23760
+    },
+    "backend/stack.ts": {
+     "files": 1,
+     "bytes": 21303
+    },
+    "backend/agent-socket-handlers": {
+     "files": 2,
+     "bytes": 19955
+    },
+    "backend/socket-handlers": {
+     "files": 3,
+     "bytes": 18264
+    },
+    "common/util-common.ts": {
+     "files": 1,
+     "bytes": 12471
+    }
+   }
+  },
+  {
+   "repo": "linkwarden/linkwarden",
+   "branch": "main",
+   "sha": "952ac4540657cae3a67c3ca59433899d2fda8374",
+   "license": "AGPL-3.0",
+   "archived": false,
+   "pushed_at": "2026-09-10T18:53:30Z",
+   "ts_files": 244,
+   "tsx_files": 252,
+   "ts_tsx_kib": 1659,
+   "js_files": 14,
+   "test_files": 22,
+   "generated_files": 6,
+   "migration_files": 9,
+   "vendored_files": 0,
+   "top_dirs_by_size": {
+    "apps/web": {
+     "files": 301,
+     "bytes": 959323
+    },
+    "apps/mobile": {
+     "files": 80,
+     "bytes": 392257
+    },
+    "apps/extension": {
+     "files": 43,
+     "bytes": 136567
+    },
+    "packages/router": {
+     "files": 14,
+     "bytes": 78436
+    },
+    "apps/worker": {
+     "files": 26,
+     "bytes": 74137
+    },
+    "packages/lib": {
+     "files": 18,
+     "bytes": 38679
+    }
+   }
+  },
+  {
+   "repo": "sct/overseerr",
+   "branch": "develop",
+   "sha": "98ea135f2d370faba0362d259fccf51d8fd44a16",
+   "license": "MIT",
+   "archived": true,
+   "pushed_at": "2026-02-15T20:34:21Z",
+   "ts_files": 139,
+   "tsx_files": 271,
+   "ts_tsx_kib": 1944,
+   "js_files": 9,
+   "test_files": 13,
+   "generated_files": 6,
+   "migration_files": 33,
+   "vendored_files": 0,
+   "top_dirs_by_size": {
+    "src/components": {
+     "files": 182,
+     "bytes": 1267781
+    },
+    "server/lib": {
+     "files": 27,
+     "bytes": 196335
+    },
+    "server/routes": {
+     "files": 21,
+     "bytes": 184654
+    },
+    "server/api": {
+     "files": 16,
+     "bytes": 102629
+    },
+    "src/pages": {
+     "files": 87,
+     "bytes": 48145
+    },
+    "server/entity": {
+     "files": 11,
+     "bytes": 47923
+    }
+   }
+  },
+  {
+   "repo": "hedgedoc/hedgedoc",
+   "branch": "develop",
+   "sha": "5dd94d5449e52835ab034d4da21773cad08ebf51",
+   "license": "AGPL-3.0",
+   "archived": false,
+   "pushed_at": "2026-09-29T16:00:23Z",
+   "ts_files": 744,
+   "tsx_files": 387,
+   "ts_tsx_kib": 2201,
+   "js_files": 3,
+   "test_files": 238,
+   "generated_files": 25,
+   "migration_files": 1,
+   "vendored_files": 0,
+   "top_dirs_by_size": {
+    "frontend/src": {
+     "files": 766,
+     "bytes": 1560546
+    },
+    "backend/src": {
+     "files": 203,
+     "bytes": 532787
+    },
+    "commons/src": {
+     "files": 116,
+     "bytes": 88456
+    },
+    "html-to-react/src": {
+     "files": 15,
+     "bytes": 25079
+    },
+    "markdown-it-plugins/src": {
+     "files": 10,
+     "bytes": 24355
+    },
+    "database/src": {
+     "files": 18,
+     "bytes": 20212
+    }
+   }
+  },
+  {
+   "repo": "ghostfolio/ghostfolio",
+   "branch": "main",
+   "sha": "c13a0c18fb9c221adc4fed02d3ba32b274c8dc80",
+   "license": "AGPL-3.0",
+   "archived": false,
+   "pushed_at": "2026-09-29T19:56:17Z",
+   "ts_files": 830,
+   "tsx_files": 0,
+   "ts_tsx_kib": 2227,
+   "js_files": 3,
+   "test_files": 91,
+   "generated_files": 0,
+   "migration_files": 0,
+   "vendored_files": 0,
+   "top_dirs_by_size": {
+    "apps/api": {
+     "files": 323,
+     "bytes": 1128062
+    },
+    "apps/client": {
+     "files": 207,
+     "bytes": 619116
+    },
+    "libs/common": {
+     "files": 181,
+     "bytes": 281757
+    },
+    "libs/ui": {
+     "files": 115,
+     "bytes": 249663
+    },
+    "prisma/seed.mts": {
+     "files": 1,
+     "bytes": 791
+    },
+    ".config/prisma.ts": {
+     "files": 1,
+     "bytes": 505
+    }
+   }
+  },
+  {
+   "repo": "umami-software/umami",
+   "branch": "master",
+   "sha": "ec0ff50388c264ed8ce46f00967e92f7e71476ae",
+   "license": "MIT",
+   "archived": false,
+   "pushed_at": "2026-09-29T19:42:34Z",
+   "ts_files": 559,
+   "tsx_files": 519,
+   "ts_tsx_kib": 2335,
+   "js_files": 18,
+   "test_files": 175,
+   "generated_files": 115,
+   "migration_files": 0,
+   "vendored_files": 7,
+   "top_dirs_by_size": {
+    "src/app": {
+     "files": 547,
+     "bytes": 982965
+    },
+    "src/components": {
+     "files": 284,
+     "bytes": 440983
+    },
+    "src/queries": {
+     "files": 96,
+     "bytes": 407264
+    },
+    "src/lib": {
+     "files": 58,
+     "bytes": 203074
+    },
+    "src/openapi": {
+     "files": 13,
+     "bytes": 110808
+    },
+    "packages/mcp": {
+     "files": 32,
+     "bytes": 82786
+    }
+   }
+  },
+  {
+   "repo": "seerr-team/seerr",
+   "branch": "develop",
+   "sha": "e9590629b8215676a352ec2413d7c8ee7e6974df",
+   "license": "MIT",
+   "archived": false,
+   "pushed_at": "2026-09-29T21:43:30Z",
+   "ts_files": 192,
+   "tsx_files": 303,
+   "ts_tsx_kib": 2770,
+   "js_files": 8,
+   "test_files": 39,
+   "generated_files": 4,
+   "migration_files": 83,
+   "vendored_files": 0,
+   "top_dirs_by_size": {
+    "src/components": {
+     "files": 207,
+     "bytes": 1694155
+    },
+    "server/lib": {
+     "files": 31,
+     "bytes": 347629
+    },
+    "server/routes": {
+     "files": 26,
+     "bytes": 287444
+    },
+    "server/api": {
+     "files": 21,
+     "bytes": 161305
+    },
+    "server/entity": {
+     "files": 14,
+     "bytes": 69682
+    },
+    "server/subscriber": {
+     "files": 4,
+     "bytes": 53556
+    }
+   }
+  },
+  {
+   "repo": "AmruthPillai/Reactive-Resume",
+   "branch": "main",
+   "sha": "1fc835e5f296d579ab88685de9dc573b174c6533",
+   "license": "MIT",
+   "archived": false,
+   "pushed_at": "2026-09-29T23:27:26Z",
+   "ts_files": 384,
+   "tsx_files": 310,
+   "ts_tsx_kib": 3050,
+   "js_files": 0,
+   "test_files": 460,
+   "generated_files": 9,
+   "migration_files": 0,
+   "vendored_files": 0,
+   "top_dirs_by_size": {
+    "apps/web": {
+     "files": 301,
+     "bytes": 1362414
+    },
+    "packages/pdf": {
+     "files": 86,
+     "bytes": 409606
+    },
+    "packages/api": {
+     "files": 72,
+     "bytes": 359622
+    },
+    "packages/resume": {
+     "files": 64,
+     "bytes": 343370
+    },
+    "packages/ui": {
+     "files": 44,
+     "bytes": 139895
+    },
+    "packages/schema": {
+     "files": 14,
+     "bytes": 94963
+    }
+   }
+  },
+  {
+   "repo": "lukevella/rallly",
+   "branch": "main",
+   "sha": "b180b2b87610590347f5deb548c5f3a16fe1dead",
+   "license": "AGPL-3.0",
+   "archived": false,
+   "pushed_at": "2026-09-29T23:10:55Z",
+   "ts_files": 396,
+   "tsx_files": 530,
+   "ts_tsx_kib": 3204,
+   "js_files": 1,
+   "test_files": 130,
+   "generated_files": 6,
+   "migration_files": 0,
+   "vendored_files": 0,
+   "top_dirs_by_size": {
+    "apps/web": {
+     "files": 686,
+     "bytes": 2131967
+    },
+    "packages/ui": {
+     "files": 73,
+     "bytes": 484764
+    },
+    "apps/landing": {
+     "files": 99,
+     "bytes": 436124
+    },
+    "packages/emails": {
+     "files": 28,
+     "bytes": 87577
+    },
+    "packages/database": {
+     "files": 4,
+     "bytes": 51965
+    },
+    "packages/posthog": {
+     "files": 8,
+     "bytes": 37701
+    }
+   }
+  },
+  {
+   "repo": "karakeep-app/karakeep",
+   "branch": "main",
+   "sha": "f908b02e904a030604d56d8bcd871763474006c9",
+   "license": "AGPL-3.0",
+   "archived": false,
+   "pushed_at": "2026-09-29T21:44:10Z",
+   "ts_files": 415,
+   "tsx_files": 449,
+   "ts_tsx_kib": 3334,
+   "js_files": 10,
+   "test_files": 86,
+   "generated_files": 8,
+   "migration_files": 0,
+   "vendored_files": 0,
+   "top_dirs_by_size": {
+    "apps/web": {
+     "files": 321,
+     "bytes": 1180398
+    },
+    "apps/mobile": {
+     "files": 135,
+     "bytes": 427284
+    },
+    "packages/trpc": {
+     "files": 53,
+     "bytes": 398389
+    },
+    "apps/workers": {
+     "files": 45,
+     "bytes": 335960
+    },
+    "packages/shared": {
+     "files": 57,
+     "bytes": 190508
+    },
+    "apps/cli": {
+     "files": 19,
+     "bytes": 124225
+    }
+   }
+  },
+  {
+   "repo": "docmost/docmost",
+   "branch": "main",
+   "sha": "b6434371ed5fe5aada45126cdf7fe3aae9b22fcf",
+   "license": "AGPL-3.0",
+   "archived": false,
+   "pushed_at": "2026-09-30T00:36:08Z",
+   "ts_files": 786,
+   "tsx_files": 557,
+   "ts_tsx_kib": 4151,
+   "js_files": 1,
+   "test_files": 38,
+   "generated_files": 4,
+   "migration_files": 52,
+   "vendored_files": 0,
+   "top_dirs_by_size": {
+    "apps/client": {
+     "files": 835,
+     "bytes": 2689419
+    },
+    "apps/server": {
+     "files": 360,
+     "bytes": 1102645
+    },
+    "packages/editor-ext": {
+     "files": 127,
+     "bytes": 406692
+    },
+    "packages/base-formula": {
+     "files": 21,
+     "bytes": 52051
+    }
+   }
+  },
+  {
+   "repo": "Dokploy/dokploy",
+   "branch": "canary",
+   "sha": "cec5b65cd6a346adf739251239b7e6b2abbdac29",
+   "license": "NOASSERTION",
+   "archived": false,
+   "pushed_at": "2026-09-29T19:01:14Z",
+   "ts_files": 424,
+   "tsx_files": 468,
+   "ts_tsx_kib": 5447,
+   "js_files": 2,
+   "test_files": 116,
+   "generated_files": 1,
+   "migration_files": 0,
+   "vendored_files": 1,
+   "top_dirs_by_size": {
+    "apps/dokploy": {
+     "files": 604,
+     "bytes": 4129702
+    },
+    "packages/server": {
+     "files": 277,
+     "bytes": 1417615
+    },
+    "apps/api": {
+     "files": 5,
+     "bytes": 15547
+    },
+    "apps/schedules": {
+     "files": 6,
+     "bytes": 14761
+    }
+   }
+  },
+  {
+   "repo": "excalidraw/excalidraw",
+   "branch": "master",
+   "sha": "35e854ecf7a1ace3467922965ce07ec1a6f0ea54",
+   "license": "MIT",
+   "archived": false,
+   "pushed_at": "2026-09-29T16:17:47Z",
+   "ts_files": 276,
+   "tsx_files": 234,
+   "ts_tsx_kib": 5981,
+   "js_files": 25,
+   "test_files": 153,
+   "generated_files": 13,
+   "migration_files": 0,
+   "vendored_files": 0,
+   "top_dirs_by_size": {
+    "packages/excalidraw": {
+     "files": 359,
+     "bytes": 4540048
+    },
+    "packages/element": {
+     "files": 53,
+     "bytes": 1092592
+    },
+    "packages/common": {
+     "files": 19,
+     "bytes": 105838
+    },
+    "examples/with-script-in-browser": {
+     "files": 8,
+     "bytes": 66547
+    },
+    "packages/math": {
+     "files": 16,
+     "bytes": 62566
+    },
+    "excalidraw-app/collab": {
+     "files": 3,
+     "bytes": 41880
+    }
+   }
+  },
+  {
+   "repo": "actualbudget/actual",
+   "branch": "master",
+   "sha": "603a905f91ed70cd0dddf072bd5fd261295d9f8b",
+   "license": "MIT",
+   "archived": false,
+   "pushed_at": "2026-09-29T20:35:43Z",
+   "ts_files": 681,
+   "tsx_files": 986,
+   "ts_tsx_kib": 6845,
+   "js_files": 57,
+   "test_files": 360,
+   "generated_files": 3,
+   "migration_files": 15,
+   "vendored_files": 0,
+   "top_dirs_by_size": {
+    "packages/desktop-client": {
+     "files": 845,
+     "bytes": 4916684
+    },
+    "packages/loot-core": {
+     "files": 247,
+     "bytes": 1308121
+    },
+    "packages/component-library": {
+     "files": 421,
+     "bytes": 322544
+    },
+    "packages/sync-server": {
+     "files": 88,
+     "bytes": 250884
+    },
+    "packages/cli": {
+     "files": 21,
+     "bytes": 75645
+    },
+    "packages/desktop-electron": {
+     "files": 10,
+     "bytes": 44936
+    }
+   }
+  },
+  {
+   "repo": "outline/outline",
+   "branch": "main",
+   "sha": "05ef55e38aeb3b625e819edab907c7ee2d33af8a",
+   "license": "NOASSERTION",
+   "archived": false,
+   "pushed_at": "2026-09-29T15:37:16Z",
+   "ts_files": 1134,
+   "tsx_files": 737,
+   "ts_tsx_kib": 7042,
+   "js_files": 7,
+   "test_files": 343,
+   "generated_files": 16,
+   "migration_files": 306,
+   "vendored_files": 0,
+   "top_dirs_by_size": {
+    "app/components": {
+     "files": 327,
+     "bytes": 1126846
+    },
+    "shared/editor": {
+     "files": 205,
+     "bytes": 978036
+    },
+    "app/scenes": {
+     "files": 183,
+     "bytes": 814733
+    },
+    "server/models": {
+     "files": 75,
+     "bytes": 504741
+    },
+    "server/routes": {
+     "files": 130,
+     "bytes": 481329
+    },
+    "server/queues": {
+     "files": 100,
+     "bytes": 369889
+    }
+   }
+  },
+  {
+   "repo": "mfts/papermark",
+   "branch": "main",
+   "sha": "ed19717ec02a1ac79aecf5569159aa9d2d869312",
+   "license": "NOASSERTION",
+   "archived": false,
+   "pushed_at": "2026-08-28T15:58:25Z",
+   "ts_files": 709,
+   "tsx_files": 666,
+   "ts_tsx_kib": 7195,
+   "js_files": 3,
+   "test_files": 0,
+   "generated_files": 0,
+   "migration_files": 0,
+   "vendored_files": 1,
+   "top_dirs_by_size": {
+    "pages/api": {
+     "files": 236,
+     "bytes": 1110238
+    },
+    "ee/features": {
+     "files": 136,
+     "bytes": 774283
+    },
+    "components/view": {
+     "files": 62,
+     "bytes": 582801
+    },
+    "components/links": {
+     "files": 51,
+     "bytes": 397932
+    },
+    "components/datarooms": {
+     "files": 49,
+     "bytes": 394711
+    },
+    "components/documents": {
+     "files": 48,
+     "bytes": 347755
+    }
+   }
+  },
+  {
+   "repo": "documenso/documenso",
+   "branch": "main",
+   "sha": "b75a66d5c0d69ddcd770ce0f5a0ef24f944427fa",
+   "license": "AGPL-3.0",
+   "archived": false,
+   "pushed_at": "2026-09-30T00:22:52Z",
+   "ts_files": 1302,
+   "tsx_files": 692,
+   "ts_tsx_kib": 9573,
+   "js_files": 2,
+   "test_files": 182,
+   "generated_files": 7,
+   "migration_files": 0,
+   "vendored_files": 0,
+   "top_dirs_by_size": {
+    "apps/remix": {
+     "files": 562,
+     "bytes": 5779843
+    },
+    "packages/lib": {
+     "files": 580,
+     "bytes": 1746490
+    },
+    "packages/trpc": {
+     "files": 460,
+     "bytes": 816529
+    },
+    "packages/ui": {
+     "files": 135,
+     "bytes": 659485
+    },
+    "packages/ee": {
+     "files": 58,
+     "bytes": 218544
+    },
+    "packages/email": {
+     "files": 72,
+     "bytes": 164989
+    }
+   }
+  }
+ ]
+}

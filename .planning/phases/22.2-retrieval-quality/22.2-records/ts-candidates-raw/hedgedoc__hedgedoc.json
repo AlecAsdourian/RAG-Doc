@@ -1,0 +1,64 @@
+{
+ "repo": "hedgedoc/hedgedoc",
+ "branch": "develop",
+ "sha": "5dd94d5449e52835ab034d4da21773cad08ebf51",
+ "license": "AGPL-3.0",
+ "archived": false,
+ "pushed_at": "2026-09-29T16:00:23Z",
+ "stars": 7449,
+ "truncated": false,
+ "counts": {
+  "ts": 744,
+  "js": 3,
+  "test": 238,
+  "migration": 1,
+  "generated": 25,
+  "tsx": 387
+ },
+ "bytes": {
+  "ts": 1230497,
+  "js": 7448,
+  "test": 1008442,
+  "migration": 16919,
+  "generated": 19986,
+  "tsx": 1023488
+ },
+ "by_top": {
+  "frontend/src": {
+   "files": 766,
+   "bytes": 1560546
+  },
+  "backend/src": {
+   "files": 203,
+   "bytes": 532787
+  },
+  "commons/src": {
+   "files": 116,
+   "bytes": 88456
+  },
+  "html-to-react/src": {
+   "files": 15,
+   "bytes": 25079
+  },
+  "markdown-it-plugins/src": {
+   "files": 10,
+   "bytes": 24355
+  },
+  "database/src": {
+   "files": 18,
+   "bytes": 20212
+  },
+  "frontend/jest.config.ts": {
+   "files": 1,
+   "bytes": 1560
+  },
+  "backend/knexfile.ts": {
+   "files": 1,
+   "bytes": 613
+  },
+  "frontend/cypress.config.ts": {
+   "files": 1,
+   "bytes": 377
+  }
+ }
+}

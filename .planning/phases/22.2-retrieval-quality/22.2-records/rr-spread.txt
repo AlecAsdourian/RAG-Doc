@@ -1,0 +1,13 @@
+source: 22-03-records/pgvector-<corpus>.summary.json (pgvector read path, top_k = 5, all sets)
+corpus    level     n  mean RR  SD pop  SD samp  SE15 pop  SE15 samp  SE45 pop
+miniflux  file     45    0.489   0.430    0.435    0.1111     0.1123    0.0641
+miniflux  symbol   45    0.353   0.403    0.407    0.1040     0.1051    0.0600
+mealie    file     45    0.475   0.407    0.411    0.1050     0.1062    0.0606
+mealie    symbol   45    0.301   0.381    0.385    0.0984     0.0995    0.0568
+
+file: both corpora as one sample of 90: SD (sample) 0.4210; SE over 15 = 0.1087; SE over 45 = 0.0628
+file: every per-corpus SE over 15 above lies in [0.1050, 0.1123]; rounded to two decimals: 0.11 to 0.11
+symbol: both corpora as one sample of 90: SD (sample) 0.3951; SE over 15 = 0.1020; SE over 45 = 0.0589
+symbol: every per-corpus SE over 15 above lies in [0.0984, 0.1051]; rounded to two decimals: 0.10 to 0.11
+
+one app over 15 questions, file level, is the noise scale for M2's per-app guard (clause 3)

@@ -1,0 +1,44 @@
+{
+ "repo": "docmost/docmost",
+ "branch": "main",
+ "sha": "b6434371ed5fe5aada45126cdf7fe3aae9b22fcf",
+ "license": "AGPL-3.0",
+ "archived": false,
+ "pushed_at": "2026-09-30T00:36:08Z",
+ "stars": 21829,
+ "truncated": false,
+ "counts": {
+  "js": 1,
+  "tsx": 557,
+  "ts": 786,
+  "test": 38,
+  "generated": 4,
+  "migration": 52
+ },
+ "bytes": {
+  "js": 343,
+  "tsx": 2112100,
+  "ts": 2138707,
+  "test": 132749,
+  "generated": 19922,
+  "migration": 100169
+ },
+ "by_top": {
+  "apps/client": {
+   "files": 835,
+   "bytes": 2689419
+  },
+  "apps/server": {
+   "files": 360,
+   "bytes": 1102645
+  },
+  "packages/editor-ext": {
+   "files": 127,
+   "bytes": 406692
+  },
+  "packages/base-formula": {
+   "files": 21,
+   "bytes": 52051
+  }
+ }
+}

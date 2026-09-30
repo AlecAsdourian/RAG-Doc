@@ -1,0 +1,96 @@
+{
+ "repo": "actualbudget/actual",
+ "branch": "master",
+ "sha": "603a905f91ed70cd0dddf072bd5fd261295d9f8b",
+ "license": "MIT",
+ "archived": false,
+ "pushed_at": "2026-09-29T20:35:43Z",
+ "stars": 29224,
+ "truncated": false,
+ "counts": {
+  "js": 57,
+  "test": 360,
+  "ts": 681,
+  "generated": 3,
+  "migration": 15,
+  "tsx": 986
+ },
+ "bytes": {
+  "js": 242680,
+  "test": 2359680,
+  "ts": 2876265,
+  "generated": 1473,
+  "migration": 19072,
+  "tsx": 4133287
+ },
+ "by_top": {
+  "packages/desktop-client": {
+   "files": 845,
+   "bytes": 4916684
+  },
+  "packages/loot-core": {
+   "files": 247,
+   "bytes": 1308121
+  },
+  "packages/component-library": {
+   "files": 421,
+   "bytes": 322544
+  },
+  "packages/sync-server": {
+   "files": 88,
+   "bytes": 250884
+  },
+  "packages/cli": {
+   "files": 21,
+   "bytes": 75645
+  },
+  "packages/desktop-electron": {
+   "files": 10,
+   "bytes": 44936
+  },
+  "packages/api": {
+   "files": 12,
+   "bytes": 25926
+  },
+  "packages/ci-actions": {
+   "files": 6,
+   "bytes": 23975
+  },
+  "packages/crdt": {
+   "files": 7,
+   "bytes": 19849
+  },
+  "bin/validate-publish-imports.mts": {
+   "files": 1,
+   "bytes": 6353
+  },
+  "packages/plugins-service": {
+   "files": 2,
+   "bytes": 5327
+  },
+  "bin/release-note-generator.mts": {
+   "files": 1,
+   "bytes": 4684
+  },
+  "packages/docs": {
+   "files": 2,
+   "bytes": 2208
+  },
+  "packages/mobile-client": {
+   "files": 1,
+   "bytes": 1017
+  },
+  "packages/eslint-plugin-actual": {
+   "files": 1,
+   "bytes": 503
+  },
+  ".": {
+   "files": 1,
+   "bytes": 503
+  },
+  "bin/vitest.config.mts": {
+   "files": 1,
+   "bytes": 393
+  }
+ }
+}

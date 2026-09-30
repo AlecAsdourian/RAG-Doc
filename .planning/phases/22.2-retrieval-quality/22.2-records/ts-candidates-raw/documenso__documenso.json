@@ -1,0 +1,82 @@
+{
+ "repo": "documenso/documenso",
+ "branch": "main",
+ "sha": "b75a66d5c0d69ddcd770ce0f5a0ef24f944427fa",
+ "license": "AGPL-3.0",
+ "archived": false,
+ "pushed_at": "2026-09-30T00:22:52Z",
+ "stars": 15263,
+ "truncated": false,
+ "counts": {
+  "ts": 1302,
+  "tsx": 692,
+  "js": 2,
+  "generated": 7,
+  "test": 182
+ },
+ "bytes": {
+  "ts": 3319187,
+  "tsx": 6483178,
+  "js": 2004,
+  "generated": 6968,
+  "test": 2162244
+ },
+ "by_top": {
+  "apps/remix": {
+   "files": 562,
+   "bytes": 5779843
+  },
+  "packages/lib": {
+   "files": 580,
+   "bytes": 1746490
+  },
+  "packages/trpc": {
+   "files": 460,
+   "bytes": 816529
+  },
+  "packages/ui": {
+   "files": 135,
+   "bytes": 659485
+  },
+  "packages/ee": {
+   "files": 58,
+   "bytes": 218544
+  },
+  "packages/email": {
+   "files": 72,
+   "bytes": 164989
+  },
+  "packages/prisma": {
+   "files": 24,
+   "bytes": 100861
+  },
+  "packages/api": {
+   "files": 16,
+   "bytes": 91147
+  },
+  "packages/auth": {
+   "files": 30,
+   "bytes": 85068
+  },
+  "packages/app-tests": {
+   "files": 4,
+   "bytes": 63652
+  },
+  "apps/docs": {
+   "files": 22,
+   "bytes": 45516
+  },
+  "apps/openpage-api": {
+   "files": 26,
+   "bytes": 22971
+  },
+  "packages/signing": {
+   "files": 4,
+   "bytes": 6566
+  },
+  ".": {
+   "files": 1,
+   "bytes": 704
+  }
+ }
+}
