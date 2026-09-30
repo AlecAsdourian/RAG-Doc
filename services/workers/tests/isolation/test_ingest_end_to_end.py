@@ -23,7 +23,8 @@ RLS), never by the code under test.
 ⚠ EVERY ENDING IS HERE, against the row that survives: completed; a refused
 token (nothing written, the job still `running`); a mid-run suspension
 (deferred an hour, never `dead`, the documented `syncing` hour); a
-misrouted internal API (a loud, retried failure); a mid-run uninstall
+misrouted internal API (a loud, retried failure); a chunker failing on
+every file (a retried failure, the good index kept); a mid-run uninstall
 (abandoned); a cap (`dead` in one attempt); a shutdown during embedding
 (deferred, attempt handed back). Logs are read from `caplog` in every test:
 no `ghs_`, no `Authorization`.
@@ -201,6 +202,21 @@ def assert_no_secret_logged(caplog) -> None:
     assert "Authorization" not in text and "authorization" not in text
 
 
+def assert_no_drift(superuser_conn: Any, org: Any) -> None:
+    """22-02's hand-off: every chunk's tenant is its repository's, and its run
+    is its repository's -- read with RLS bypassed, so nothing is hidden."""
+    with superuser_conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM chunks c "
+            "JOIN repositories r ON r.id = c.repository_id "
+            "JOIN ingestion_runs ir ON ir.id = c.ingestion_run_id "
+            "WHERE c.repository_id = %s "
+            "  AND (c.organization_id <> r.organization_id OR ir.repository_id <> c.repository_id)",
+            (org.repo_id,),
+        )
+        assert cur.fetchone()[0] == 0, "a stored chunk drifted from its repository's tenant or run"
+
+
 def take_out_of_the_live_set(conn: Any, job_id: str) -> None:
     """For a job a test leaves `running`: so no later test's worker reclaims it."""
     sql(conn, "UPDATE ingestion_jobs SET state = 'superseded' WHERE id = %s", (job_id,))
@@ -299,18 +315,8 @@ def test_a_repository_is_ingested_end_to_end_as_the_app_role(
     [revocation] = github.revocations()
     assert revocation.headers["authorization"] == f"Bearer {SENTINEL_TOKEN}"
 
-    # Drift (22-02's hand-off): every chunk's tenant is its repository's, and
-    # its run is its repository's -- read with RLS bypassed.
-    with superuser_conn.cursor() as cur:
-        cur.execute(
-            "SELECT count(*) FROM chunks c "
-            "JOIN repositories r ON r.id = c.repository_id "
-            "JOIN ingestion_runs ir ON ir.id = c.ingestion_run_id "
-            "WHERE c.repository_id = %s "
-            "  AND (c.organization_id <> r.organization_id OR ir.repository_id <> c.repository_id)",
-            (org_a.repo_id,),
-        )
-        assert cur.fetchone()[0] == 0, "a stored chunk drifted from its repository's tenant or run"
+    # Drift (22-02's hand-off), read with RLS bypassed.
+    assert_no_drift(superuser_conn, org_a)
 
     # The search, as the app role: A finds the fixture, with its provenance.
     engine = search_engine(app_dsn)
@@ -342,13 +348,15 @@ def test_a_repository_is_ingested_end_to_end_as_the_app_role(
 
 
 def test_a_second_ingest_replaces_the_chunks_idempotently(
-    conn, app_dsn, with_two_orgs, tmp_path, caplog
+    conn, superuser_conn, app_dsn, with_two_orgs, tmp_path, caplog
 ):
     """Enqueue again: the same count, no duplicates, the same run reused.
 
     The replacement is `DELETE` by repository then `INSERT`, in the
     completion's transaction, so a retry, a rerun or a second push never
-    doubles a repository (ISS-027's full-ingest half).
+    doubles a repository (ISS-027's full-ingest half). The drift check runs
+    on the replacement too (PR #58's review, B-N3): a re-ingest is the write
+    that could attach new chunks to the wrong run.
     """
     caplog.set_level(logging.DEBUG)
     org, _ = with_two_orgs
@@ -371,6 +379,49 @@ def test_a_second_ingest_replaces_the_chunks_idempotently(
     [run] = runs_of(conn, org)
     assert run["commit_sha"] == SHA, "the same commit reuses its run (UNIQUE repository, sha)"
     assert run["chunks_processed"] == len(second)
+    assert {c["run_id"] for c in second} == {run["id"]}
+    assert_no_drift(superuser_conn, org)
+    assert_no_secret_logged(caplog)
+
+
+def test_a_chunker_that_fails_on_every_file_fails_the_job_and_keeps_the_index(
+    conn, app_dsn, with_two_orgs, tmp_path, caplog
+):
+    """PR #58's review (B-M3, A-L5), against the rows: the good index survives.
+
+    A first ingest stores the fixture. A second, whose chunker raises on
+    every file, must end as an ORDINARY failure -- the attempt consumed,
+    `last_error` naming the count, a backoff -- and leave every chunk, its
+    id and the run exactly as the first ingest wrote them. Before the guard
+    it completed `synced` over an emptied index: `write_results` deleted
+    every chunk of the repository and inserted none.
+    """
+    caplog.set_level(logging.DEBUG)
+    org, _ = with_two_orgs
+    link_installation(conn, org)
+
+    _, first_row, _, _ = ingest_once(conn, app_dsn, tmp_path, org, caplog)
+    assert first_row["state"] == "completed", first_row
+    before, runs_before = chunks_of(conn, org), runs_of(conn, org)
+    assert before, "premise: the first ingest stored an index for the second to protect"
+
+    class BrokenChunker:
+        def chunk_file(self, path, content, language):
+            raise RuntimeError("the grammar is broken for every file")
+
+    _, row, _, github = ingest_once(conn, app_dsn, tmp_path, org, caplog, chunker=BrokenChunker())
+
+    assert row["state"] == "queued", f"an ordinary failure re-queues below max_attempts, not {row['state']!r}"
+    assert row["attempts"] == 1, "the attempt is consumed: it is a failure, not a lost lease"
+    assert row["lease_owner"] is None
+    assert "ParseFailed" in row["last_error"], row["last_error"]
+    assert "every one of the 3 indexable files failed to parse" in row["last_error"]
+    assert row["run_after"] > row["updated_at"], "a failure takes a backoff"
+    assert row["last_stage"] == "parse"
+    assert chunks_of(conn, org) == before, "the repository's good index was replaced"
+    assert runs_of(conn, org) == runs_before
+    assert repo_row(conn, org.id, org.repo_id)["sync_state"] == "failed"
+    assert len(github.revocations()) == 1, "the fetch ended, so the token was revoked"
     assert_no_secret_logged(caplog)
 
 
@@ -577,6 +628,7 @@ def test_a_mid_run_uninstall_abandons(conn, app_dsn, with_two_orgs, tmp_path, ca
     assert repo_row(conn, org.id, org.repo_id)["sync_state"] == "never_synced", (
         "never `failed`: nothing failed, and the queue must not retry it"
     )
+    assert chunks_of(conn, org) == [] and runs_of(conn, org) == []
     assert_no_secret_logged(caplog)
 
 
@@ -604,8 +656,11 @@ def test_a_cap_ends_the_job_dead_in_one_attempt(conn, app_dsn, with_two_orgs, tm
     expected = "more than 2 chunks" if cap == "chunks" else "more than 2 indexable files"
     assert expected in row["last_error"], row["last_error"]
     assert "ghs_" not in row["last_error"]
+    # The stage it stopped in: the chunk cap during parsing, the file cap
+    # inside the fetch.
+    assert row["last_stage"] == ("parse" if cap == "chunks" else "fetch"), row["last_stage"]
     assert repo_row(conn, org.id, org.repo_id)["sync_state"] == "failed"
-    assert chunks_of(conn, org) == []
+    assert chunks_of(conn, org) == [] and runs_of(conn, org) == []
     assert len(github.revocations()) == 1, "the fetch ended, so the token was revoked"
     assert_no_secret_logged(caplog)
 
@@ -656,4 +711,7 @@ def test_a_shutdown_during_embedding_defers_with_the_attempt_handed_back(
     assert "shutting down" in row["last_error"]
     assert len(calls) == 1, "no slice was embedded after the shutdown"
     assert chunks_of(conn, org) == [] and runs_of(conn, org) == []
+    assert repo_row(conn, org.id, org.repo_id)["sync_state"] == "syncing", (
+        "DEFER_SQL projects nothing, so mark_started's `syncing` stands until the job runs again"
+    )
     assert_no_secret_logged(caplog)
