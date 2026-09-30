@@ -286,7 +286,11 @@ handler: fetch a repository's archive through the backend's internal token
 route, parse, embed and store it (22-05; `docs/api-ingestion-jobs.md` is the
 authority for how a job ends). It needs, and refuses to start without:
 
-- `DATABASE_URL` — the application Postgres;
+- `DATABASE_URL` — the application Postgres. **Outside local development it
+  must log in as a `NOSUPERUSER NOBYPASSRLS` role**, as 22-05's live proof did
+  (`rag_doc_app`): a superuser bypasses row-level security. Compose's
+  `coderag` is a superuser, so tenant isolation is **not** exercised under
+  compose (`docs/api-ingestion-jobs.md`, "What a deployed worker needs");
 - `INTERNAL_API_URL` — the backend's **internal** listener
   (`INTERNAL_ADDR`, default `127.0.0.1:8081`), **never** the public API on
   8080. Pointed at the public router it gets chi's unmarked 404 and every job
@@ -321,6 +325,17 @@ the backend's internal listener is up on the compose network:
 ```bash
 docker compose --profile ingest up workers
 ```
+
+**Stopping it takes up to two minutes, on purpose.** `stop_grace_period: 2m`
+gives a worker time to finish the stretch it is in and hand its job back with
+the attempt; Docker's default ten seconds would SIGKILL it mid-stage. A
+killed worker runs no `finally`: its job stays `running` until the lease
+lapses (five minutes) and is then reclaimed at the cost of an attempt, and its
+token is not revoked — it dies with the process, and GitHub ends it within the
+hour. `restart: on-failure:5` restarts a worker that exited 1 (the database
+stayed unreachable) and stops after five, so a refusal (exit 2, for example
+`OPENAI_API_KEY` unset on the host) does not loop. The reasons for both values
+are beside them in `docker-compose.yml`.
 
 **⚠ `docker compose config` prints secrets.** The resolved configuration
 interpolates `${OPENAI_API_KEY}` from your shell, so `docker compose

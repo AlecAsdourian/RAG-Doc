@@ -168,10 +168,11 @@ results are rolled back with it.
 
 **This table is the authority for handler endings** (22-05; it replaces the
 "three endings" Phase 21 documented). The exception type a handler raises is
-the contract, and `workers/jobs/runtime.py` (its "THE ENDINGS" table) and
-`workers/ingest/handler.py` point here. Every ending that already existed at
-claim time is reused mid-run, so an installation that changes state while a
-job runs ends exactly as it would have at the claim.
+the contract, and `workers/jobs/runtime.py` (its "THE ENDINGS" section, which
+keeps no copy of the table), `workers/ingest/handler.py` and `workers/fetch`
+point here. Every ending that already existed at claim time is reused mid-run,
+so an installation that changes state while a job runs ends exactly as it
+would have at the claim.
 
 | The handler… | Ending | The job row | `sync_state` | Why |
 |---|---|---|---|---|
@@ -182,7 +183,7 @@ job runs ends exactly as it would have at the claim.
 | raises **`InstallationSuspended`** — the token route's `409 installation_suspended` | `defer` **60 minutes** | `queued`, attempt handed back, `run_after` an hour out, a reason | **unchanged** (reads `syncing`; see below) | the claim-time policy: a suspension heals on its own and must never dead-letter a healthy repository |
 | raises **`InstallationUninstalled`** — the route's `409 installation_uninstalled` | `abandon` | `superseded` | `never_synced` | the claim-time policy: nothing to do, nothing failed |
 | raises **`LeaseLost`** — `should_abort()`, or a refused token (the route's **marked** 404) | **nothing** | untouched: `running` under the old lease until someone reclaims it | untouched | the job is someone else's; any write would clobber theirs |
-| raises anything else — including `InternalApiMisrouted` (an **unmarked** answer from the token route) | `fail` | attempt consumed, backoff, `dead` at 5 | `failed` | an ordinary, retried failure, with `last_error` saying why |
+| raises anything else — including `InternalApiMisrouted` (an **unmarked** answer from the token route) and **`ParseFailed`** (every indexable file raised in the chunker) | `fail` | attempt consumed, backoff, `dead` at 5 | `failed` | an ordinary, retried failure, with `last_error` saying why |
 
 Three rules sit behind that table, each learned the hard way:
 
@@ -209,6 +210,14 @@ Three rules sit behind that table, each learned the hard way:
 completion together, and the runtime then writes the ending that exception
 calls for — normally `fail` — rather than leaving the job `running` until its
 lease expires.
+
+**A parse that produced nothing from files that exist never stores.** One
+file whose chunking raises is skipped and counted (`parse_errors`). When
+**every** indexable file raises, the handler raises `ParseFailed` instead of
+reaching `store`, because `write_results` *replaces* the repository's chunks:
+carrying on would delete a good index, insert nothing and read `synced`
+(PR #58's review). A tree with nothing indexable is not that case — nothing
+raised, and an empty index is then the truth about the repository.
 
 ### Stages and progress
 
@@ -248,7 +257,7 @@ removes none:
 | `files_indexable` | `parse` | files the fetch kept |
 | `skipped` | `parse` | skip reason → count, e.g. `{"secret": 1, "unsupported": 12}`. **Counts, never paths** |
 | `files_parsed` | `embed` | files chunked |
-| `parse_errors` | `embed` | files whose chunking raised; skipped and counted rather than failing the job |
+| `parse_errors` | `embed` | files whose chunking raised; skipped and counted rather than failing the job — unless **every** file raised, which is `ParseFailed` and never reaches `embed` |
 | `chunks` | `embed` | chunks produced |
 | `chunks_embedded` | `store` | chunks with their vector (duplicates share one) |
 | `chunks_stored` | `store` | chunks the store stage writes; true of a `completed` row |
@@ -597,6 +606,12 @@ three different lists is the failure mode `21-CONTEXT.md` opens by naming.
 **What a deployed worker needs**, all read by `workers/__main__` at startup
 and refused with exit 2 when missing: `DATABASE_URL`, `INTERNAL_API_URL` (the
 backend's **internal** listener, never the public API) and `OPENAI_API_KEY`.
+**`DATABASE_URL` must log in as a `NOSUPERUSER NOBYPASSRLS` role**, as every
+process in 22-05's live proof did (`rag_doc_app`): a superuser bypasses
+row-level security, so the tenant checks beneath the worker's writes would go
+unexercised. Compose's `coderag` is a superuser, so tenant isolation is **not**
+exercised under compose; the composite keys and `trg_assert_tenant` still bind
+it, but RLS does not.
 `WORKER_WORKDIR` (default: the system temporary directory's
 `rag-doc-worker`) needs about **1 GB free per worker process**: the archive
 (up to 500 MB) is kept until extraction ends, and the extracted tree can reach

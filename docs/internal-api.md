@@ -158,10 +158,12 @@ a suspension **defers** an hour with the attempt handed back; an uninstall
 
 ## The lease as a credential, and the residual risk
 
-`lease_owner` is a UUID4 the worker generated when it claimed the job. No
-API returns it: 21-07 deliberately left it out of the job response. A caller
-that presents the right `(job id, lease owner)` pair for a running job with a
-live lease is the worker running that job.
+`lease_owner` is a UUID4 the worker generated **once, when its process
+started**, and uses for every job that process claims (corrected by PR #58's
+review; this page first said "when it claimed the job"). No API returns it:
+21-07 deliberately left it out of the job response. A caller that presents the
+right `(job id, lease owner)` pair for a running job with a live lease is the
+worker running that job.
 
 **The residual risk, stated (P10):** a process with the worker's database
 access can read every running job's `lease_owner`, and could therefore ask for
@@ -170,6 +172,17 @@ obtain are still one repository, read-only and gone within the hour — far
 narrower than the App key, which never leaves the backend. Phase 24's
 deployment keeps the listener unreachable from anything but the workers, which
 is what bounds the risk to that process.
+
+**⚠ The worker's logs carry the lease owner today (ISS-039, a Phase 24
+gate).** Every transition line, and the runtime's startup, progress and
+heartbeat lines, print `worker=<lease_owner>`. So whoever can read a live
+worker's logs **and** reach the internal listener can mint a token for any
+repository that worker is ingesting, with no race to win: the id lives as
+long as the process, the heartbeat keeps each lease live for the whole job,
+and the route mints a fresh token on every call. Under compose that adds
+nothing — reading the logs needs the Docker daemon, which can already read
+`ingestion_jobs.lease_owner` — and ISS-039 closes it before any deployment
+ships worker logs off the host.
 
 **The lease gates issuance, not validity.** Measured in PR #52's review (L1):
 once the lease expires the route refuses, but a token it already issued stays
@@ -182,6 +195,16 @@ fetch, a cap, a failed download, and before any later stage could raise
 failed revocation never fails the job; it is logged with the host and the
 status or exception class, never the token, and the token then lives out its
 own hour.
+
+**What revocation does not cover.** The worker revokes **its own** token,
+the one its fetch used. It cannot revoke:
+
+- **a token the route minted for anyone else** presenting a live lease — for
+  example with a lease owner read from the worker's logs (ISS-039). That
+  token is not the worker's, and it lives GitHub's full hour;
+- **its own token, when the process is killed** (SIGKILL, an OOM kill, a
+  compose stop past `stop_grace_period`): no `finally` runs. That token lived
+  only in the dead process's memory, and GitHub ends it within the hour.
 
 **What the network position is worth.** On a private compose network, the
 lease owner plus reachability is the whole authentication, and the review ruled
