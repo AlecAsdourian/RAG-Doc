@@ -44,7 +44,14 @@ from tests.ingest.fakes import (
 )
 from workers.chunker import SemanticChunker
 from workers.fetch import FetchRejected, InternalApiMisrouted, Limits
-from workers.ingest import STAGES, ConfigurationError, IngestDeps, deps_from_env, make_full_ingest_handler
+from workers.ingest import (
+    STAGES,
+    ConfigurationError,
+    IngestDeps,
+    ParseFailed,
+    deps_from_env,
+    make_full_ingest_handler,
+)
 from workers.jobs.handlers import REGISTRY, run_full_ingest
 from workers.jobs.runtime import (
     InstallationSuspended,
@@ -265,7 +272,15 @@ def test_embedding_happens_in_slices(tmp_path):
     assert all(len(call) == 1 for call in outcome.embedder.calls)
 
 
-def test_a_chunker_failure_on_one_file_is_counted_not_fatal(tmp_path):
+def test_a_chunker_failure_on_one_file_is_counted_not_fatal(tmp_path, caplog):
+    """One file raising is counted and skipped -- and its warning is redacted.
+
+    ⚠ THE WARNING IS READ AS A `LogRecord` (PR #58's review, B-L2). The
+    chunker's exception can quote customer code, which U7 says may hold a
+    key; this one carries a token-shaped sentinel, and a warning that logged
+    `str(exc)` instead of `sanitize_error(exc)` would put it in the log.
+    """
+    caplog.set_level(logging.WARNING, logger="workers.ingest.handler")
     real = SemanticChunker()
 
     class FlakyChunker:
@@ -279,6 +294,108 @@ def test_a_chunker_failure_on_one_file_is_counted_not_fatal(tmp_path):
     final = outcome.ctx.reports[-1][1]
     assert final["files_parsed"] == 2
     assert final["parse_errors"] == 1
+
+    [warning] = [
+        r.getMessage() for r in caplog.records
+        if r.name == "workers.ingest.handler" and "chunking app/billing.py failed" in r.getMessage()
+    ]
+    assert "[REDACTED]" in warning, "premise: the exception's text reached the line, redacted"
+    assert SENTINEL_TOKEN not in warning and "ghs_" not in warning
+
+
+def test_a_chunker_that_fails_on_every_file_fails_the_job_instead_of_emptying_the_index(tmp_path):
+    """PR #58's review (B-M3, A-L5): a parse with NOTHING parsed must not store.
+
+    Without the guard the handler reached `store` with no chunks, and
+    `write_results` REPLACES the repository's index: every chunk the last
+    good ingest wrote deleted, none inserted, the job `completed` and
+    `synced`. The guard makes it an ordinary failure instead -- not a lost
+    lease, not a cap -- so the job is retried and the index it would have
+    replaced is left alone (asserted on the rows by the end-to-end test).
+    """
+
+    class BrokenChunker:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def chunk_file(self, path, content, language):
+            self.calls += 1
+            raise RuntimeError("the grammar is broken for every file")
+
+    chunker = BrokenChunker()
+    outcome = _run(tmp_path, chunker=chunker)
+
+    assert isinstance(outcome.error, ParseFailed), repr(outcome.error)
+    assert not isinstance(outcome.error, (Rejected, LeaseLost, Unfinished))
+    assert outcome.result is None, "no write_results: nothing may replace the index"
+    assert "every one of the 3 indexable files failed to parse" in str(outcome.error)
+    assert chunker.calls == 3, "every file was tried before giving up"
+    assert outcome.embedder.calls == [], "nothing is sent to OpenAI for a failed parse"
+    assert stages(outcome) == ["fetch", "parse"]
+    assert len(outcome.github.revocations()) == 1
+    assert job_dirs(outcome) == []
+
+
+def test_a_tree_with_nothing_indexable_is_not_a_parse_failure(tmp_path):
+    """The guard is about files that RAISED, not about an empty result.
+
+    A repository whose only files are unsupported has nothing to index, and
+    an empty index is then the truth about it; nothing raised, so the job
+    completes with zero chunks rather than failing five times.
+    """
+    outcome = _run(tmp_path, files={"docs/notes.txt": b"no language here\n", ".env": b"X=1\n"})
+    assert outcome.error is None, repr(outcome.error)
+    final = outcome.ctx.reports[-1][1]
+    assert final["files_indexable"] == 0 and final["chunks_stored"] == 0
+    assert final["skipped"] == {"secret": 1, "unsupported": 1}
+
+
+def test_an_embedder_that_returns_no_vector_fails_plainly(tmp_path):
+    """`_embed` refuses a result with a vector missing (PR #58's review, B-N2).
+
+    The writer would refuse it too, inside `complete()`'s transaction; this
+    stops it before the store, as an ordinary failure naming the count.
+    """
+
+    class ForgetfulEmbedder(FakeEmbedder):
+        def generate_embeddings_for_chunks(self, chunks, use_cache=True):
+            vectors = super().generate_embeddings_for_chunks(chunks, use_cache)
+            vectors.pop(next(iter(vectors)))
+            return vectors
+
+    outcome = _run(tmp_path, embedder=ForgetfulEmbedder())
+    assert isinstance(outcome.error, RuntimeError), repr(outcome.error)
+    assert "returned no vector for 1 of" in str(outcome.error)
+    assert outcome.result is None
+    assert stages(outcome) == ["fetch", "parse", "embed"]
+
+
+def test_a_file_name_with_a_control_character_never_reaches_a_log_line(tmp_path, caplog):
+    """PR #58's review, A-L1: a file name must not be able to forge a log line.
+
+    The chunker logs the path it is chunking. A member named with a newline
+    and a forged record used to be extracted, indexed and logged raw; the
+    fetcher now refuses it (`unsafe_path`), so it never reaches the chunker,
+    a log line or `chunks.file_path`.
+    """
+    caplog.set_level(logging.DEBUG)
+    forged = "app/x\n2026-09-29 20:17:10,248 INFO workers.jobs.transitions job FORGED: complete.py"
+    files = dict(FIXTURE_FILES)
+    files[forged] = b"def forged():\n    return 1\n"
+    seen: List[str] = []
+    real = SemanticChunker()
+
+    class RecordingChunker:
+        def chunk_file(self, path, content, language):
+            seen.append(path)
+            return real.chunk_file(path, content, language)
+
+    outcome = _run(tmp_path, files=files, chunker=RecordingChunker())
+    assert outcome.error is None, repr(outcome.error)
+    assert forged not in seen and not any("\n" in path for path in seen)
+    final = outcome.ctx.reports[-1][1]
+    assert final["skipped"].get("unsafe_path") == 1, final["skipped"]
+    assert "FORGED" not in caplog.text, "a customer's file name forged a log line"
 
 
 # ---------------------------------------------------------------------
@@ -374,7 +491,9 @@ def test_a_lost_lease_between_stages_raises_lease_lost(tmp_path, stage):
 def test_a_lease_lost_after_the_store_report_is_left_to_the_runtime(tmp_path):
     """`store` is the handler's last checkpoint. After it the handler returns,
     and the RUNTIME's own check -- `lease_lost` before `complete` -- is what
-    writes nothing; `test_ingest_end_to_end.py` covers that half."""
+    writes nothing: `test_job_worker_runtime.py::
+    test_a_supersede_mid_run_aborts_the_handler_and_writes_nothing` pins that
+    half (`probe.calls == 0`)."""
 
     def vanish(ctx, reported):
         if reported == "store":
@@ -391,6 +510,51 @@ def test_a_progress_report_that_matches_no_row_raises_lease_lost(tmp_path):
     assert isinstance(outcome.error, LeaseLost), repr(outcome.error)
     assert stages(outcome) == ["fetch", "parse"]
     assert outcome.embedder.calls == [], "nothing is embedded for a job that is not ours"
+    assert job_dirs(outcome) == []
+
+
+def test_a_fetch_report_that_matches_no_row_stops_before_asking_for_a_token(tmp_path):
+    """`_enter`'s own guard, made observable (PR #58's review, B-L1).
+
+    The fake, like the runtime, raises the abort flag on a report that lands
+    nowhere, so the NEXT checkpoint would stop the job anyway -- but only
+    after the stage's first piece of work, which at `fetch` is asking the
+    token route to mint a token for a job that is not ours. The guard stops
+    it before that request, which is what this pins: no token requested,
+    GitHub never touched.
+    """
+    outcome = _run(tmp_path, ctx=FakeContext(land=lambda stage: stage != "fetch"))
+
+    assert isinstance(outcome.error, LeaseLost), repr(outcome.error)
+    assert "progress report matched no row" in str(outcome.error)
+    assert outcome.route.requests == [], "a token was requested for a job that is not ours"
+    assert outcome.github.requests == []
+    assert job_dirs(outcome) == []
+
+
+def test_a_shutdown_during_parsing_stops_at_the_next_file(tmp_path):
+    """The per-file checkpoint in `_parse`, made observable (PR #58's review, B-L1).
+
+    Without it a shutdown that arrives while the first file is being chunked
+    would still be caught -- at the `embed` entry, with the same
+    `last_stage` -- but only after every other file had been parsed. The
+    chunker raises the flag on its first call; exactly one call is made.
+    """
+    ctx = FakeContext()
+    real = SemanticChunker()
+    calls: List[str] = []
+
+    class SignallingChunker:
+        def chunk_file(self, path, content, language):
+            calls.append(path)
+            ctx.stopping = True  # SIGTERM arrives while this file is chunked
+            return real.chunk_file(path, content, language)
+
+    outcome = _run(tmp_path, ctx=ctx, chunker=SignallingChunker())
+
+    assert isinstance(outcome.error, Unfinished), repr(outcome.error)
+    assert len(calls) == 1, f"parsed {len(calls)} files after the shutdown arrived: {calls}"
+    assert stages(outcome)[-1] == "parse"
     assert job_dirs(outcome) == []
 
 

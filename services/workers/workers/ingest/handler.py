@@ -31,6 +31,10 @@ restated here. What this handler owns is choosing the exception:
   - `is_shutting_down()` at a checkpoint -> **`Unfinished`**.
   - a U6 cap -> **`Rejected`**: its own 100,000-chunk cap here, the
     fetcher's caps as `FetchRejected`.
+  - **every** indexable file raising in the chunker -> **`ParseFailed`**, an
+    ordinary failure: the job is retried and never replaces a good index
+    with nothing (PR #58's review, B-M3). One file raising is counted
+    (`parse_errors`) and the job goes on.
   - `InstallationSuspended` / `InstallationUninstalled` from the token route
     -> propagated unchanged.
   - `InternalApiMisrouted` (an UNMARKED answer: `INTERNAL_API_URL` reaches
@@ -39,10 +43,9 @@ restated here. What this handler owns is choosing the exception:
 
 ⚠ `progress` IS CUMULATIVE. `PROGRESS_SQL` replaces the whole column, so
 every report carries the ONE running dict, each stage adding its keys and
-removing none: `fetch` reports `{}`; `parse` adds what the fetch found
-(`files_indexable`, `skipped`); `embed` adds what the parse found
-(`files_parsed`, `parse_errors`, `chunks`); `store` adds `chunks_embedded`
-and `chunks_stored`. A completed row's `progress` therefore still holds
+removing none; which keys each report first carries is
+`docs/api-ingestion-jobs.md`, "Stages and progress" (the authority, not
+restated here). A completed row's `progress` therefore still holds
 `skipped` -- the count of secret-looking files never sent to OpenAI.
 
 ⚠ THE STAGE IS REPORTED ON ENTRY, AFTER THE CHECKPOINT. So `last_stage` is
@@ -127,6 +130,27 @@ class ConfigurationError(RuntimeError):
     `workers/__main__` turns this into exit 2 at startup, before the worker
     claims anything: a worker that cannot reach the token route or OpenAI
     would fail every job it claimed five times and dead-letter it.
+    """
+
+
+class ParseFailed(Exception):
+    """Every indexable file raised in the chunker. An ORDINARY failure: retried.
+
+    ⚠ WHY IT EXISTS (PR #58's review, B-M3 and A-L5). One file raising is
+    counted and skipped (`parse_errors`), which is right for one bad file.
+    But when EVERY file raises, carrying on would reach `store` with no
+    chunks, and `write_results` REPLACES the repository's index: it would
+    delete every chunk the last good ingest wrote, insert none, and complete
+    the job `synced` -- a `completed` over work that did not happen, and on a
+    re-index the destruction of a good index. `SemanticChunker` catches its
+    own grammar errors and falls back, so this takes a systematic failure --
+    exactly the kind a chunker change can introduce, and exactly the kind
+    that would wipe every repository it touched.
+
+    Not `Rejected`: nothing about the repository is over a cap, and a fixed
+    chunker will parse it. The job fails with this message in `last_error`,
+    takes a backoff and is retried; the index it would have replaced is left
+    exactly as it was.
     """
 
 
@@ -232,7 +256,11 @@ def _enter(ctx: JobContext, stage: str, progress: Dict[str, Any]) -> None:
 
     A report that matches no row means the fenced `UPDATE` found the job
     under someone else's lease; the runtime has raised the abort flag, and
-    this raises `LeaseLost` straight away rather than working on.
+    this raises `LeaseLost` straight away rather than working on. Without it
+    the NEXT checkpoint would still stop the job -- the flag is set -- but
+    only after the stage's first piece of work: at `fetch`, asking the token
+    route to mint a token for a job that is not ours
+    (`test_a_fetch_report_that_matches_no_row_stops_before_asking_for_a_token`).
     """
     _checkpoint(ctx)
     if not ctx.report_progress(stage, copy.deepcopy(progress)):
@@ -251,6 +279,15 @@ def _parse(ctx: JobContext, deps: IngestDeps, files: List[FetchedFile]) -> tuple
     file, and dead-lettering the whole repository for it helps nobody. The
     cap is checked as chunks accumulate, so a repository over it stops
     being parsed the moment it crosses.
+
+    ⚠ BUT NOT WHEN EVERY FILE RAISES: that is `ParseFailed`, because the
+    store that follows would replace the repository's index with nothing.
+    A tree with no indexable files at all, or whose files parse into no
+    chunks, is not that case -- nothing raised, and an empty index is then
+    the truth about the repository.
+
+    The checkpoint runs before EVERY file, not only between stages, so a
+    shutdown or a lost lease lands within one file's parse.
     """
     chunks: List[Chunk] = []
     parsed = errors = 0
@@ -274,6 +311,12 @@ def _parse(ctx: JobContext, deps: IngestDeps, files: List[FetchedFile]) -> tuple
                 f"the repository produces more than {deps.max_chunks} chunks (U6's cap); "
                 f"stopped after {number} of {len(files)} files"
             )
+    if files and parsed == 0:
+        raise ParseFailed(
+            f"every one of the {len(files)} indexable files failed to parse "
+            f"({errors} raised in the chunker); refusing to replace the repository's "
+            "index with nothing"
+        )
     return chunks, parsed, errors
 
 
