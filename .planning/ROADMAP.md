@@ -235,7 +235,7 @@ This is U10's retrieval-quality track, named Phase 22.2 by the user's answer QU1
 **Research:** Complete — `22.2-RESEARCH.md`; decisions locked in `22.2-CONTEXT.md` (2026-09-29, the user's answers QU1–QU10), which is the authority for scope, order and estimates. Acceptance criteria: `22.2-ACCEPTANCE.md`.
 **Rule:** each quality decision follows `services/workers/scripts/rag_benchmarks/boost-defaults-protocol.md`'s method.
 - The embedding-model rule (M2) is committed in `embedding-model-protocol.md`, dated 2026-09-29, the user its author.
-- Its per-app threshold T = 0.11 awaits the user's confirmation before its questions are written.
+- The user confirmed its numbers the same day, before any of its questions existed (`afa50b2`): T = 0.11 on file MRR per app, and clause 1's +0.03. The rule is complete.
 
 **Estimate:** ~63–97 h, against the sketch's 36–58 h. The reasons are in `22.2-CONTEXT.md`.
 **Plans:** 6 (not yet written)
