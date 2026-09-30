@@ -115,8 +115,10 @@ token is proven to reach the repository before the worker is handed it.
    then **fails closed on what GitHub reports back**: the token must list
    exactly the one repository and carry `contents: read` and nothing beyond
    `metadata: read`. A token minted wider than asked for is refused, not
-   handed out. (This reading of GitHub's contract is verified against the
-   fake in tests; 22-05's live proof validates it against the real API.)
+   handed out. **Confirmed against the real API by 22-05's live proof**:
+   GitHub's reply for the approved repository listed exactly
+   `repository_ids 1103353668` and `permissions contents:read,metadata:read`,
+   on both mints, and the check accepted it unchanged.
 
 4. **One log line per mint**: job, organization, repository, GitHub
    repository id, installation, name and expiry, and since 22-05 the scope
@@ -212,10 +214,15 @@ and that traffic is HTTPS through a CONNECT tunnel the proxy cannot read.
 `workers.fetch.archive.fetch_repository(token, job_id=…, workdir=…)` then
 resolves the default branch to a full SHA, downloads the tarball of **that
 commit**, extracts it under the U6 caps, applies the U7 filters and yields the
-tree. The download link GitHub redirects to may carry a credential of its
-own; it is never logged. **The fetcher holds `httpx`'s logger at WARNING**
-because, measured, `httpx` logs every request URL at INFO — the redirect link
-included.
+tree. The download link GitHub redirects to **does** carry a credential of
+its own for a private repository — a `token` query parameter, measured by
+name only in 22-05's live proof (a public repository's link had none) — and it
+is never logged. **The fetcher holds `httpx`'s logger at WARNING** because,
+measured, `httpx` logs every request URL at INFO — the redirect link
+included. The archive's top-level directory is `{owner}-{repo}-{sha7}` for a
+public repository and `{owner}-{repo}-{sha}`, the full SHA, for a private one
+(both measured; 22-04 knew only the first, and the live proof's first fetch
+was refused until the second was accepted).
 
 The caller is the `full_ingest` handler (`workers.ingest.handler`, 22-05):
 it requests the token, fetches, revokes, and maps the exceptions onto the

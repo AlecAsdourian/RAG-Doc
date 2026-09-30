@@ -70,11 +70,13 @@ into each other's tree by path (PR #52's review, M1). `sweep_stale_workdirs`
 removes job directories older than a bound no live job can reach; 22-05
 calls it when the worker starts.
 
-NOTHING HERE LOGS A URL. The download link may carry a credential of its
-own ([not verified], 22-RESEARCH Q8), so every message names a HOST, a
-status and a count, never a link -- and every `httpx` exception is
-re-raised `from None`, because a chained traceback prints the original's
-message, and that is where the URL would be.
+NOTHING HERE LOGS A URL. The download link DOES carry a credential of its
+own for a private repository -- measured by 22-05's live proof, by name
+only: one query parameter, `token` (a public repository's link had none,
+22-04) -- so every message names a HOST, a status and a count, never a
+link, and every `httpx` exception is re-raised `from None`, because a
+chained traceback prints the original's message, and that is where the URL
+would be.
 
 What `FetchRejected` means for the job: a hard cap, so the runtime ends it
 `dead` in one attempt (U6) -- it subclasses `workers.jobs.runtime.Rejected`
