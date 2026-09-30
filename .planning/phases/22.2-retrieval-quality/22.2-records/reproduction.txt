@@ -1,0 +1,48 @@
+reproduce.py, run 2026-09-29 from a CLEAN EXPORT of docs/quality-track-plan at 1b8935e8d5e3
+(`git archive HEAD`: no .git, no untracked or ignored files; this file itself was not yet in the tree), with:
+  --census-tree  a clean export of 0f2e4dfaffa6 (the commit the census records name; services/backend/pkg
+                 has changed since, so the self corpora must be read there)
+  --corpora      miniflux, mealie, linkwarden, ghostfolio and seerr, each checked at its pinned commit below
+  the interpreter of environment.txt (a venv built from services/workers/requirements.txt plus
+  tree-sitter-typescript 0.23.2)
+
+    python .planning/phases/22.2-retrieval-quality/22.2-records/reproduce.py \
+        --census-tree <export of 0f2e4df> --self-commit 0f2e4dfaffa6154e9dc8bc45b6771be0b7218759 \
+        --corpora <dir> --out <dir>
+
+exit code 0. Its output, verbatim:
+
+1. corpus pins
+   linkwarden: already fetched: linkwarden at 952ac4540657cae3a67c3ca59433899d2fda8374
+   ghostfolio-api: already fetched: ghostfolio at c13a0c18fb9c221adc4fed02d3ba32b274c8dc80
+   seerr: already fetched: seerr at e9590629b8215676a352ec2413d7c8ee7e6974df
+   miniflux: already fetched: miniflux at 76889f08b12c2577b37e524e645afa5dd46ff050
+   mealie: already fetched: mealie at 84b2677f76069a6fb2bac6e2c633c9dbe7379ce4
+2. regenerate
+   done
+3. compare with the committed files
+   census-self-go.json: 93 fields; differing 0; missing 0; extra 0
+   census-self-py.json: 86 fields; differing 0; missing 0; extra 0
+   census-self-ts.json: 104 fields; differing 0; missing 0; extra 0
+   census-miniflux.json: 96 fields; differing 0; missing 0; extra 0
+   census-mealie.json: 90 fields; differing 0; missing 0; extra 0
+   census-linkwarden.json: 110 fields; differing 0; missing 0; extra 0
+   census-ghostfolio-api.json: 102 fields; differing 0; missing 0; extra 0
+   census-seerr.json: 124 fields; differing 0; missing 0; extra 0
+   records-analysis.json: 97 fields; differing 0; missing 0; extra 0
+   ts-candidates.json: 461 fields; differing 0; missing 0; extra 0
+   rr-spread.txt: identical (13 lines)
+   ts-grammar-checks.txt: identical (12 lines)
+   ml-05-trace.txt: identical (18 lines)
+   environment.txt: identical (10 lines)
+RESULT: 14 files compared, 0 differ
+
+The same run from a clean export of 7f412f03f36f, the commit that added the scripts, also gave 14 compared,
+0 differ; ts_grammar_checks.py gained one check after that (550f2f6), and this run covers it.
+
+Not regenerated, and why:
+- ts-candidates-raw/*.json are the inputs consolidate.py reads. size_candidates.py produced them from GitHub's
+  API on 2026-09-29 at each repository's then-current default-branch head; the SHAs are recorded in them, and a
+  re-run today sizes newer trees.
+- The corpora are fetched from public GitHub at the pinned commits by the harness's --fetch (miniflux, mealie)
+  and fetch_pinned.py (the TypeScript three); they are not part of this repository.
