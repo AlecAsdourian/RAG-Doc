@@ -4,16 +4,6 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 ## Open Enhancements
 
-### ISS-037: The Go isolation harness's single reuse-by-name container collides across parallel worktrees at different migration versions
-
-**Found:** 2026-09-29, during 22-04 (PR #52), while 22-02 ran in a sibling worktree. Filed at PR #52's review (L8).
-**Owner:** 22-05, as its first task.
-**Severity:** medium — a fleet-workflow hazard; no product impact.
-
-**What happens.** `pkg/testing/isolation/container.go` names ONE container (`containerName`, :34) and reuses it by name (`WithReuseByName`, :120), so every worktree on a host shares it. When 22-02's run migrated the shared container to 000017 while 22-04's tree was still at 000016, golang-migrate refused every 22-04 run with `no migration found for version 17: read down for version 17 .: file does not exist` — the harness applies its own tree's migrations to a database already past them. 22-04 worked around it with a local, uncommitted rename of the constant until `main` (with 000017) was merged. The next pair of parallel plans with different newest migrations hits it again.
-
-**Fix, recommended by the review and adopted:** derive the container name from the worktree by default — `containerName + "-" + shortHash(worktreeRoot)` — with `ISOLATION_CONTAINER_NAME` as an override. **Not an env-only override**: that recreates the collision the first time someone forgets to set it. Cost: one Postgres container per worktree; the harness removes nothing, so stale ones are `docker rm -f`'d by hand as today. `docs/local-development.md`'s "The Postgres image" section names the container and needs the derived form.
-
 ### ISS-036: `chunks.ingestion_run_id` and `chunks.symbol_id` carry no tenancy, so a tenant can cite another tenant's run or symbol on its own row
 
 - **Discovered:** 2026-09-29, by the reviewer session on PR #49 (22-02), measured in the deployment shape (a `NOSUPERUSER NOBYPASSRLS` owner, FORCE RLS everywhere) as `rag_doc_app`.
@@ -408,6 +398,25 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Recommendation:** the `AfterConnect` sentinel, giving deterministically **loud**. With `TenantScoper` in place an unscoped query is by definition a bug, and a bug that always throws is cheaper than one that sometimes returns `[]`. Still an operational-risk judgement — a 500 is worse than an empty list for a user who trips it — so it belongs to whoever owns that call, but it is now a pool-constructor line rather than a schema change.
 
 ## Closed Enhancements
+
+### ISS-037: The Go isolation harness's single reuse-by-name container collides across parallel worktrees at different migration versions ✅
+
+**Found:** 2026-09-29, during 22-04 (PR #52), while 22-02 ran in a sibling worktree. Filed at PR #52's review (L8).
+**Owner:** 22-05, as its first task.
+**Severity:** medium — a fleet-workflow hazard; no product impact.
+
+- **✅ CLOSED 2026-09-29, by its own fix PR (branch `fix/iss-037-harness-container-name`) ahead of 22-05 rather than inside it.** The fix is the one adopted below, measured:
+  - **The name:** `rag-doc-isolation-tests-pgv16-` and the first 12 hex digits of the SHA-256 of the checkout's root. The root is found five directories up from `container.go`'s compiled path, the way the migrations directory already was (which now derives from the same root), with symlinks and Windows letter case resolved; no git. `ISOLATION_CONTAINER_NAME` overrides it and must be lowercase `[a-z0-9_.-]`, at least two characters, starting with a letter or digit, or setup fails naming the variable. The constant is now `containerNamePrefix`. Each container carries the label `rag-doc.isolation.checkout` with the checkout that created it.
+  - **Real runs:** `go test ./pkg/testing/isolation/... -count=1` created `rag-doc-isolation-tests-pgv16-971ef0687c03` (id `003e79087fa0`, labelled with this worktree, `schema_migrations` 17, clean); a second run reused it (no create, same id and start time); after `docker stop`, a third run started the same id. A valid override created a container by that name; `ISOLATION_CONTAINER_NAME="Bad Name"` failed setup with the message and created nothing.
+  - **Unit tests,** `container_name_test.go`, no Docker: different checkouts give different names; one checkout gives one name, pinned for GitHub Actions' workspace path; the override wins; a name Docker could not use is refused; every derived name is a valid Docker name with the documented listing prefix; the root holds `services/backend/go.mod`.
+  - **Four mutations, four killed:** the bare constant (the "different checkouts" test and the pin fail), the override ignored, the override's check neutered, and the root one directory too high, which would hash `.claude/worktrees` and give every agent worktree one container again.
+  - **Suites, local:** `go test ./... -count=1 -p 1` on a scratch Postgres passes every package except `pkg/api/handlers`, whose only failure is the known CRLF-only `TestSignatureComparisonIsConstantTime`; that package passes with just that test skipped. CI's package-parallelism step widened to `pkg/jobs` and `pkg/internalapi` (seven packages, that test skipped), run at default parallelism with no container to start from, passes and leaves exactly one container for the checkout.
+  - **Nothing else named the container** in code, CI or scripts. `docs/local-development.md` gives the derived form, the override, and how to list (`docker ps -a --filter name=rag-doc-isolation-tests-`) and remove them. The Python conftest was never affected: it starts an unnamed container per pytest session and stops it at teardown.
+  - **Left by hand:** the old shared `rag-doc-isolation-tests-pgv16` stays on developer machines, and a branch that has not merged `main` since the fix still uses it.
+
+**What happens.** `pkg/testing/isolation/container.go` names ONE container (`containerName`, :34) and reuses it by name (`WithReuseByName`, :120), so every worktree on a host shares it. When 22-02's run migrated the shared container to 000017 while 22-04's tree was still at 000016, golang-migrate refused every 22-04 run with `no migration found for version 17: read down for version 17 .: file does not exist` — the harness applies its own tree's migrations to a database already past them. 22-04 worked around it with a local, uncommitted rename of the constant until `main` (with 000017) was merged. The next pair of parallel plans with different newest migrations hits it again.
+
+**Fix, recommended by the review and adopted:** derive the container name from the worktree by default — `containerName + "-" + shortHash(worktreeRoot)` — with `ISOLATION_CONTAINER_NAME` as an override. **Not an env-only override**: that recreates the collision the first time someone forgets to set it. Cost: one Postgres container per worktree; the harness removes nothing, so stale ones are `docker rm -f`'d by hand as today. `docs/local-development.md`'s "The Postgres image" section names the container and needs the derived form.
 
 ### ISS-031: A migration that sets a tenant leaves the migrating session unable to read RLS tables, and CI cannot catch it ✅
 

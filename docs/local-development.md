@@ -465,8 +465,8 @@ in the other then failed with `no migration found for version N`.
   to give a checkout a fresh database after editing a migration its
   container already applied (golang-migrate never re-applies a recorded
   version). The harness removes nothing itself, and the next run in that
-  checkout creates the container again. Removing a container while its
-  worktree's tests are running fails that run.
+  checkout creates the container again. Do not remove one while its
+  worktree's tests are running.
 - **The cost** is one Postgres per worktree. A stopped one is started again
   by the next run, so a Docker restart costs a start, not a new database.
 - **The old shared container,** `rag-doc-isolation-tests-pgv16`, is the one
