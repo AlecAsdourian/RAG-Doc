@@ -1,0 +1,44 @@
+{
+ "repo": "Dokploy/dokploy",
+ "branch": "canary",
+ "sha": "cec5b65cd6a346adf739251239b7e6b2abbdac29",
+ "license": "NOASSERTION",
+ "archived": false,
+ "pushed_at": "2026-09-29T19:01:14Z",
+ "stars": 37579,
+ "truncated": false,
+ "counts": {
+  "ts": 424,
+  "test": 116,
+  "tsx": 468,
+  "vendored": 1,
+  "generated": 1,
+  "js": 2
+ },
+ "bytes": {
+  "ts": 2328683,
+  "test": 610158,
+  "tsx": 3248942,
+  "vendored": 16883,
+  "generated": 987,
+  "js": 1882
+ },
+ "by_top": {
+  "apps/dokploy": {
+   "files": 604,
+   "bytes": 4129702
+  },
+  "packages/server": {
+   "files": 277,
+   "bytes": 1417615
+  },
+  "apps/api": {
+   "files": 5,
+   "bytes": 15547
+  },
+  "apps/schedules": {
+   "files": 6,
+   "bytes": 14761
+  }
+ }
+}

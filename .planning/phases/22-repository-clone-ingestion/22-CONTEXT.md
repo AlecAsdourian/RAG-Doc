@@ -168,6 +168,10 @@ searchable. **Locks:** P10 (its filters).
 > OpenAI. That is the trade the user took with A. Content-level secret
 > detection (option B) is recorded as a question for the retrieval-quality
 > track, not something Phase 22 solves.
+>
+> **Answered 2026-09-29 (`22.2-CONTEXT.md` QU9, QD13):** content-level secret
+> scanning is scheduled before launch, in 25-02's security review pass (~6–10
+> h), not in the retrieval-quality phase.
 
 - **A — deny-list by file name (chosen).** ~1–2 h. It misses secrets pasted into
   ordinary source files.
@@ -703,7 +707,7 @@ queue → worker → pgvector → search, under tenant isolation on both legs.
 
 | Plan | Scope | Est. |
 |---|---|---|
-| **22.1-01** | **D1 symbol identity from the chunker** (P8). Full-chain `symbol_path`, `kind`, `ordinal`, a span that includes decorators and doc comments, `span_digest`, `module` symbols, Go non-struct types and constants as symbols, and the alias rule. Upsert-and-unarchive. Chunks linked to symbols. D1's first two verification criteria. Python and Go only; TypeScript waits for the quality track's grammar decision. **Carried from PR #49's review (ISS-036):** composite keys `(ingestion_run_id, repository_id)` and `(symbol_id, repository_id)` on `chunks`, so a chunk cannot cite another repository's run or symbol; until then the drift query's `:run` and `:symbol` arms are the guard. | 14–20 h |
+| **22.1-01** | **D1 symbol identity from the chunker** (P8). Full-chain `symbol_path`, `kind`, `ordinal`, a span that includes decorators and doc comments, `span_digest`, `module` symbols, Go non-struct types and constants as symbols, and the alias rule. Upsert-and-unarchive. Chunks linked to symbols. D1's first two verification criteria. Python and Go only; TypeScript waits for the quality track's grammar decision. **Revised 2026-09-29 by the user's answer QU4 (`22.2-CONTEXT.md` QD6, QD11):** 22.1-01 runs **after 22.2-02** (the chunker fixes) and **includes TypeScript symbols** (+3–5 h). Its span starts at the same first decorator as 22.2-02's chunk span, and it **must not change the display breadcrumb**, which the benchmark's symbol scoring reads. **Carried from PR #49's review (ISS-036):** composite keys `(ingestion_run_id, repository_id)` and `(symbol_id, repository_id)` on `chunks`, so a chunk cannot cite another repository's run or symbol; until then the drift query's `:run` and `:symbol` arms are the guard. | 14–20 h |
 | **22.1-02** | **Incremental ingestion** (P11). The file manifest (a small migration), per-file delete-and-insert, symbol archival, embedding reuse, and `incremental` made distinct from `full_ingest`. Tests for a force-push, a missed push, and a file deleted then restored (D1's resurrection path). **Closes ISS-027.** | 12–16 h |
 | **22.1-03** | **The progress contract and ISS-034** (P12). A documented `progress` schema. The repository's current or last job made reachable from the repository API; ISS-034 offers two shapes and the plan chooses. A deliberately written, mutation-checked isolation test, because `ingestion_jobs` has no RLS and the CI gate ignores `GET`s. | 6–10 h |
 | **22.1-04** | **D3 tier 1** (P9). **Creates `symbol_edges`** (D3's DDL; moved here from 22-02), testing D3's upgrade and no-downgrade SQL rule first. Call-site and import candidates from the parser. The resolver (imports plus scope matching) writes `symbol_edges` with `to_symbol_name` always set. The reconciliation rule. A `CYCLE`-safe traversal helper, tested on a cyclic fixture. Archived symbols excluded. D1's re-export criterion. | 20–30 h |
@@ -764,6 +768,21 @@ connection, and `exact_paths`, and the harness's scoring rule lives in
 vector leg: the keyword leg was empty for 120 of the 130 questions (ISS-029),
 so a keyword-leg change has no equivalence evidence from 22-03 and needs the
 protocol's own fresh questions.
+
+**Superseded 2026-09-29.** The user answered the track's questions (QU1–QU10)
+and took every recommendation. The track is now **Phase 22.2, Retrieval
+Quality**, and its scope, order, estimates and decisions are locked in
+`../22.2-retrieval-quality/22.2-CONTEXT.md`, **which is now the authority**.
+- U10's words "It is not a phase of its own" now read as a label change; its
+  scope and position are unchanged.
+- The table above stays for the record. The order it gives changed in three
+  ways:
+  - chunker bug fixes come first, on offline proof;
+  - the TypeScript grammar is one of those fixes;
+  - "ranking" is one decision, the keyword leg.
+- The tolerance above is fixed at 2e-6 (QD2).
+- The embedding-model rule is committed in
+  `services/workers/scripts/rag_benchmarks/embedding-model-protocol.md`.
 
 ---
 

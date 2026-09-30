@@ -1,0 +1,140 @@
+{
+ "repo": "louislam/dockge",
+ "branch": "master",
+ "sha": "f809ae192b571944ad773e9866d3e67064ae8043",
+ "license": "MIT",
+ "archived": false,
+ "pushed_at": "2026-04-25T02:28:26Z",
+ "stars": 24484,
+ "truncated": false,
+ "counts": {
+  "ts": 40,
+  "migration": 3,
+  "js": 2,
+  "generated": 2
+ },
+ "bytes": {
+  "ts": 189209,
+  "migration": 1710,
+  "js": 2104,
+  "generated": 2434
+ },
+ "by_top": {
+  "frontend/src": {
+   "files": 8,
+   "bytes": 33366
+  },
+  "backend/dockge-server.ts": {
+   "files": 1,
+   "bytes": 23760
+  },
+  "backend/stack.ts": {
+   "files": 1,
+   "bytes": 21303
+  },
+  "backend/agent-socket-handlers": {
+   "files": 2,
+   "bytes": 19955
+  },
+  "backend/socket-handlers": {
+   "files": 3,
+   "bytes": 18264
+  },
+  "common/util-common.ts": {
+   "files": 1,
+   "bytes": 12471
+  },
+  "backend/agent-manager.ts": {
+   "files": 1,
+   "bytes": 9930
+  },
+  "backend/terminal.ts": {
+   "files": 1,
+   "bytes": 8928
+  },
+  "backend/database.ts": {
+   "files": 1,
+   "bytes": 7721
+  },
+  "backend/log.ts": {
+   "files": 1,
+   "bytes": 6699
+  },
+  "backend/settings.ts": {
+   "files": 1,
+   "bytes": 4562
+  },
+  "extra/reset-password.ts": {
+   "files": 1,
+   "bytes": 4018
+  },
+  "backend/util-server.ts": {
+   "files": 1,
+   "bytes": 2770
+  },
+  "backend/rate-limiter.ts": {
+   "files": 1,
+   "bytes": 2364
+  },
+  "backend/models": {
+   "files": 2,
+   "bytes": 2308
+  },
+  "extra/reformat-changelog.ts": {
+   "files": 1,
+   "bytes": 1798
+  },
+  "backend/check-version.ts": {
+   "files": 1,
+   "bytes": 1683
+  },
+  "extra/update-version.ts": {
+   "files": 1,
+   "bytes": 1560
+  },
+  "backend/password-hash.ts": {
+   "files": 1,
+   "bytes": 1215
+  },
+  "frontend/vite.config.ts": {
+   "files": 1,
+   "bytes": 985
+  },
+  "extra/mark-as-nightly.ts": {
+   "files": 1,
+   "bytes": 799
+  },
+  "backend/routers": {
+   "files": 1,
+   "bytes": 674
+  },
+  "backend/utils": {
+   "files": 1,
+   "bytes": 532
+  },
+  "common/agent-socket.ts": {
+   "files": 1,
+   "bytes": 401
+  },
+  "backend/agent-socket-handler.ts": {
+   "files": 1,
+   "bytes": 294
+  },
+  "extra/test-docker.ts": {
+   "files": 1,
+   "bytes": 248
+  },
+  "backend/router.ts": {
+   "files": 1,
+   "bytes": 216
+  },
+  "backend/socket-handler.ts": {
+   "files": 1,
+   "bytes": 208
+  },
+  "backend/index.ts": {
+   "files": 1,
+   "bytes": 177
+  }
+ }
+}

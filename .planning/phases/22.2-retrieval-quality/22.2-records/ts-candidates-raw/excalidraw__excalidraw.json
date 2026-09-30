@@ -1,0 +1,130 @@
+{
+ "repo": "excalidraw/excalidraw",
+ "branch": "master",
+ "sha": "35e854ecf7a1ace3467922965ce07ec1a6f0ea54",
+ "license": "MIT",
+ "archived": false,
+ "pushed_at": "2026-09-29T16:17:47Z",
+ "stars": 133260,
+ "truncated": false,
+ "counts": {
+  "js": 25,
+  "tsx": 234,
+  "ts": 276,
+  "generated": 13,
+  "test": 153
+ },
+ "bytes": {
+  "js": 89043,
+  "tsx": 1768818,
+  "ts": 4356018,
+  "generated": 6958,
+  "test": 2117377
+ },
+ "by_top": {
+  "packages/excalidraw": {
+   "files": 359,
+   "bytes": 4540048
+  },
+  "packages/element": {
+   "files": 53,
+   "bytes": 1092592
+  },
+  "packages/common": {
+   "files": 19,
+   "bytes": 105838
+  },
+  "examples/with-script-in-browser": {
+   "files": 8,
+   "bytes": 66547
+  },
+  "packages/math": {
+   "files": 16,
+   "bytes": 62566
+  },
+  "excalidraw-app/collab": {
+   "files": 3,
+   "bytes": 41880
+  },
+  "excalidraw-app/App.tsx": {
+   "files": 1,
+   "bytes": 41045
+  },
+  "excalidraw-app/data": {
+   "files": 9,
+   "bytes": 40306
+  },
+  "excalidraw-app/components": {
+   "files": 10,
+   "bytes": 37811
+  },
+  "packages/utils": {
+   "files": 4,
+   "bytes": 22161
+  },
+  "packages/laser-pointer": {
+   "files": 4,
+   "bytes": 12921
+  },
+  "excalidraw-app/vite.config.mts": {
+   "files": 1,
+   "bytes": 10228
+  },
+  "excalidraw-app/share": {
+   "files": 3,
+   "bytes": 9195
+  },
+  "packages/fractional-indexing": {
+   "files": 1,
+   "bytes": 8441
+  },
+  ".": {
+   "files": 2,
+   "bytes": 7370
+  },
+  "excalidraw-app/ExcalidrawPlusIframeExport.tsx": {
+   "files": 1,
+   "bytes": 6582
+  },
+  "excalidraw-app/sentry.ts": {
+   "files": 1,
+   "bytes": 3223
+  },
+  "dev-docs/src": {
+   "files": 2,
+   "bytes": 2931
+  },
+  "excalidraw-app/CustomStats.tsx": {
+   "files": 1,
+   "bytes": 2477
+  },
+  "examples/with-nextjs": {
+   "files": 4,
+   "bytes": 2084
+  },
+  "excalidraw-app/debugCollaborators.ts": {
+   "files": 1,
+   "bytes": 1997
+  },
+  "excalidraw-app/app-language": {
+   "files": 3,
+   "bytes": 1995
+  },
+  "excalidraw-app/app_constants.ts": {
+   "files": 1,
+   "bytes": 1928
+  },
+  "excalidraw-app/useHandleAppTheme.ts": {
+   "files": 1,
+   "bytes": 1430
+  },
+  "excalidraw-app/app-jotai.ts": {
+   "files": 1,
+   "bytes": 795
+  },
+  "excalidraw-app/index.tsx": {
+   "files": 1,
+   "bytes": 445
+  }
+ }
+}

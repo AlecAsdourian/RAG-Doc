@@ -1,0 +1,130 @@
+{
+ "repo": "karakeep-app/karakeep",
+ "branch": "main",
+ "sha": "f908b02e904a030604d56d8bcd871763474006c9",
+ "license": "AGPL-3.0",
+ "archived": false,
+ "pushed_at": "2026-09-29T21:44:10Z",
+ "stars": 29349,
+ "truncated": false,
+ "counts": {
+  "js": 10,
+  "tsx": 449,
+  "ts": 415,
+  "generated": 8,
+  "test": 86
+ },
+ "bytes": {
+  "js": 11408,
+  "tsx": 1659745,
+  "ts": 1754430,
+  "generated": 104028,
+  "test": 854576
+ },
+ "by_top": {
+  "apps/web": {
+   "files": 321,
+   "bytes": 1180398
+  },
+  "apps/mobile": {
+   "files": 135,
+   "bytes": 427284
+  },
+  "packages/trpc": {
+   "files": 53,
+   "bytes": 398389
+  },
+  "apps/workers": {
+   "files": 45,
+   "bytes": 335960
+  },
+  "packages/shared": {
+   "files": 57,
+   "bytes": 190508
+  },
+  "apps/cli": {
+   "files": 19,
+   "bytes": 124225
+  },
+  "apps/browser-extension": {
+   "files": 41,
+   "bytes": 110133
+  },
+  "packages/plugins": {
+   "files": 28,
+   "bytes": 93721
+  },
+  "apps/landing": {
+   "files": 30,
+   "bytes": 93619
+  },
+  "packages/shared-react": {
+   "files": 24,
+   "bytes": 75032
+  },
+  "packages/open-api": {
+   "files": 15,
+   "bytes": 69794
+  },
+  "packages/api": {
+   "files": 29,
+   "bytes": 52729
+  },
+  "docs/versioned_docs": {
+   "files": 6,
+   "bytes": 47040
+  },
+  "packages/db": {
+   "files": 7,
+   "bytes": 43965
+  },
+  "apps/mcp": {
+   "files": 10,
+   "bytes": 42259
+  },
+  "packages/shared-server": {
+   "files": 11,
+   "bytes": 40753
+  },
+  "packages/benchmarks": {
+   "files": 7,
+   "bytes": 19407
+  },
+  "tools/seed-snapshot": {
+   "files": 2,
+   "bytes": 18953
+  },
+  "tools/compare-models": {
+   "files": 7,
+   "bytes": 16428
+  },
+  "packages/e2e_tests": {
+   "files": 8,
+   "bytes": 9267
+  },
+  "docs/src": {
+   "files": 1,
+   "bytes": 8116
+  },
+  "docs/docs": {
+   "files": 1,
+   "bytes": 8039
+  },
+  "docs/docusaurus.config.ts": {
+   "files": 1,
+   "bytes": 3552
+  },
+  "tooling/tailwind": {
+   "files": 3,
+   "bytes": 3151
+  },
+  "packages/sdk": {
+   "files": 2,
+   "bytes": 1118
+  },
+  "docs/sidebars.ts": {
+   "files": 1,
+   "bytes": 335
+  }
+ }
+}

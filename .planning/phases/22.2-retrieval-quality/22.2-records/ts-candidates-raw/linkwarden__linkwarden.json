@@ -1,0 +1,68 @@
+{
+ "repo": "linkwarden/linkwarden",
+ "branch": "main",
+ "sha": "952ac4540657cae3a67c3ca59433899d2fda8374",
+ "license": "AGPL-3.0",
+ "archived": false,
+ "pushed_at": "2026-09-10T18:53:30Z",
+ "stars": 19872,
+ "truncated": false,
+ "counts": {
+  "ts": 244,
+  "js": 14,
+  "tsx": 252,
+  "generated": 6,
+  "test": 22,
+  "migration": 9
+ },
+ "bytes": {
+  "ts": 609241,
+  "js": 63732,
+  "tsx": 1089642,
+  "generated": 1045,
+  "test": 41717,
+  "migration": 34224
+ },
+ "by_top": {
+  "apps/web": {
+   "files": 301,
+   "bytes": 959323
+  },
+  "apps/mobile": {
+   "files": 80,
+   "bytes": 392257
+  },
+  "apps/extension": {
+   "files": 43,
+   "bytes": 136567
+  },
+  "packages/router": {
+   "files": 14,
+   "bytes": 78436
+  },
+  "apps/worker": {
+   "files": 26,
+   "bytes": 74137
+  },
+  "packages/lib": {
+   "files": 18,
+   "bytes": 38679
+  },
+  "packages/filesystem": {
+   "files": 10,
+   "bytes": 13308
+  },
+  "packages/types": {
+   "files": 2,
+   "bytes": 5207
+  },
+  "packages/prisma": {
+   "files": 1,
+   "bytes": 694
+  },
+  ".": {
+   "files": 1,
+   "bytes": 275
+  }
+ }
+}

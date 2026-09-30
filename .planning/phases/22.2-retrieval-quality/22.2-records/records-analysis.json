@@ -1,0 +1,155 @@
+{
+ "self": {
+  "questions": 40,
+  "chunks_visible": 534,
+  "keyword_leg_nonempty": 10,
+  "keyword_leg_sizes": {
+   "0": 30,
+   "1": 4,
+   "2": 4,
+   "3": 2
+  },
+  "top5_by_type": {
+   "class": 48,
+   "class_summary": 34,
+   "file_summary": 43,
+   "fixed_size": 5,
+   "function": 70
+  },
+  "top5_slots": 200,
+  "top5_class_ge80": null,
+  "questions_with_dup_class_in_top5_holding_answer": null,
+  "symbol_questions": 0,
+  "answer_symbol_rank_in_vector_leg": {},
+  "answer_file_rank_in_vector_leg": {
+   "1": 24,
+   "11-20": 3,
+   "2-5": 10,
+   "21-50": 2,
+   "not in 50": 1
+  },
+  "final_symbol_rank": {},
+  "unmatched_join": 200,
+  "by_set": {
+   "tuning": {
+    "n": 25,
+    "kw_nonempty": 8
+   },
+   "holdout": {
+    "n": 15,
+    "kw_nonempty": 2
+   }
+  },
+  "note": "join fields not computed for self: the 22-03 records were measured at harness commit 9bd404b/4fd8f80, and the census table is of 0f2e4df, where self has 595 chunks, not 534; unmatched_join counts every slot"
+ },
+ "miniflux": {
+  "questions": 45,
+  "chunks_visible": 2134,
+  "keyword_leg_nonempty": 0,
+  "keyword_leg_sizes": {
+   "0": 45
+  },
+  "top5_by_type": {
+   "class": 28,
+   "class_summary": 23,
+   "file_summary": 3,
+   "fixed_size": 6,
+   "function": 165
+  },
+  "top5_slots": 225,
+  "top5_class_ge80": 0,
+  "questions_with_dup_class_in_top5_holding_answer": 0,
+  "symbol_questions": 45,
+  "answer_symbol_rank_in_vector_leg": {
+   "1": 11,
+   "11-20": 5,
+   "2-5": 14,
+   "21-50": 6,
+   "6-10": 5,
+   "not in 50": 4
+  },
+  "answer_file_rank_in_vector_leg": {
+   "1": 17,
+   "11-20": 5,
+   "2-5": 13,
+   "21-50": 2,
+   "6-10": 6,
+   "not in 50": 2
+  },
+  "final_symbol_rank": {
+   "1": 11,
+   "2-5": 14,
+   "not in top 5": 20
+  },
+  "unmatched_join": 0,
+  "by_set": {
+   "tuning": {
+    "n": 15,
+    "kw_nonempty": 0
+   },
+   "holdout": {
+    "n": 15,
+    "kw_nonempty": 0
+   },
+   "confirm": {
+    "n": 15,
+    "kw_nonempty": 0
+   }
+  }
+ },
+ "mealie": {
+  "questions": 45,
+  "chunks_visible": 2816,
+  "keyword_leg_nonempty": 0,
+  "keyword_leg_sizes": {
+   "0": 45
+  },
+  "top5_by_type": {
+   "class": 71,
+   "class_summary": 16,
+   "file_summary": 7,
+   "fixed_size": 11,
+   "function": 120
+  },
+  "top5_slots": 225,
+  "top5_class_ge80": 22,
+  "questions_with_dup_class_in_top5_holding_answer": 10,
+  "symbol_questions": 45,
+  "answer_symbol_rank_in_vector_leg": {
+   "1": 10,
+   "11-20": 3,
+   "2-5": 15,
+   "21-50": 3,
+   "6-10": 7,
+   "not in 50": 7
+  },
+  "answer_file_rank_in_vector_leg": {
+   "1": 16,
+   "11-20": 1,
+   "2-5": 18,
+   "21-50": 2,
+   "6-10": 5,
+   "not in 50": 3
+  },
+  "final_symbol_rank": {
+   "1": 9,
+   "2-5": 15,
+   "not in top 5": 21
+  },
+  "unmatched_join": 0,
+  "by_set": {
+   "tuning": {
+    "n": 15,
+    "kw_nonempty": 0
+   },
+   "holdout": {
+    "n": 15,
+    "kw_nonempty": 0
+   },
+   "confirm": {
+    "n": 15,
+    "kw_nonempty": 0
+   }
+  }
+ }
+}

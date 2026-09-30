@@ -11,7 +11,7 @@ None
 ## Milestones
 
 - 🟡 **v0.9 Initial Build** — Phases 1-16 (foundation shipped in prototype form; several phases deferred or superseded — see disposition table below)
-- 🚧 **v1.0 MVP** — Phases 17-25, plus 22.1 inserted: ten phases (in progress — the first shippable version)
+- 🚧 **v1.0 MVP** — Phases 17-25, plus 22.1 and 22.2 inserted: eleven phases (in progress — the first shippable version)
 - 📋 **v2.0 Memory Substrate** — Phases planned separately once v1.0 ships (GraphRAG + LangGraph agents + MCP server)
 
 ## v0.9 Initial Build — Disposition
@@ -199,16 +199,18 @@ Plans:
 ### Phase 22.1: Symbols, Incremental Updates, Progress & the Code Graph
 
 **Goal:** Stable symbol identity, push-driven incremental ingestion, a progress contract a UI can poll, tier-1 graph edges, and D2's multi-tenant recall test. All of it is built on the pipeline Phase 22 proved end to end.
-**Depends on:** Phase 22. 22.1-01 is offline parser work and can start once 22-01 lands.
+**Depends on:** Phase 22. **22.1-01 depends on 22.2-02** (the chunker fixes), by the user's answer QU4 of 2026-09-29 (`22.2-CONTEXT.md` QD11). The rest of 22.1 follows 22.1-01.
 **Research:** Complete — `22-RESEARCH.md`; decisions locked in `22-CONTEXT.md` (same document as Phase 22; the name keeps every existing "Phase 23" reference correct, U2)
 **Plans:** 5 (not yet written)
 
 Plans:
-- [ ] 22.1-01: D1 symbol identity from the chunker:
+- [ ] 22.1-01: D1 symbol identity from the chunker, **after 22.2-02**:
   - full-chain `symbol_path`, `kind` and `ordinal` (including `@typing.overload`);
-  - a span that includes decorators and doc comments;
+  - a span that includes decorators and doc comments (the same first decorator as 22.2-02's chunk span, QD6);
   - `module` symbols, and Go non-struct types and constants as symbols;
-  - ids minted only at definitions, never for aliases.
+  - **TypeScript symbols too** (QU4): interfaces, type aliases and enums as `type`, named function expressions as `function`;
+  - ids minted only at definitions, never for aliases;
+  - **the display breadcrumb unchanged**, since benchmark scoring reads it.
 - [ ] 22.1-02: incremental ingestion by content-addressed file manifest. Symbols are archived, never deleted. `incremental` becomes distinct from `full_ingest`. Closes ISS-027.
 - [ ] 22.1-03: the progress contract, by polling the job row (U8), and ISS-034. Includes a deliberately written, mutation-checked isolation test.
 - [ ] 22.1-04: D3 tier 1:
@@ -218,21 +220,38 @@ Plans:
   - a `CYCLE`-safe traversal helper.
 - [ ] 22.1-05: D2's recall test, seeded with real embeddings and at least one tenant large enough to use HNSW, filtering by repository. Then the operating numbers, measured: pool size, `max_job_duration`, OpenAI throughput.
 
-### Retrieval-quality track (between 22-03 and Phase 23)
+### Phase 22.2: Retrieval Quality
 
-**When:** after 22-03's equivalence check, and before Phase 23 (U10). It can run alongside 22-04, 22-05 and Phase 22.1. It is not a phase of its own.
-**Rule:** each item is decided under `services/workers/scripts/rag_benchmarks/boost-defaults-protocol.md`'s method: fresh blind questions, and a pass rule committed before the questions exist.
-**Estimate:** ~36–58 h in total. Order and costs are in `22-CONTEXT.md`.
+**Goal:** The retrieval Phase 23 shows users is the retrieval we mean to launch with. That takes three things:
+- the chunker's bugs fixed and proven fixed offline;
+- a TypeScript benchmark corpus;
+- three quality decisions (chunk shape, the embedding model, the keyword leg), each under a rule the user commits before its fresh blind questions exist.
 
-- [ ] Chunker: ISS-026 (class chunks without their method bodies)
-- [ ] Chunker: the TypeScript grammar, after adding a TS/JS benchmark corpus (the benchmark has none)
-- [ ] Embedding model: `text-embedding-3-small` against ada-002 (U3), under a pass rule the user commits before the deciding questions are written
-- [ ] Ranking: ISS-024, ISS-025, ISS-028, ISS-029
+This is U10's retrieval-quality track, named Phase 22.2 by the user's answer QU1 of 2026-09-29.
+**Depends on:** 22-03 (its equivalence check).
+- 22.2-01 and 22.2-03 can start now; neither touches 22-05's files.
+- **22.2-02 → 22.1-01 → 22.2-04:** those three edit the chunker, in that order (QU4).
+
+**Research:** Complete — `22.2-RESEARCH.md`; decisions locked in `22.2-CONTEXT.md` (2026-09-29, the user's answers QU1–QU10), which is the authority for scope, order and estimates. Acceptance criteria: `22.2-ACCEPTANCE.md`.
+**Rule:** each quality decision follows `services/workers/scripts/rag_benchmarks/boost-defaults-protocol.md`'s method.
+- The embedding-model rule (M2) is committed in `embedding-model-protocol.md`, dated 2026-09-29, the user its author.
+- The user confirmed its numbers the same day, before any of its questions existed (`afa50b2`): T = 0.11 on file MRR per app, and clause 1's +0.03. The rule is complete.
+
+**Estimate:** ~63–97 h, against the sketch's 36–58 h. The reasons are in `22.2-CONTEXT.md`.
+**Plans:** 6 (not yet written)
+
+Plans:
+- [ ] 22.2-01: instruments. The chunk census as a tool, `decide.py` for four arms, the harness's new sets and record headers, and the model as an argument. Also the tolerance flag (2e-6) and the embedding API's repeatability, measured.
+- [ ] 22.2-02: chunker bug fixes, adopted on offline proof with a tripwire. The TypeScript grammars and queries, named arrow functions, JSDoc, decorators inside their chunk, grouped Go structs, and visible truncation.
+- [ ] 22.2-03: the TypeScript corpus, linkwarden at `952ac454`, with 30 blind questions and a baseline. It runs alongside 22.2-02.
+- [ ] 22.2-04: the chunk-shape candidate (ISS-026 and the other duplicates, one bundle) and its rule, committed by the user. **After 22.1-01.**
+- [ ] 22.2-05: the shared protocol run. One fresh set of 45 questions and four arms: the chunk-shape verdict, then the embedding-model verdict (M2) on the adopted chunks.
+- [ ] 22.2-06: the keyword leg (ISS-029, ISS-028, ISS-038) on its own fresh set. Also ISS-024's dead boosts deleted, ISS-025's defect 3, and the phase's closing record.
 
 ### Phase 23: Frontend Wiring & Onboarding UX
 
 **Goal:** Replace every mocked frontend surface with real data. Ship a first-run onboarding flow that walks a new user from "signed up" to "first successful query." Fix inline-style debt on every component touched.
-**Depends on:** Phases 19, 20, 22, 22.1 (23-03 needs 22.1-03's progress contract and ISS-034), and the retrieval-quality track (U10)
+**Depends on:** Phases 19, 20, 22, 22.1 (23-03 needs 22.1-03's progress contract and ISS-034), and 22.2 (Retrieval Quality, U10)
 **Research:** Unlikely (internal wiring against defined APIs)
 **Plans:** TBD (target 5 plans)
 
@@ -271,7 +290,7 @@ Plans:
 
 Plans:
 - [ ] 25-01: Public landing page — marketing site (can be a new route on the app or a separate marketing site), feature summary, sign-up CTA, screenshots or demo, product positioning aligned with memory-substrate north star
-- [ ] 25-02: Security review pass — run `security-review` skill against the entire v1.0 surface, address findings, third-party dependency audit (`go mod tidy`, `pip-audit`, `npm audit`), secret-scanning check on git history
+- [ ] 25-02: Security review pass — run `security-review` skill against the entire v1.0 surface, address findings, third-party dependency audit (`go mod tidy`, `pip-audit`, `npm audit`), secret-scanning check on git history. **Also content-level secret scanning of ingested files** (U7's option B, ~6–10 h). Today a key pasted into an ordinary source file is indexed and sent to OpenAI (`22-CONTEXT.md` U7's note). It was scheduled here, before launch, by the user's answer QU9 of 2026-09-29 (`22.2-CONTEXT.md` QD13).
 - [ ] 25-03: Incident runbook + ops docs — what to do when: LLM API down, DB slow / running out of connections, cost cap exceeded, GitHub App deauthorized, stuck ingestion jobs; on-call handoff notes even if it's just you
 - [ ] 25-04: User-facing + self-hosting docs — getting started guide, FAQ, limits, `docker-compose up` self-hosting doc that actually works standalone, API reference for the shipped endpoints
 
@@ -302,6 +321,7 @@ Plans:
 | 21. Ingestion Job Infrastructure | v1.0 | 7/7 | Complete | 2026-09-16 |
 | 22. pgvector Storage & the First Real Repository | v1.0 | 5/5 | Executed: 22-01 to 22-04 merged (PRs #48, #49, #53, #52); 22-05 in review (PR #58); A1–A11 met with evidence (`22-05-SUMMARY.md`) | - |
 | 22.1. Symbols, Incremental Updates, Progress & the Code Graph | v1.0 | 0/5 | Researched, decisions locked; plans not written | - |
+| 22.2. Retrieval Quality | v1.0 | 0/6 | Researched, decisions locked 2026-09-29; plans not written | - |
 | 23. Frontend Wiring & Onboarding UX | v1.0 | 0/5 | Not started | - |
 | 24. Production Deployment & Cost Controls | v1.0 | 0/5 | Not started | - |
 | 25. Launch Readiness & Ops | v1.0 | 0/4 | Not started | - |

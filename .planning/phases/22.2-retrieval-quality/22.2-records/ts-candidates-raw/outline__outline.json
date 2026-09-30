@@ -1,0 +1,340 @@
+{
+ "repo": "outline/outline",
+ "branch": "main",
+ "sha": "05ef55e38aeb3b625e819edab907c7ee2d33af8a",
+ "license": "NOASSERTION",
+ "archived": false,
+ "pushed_at": "2026-09-29T15:37:16Z",
+ "stars": 40757,
+ "truncated": false,
+ "counts": {
+  "test": 343,
+  "tsx": 737,
+  "ts": 1134,
+  "generated": 16,
+  "js": 7,
+  "migration": 306
+ },
+ "bytes": {
+  "test": 2749449,
+  "tsx": 3018281,
+  "ts": 4192944,
+  "generated": 20154,
+  "js": 28589,
+  "migration": 265059
+ },
+ "by_top": {
+  "app/components": {
+   "files": 327,
+   "bytes": 1126846
+  },
+  "shared/editor": {
+   "files": 205,
+   "bytes": 978036
+  },
+  "app/scenes": {
+   "files": 183,
+   "bytes": 814733
+  },
+  "server/models": {
+   "files": 75,
+   "bytes": 504741
+  },
+  "server/routes": {
+   "files": 130,
+   "bytes": 481329
+  },
+  "server/queues": {
+   "files": 100,
+   "bytes": 369889
+  },
+  "app/editor": {
+   "files": 61,
+   "bytes": 362823
+  },
+  "shared/utils": {
+   "files": 55,
+   "bytes": 198842
+  },
+  "server/utils": {
+   "files": 48,
+   "bytes": 196884
+  },
+  "app/actions": {
+   "files": 24,
+   "bytes": 167590
+  },
+  "app/stores": {
+   "files": 39,
+   "bytes": 155702
+  },
+  "app/hooks": {
+   "files": 79,
+   "bytes": 131662
+  },
+  "app/models": {
+   "files": 40,
+   "bytes": 130600
+  },
+  "server/emails": {
+   "files": 36,
+   "bytes": 118320
+  },
+  "app/utils": {
+   "files": 33,
+   "bytes": 108598
+  },
+  "server/commands": {
+   "files": 23,
+   "bytes": 108570
+  },
+  "server/tools": {
+   "files": 8,
+   "bytes": 99404
+  },
+  "plugins/gitlab": {
+   "files": 13,
+   "bytes": 67102
+  },
+  "plugins/webhooks": {
+   "files": 19,
+   "bytes": 64463
+  },
+  "server/storage": {
+   "files": 10,
+   "bytes": 57039
+  },
+  "plugins/notion": {
+   "files": 13,
+   "bytes": 53569
+  },
+  "server/policies": {
+   "files": 32,
+   "bytes": 52129
+  },
+  "plugins/slack": {
+   "files": 16,
+   "bytes": 51911
+  },
+  "server/presenters": {
+   "files": 41,
+   "bytes": 47122
+  },
+  "app/menus": {
+   "files": 26,
+   "bytes": 44427
+  },
+  "server/converters": {
+   "files": 8,
+   "bytes": 43632
+  },
+  "plugins/github": {
+   "files": 13,
+   "bytes": 41530
+  },
+  "server/middlewares": {
+   "files": 19,
+   "bytes": 40943
+  },
+  "shared/components": {
+   "files": 19,
+   "bytes": 38943
+  },
+  "plugins/passkeys": {
+   "files": 13,
+   "bytes": 37149
+  },
+  "server/collaboration": {
+   "files": 10,
+   "bytes": 33688
+  },
+  "server/scripts": {
+   "files": 16,
+   "bytes": 33262
+  },
+  "server/env.ts": {
+   "files": 1,
+   "bytes": 28594
+  },
+  "plugins/linear": {
+   "files": 11,
+   "bytes": 26282
+  },
+  "shared/types.ts": {
+   "files": 1,
+   "bytes": 25242
+  },
+  "plugins/search-postgres": {
+   "files": 2,
+   "bytes": 25043
+  },
+  "server/services": {
+   "files": 7,
+   "bytes": 24471
+  },
+  "plugins/oidc": {
+   "files": 9,
+   "bytes": 22865
+  },
+  "server/logging": {
+   "files": 5,
+   "bytes": 21564
+  },
+  "plugins/figma": {
+   "files": 10,
+   "bytes": 21411
+  },
+  "shared/styles": {
+   "files": 5,
+   "bytes": 16913
+  },
+  "shared/helpers": {
+   "files": 2,
+   "bytes": 15691
+  },
+  "server/types.ts": {
+   "files": 1,
+   "bytes": 15193
+  },
+  ".": {
+   "files": 2,
+   "bytes": 14034
+  },
+  "plugins/azure": {
+   "files": 7,
+   "bytes": 13441
+  },
+  "plugins/discord": {
+   "files": 7,
+   "bytes": 13216
+  },
+  "server/editor": {
+   "files": 4,
+   "bytes": 11713
+  },
+  "app/routes": {
+   "files": 4,
+   "bytes": 11288
+  },
+  "plugins/storage": {
+   "files": 4,
+   "bytes": 11045
+  },
+  "plugins/google": {
+   "files": 6,
+   "bytes": 9496
+  },
+  "app/types.ts": {
+   "files": 1,
+   "bytes": 8803
+  },
+  "shared/schema.ts": {
+   "files": 1,
+   "bytes": 8296
+  },
+  "plugins/email": {
+   "files": 3,
+   "bytes": 8206
+  },
+  "plugins/matomo": {
+   "files": 3,
+   "bytes": 7072
+  },
+  "plugins/umami": {
+   "files": 3,
+   "bytes": 7035
+  },
+  "plugins/diagrams": {
+   "files": 3,
+   "bytes": 6406
+  },
+  "server/main.ts": {
+   "files": 1,
+   "bytes": 6290
+  },
+  "server/errors.ts": {
+   "files": 1,
+   "bytes": 6012
+  },
+  "plugins/googleanalytics": {
+   "files": 3,
+   "bytes": 5919
+  },
+  "plugins/slab": {
+   "files": 6,
+   "bytes": 5840
+  },
+  "shared/validations.ts": {
+   "files": 1,
+   "bytes": 5649
+  },
+  "server/onerror.ts": {
+   "files": 1,
+   "bytes": 5433
+  },
+  "app/index.tsx": {
+   "files": 1,
+   "bytes": 4997
+  },
+  "plugins/enterprise": {
+   "files": 1,
+   "bytes": 4767
+  },
+  "plugins/zapier": {
+   "files": 3,
+   "bytes": 4688
+  },
+  "plugins/iframely": {
+   "files": 3,
+   "bytes": 3911
+  },
+  "server/validation.ts": {
+   "files": 1,
+   "bytes": 3699
+  },
+  "app/styles": {
+   "files": 2,
+   "bytes": 3683
+  },
+  "shared/constants.ts": {
+   "files": 1,
+   "bytes": 3361
+  },
+  "shared/random.ts": {
+   "files": 1,
+   "bytes": 2154
+  },
+  "server/onupgrade.ts": {
+   "files": 1,
+   "bytes": 2117
+  },
+  "shared/i18n": {
+   "files": 1,
+   "bytes": 2099
+  },
+  "server/index.ts": {
+   "files": 1,
+   "bytes": 2089
+  },
+  "shared/collaboration": {
+   "files": 1,
+   "bytes": 1536
+  },
+  "app/env.ts": {
+   "files": 1,
+   "bytes": 674
+  },
+  "server/context.ts": {
+   "files": 1,
+   "bytes": 667
+  },
+  "shared/hooks": {
+   "files": 2,
+   "bytes": 665
+  },
+  "shared/env.ts": {
+   "files": 1,
+   "bytes": 177
+  }
+ }
+}

@@ -1,0 +1,72 @@
+{
+ "repo": "shlinkio/shlink-web-client",
+ "branch": "develop",
+ "sha": "7101d5205d9758c31a16bd1f688292dd69a634ff",
+ "license": "MIT",
+ "archived": false,
+ "pushed_at": "2026-09-26T13:27:10Z",
+ "stars": 398,
+ "truncated": false,
+ "counts": {
+  "ts": 31,
+  "tsx": 31,
+  "test": 45,
+  "generated": 1
+ },
+ "bytes": {
+  "ts": 40192,
+  "tsx": 50776,
+  "test": 90037,
+  "generated": 38
+ },
+ "by_top": {
+  "src/servers": {
+   "files": 22,
+   "bytes": 44137
+  },
+  "src/common": {
+   "files": 12,
+   "bytes": 15054
+  },
+  "src/serviceWorkerRegistration.ts": {
+   "files": 1,
+   "bytes": 5245
+  },
+  "src/utils": {
+   "files": 10,
+   "bytes": 5201
+  },
+  ".": {
+   "files": 4,
+   "bytes": 3886
+  },
+  "src/app": {
+   "files": 2,
+   "bytes": 3784
+  },
+  "src/container": {
+   "files": 2,
+   "bytes": 3419
+  },
+  "src/service-worker.ts": {
+   "files": 1,
+   "bytes": 2951
+  },
+  "src/settings": {
+   "files": 3,
+   "bytes": 2407
+  },
+  "src/store": {
+   "files": 3,
+   "bytes": 2305
+  },
+  "src/api": {
+   "files": 1,
+   "bytes": 1435
+  },
+  "src/index.tsx": {
+   "files": 1,
+   "bytes": 1144
+  }
+ }
+}

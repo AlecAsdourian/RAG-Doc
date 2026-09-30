@@ -4,15 +4,25 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 ## Open Enhancements
 
-### ISS-037: The Go isolation harness's single reuse-by-name container collides across parallel worktrees at different migration versions
+### ISS-038: The noise penalty treats every `migrations/` directory as generated code, so application code under one is pushed out of the results
 
-**Found:** 2026-09-29, during 22-04 (PR #52), while 22-02 ran in a sibling worktree. Filed at PR #52's review (L8).
-**Owner:** 22-05, as its first task.
-**Severity:** medium — a fleet-workflow hazard; no product impact.
-
-**What happens.** `pkg/testing/isolation/container.go` names ONE container (`containerName`, :34) and reuses it by name (`WithReuseByName`, :120), so every worktree on a host shares it. When 22-02's run migrated the shared container to 000017 while 22-04's tree was still at 000016, golang-migrate refused every 22-04 run with `no migration found for version 17: read down for version 17 .: file does not exist` — the harness applies its own tree's migrations to a database already past them. 22-04 worked around it with a local, uncommitted rename of the constant until `main` (with 000017) was merged. The next pair of parallel plans with different newest migrations hits it again.
-
-**Fix, recommended by the review and adopted:** derive the container name from the worktree by default — `containerName + "-" + shortHash(worktreeRoot)` — with `ISOLATION_CONTAINER_NAME` as an override. **Not an env-only override**: that recreates the collision the first time someone forgets to set it. Cost: one Postgres container per worktree; the harness removes nothing, so stale ones are `docker rm -f`'d by hand as today. `docs/local-development.md`'s "The Postgres image" section names the container and needs the derived form.
+- **Discovered:** 2026-09-29, by the retrieval-quality track's research (`22.2-RESEARCH.md` R5), from the committed 22-03 records. Measured, not inferred.
+- **Type:** Retrieval quality
+- **Priority:** MEDIUM. It silently removes correct answers. It is a ranking default, so it is decided under the protocol, not patched.
+- **What happens:**
+  - `MetadataBooster.NOISE_PATTERNS` includes `(^|.*/)migrations/.*` (`metadata_booster.py:21`), multiplied by `noise_penalty` 0.3 (`:52`). That penalty is the one multiplier the neutral defaults (PR #32) kept.
+  - mealie's `mealie/services/migrations/` is application code: the importers from other recipe apps. The benchmark spec keeps it deliberately.
+  - In the 22-03 pgvector records, 113 entries across mealie's 45 boosted lists carry the 0.3. miniflux has none.
+- **One case, traced (ml-05, a tuning question):**
+  - The answer, `PaprikaMigrator._migrate`, is the vector leg's #1 (0.7847). The answer file holds the leg's #1, #2, #5 and #6, and six of the top eight carry the penalty.
+  - The penalty moves it to #26, and the final top five contains nothing from the file. That is a miss at both file and symbol level.
+- **The ingest filter disagrees.** 22-04's `VENDORED_DIRS` (`workers/fetch/filters.py:59`) does not treat `migrations/` as vendored. So the pipeline pays to embed code that ranking then discounts.
+- **Fix direction:**
+  - Narrow the pattern to schema-migration layouts: alembic `versions/`, Django's numbered `migrations/0001_*.py`, numbered SQL files.
+  - Or drop it, and keep schema migrations out at ingest.
+  - Either way, decide it with the keyword-leg decision, because it changes ranking.
+- **Owner (2026-09-29, the user's answer QU8):** 22.2-06. It is part of the keyword-leg bundle (with ISS-029 and ISS-028), decided under the protocol on its own fresh set.
+- **Related:** ISS-024 and ISS-025 (the other boosts), and `22.2-CONTEXT.md` QD9.
 
 ### ISS-036: `chunks.ingestion_run_id` and `chunks.symbol_id` carry no tenancy, so a tenant can cite another tenant's run or symbol on its own row
 
@@ -105,6 +115,7 @@ Enhancements discovered during execution. Not critical - address in future phase
   - ISS-025: identifiers extracted from stopwords, which let the breadcrumb boost fire on words like "the"
   - ISS-024: content boosts that never fire
   - ISS-028: breadcrumbs that match only whole qualified names
+- **Owner (2026-09-29, the user's answer QU8):** 22.2-06, the keyword-leg bundle with ISS-028 and ISS-038. It runs after the chunk-shape decision (ISS-026), on its own fresh set. The 22-03 records show the leg empty for all 90 benchmark questions (`22.2-RESEARCH.md` R5).
 
 ### ISS-028: Keyword search on breadcrumbs matches only whole qualified names
 
@@ -119,6 +130,9 @@ Enhancements discovered during execution. Not critical - address in future phase
   So the breadcrumb branch of keyword search (`FTSRetriever.search`, backed by migration 000006's GIN index) matches only a query containing the whole qualified name. `to_tsvector('english','RepositoriesHandler.Connect') @@ plainto_tsquery('english','connect')` is false.
 - **Why it matters:** migration 000006 says the index "enables searches like auth.middleware.validateToken", and that exact form does work. But a question that names a symbol only in part, such as "the Connect handler", never matches. For natural-language questions, the words in a breadcrumb add nothing to keyword search.
 - **Fix direction:** index a word-split form alongside the display value. Split on `.` and `_` and at lower-to-upper case boundaries, so `RepositoriesHandler.Connect` becomes `repositories handler connect`. Change the query expression and the GIN index expression together, so the index is still used. This changes ranking, so measure it against the harness's tuning and held-out sets rather than shipping it as a fix.
+- **Owner (2026-09-29, the user's answer QU8):** 22.2-06, in the keyword-leg bundle.
+  - It is a new indexed expression: a migration under ISS-031's rule and the seeded gate.
+  - The stored breadcrumb is not rewritten, because the benchmark's symbol scoring reads it.
 - **Not the empty-column bug.** That one, fixed in the same change that filed this, left the column NULL for every chunk. This one is about how a populated column is tokenized.
 
 ### ISS-027: Re-indexing a repository leaves every earlier run's vectors searchable
@@ -160,6 +174,15 @@ Enhancements discovered during execution. Not critical - address in future phase
 
   So the same code is indexed twice: once precisely, method by method, and once as a single blurred block — and the blurred copy is the one length bias rewards.
 - **Fix direction:** stop emitting a full class body when its methods are already chunked. Keep a short class chunk carrying the signature, docstring and method list. Re-splitting the body would only add a third copy. Re-measure on the quality harness before and after, and expect keyword-search length bias to fall sharply, since most of the >5,000-character chunks disappear.
+- **2026-09-29, a precondition, measured by the quality track's chunk census (`22.2-RESEARCH.md` R6):** a function chunk starts at `def` (`semantic_chunker.py:154-158`), so its decorators are outside it.
+  - mealie has 844 decorated definitions (773 functions, 71 classes). 466 of them have their decorators only inside an enclosing class chunk, which is this issue's duplicate. 105 have them in no chunk at all.
+  - Of the 270 route decorators (`@router.get("/…")`), 245 reach the index only through a class chunk.
+  - Removing the class body before decorators move into their method's own chunk would drop them from the index entirely. Phase 22.2 orders the two accordingly (`22.2-CONTEXT.md` QD6).
+  - Also measured: 147 of mealie's 679 class chunks are at least 80% covered by their own method chunks, and 31 of its 32 chunks over 5,000 characters are class chunks. In Go, 0 of miniflux's 329 are.
+- **Owner (2026-09-29, the user's answers QU4 and QU5):** Phase 22.2's chunk-shape decision, one bundled candidate.
+  - 22.2-04 builds the candidate and the user commits its rule.
+  - 22.2-05 decides it on the shared fresh set.
+  - Both come after 22.2-02 has moved decorators into their chunks.
 
 ### ISS-025: Whether the breadcrumb boost fires depends on which retriever found the chunk
 
@@ -177,6 +200,9 @@ Enhancements discovered during execution. Not critical - address in future phase
   - **OR keyword search:** the boost now also reaches chunks found by both retrievers. For OR with keyword weight 0.5, 15 of 40 ranks moved.
   - **Defect 3 now reaches more chunks:** its stopword matching can fire on more chunks than before.
 - **Fix direction:** restrict identifier extraction to genuinely code-shaped tokens: ones containing `_` or internal capitals, or quoted. Make fusion merge metadata rather than keep the first occurrence.
+- **Owner (2026-09-29, the user's answer QU8):** 22.2-06.
+  - Defect 3 is fixed there as a neutral cleanup. At today's neutral boosts it changes no ranking, and an equivalence run proves it at the 2e-6 tolerance.
+  - Defect 2 is moot since 22-03: both legs read the same row's metadata (`22.2-RESEARCH.md` R1).
 
 ### ISS-024: The content-based ranking boosts have never fired in production
 
@@ -187,6 +213,10 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Measured:** an instrumented query traced the booster at call time — **0 of 70** chunks carried `content`. A search for `"login error"` in quotes receives no quoted-term boost at all.
 - **Why the unit tests did not catch it:** `test_metadata_booster.py` builds chunks that include `content`, so it tests a path the pipeline never takes. Same shape as ISS-021, where the semantic cache passed its tests and never ran.
 - **Options, not yet decided:** boost the top-N *after* enrichment; have both retrievers return content; or delete the two boosts. Re-measure on the harness before choosing, since the identifier boost as written also matches stopwords (see ISS-025) and may be net harmful once it can fire.
+- **Decided 2026-09-29 (the user's answer QU8, `22.2-CONTEXT.md` QD9): delete the two boosts,** in 22.2-06.
+  - That means `quoted_match_boost` and `identifier_match_boost`, with their environment variables and configuration keys.
+  - They are 1.0 since the boost protocol's verdict (PR #32), so the deletion changes no ranking, and an equivalence run proves it.
+  - Bringing either back would be a ranking change, decided under the protocol.
 
 
 ### ISS-021: The semantic cache has never run, so a documented cost control has been absent since Phase 12
@@ -409,6 +439,26 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Recommendation:** the `AfterConnect` sentinel, giving deterministically **loud**. With `TenantScoper` in place an unscoped query is by definition a bug, and a bug that always throws is cheaper than one that sometimes returns `[]`. Still an operational-risk judgement — a 500 is worse than an empty list for a user who trips it — so it belongs to whoever owns that call, but it is now a pool-constructor line rather than a schema change.
 
 ## Closed Enhancements
+
+### ISS-037: The Go isolation harness's single reuse-by-name container collides across parallel worktrees at different migration versions ✅
+
+**Found:** 2026-09-29, during 22-04 (PR #52), while 22-02 ran in a sibling worktree. Filed at PR #52's review (L8).
+**Owner:** 22-05, as its first task.
+**Severity:** medium — a fleet-workflow hazard; no product impact.
+
+- **✅ CLOSED 2026-09-29, by its own fix PR, #56 (branch `fix/iss-037-harness-container-name`), ahead of 22-05 rather than inside it.** The fix is the one adopted below, measured:
+  - **The name:** `rag-doc-isolation-tests-pgv16-` and the first 12 hex digits of the SHA-256 of the checkout's root. The root is found five directories up from `container.go`'s compiled path, the way the migrations directory already was (which now derives from the same root), with symlinks and Windows letter case resolved; no git. `ISOLATION_CONTAINER_NAME` overrides it and must be lowercase `[a-z0-9_.-]`, at least two characters, starting with a letter or digit, or setup fails naming the variable. The constant is now `containerNamePrefix`. Each container carries the label `rag-doc.isolation.checkout` with the checkout that created it.
+  - **Real runs:** `go test ./pkg/testing/isolation/... -count=1` created `rag-doc-isolation-tests-pgv16-971ef0687c03` (id `003e79087fa0`, labelled with this worktree, `schema_migrations` 17, clean); a second run reused it (no create, same id and start time); after `docker stop`, a third run started the same id. A valid override created a container by that name; `ISOLATION_CONTAINER_NAME="Bad Name"` failed setup with the message and created nothing.
+  - **Unit tests,** `container_name_test.go`, no Docker: different checkouts give different names; one checkout gives one name, pinned for GitHub Actions' workspace path; the override wins; a name Docker could not use is refused; every derived name is a valid Docker name with the documented listing prefix; the root holds `services/backend/go.mod`.
+  - **Four mutations, four killed:** the bare constant (the "different checkouts" test and the pin fail), the override ignored, the override's check neutered, and the root one directory too high, which would hash `.claude/worktrees` and give every agent worktree one container again.
+  - **Suites, local:** `go test ./... -count=1 -p 1` on a scratch Postgres passes every package except `pkg/api/handlers`, whose only failure is the known CRLF-only `TestSignatureComparisonIsConstantTime`; that package passes with just that test skipped. Also locally, not in CI: the packages of CI's parallelism step plus `pkg/jobs` and `pkg/internalapi` (seven packages, that test skipped), run at default parallelism with no container to start from, passed and left exactly one container for the checkout. CI's own steps are unchanged, and all of them passed on #56.
+  - **Nothing else named the container** in code, CI or scripts. `docs/local-development.md` gives the derived form, the override, and how to list (by the label, `docker ps -a --filter label=rag-doc.isolation.checkout`, which also finds override names) and remove them. The Python conftest was never affected: it starts an unnamed container per pytest session and stops it at teardown.
+  - **#56's review, APPROVE WITH NITS, all five applied.** A root that is not absolute is refused before any container exists: under `go test -trimpath` every checkout derived the name ending `587fa80cee2f`, and with the override set the harness still failed on migrations, which are found from the same path. `TestResolveContainerName_RefusesTheRootTrimpathGives` pins the refusal, and mutation M5 (the guard neutered) is killed. Both `-trimpath` runs, with and without the override, now fail with the message and create nothing. The docs now cover the label listing, Windows junctions (not resolved under go 1.25's `winsymlink` default: one checkout reached two ways gets two containers, never two checkouts one), and a branch switch inside one checkout, which still gives ISS-037's own error (measured with 000017 removed: `no migration found for version 17`).
+  - **Left by hand:** the old shared `rag-doc-isolation-tests-pgv16` stays on developer machines, and a branch that has not merged `main` since the fix still uses it.
+
+**What happens.** `pkg/testing/isolation/container.go` names ONE container (`containerName`, :34) and reuses it by name (`WithReuseByName`, :120), so every worktree on a host shares it. When 22-02's run migrated the shared container to 000017 while 22-04's tree was still at 000016, golang-migrate refused every 22-04 run with `no migration found for version 17: read down for version 17 .: file does not exist` — the harness applies its own tree's migrations to a database already past them. 22-04 worked around it with a local, uncommitted rename of the constant until `main` (with 000017) was merged. The next pair of parallel plans with different newest migrations hits it again.
+
+**Fix, recommended by the review and adopted:** derive the container name from the worktree by default — `containerName + "-" + shortHash(worktreeRoot)` — with `ISOLATION_CONTAINER_NAME` as an override. **Not an env-only override**: that recreates the collision the first time someone forgets to set it. Cost: one Postgres container per worktree; the harness removes nothing, so stale ones are `docker rm -f`'d by hand as today. `docs/local-development.md`'s "The Postgres image" section names the container and needs the derived form.
 
 ### ISS-031: A migration that sets a tenant leaves the migrating session unable to read RLS tables, and CI cannot catch it ✅
 
