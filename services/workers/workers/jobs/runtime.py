@@ -183,6 +183,7 @@ override, and `docs/api-ingestion-jobs.md` records where each came from.
 from __future__ import annotations
 
 import logging
+import os
 import random
 import threading
 import time
@@ -584,9 +585,22 @@ def _merged_options_dsn(dsn: str, extra_options: str) -> str:
     So: parse the DSN, join the two `options` strings with a space (libpq
     splits them on whitespace), and rebuild it. `make_dsn` quotes the
     result, so an `options` containing spaces survives.
+
+    ⚠ AND `PGOPTIONS`, WHEN THE DSN NAMES NO OPTIONS (PR #58's review, A-N3).
+    libpq reads the `PGOPTIONS` environment variable only when the
+    connection string carries no `options`; once this adds some, it would be
+    ignored, and the heartbeat alone would lose what an operator set there
+    (measured by the review: the loop got `work_mem` 7MB from `PGOPTIONS`,
+    the heartbeat 4MB) -- including a role, if `PGOPTIONS` is where the
+    role is set. So an empty DSN `options` starts from `PGOPTIONS`, exactly
+    as libpq would have; `test_the_heartbeat_keeps_an_identity_set_through_
+    pgoptions` pins it on real connections. A DSN that names `options`
+    keeps libpq's own rule: `PGOPTIONS` does not apply to it.
     """
     params = parse_dsn(dsn)
     existing = (params.get("options") or "").strip()
+    if not existing:
+        existing = (os.environ.get("PGOPTIONS") or "").strip()
     params["options"] = f"{existing} {extra_options}" if existing else extra_options
     return make_dsn(**params)
 
