@@ -546,6 +546,12 @@ pipeline actually stores.
 | Breadcrumb | ancestor classes/functions + name | receiver type + name for methods (`metadata_builder.py:43-46`) | ancestors + name |
 | Docstring | in metadata | doc comment in metadata, **outside the span** (`semantic_chunker.py:179-186`) | JSDoc in metadata |
 
+*Corrected 2026-09-29, measured by the retrieval-quality track's census
+(`22.2-RESEARCH.md` R6): the TypeScript "Docstring" cell is wrong.*
+- `_extract_js_docstring` exists, but the chunker calls the extractor only in
+  its Go branch (`semantic_chunker.py:176-186`).
+- So no TypeScript chunk carries its JSDoc: 0 in every TS corpus measured.
+
 ### What D1's `(repository, file_path, symbol_path, kind, ordinal)` is missing
 
 1. **`symbol_path` cannot be the breadcrumb.** [read] `generate_breadcrumb`

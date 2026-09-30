@@ -223,6 +223,13 @@ Plans:
 **When:** after 22-03's equivalence check, and before Phase 23 (U10). It can run alongside 22-04, 22-05 and Phase 22.1. It is not a phase of its own.
 **Rule:** each item is decided under `services/workers/scripts/rag_benchmarks/boost-defaults-protocol.md`'s method: fresh blind questions, and a pass rule committed before the questions exist.
 **Estimate:** ~36–58 h in total. Order and costs are in `22-CONTEXT.md`.
+**Drafted 2026-09-29, not yet approved:** research, a draft context and draft acceptance criteria are in `.planning/phases/22.2-retrieval-quality/`. They propose:
+- the name **Phase 22.2** (QU1);
+- a chunker-correctness plan ahead of the three protocol runs;
+- linkwarden as the TypeScript corpus;
+- a revised estimate of ~66–104 h.
+
+The user's answers to QU1–QU10 are open. Until then, this section and `22-CONTEXT.md` stand.
 
 - [ ] Chunker: ISS-026 (class chunks without their method bodies)
 - [ ] Chunker: the TypeScript grammar, after adding a TS/JS benchmark corpus (the benchmark has none)

@@ -765,6 +765,18 @@ vector leg: the keyword leg was empty for 120 of the 130 questions (ISS-029),
 so a keyword-leg change has no equivalence evidence from 22-03 and needs the
 protocol's own fresh questions.
 
+*2026-09-29: the track is drafted in `../22.2-retrieval-quality/`.* That means
+research, a draft context and draft acceptance criteria, with the name
+"Phase 22.2" proposed. The draft proposes:
+- a chunker-correctness plan ahead of the three protocol runs;
+- a revised order around 22.1-01;
+- linkwarden as the TypeScript corpus;
+- the tolerance above fixed at 2e-6 (QD2);
+- ~66–104 h.
+
+Every decision in it is PROPOSED, pending the user's answers to QU1–QU10.
+**Until then, this section stands.**
+
 ---
 
 ## Boundaries

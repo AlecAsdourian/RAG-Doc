@@ -90,6 +90,19 @@ measures retrieval on this repository's own code. It asks 25 tuning questions an
   the same protocol: explore on tuning, and decide under a rule fixed before the
   deciding questions exist. ISS-025, ISS-026 and ISS-028 remain the known root
   causes.
+- **2026-09-29, the track drafted (not yet approved):**
+  `.planning/phases/22.2-retrieval-quality/` holds research with an offline
+  chunk census of eight corpora, a draft context in which every decision is
+  PROPOSED, ten questions for the user (QU1–QU10), and draft acceptance
+  criteria. The headlines:
+  - TypeScript is parsed with the JavaScript grammar: 351 of linkwarden's 379
+    files have parse errors, and 0 do with the TypeScript grammars. So a
+    correctness plan goes first.
+  - ISS-026 has to wait until decorators move into their functions' chunks:
+    245 of mealie's 270 route decorators reach the index only through the
+    duplicated class chunks.
+  - Ranking comes down to one decision, the keyword leg.
+  - ISS-038 is filed.
 
 **v2 substrate work, 2026-09-10.** `.planning/v2-substrate/` holds `DESIGN.md`
 (the RAG redesign and 21 fleet proposals), `RESEARCH.md` (R-A…R-G), `DECISIONS.md`
@@ -220,6 +233,7 @@ Recent decisions still affecting current work:
 - **ISS-033:** The webhook producers do not check `uninstalled_at`, so a push racing an uninstall queues a job under a dead installation — **filed 2026-09-16** by PR #40's review. LOW-MEDIUM and **conditional on 21-06**: if the worker abandons such a job at claim time (superseded, `never_synced`, no attempt consumed) the cost is one wasted round trip; if it instead lets the job fail its way to `dead`, the repository ends at `failed` and the priority rises. See ISSUES.md.
 - **ISS-027:** Re-indexing a repository leaves every earlier run's vectors searchable — **filed 2026-09-13.** Latent until something re-indexes; **HIGH before Phase 22 ships** (scheduled: 22-03 removes the second store; 22.1-02 closes it with per-file currency), and "filter to the latest run" is the wrong fix for incremental indexing. See ISSUES.md.
 - **ISS-024, ISS-025, ISS-026, ISS-028, ISS-029:** retrieval-quality findings, **filed 2026-09-13** with measurements. They are boosts that never fire, stopword identifiers, duplicate oversized class chunks, breadcrumbs matching only whole names, and keyword search returning nothing. **Fix these root causes before any further ranking tuning.**
+- **ISS-038:** the noise penalty treats every `migrations/` directory as generated code. In mealie it turned a correct #1 answer into a miss. **Filed 2026-09-29** by the quality track's research; it is to be decided with the keyword leg.
 - **ISS-030:** search returns partial or empty results as a success when a retriever fails — **✅ closed 2026-09-14** by PR #34. A failed retriever now fails the request: 503 on `/search` and `/chat`, an error frame on `/chat/stream`, with no exception text in any response. A query containing control characters is rejected at the boundary (400 in Go, 422 in Python). See ISSUES.md.
 - **Frontend inline-style pollution** — ongoing rule, cleaned per component touched
 - **Mocked repos/orgs/graph in frontend** — **replaced in Phase 23**

@@ -4,6 +4,25 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 ## Open Enhancements
 
+### ISS-038: The noise penalty treats every `migrations/` directory as generated code, so application code under one is pushed out of the results
+
+- **Discovered:** 2026-09-29, by the retrieval-quality track's research (`22.2-RESEARCH.md` R5), from the committed 22-03 records. Measured, not inferred.
+- **Type:** Retrieval quality
+- **Priority:** MEDIUM. It silently removes correct answers. It is a ranking default, so it is decided under the protocol, not patched.
+- **What happens:**
+  - `MetadataBooster.NOISE_PATTERNS` includes `(^|.*/)migrations/.*` (`metadata_booster.py:21`), multiplied by `noise_penalty` 0.3 (`:52`). That penalty is the one multiplier the neutral defaults (PR #32) kept.
+  - mealie's `mealie/services/migrations/` is application code: the importers from other recipe apps. The benchmark spec keeps it deliberately.
+  - In the 22-03 pgvector records, 113 entries across mealie's 45 boosted lists carry the 0.3. miniflux has none.
+- **One case, traced (ml-05, a tuning question):**
+  - The answer, `PaprikaMigrator._migrate`, is the vector leg's #1 (0.7847). The answer file holds the leg's #1, #2, #5 and #6, and six of the top eight carry the penalty.
+  - The penalty moves it to #26, and the final top five contains nothing from the file. That is a miss at both file and symbol level.
+- **The ingest filter disagrees.** 22-04's `VENDORED_DIRS` (`workers/fetch/filters.py:59`) does not treat `migrations/` as vendored. So the pipeline pays to embed code that ranking then discounts.
+- **Fix direction:**
+  - Narrow the pattern to schema-migration layouts: alembic `versions/`, Django's numbered `migrations/0001_*.py`, numbered SQL files.
+  - Or drop it, and keep schema migrations out at ingest.
+  - Either way, decide it with the keyword-leg decision (22.2-06 in the draft), because it changes ranking.
+- **Related:** ISS-024 and ISS-025 (the other boosts), and `22.2-CONTEXT.md` QD9 and QU8.
+
 ### ISS-037: The Go isolation harness's single reuse-by-name container collides across parallel worktrees at different migration versions
 
 **Found:** 2026-09-29, during 22-04 (PR #52), while 22-02 ran in a sibling worktree. Filed at PR #52's review (L8).
@@ -159,6 +178,11 @@ Enhancements discovered during execution. Not critical - address in future phase
 
   So the same code is indexed twice: once precisely, method by method, and once as a single blurred block — and the blurred copy is the one length bias rewards.
 - **Fix direction:** stop emitting a full class body when its methods are already chunked. Keep a short class chunk carrying the signature, docstring and method list. Re-splitting the body would only add a third copy. Re-measure on the quality harness before and after, and expect keyword-search length bias to fall sharply, since most of the >5,000-character chunks disappear.
+- **2026-09-29, a precondition, measured by the quality track's chunk census (`22.2-RESEARCH.md` R6):** a function chunk starts at `def` (`semantic_chunker.py:154-158`), so its decorators are outside it.
+  - mealie has 844 decorated definitions (773 functions, 71 classes). 466 of them have their decorators only inside an enclosing class chunk, which is this issue's duplicate. 105 have them in no chunk at all.
+  - Of the 270 route decorators (`@router.get("/…")`), 245 reach the index only through a class chunk.
+  - Removing the class body before decorators move into their method's own chunk would drop them from the index entirely. The draft track orders the two accordingly (`22.2-CONTEXT.md` QD6).
+  - Also measured: 147 of mealie's 679 class chunks are at least 80% covered by their own method chunks, and 31 of its 32 chunks over 5,000 characters are class chunks. In Go, 0 of miniflux's 329 are.
 
 ### ISS-025: Whether the breadcrumb boost fires depends on which retriever found the chunk
 
