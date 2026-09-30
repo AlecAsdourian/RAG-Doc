@@ -2,9 +2,12 @@ package isolation
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sync"
 	"testing"
@@ -18,20 +21,40 @@ import (
 )
 
 const (
-	// containerName is the stable name used for testcontainers reuse. A single
-	// Postgres container is shared across every test package in the repo.
+	// containerNamePrefix begins the name of the Postgres container the
+	// harness reuses. The whole name is per checkout: see
+	// resolveContainerName. Every test package in one checkout derives the
+	// same name, so they share one container, as before.
 	//
-	// ⚠ CHANGE THE NAME WHENEVER postgresImage CHANGES. testcontainers-go
+	// ⚠ CHANGE THE PREFIX WHENEVER postgresImage CHANGES. testcontainers-go
 	// v0.44.0's ReuseOrCreateContainer finds a container by NAME and uses it
 	// whatever its image (docker.go:1424-1441): there is no image
 	// comparison. Measured in 22-RESEARCH.md Q2: a leftover
 	// `postgres:16-alpine` container under the old name was reused by a
 	// harness asking for pgvector, and the first migration needing the
 	// extension failed with `extension "vector" is not available`. A new
-	// name means a stale container is simply not found. The old
-	// `rag-doc-isolation-tests` container is left on developer machines,
-	// unused; remove it by hand when convenient.
-	containerName = "rag-doc-isolation-tests-pgv16"
+	// prefix means a stale container is simply not found. Two old
+	// containers, `rag-doc-isolation-tests` (before 22-01) and
+	// `rag-doc-isolation-tests-pgv16` (the one shared container before
+	// ISS-037), are left on developer machines; docs/local-development.md
+	// says when they can be removed.
+	containerNamePrefix = "rag-doc-isolation-tests-pgv16"
+
+	// containerNameEnv overrides the derived name with a name of the
+	// developer's choosing, for example to share one container between
+	// checkouts known to be at the same migration version. An empty value
+	// counts as unset.
+	containerNameEnv = "ISOLATION_CONTAINER_NAME"
+
+	// containerNameHashLen is how many hex digits of the checkout's hash the
+	// name carries: 48 bits, the length of a short Docker id.
+	containerNameHashLen = 12
+
+	// checkoutLabel is the Docker label recording which checkout created a
+	// harness container, so a listing can tell a live worktree's container
+	// from one whose worktree is gone. Reuse ignores it: it matches the
+	// name alone.
+	checkoutLabel = "rag-doc.isolation.checkout"
 
 	// postgresImage is pinned by digest, and the same reference appears in
 	// the Python conftest, backend-ci.yml and docker-compose.yml. PostgreSQL
@@ -53,6 +76,57 @@ var (
 	setupOnce sync.Once
 	setupErr  error
 )
+
+// validContainerName is what an ISOLATION_CONTAINER_NAME value must match:
+// Docker's own rule for a container name, [a-zA-Z0-9][a-zA-Z0-9_.-]+
+// (daemon/names in docker v28.3.3), narrowed to lowercase. A derived name
+// matches it by construction: the prefix, a dash and hex digits.
+var validContainerName = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]+$`)
+
+// resolveContainerName returns the name of the container this checkout's
+// harness creates or reuses: ISOLATION_CONTAINER_NAME when it is set,
+// otherwise containerNamePrefix, a dash, and a short hash of the checkout's
+// root directory.
+//
+// ONE CONTAINER PER CHECKOUT, NOT ONE PER MACHINE (ISS-037). The harness
+// applies its own tree's migrations to whatever database it finds, and
+// golang-migrate refuses a database recorded at a version the tree does not
+// have. With a single name, every worktree on a machine shared one
+// container: 22-02's run migrated it to 17 while 22-04's tree was at 16,
+// and every 22-04 run then failed with "no migration found for version 17".
+// A name derived from the checkout gives each worktree its own container,
+// and the same one on every run; CI has one checkout, so one container, as
+// before. The cost is one Postgres per worktree, which the harness never
+// removes.
+//
+// The derived name is the default, and the variable only an override,
+// because a safety that has to be remembered brings the collision back the
+// first time someone forgets it.
+func resolveContainerName() (string, error) {
+	return containerNameFor(os.Getenv(containerNameEnv), checkoutRoot())
+}
+
+// containerNameFor is resolveContainerName with its two inputs passed in,
+// so a test can give it any checkout root.
+func containerNameFor(override, root string) (string, error) {
+	if override != "" {
+		if !validContainerName.MatchString(override) {
+			return "", fmt.Errorf("%s=%q is not a usable container name: "+
+				"use lowercase letters, digits, underscores, dots and dashes, "+
+				"starting with a letter or digit, at least two characters",
+				containerNameEnv, override)
+		}
+		return override, nil
+	}
+	return containerNamePrefix + "-" + shortHash(root), nil
+}
+
+// shortHash is the first containerNameHashLen hex digits of the SHA-256 of
+// s: lowercase hex, so always valid in a container name.
+func shortHash(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])[:containerNameHashLen]
+}
 
 // SetupTestDB returns a *pgxpool.Pool connected to an ephemeral Postgres with
 // all migrations applied. The Postgres container is reused across the test
@@ -95,16 +169,19 @@ func SetupTestDB(t *testing.T) *pgxpool.Pool {
 
 func setupContainer(ctx context.Context) error {
 	// Disable the Ryuk reaper so the reusable Postgres container survives
-	// between `go test` invocations. WithReuseByName finds an existing
-	// container only if it's still running — Ryuk would tear it down at the
-	// end of the first session, defeating reuse. This env var is read the
-	// first time testcontainers' config initialises, which happens inside
-	// postgres.Run below, so setting it here is early enough.
+	// between `go test` invocations. Ryuk would tear it down at the end of
+	// the first session, leaving nothing to reuse. WithReuseByName finds a
+	// stopped container as well as a running one and starts it
+	// (docker.go:1383-1385 and 1496-1507), so a Docker restart costs a
+	// start, not a new database. This env var is read the first time
+	// testcontainers' config initialises, which happens inside postgres.Run
+	// below, so setting it here is early enough.
 	//
-	// Consequence: the container named by containerName persists on the
-	// developer's Docker daemon until manually removed (`docker rm -f
-	// rag-doc-isolation-tests-pgv16`). Data is idempotent (migrations skip
-	// already-applied ones) and per-test fixtures clean themselves up.
+	// Consequence: this checkout's container (resolveContainerName) persists
+	// on the developer's Docker daemon until removed by hand, one per
+	// checkout; docs/local-development.md lists them and says how to remove
+	// them. Data is idempotent (migrations skip already-applied ones) and
+	// per-test fixtures clean themselves up.
 	//
 	// ⚠ golang-migrate never re-applies a version it has recorded, so after
 	// EDITING a migration that this container has already applied, remove
@@ -113,11 +190,17 @@ func setupContainer(ctx context.Context) error {
 		return fmt.Errorf("set ryuk-disabled env: %w", err)
 	}
 
+	name, err := resolveContainerName()
+	if err != nil {
+		return err
+	}
+
 	container, err := postgres.Run(ctx, postgresImage,
 		postgres.WithDatabase(postgresDB),
 		postgres.WithUsername(postgresUser),
 		postgres.WithPassword(postgresPass),
-		testcontainers.WithReuseByName(containerName),
+		testcontainers.WithReuseByName(name),
+		testcontainers.WithLabels(map[string]string{checkoutLabel: checkoutRoot()}),
 		testcontainers.WithWaitStrategy(
 			wait.ForLog("database system is ready to accept connections").
 				WithOccurrence(2).
@@ -125,7 +208,7 @@ func setupContainer(ctx context.Context) error {
 		),
 	)
 	if err != nil {
-		return fmt.Errorf("start postgres container: %w", err)
+		return fmt.Errorf("start postgres container %s: %w", name, err)
 	}
 
 	dsn, err := container.ConnectionString(ctx, "sslmode=disable")
@@ -290,12 +373,33 @@ func firstLine(s string) string {
 	return s
 }
 
-// migrationsDir returns the absolute path to services/backend/migrations relative
-// to this source file. Using runtime.Caller keeps the harness portable — it works
-// no matter what directory `go test` was invoked from.
+// migrationsDir returns the absolute path to services/backend/migrations in
+// the checkout this source file belongs to. Deriving it from checkoutRoot
+// keeps one anchor for both, so the migrations applied and the container
+// they are applied to always name the same checkout.
 func migrationsDir() string {
+	return filepath.Join(checkoutRoot(), "services", "backend", "migrations")
+}
+
+// checkoutRoot returns the absolute path of the repository checkout (a
+// worktree's own root, in a worktree) that this source file was compiled
+// from. It reads the path the compiler recorded, via runtime.Caller, so it
+// needs no git and works whatever directory `go test` runs in.
+func checkoutRoot() string {
 	_, thisFile, _, _ := runtime.Caller(0)
 	// this file: services/backend/pkg/testing/isolation/container.go
-	// target:    services/backend/migrations
-	return filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "migrations")
+	// target:    the checkout root, five directories up from its directory
+	return canonicalPath(filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "..", ".."))
+}
+
+// canonicalPath resolves symlinks and, on Windows, letter case, so one
+// checkout reached by two spellings derives one container name (measured on
+// go1.25, windows: a lower-cased checkout path comes back in its on-disk
+// case). A path that cannot be resolved is returned cleaned; the harness
+// then fails on the migrations under it, which says more than a name would.
+func canonicalPath(p string) string {
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return resolved
+	}
+	return filepath.Clean(p)
 }
