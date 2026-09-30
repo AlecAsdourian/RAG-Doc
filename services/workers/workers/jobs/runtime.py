@@ -29,40 +29,25 @@ Until `stop` is set:
      registry, so a deployed worker cannot reach this.
   5. **`mark_started`** -- and not before step 3. See the table.
   6. **Start the heartbeat thread**, on ITS OWN CONNECTION.
-  7. **Run the handler.** Returned normally -> `complete` with whatever
-     `write_results` it gave back, UNLESS the lease was lost meanwhile, in
-     which case write nothing. Raised `Unfinished` -> `defer` with the
-     attempt handed back. Raised `Rejected` -> `reject` (`dead` in one
-     attempt). Raised `InstallationSuspended` -> `defer` an hour with the
-     attempt handed back; `InstallationUninstalled` -> `abandon`. Raised
-     anything else -> `fail`. `LeaseLost` from either -> log a warning and
-     carry on; the job belongs to someone else now. The table under
-     "THE ENDINGS" below is the whole mapping.
+  7. **Run the handler, and write the ending its return or its exception
+     calls for** -- `complete` UNLESS the lease was lost meanwhile, in
+     which case nothing. See "THE ENDINGS" below.
   8. **Stop the heartbeat thread** and join it.
 
 =====================================================================
-THE ENDINGS (22-05; `docs/api-ingestion-jobs.md` is the authority)
+THE ENDINGS
 =====================================================================
 
-The exception TYPE a handler raises is the contract. Each ending that
-exists at claim time (21-06) is reused mid-run, so an installation that
-changes state while a job runs ends exactly as it would have at the claim:
-
-| The handler...                 | Ending    | Written                                   |
-|--------------------------------|-----------|-------------------------------------------|
-| returns `write_results`        | complete  | `completed`, `synced`                     |
-| raises `Unfinished` (shutdown) | defer 0   | `queued`, attempt handed back             |
-| raises `Unfinished` otherwise  | fail      | attempt consumed, backoff                 |
-| raises `Rejected` (a U6 cap)   | reject    | `dead` in ONE attempt, `failed`           |
-| raises `InstallationSuspended` | defer 60m | `queued`, attempt handed back, no projection |
-| raises `InstallationUninstalled` | abandon | `superseded`, `never_synced`              |
-| raises `LeaseLost`             | nothing   | the job is someone else's                 |
-| raises anything else           | fail      | attempt consumed, backoff, `dead` at 5    |
-
-`write_results` raising inside `complete`'s transaction is settled the
-same way as the handler raising, after the rollback: its results are gone
-with the completion, so the job must say why rather than sit `running`
-until its lease expires.
+The exception TYPE a handler raises is the contract, and
+`docs/api-ingestion-jobs.md`, "How a job ends", is its AUTHORITY: the one
+table of which exception takes which ending, and why. This module keeps no
+copy of it (three files with three lists is the failure mode
+`21-CONTEXT.md` opens by naming). `_invoke` handles `LeaseLost` (write
+nothing) and `Unfinished` (a deferral only during a shutdown); `_settle`
+handles everything else, in the table's order; and since 22-05 an exception
+from `write_results` inside `complete`'s transaction is settled the same
+way, after the rollback, rather than leaving the job `running` until its
+lease expires.
 
 =====================================================================
 ⚠ THE INSTALLATION IS READ AT CLAIM TIME, NOT AT ENQUEUE TIME
@@ -160,13 +145,9 @@ never abandons a job mid-write, and it never kills a handler.
   - `is_shutting_down()` -- **the worker is going away; the job is still
     ours.** What gets written depends entirely on how the handler ends.
 
-Three endings, and a handler picks one:
-
-  return              done            -> `complete`
-  raise Unfinished    stopped early   -> `defer` DURING A SHUTDOWN, with the
-                                         attempt handed back; `fail` at any
-                                         other time
-  raise anything else failed          -> `fail`, attempt consumed
+During a shutdown a handler either finishes (`return` -> `complete`) or
+stops early with `raise Unfinished` -> `defer`, the attempt handed back
+(the rest of the endings are `docs/api-ingestion-jobs.md`'s table).
 
 ⚠ `Unfinished` IS ONLY FREE DURING A SHUTDOWN, and the condition is the
 bound. `defer(timedelta(0))` neither consumes an attempt nor moves
@@ -572,22 +553,18 @@ WriteResults = Callable[[Any], None]
 #: A job handler. Takes the context, does the work, and returns its
 #: `write_results` callback -- or None.
 #:
-#: The exception type is the contract; the module docstring's "THE ENDINGS"
-#: table is the whole of it. The four a handler reaches for most:
+#: The exception type it raises is the contract; `docs/api-ingestion-jobs.md`,
+#: "How a job ends", is the authority for which ending each one takes.
 #:
-#:   return        the job is DONE          -> `complete`
-#:   raise Unfinished   stopped part-way    -> `defer`, attempt handed back
-#:   raise Rejected     a hard cap          -> `reject`, `dead` in one attempt
-#:   raise anything else    it FAILED       -> `fail`, attempt consumed
-#:
-#: ⚠ THE FIRST TWO ARE THE ONES THAT GET CONFUSED. The worker cannot tell
-#: an unfinished return from a finished one, so a bare `return` during a
-#: shutdown writes `completed` over work that did not happen. `Unfinished`
-#: is the difference; see its docstring for the row PR #42's review
-#: produced without it. The same lesson, one level in: a handler that finds
-#: the job is not its own any more (`should_abort()`, or a refused token)
-#: raises `LeaseLost` rather than returning, because `COMPLETE_SQL` does not
-#: check the lease's EXPIRY and would write `completed` for undone work.
+#: ⚠ A RETURN AND AN EARLY STOP ARE THE ONES THAT GET CONFUSED. The worker
+#: cannot tell an unfinished return from a finished one, so a bare `return`
+#: during a shutdown writes `completed` over work that did not happen.
+#: `Unfinished` is the difference; see its docstring for the row PR #42's
+#: review produced without it. The same lesson, one level in: a handler that
+#: finds the job is not its own any more (`should_abort()`, or a refused
+#: token) raises `LeaseLost` rather than returning, because `COMPLETE_SQL`
+#: does not check the lease's EXPIRY and would write `completed` for undone
+#: work.
 Handler = Callable[["JobContext"], Optional[WriteResults]]
 
 
@@ -1304,10 +1281,11 @@ class Worker:
             self._settle(conn, job, exc)
 
     def _settle(self, conn: Any, job: Job, exc: Exception) -> None:
-        """Write the ending a handler's exception calls for (see THE ENDINGS).
+        """Write the ending a handler's exception calls for.
 
-        ⚠ THE ORDER OF THE `isinstance` TESTS IS THE ORDER OF THE TABLE, and
-        the catch-all is last. `Rejected` before the rest so a cap is never
+        `docs/api-ingestion-jobs.md`, "How a job ends", is the authority for
+        the mapping. ⚠ THE ORDER OF THE `isinstance` TESTS IS THAT TABLE'S,
+        and the catch-all is last. `Rejected` before the rest so a cap is never
         a retried `fail`; the two installation exceptions before the
         catch-all so a mid-run suspension defers exactly as a claim-time
         one does -- the earlier plan mapped it to `Rejected`, which would

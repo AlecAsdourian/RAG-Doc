@@ -19,22 +19,23 @@ one transactional write:
      set with their vectors and model, mark the run completed. The chunks,
      the run and the job's completion commit together or not at all (L1).
 
-⚠ THE ENDINGS ARE THE CONTRACT (`workers.jobs.runtime`, "THE ENDINGS"):
+⚠ WHAT IT RAISES, AND WHEN. Which ending each exception takes is
+`docs/api-ingestion-jobs.md`, "How a job ends" -- the authority, not
+restated here. What this handler owns is choosing the exception:
 
-  - `should_abort()` between stages, or a refused token (`TokenRefused`, the
-    route's MARKED 404) -> **raise `LeaseLost`**, so nothing is written.
-    Never `return`: `COMPLETE_SQL` does not check the lease's expiry, so an
-    expired-but-unreclaimed lease would reach `complete()` and write
-    `completed` for work that was never done (fact-check c2).
-  - `is_shutting_down()` between stages -> **raise `Unfinished`**: deferred,
-    attempt handed back, picked up by the next worker.
-  - a U6 cap -> `Rejected` (the fetcher's `FetchRejected` is one) -> `dead`.
+  - `should_abort()` at a checkpoint, or a refused token (`TokenRefused`,
+    the route's MARKED 404) -> **`LeaseLost`**. Never a `return`:
+    `COMPLETE_SQL` does not check the lease's expiry, so an expired but
+    unreclaimed lease would reach `complete()` and write `completed` for
+    work that was never done (fact-check c2).
+  - `is_shutting_down()` at a checkpoint -> **`Unfinished`**.
+  - a U6 cap -> **`Rejected`**: its own 100,000-chunk cap here, the
+    fetcher's caps as `FetchRejected`.
   - `InstallationSuspended` / `InstallationUninstalled` from the token route
-    -> propagate unchanged: the runtime defers an hour / abandons, as at
-    claim time.
+    -> propagated unchanged.
   - `InternalApiMisrouted` (an UNMARKED answer: `INTERNAL_API_URL` reaches
-    something that is not the route) and everything else -> propagate: a
-    plain, retried failure with `last_error` saying why (fact-check c3).
+    something that is not the route) and everything else -> propagated
+    unchanged, never turned into a lost lease (fact-check c3).
 
 ⚠ `progress` IS CUMULATIVE. `PROGRESS_SQL` replaces the whole column, so
 every report carries the ONE running dict, each stage adding its keys and

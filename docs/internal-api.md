@@ -49,7 +49,11 @@ matter of middleware ordering; on a separate listener it is a matter of
   start. `internalapi.CheckListenAddr` is the judge and `listen_addr_test.go`
   pins the spellings.
 - In compose it is exposed on the compose network only. **It is never in
-  `ports:`.** (22-05 adds the compose wiring; 22-04 adds none.)
+  `ports:`.** 22-05 added the wiring: the backend's `expose: ["8081"]` and
+  `INTERNAL_ADDR=backend:8081`, and the worker's
+  `INTERNAL_API_URL=http://backend:8081`;
+  `services/workers/tests/test_compose_environment.py` checks all three,
+  and that nothing publishes 8081.
 - **Phase 24 carries "keep the token route internal-only" as a deployment
   requirement.** Publishing this address would let anyone who can read a
   `lease_owner` mint repository tokens.
@@ -115,8 +119,10 @@ token is proven to reach the repository before the worker is handed it.
    fake in tests; 22-05's live proof validates it against the real API.)
 
 4. **One log line per mint**: job, organization, repository, GitHub
-   repository id, installation, name and expiry. **Never the token, never
-   the lease owner.**
+   repository id, installation, name and expiry, and since 22-05 the scope
+   GitHub **reported** in the mint reply, as the checks above accepted it
+   (`reported_repository_ids`, `reported_permissions` as sorted
+   `name:level` pairs). **Never the token, never the lease owner.**
 
 ### The 404 is one 404
 
@@ -129,9 +135,9 @@ not merely all 404.
 
 ### The marker
 
-The worker treats a 404 as "the lease is not mine" — and 22-05 turns that into
-`LeaseLost`, which **writes nothing** — **only when the marker is present and
-the body is the fixed one**. Any response without the marker, a 404 included,
+The worker treats a 404 as "the lease is not mine" — and the ingest handler
+turns that into `LeaseLost`, which **writes nothing** (22-05) — **only when the
+marker is present and the body is the fixed one**. Any response without the marker, a 404 included,
 is `InternalApiMisrouted`: a plain exception, so the job fails loudly, an
 attempt is consumed, and `last_error` names the host the request reached.
 
@@ -166,9 +172,14 @@ is what bounds the risk to that process.
 **The lease gates issuance, not validity.** Measured in PR #52's review (L1):
 once the lease expires the route refuses, but a token it already issued stays
 valid for GitHub's full hour, and nothing on this side can shorten it. So
-**22-05 revokes the token** — `DELETE /installation/token`, authenticated by
-the token being revoked, no App key involved — when the fetch ends and on
-`LeaseLost`, so the credential's life is the fetch rather than the hour.
+**the worker revokes the token** (22-05, `workers.fetch.revoke_token`) —
+`DELETE /installation/token`, authenticated by the token being revoked, no
+App key involved — **the moment the fetch ends, on every path**: after a good
+fetch, a cap, a failed download, and before any later stage could raise
+`LeaseLost`, so the credential's life is the fetch rather than the hour. A
+failed revocation never fails the job; it is logged with the host and the
+status or exception class, never the token, and the token then lives out its
+own hour.
 
 **What the network position is worth.** On a private compose network, the
 lease owner plus reachability is the whole authentication, and the review ruled
@@ -205,6 +216,13 @@ tree. The download link GitHub redirects to may carry a credential of its
 own; it is never logged. **The fetcher holds `httpx`'s logger at WARNING**
 because, measured, `httpx` logs every request URL at INFO — the redirect link
 included.
+
+The caller is the `full_ingest` handler (`workers.ingest.handler`, 22-05):
+it requests the token, fetches, revokes, and maps the exceptions onto the
+runtime's endings as [`api-ingestion-jobs.md`](api-ingestion-jobs.md#how-a-job-ends)
+records them. `InstallationSuspended` and `InstallationUninstalled` are
+defined by the runtime (`workers.jobs.runtime`) and re-exported here, so there
+is one class of each.
 
 ---
 
