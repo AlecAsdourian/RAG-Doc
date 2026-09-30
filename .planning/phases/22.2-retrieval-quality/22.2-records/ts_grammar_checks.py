@@ -57,6 +57,10 @@ def main():
     grammars = {"typescript": Language(tree_sitter_typescript.language_typescript()),
                 "tsx": Language(tree_sitter_typescript.language_tsx())}
     print("1. the parser's current \"typescript\" queries, compiled against the TypeScript grammars")
+    # The same class query with its name node renamed to the TypeScript
+    # grammars' `type_identifier`, to show that one change is what it needs.
+    ts_texts["classes, name as type_identifier"] = ts_texts["classes"].replace(
+        "name: (identifier)", "name: (type_identifier)")
     for name, text in ts_texts.items():
         for gname, language in grammars.items():
             try:

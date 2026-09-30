@@ -3,6 +3,8 @@
    functions under tsx       : compiles
    classes   under typescript: QueryError: Impossible pattern at row 1, column 25
    classes   under tsx       : QueryError: Invalid syntax at row 1, column 0
+   classes, name as type_identifier under typescript: compiles
+   classes, name as type_identifier under tsx       : compiles
 
 2. the existing TypeScript parser tests' inputs (workers/parser/test_parser.py)
    test_extract_typescript_function: chunker's grammar has_error=True (ERROR nodes 2); TypeScript grammar has_error=False
