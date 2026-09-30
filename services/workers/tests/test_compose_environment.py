@@ -1,4 +1,4 @@
-"""The compose `workers` service, resolved: no App key, and no accidental start (22-05).
+"""The compose `workers` service, resolved: no App key, no accidental start, a graceful stop (22-05).
 
 Reads `docker compose ... config --format json`, which is the environment a
 container would actually get -- anything an `env_file:` or a variable adds
@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import shutil
 import subprocess
 from typing import Dict, List, Optional
@@ -92,6 +93,8 @@ def _shape(profile: Optional[str]) -> Dict[str, object]:
         shape["workers_depends_on"] = sorted((workers.get("depends_on") or {}).keys())
         shape["workers_replicas"] = (workers.get("deploy") or {}).get("replicas")
         shape["workers_ports"] = len(workers.get("ports") or [])
+        shape["workers_stop_grace_period"] = workers.get("stop_grace_period")
+        shape["workers_restart"] = workers.get("restart")
         internal_url = environment.get("INTERNAL_API_URL") if isinstance(environment, dict) else None
         shape["internal_api_url_host_port"] = (
             (urlsplit(internal_url).hostname, urlsplit(internal_url).port) if internal_url else None
@@ -141,6 +144,31 @@ def test_the_workers_service_has_what_it_needs_and_the_provisional_pool():
     assert shape["workers_depends_on"] == ["postgres"]
     assert shape["workers_replicas"] == 2, "P16: two worker processes, provisional until 22.1-05"
     assert shape["workers_ports"] == 0, "the worker serves nothing"
+
+
+def test_the_workers_service_stops_gracefully_and_restarts_a_bounded_number_of_times():
+    """PR #58's review, A-L4: two minutes to stop, and a bounded restart.
+
+    Docker's default ten seconds would SIGKILL a worker mid-stage on every
+    `docker compose stop`, skipping each `finally`; and with no restart
+    policy, the exit 1 `workers/__main__` gives for an unreachable database
+    restarts nothing. The bound keeps an exit-2 refusal from looping. The
+    reasons for both values are beside them in `docker-compose.yml`.
+    """
+    shape = _shape("ingest")
+    grace = shape["workers_stop_grace_period"]
+    assert _duration_seconds(grace) == 120.0, f"stop_grace_period resolved to {grace!r}, not two minutes"
+    assert shape["workers_restart"] == "on-failure:5", shape["workers_restart"]
+
+
+def _duration_seconds(value: Optional[str]) -> Optional[float]:
+    """A Go-style duration as compose renders it ('2m0s') in seconds; None if unset."""
+    if not value:
+        return None
+    units = {"h": 3600.0, "m": 60.0, "s": 1.0, "ms": 0.001}
+    parts = re.findall(r"(\d+(?:\.\d+)?)(ms|h|m|s)", value)
+    assert "".join(a + u for a, u in parts) == value, f"not a duration: {value!r}"
+    return sum(float(amount) * units[unit] for amount, unit in parts)
 
 
 def test_the_internal_listener_is_exposed_on_the_network_and_never_published():
