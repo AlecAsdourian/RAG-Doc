@@ -20,8 +20,9 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Fix direction:**
   - Narrow the pattern to schema-migration layouts: alembic `versions/`, Django's numbered `migrations/0001_*.py`, numbered SQL files.
   - Or drop it, and keep schema migrations out at ingest.
-  - Either way, decide it with the keyword-leg decision (22.2-06 in the draft), because it changes ranking.
-- **Related:** ISS-024 and ISS-025 (the other boosts), and `22.2-CONTEXT.md` QD9 and QU8.
+  - Either way, decide it with the keyword-leg decision, because it changes ranking.
+- **Owner (2026-09-29, the user's answer QU8):** 22.2-06. It is part of the keyword-leg bundle (with ISS-029 and ISS-028), decided under the protocol on its own fresh set.
+- **Related:** ISS-024 and ISS-025 (the other boosts), and `22.2-CONTEXT.md` QD9.
 
 ### ISS-036: `chunks.ingestion_run_id` and `chunks.symbol_id` carry no tenancy, so a tenant can cite another tenant's run or symbol on its own row
 
@@ -114,6 +115,7 @@ Enhancements discovered during execution. Not critical - address in future phase
   - ISS-025: identifiers extracted from stopwords, which let the breadcrumb boost fire on words like "the"
   - ISS-024: content boosts that never fire
   - ISS-028: breadcrumbs that match only whole qualified names
+- **Owner (2026-09-29, the user's answer QU8):** 22.2-06, the keyword-leg bundle with ISS-028 and ISS-038. It runs after the chunk-shape decision (ISS-026), on its own fresh set. The 22-03 records show the leg empty for all 90 benchmark questions (`22.2-RESEARCH.md` R5).
 
 ### ISS-028: Keyword search on breadcrumbs matches only whole qualified names
 
@@ -128,6 +130,9 @@ Enhancements discovered during execution. Not critical - address in future phase
   So the breadcrumb branch of keyword search (`FTSRetriever.search`, backed by migration 000006's GIN index) matches only a query containing the whole qualified name. `to_tsvector('english','RepositoriesHandler.Connect') @@ plainto_tsquery('english','connect')` is false.
 - **Why it matters:** migration 000006 says the index "enables searches like auth.middleware.validateToken", and that exact form does work. But a question that names a symbol only in part, such as "the Connect handler", never matches. For natural-language questions, the words in a breadcrumb add nothing to keyword search.
 - **Fix direction:** index a word-split form alongside the display value. Split on `.` and `_` and at lower-to-upper case boundaries, so `RepositoriesHandler.Connect` becomes `repositories handler connect`. Change the query expression and the GIN index expression together, so the index is still used. This changes ranking, so measure it against the harness's tuning and held-out sets rather than shipping it as a fix.
+- **Owner (2026-09-29, the user's answer QU8):** 22.2-06, in the keyword-leg bundle.
+  - It is a new indexed expression: a migration under ISS-031's rule and the seeded gate.
+  - The stored breadcrumb is not rewritten, because the benchmark's symbol scoring reads it.
 - **Not the empty-column bug.** That one, fixed in the same change that filed this, left the column NULL for every chunk. This one is about how a populated column is tokenized.
 
 ### ISS-027: Re-indexing a repository leaves every earlier run's vectors searchable
@@ -171,8 +176,12 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **2026-09-29, a precondition, measured by the quality track's chunk census (`22.2-RESEARCH.md` R6):** a function chunk starts at `def` (`semantic_chunker.py:154-158`), so its decorators are outside it.
   - mealie has 844 decorated definitions (773 functions, 71 classes). 466 of them have their decorators only inside an enclosing class chunk, which is this issue's duplicate. 105 have them in no chunk at all.
   - Of the 270 route decorators (`@router.get("/…")`), 245 reach the index only through a class chunk.
-  - Removing the class body before decorators move into their method's own chunk would drop them from the index entirely. The draft track orders the two accordingly (`22.2-CONTEXT.md` QD6).
+  - Removing the class body before decorators move into their method's own chunk would drop them from the index entirely. Phase 22.2 orders the two accordingly (`22.2-CONTEXT.md` QD6).
   - Also measured: 147 of mealie's 679 class chunks are at least 80% covered by their own method chunks, and 31 of its 32 chunks over 5,000 characters are class chunks. In Go, 0 of miniflux's 329 are.
+- **Owner (2026-09-29, the user's answers QU4 and QU5):** Phase 22.2's chunk-shape decision, one bundled candidate.
+  - 22.2-04 builds the candidate and the user commits its rule.
+  - 22.2-05 decides it on the shared fresh set.
+  - Both come after 22.2-02 has moved decorators into their chunks.
 
 ### ISS-025: Whether the breadcrumb boost fires depends on which retriever found the chunk
 
@@ -190,6 +199,9 @@ Enhancements discovered during execution. Not critical - address in future phase
   - **OR keyword search:** the boost now also reaches chunks found by both retrievers. For OR with keyword weight 0.5, 15 of 40 ranks moved.
   - **Defect 3 now reaches more chunks:** its stopword matching can fire on more chunks than before.
 - **Fix direction:** restrict identifier extraction to genuinely code-shaped tokens: ones containing `_` or internal capitals, or quoted. Make fusion merge metadata rather than keep the first occurrence.
+- **Owner (2026-09-29, the user's answer QU8):** 22.2-06.
+  - Defect 3 is fixed there as a neutral cleanup. At today's neutral boosts it changes no ranking, and an equivalence run proves it at the 2e-6 tolerance.
+  - Defect 2 is moot since 22-03: both legs read the same row's metadata (`22.2-RESEARCH.md` R1).
 
 ### ISS-024: The content-based ranking boosts have never fired in production
 
@@ -200,6 +212,10 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Measured:** an instrumented query traced the booster at call time — **0 of 70** chunks carried `content`. A search for `"login error"` in quotes receives no quoted-term boost at all.
 - **Why the unit tests did not catch it:** `test_metadata_booster.py` builds chunks that include `content`, so it tests a path the pipeline never takes. Same shape as ISS-021, where the semantic cache passed its tests and never ran.
 - **Options, not yet decided:** boost the top-N *after* enrichment; have both retrievers return content; or delete the two boosts. Re-measure on the harness before choosing, since the identifier boost as written also matches stopwords (see ISS-025) and may be net harmful once it can fire.
+- **Decided 2026-09-29 (the user's answer QU8, `22.2-CONTEXT.md` QD9): delete the two boosts,** in 22.2-06.
+  - That means `quoted_match_boost` and `identifier_match_boost`, with their environment variables and configuration keys.
+  - They are 1.0 since the boost protocol's verdict (PR #32), so the deletion changes no ranking, and an equivalence run proves it.
+  - Bringing either back would be a ranking change, decided under the protocol.
 
 
 ### ISS-021: The semantic cache has never run, so a documented cost control has been absent since Phase 12

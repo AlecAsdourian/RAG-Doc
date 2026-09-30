@@ -9,7 +9,7 @@ See: .planning/PROJECT.md (updated 2026-01-08; product-vision reframe recorded i
 
 ## Current Position
 
-Milestone: v1.0 MVP (10 phases: 17-25, plus 22.1 inserted 2026-09-17)
+Milestone: v1.0 MVP (11 phases: 17-25, plus 22.1 inserted 2026-09-17 and 22.2 on 2026-09-29)
 Phase: **22 IN EXECUTION, four of five plans merged. 2026-09-29: 22-01 merged as `4a3b16c` (PR #48), after two review rounds; 22-02 as `68a3af2` (PR #49); 22-03 as `b553ac8` (PR #53); 22-04 as `e2c25ff` (PR #52). Acceptance criteria A1–A5, A7 and A8 are met and A6 is met as qualified (`22-ACCEPTANCE.md`); A9 and A10 are 22-05's. 22-02 was: `chunks` partitioned by organization with row-level security on every partition, `symbols` created, the retrievals key dropped, and every writer of `chunks` moved in the same PR (`22-02-SUMMARY.md`).** Plans 22-01 to 22-05 merged as `ac95151` (PR #47) on 2026-09-17; writing them moved four boundaries, recorded in `22-CONTEXT.md` under the split. Researched and scoped the same day (PR #45): The user approved splitting it into **Phase 22** (pgvector storage, and one real repository indexed end to end) and **Phase 22.1** (symbols, incremental updates, progress and the code graph), with a retrieval-quality track between 22-03 and Phase 23. The user answered U1–U10 and took every recommendation. **`22-CONTEXT.md` is the authority** for the split, the plans, the answers and every decision; this file keeps no copy of any of them. **Next: execute 22-05.**
 Phase 21: COMPLETE — Ingestion Job Infrastructure, all seven plans executed (21-01 merged as `fbb9793` / PR #37; 21-02 as `58ca2e8` / PR #38; 21-03 as `3068a42` / PR #39; 21-04 as `0c63917` / PR #40; 21-05 as `a92df5f` / PR #41; 21-06 as `de6b6e9` / PR #42; 21-07 as `b1aac04` / PR #43, which returned **APPROVE WITH NITS** and had its four minors and two nits applied before merge). Phase 22, the phase that makes the queue do something, came next and is now researched (see the Phase line above). **What turns it on is the list in `docs/api-ingestion-jobs.md` under "The Phase 22 hand-off", which is the authority** — this file deliberately keeps no copy of it, because PR #43's review found three files carrying three different versions and that is the failure mode `21-CONTEXT.md` opens by naming. Phase 20 COMPLETE — all five plans merged.
 Plan: Phases 17, 19, 20 and 21 closed. Phase 21 was researched 2026-09-10 (`21-RESEARCH.md`, `21-CONTEXT.md`); eight decisions locked (L1-L8); planned 2026-09-14; **ISS-016 is now closed on evidence in 21-07**, and ISS-023 (retrying a `dead` repository through the API) stays open by decision O1 — the split is what let ISS-016 close cleanly. Phase 22 was researched 2026-09-17 (`22-RESEARCH.md`, `22-CONTEXT.md`). Its decisions were locked the same day, it was planned the same day (merged as `ac95151`, PR #47); 22-01 to 22-04 are merged (PRs #48, #49, #53, #52).
@@ -90,19 +90,7 @@ measures retrieval on this repository's own code. It asks 25 tuning questions an
   the same protocol: explore on tuning, and decide under a rule fixed before the
   deciding questions exist. ISS-025, ISS-026 and ISS-028 remain the known root
   causes.
-- **2026-09-29, the track drafted (not yet approved):**
-  `.planning/phases/22.2-retrieval-quality/` holds research with an offline
-  chunk census of eight corpora, a draft context in which every decision is
-  PROPOSED, ten questions for the user (QU1–QU10), and draft acceptance
-  criteria. The headlines:
-  - TypeScript is parsed with the JavaScript grammar: 351 of linkwarden's 379
-    files have parse errors, and 0 do with the TypeScript grammars. So a
-    correctness plan goes first.
-  - ISS-026 has to wait until decorators move into their functions' chunks:
-    245 of mealie's 270 route decorators reach the index only through the
-    duplicated class chunks.
-  - Ranking comes down to one decision, the keyword leg.
-  - ISS-038 is filed.
+- **2026-09-29: this track is now Phase 22.2, Retrieval Quality.** It has six plans, decisions locked by the user's answers QU1–QU10 in `.planning/phases/22.2-retrieval-quality/22.2-CONTEXT.md` (the authority), and the embedding-model rule committed. Its threshold T awaits the user's confirmation.
 
 **v2 substrate work, 2026-09-10.** `.planning/v2-substrate/` holds `DESIGN.md`
 (the RAG redesign and 21 fleet proposals), `RESEARCH.md` (R-A…R-G), `DECISIONS.md`
