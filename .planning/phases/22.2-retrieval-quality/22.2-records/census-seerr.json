@@ -155,10 +155,12 @@
   "real_method_definition": 390,
   "real_type_alias_declaration": 116,
   "real_top_level_const_function": 466,
+  "real_top_level_const_function_in_no_chunk_today": 53,
   "real_function_declaration": 60,
   "real_declarations_with_jsdoc_above": 25,
   "real_enum_declaration": 23,
   "real_decorators": 228,
+  "real_top_level_const_function_in_a_fixed_size_window_today": 412,
   "real_abstract_class_declaration": 1,
   "real_abstract_method_signature": 1,
   "real_top_level_const_function_capitalised": 322

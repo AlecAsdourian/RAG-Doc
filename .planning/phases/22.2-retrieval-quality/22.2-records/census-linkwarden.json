@@ -138,13 +138,13 @@
   "real_type_alias_declaration": 150,
   "real_interface_declaration": 40,
   "real_top_level_const_function": 213,
+  "real_top_level_const_function_in_no_chunk_today": 67,
   "real_top_level_const_function_capitalised": 50,
+  "real_top_level_const_function_in_a_fixed_size_window_today": 146,
   "real_declarations_with_jsdoc_above": 17,
   "real_method_definition": 12,
   "real_class_declaration": 1,
-  "real_enum_declaration": 8,
-  "real_top_level_const_function_in_a_fixed_size_window_today": 146,
-  "real_top_level_const_function_in_no_chunk_today": 67
+  "real_enum_declaration": 8
  },
  "versions": {
   "tree_sitter_go": "0.25.0",

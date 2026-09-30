@@ -131,7 +131,8 @@
   "real_type_alias_declaration": 6,
   "real_abstract_class_declaration": 2,
   "real_abstract_method_signature": 8,
-  "real_top_level_const_function": 1
+  "real_top_level_const_function": 1,
+  "real_top_level_const_function_in_a_fixed_size_window_today": 1
  },
  "versions": {
   "tree_sitter_go": "0.25.0",
