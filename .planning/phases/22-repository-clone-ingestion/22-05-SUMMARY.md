@@ -49,6 +49,7 @@ key-files:
     - services/workers/tests/isolation/test_ingest_end_to_end.py
     - services/workers/tests/test_compose_environment.py
     - .planning/phases/22-repository-clone-ingestion/22-05-live-proof.md
+    - .planning/phases/22-repository-clone-ingestion/22-05-live-proof-scripts/ (seven files, verbatim, at PR #58's review)
   modified:
     - services/workers/workers/jobs/runtime.py
     - services/workers/workers/jobs/transitions.py
@@ -71,6 +72,7 @@ key-files:
     - docs/api-ingestion-jobs.md
     - docs/internal-api.md
     - docs/local-development.md
+    - .planning/phases/22-repository-clone-ingestion/22-ACCEPTANCE.md (A10's qualification, at the review)
     - .planning/ISSUES.md
     - .planning/ROADMAP.md
     - .planning/STATE.md
@@ -79,7 +81,10 @@ key-decisions:
   - "Both job types run the full ingest until 22.1-02; the registry imports the ingest module when a job runs, which breaks an import cycle (workers.fetch -> workers.jobs -> handlers -> ingest -> workers.fetch), and __main__ imports and configures it at startup so a broken build fails before a claim"
   - "Stages are reported on entry, after a checkpoint, so last_stage is the stage the job was in when it stopped; store is reported last and a completed job reads store"
   - "The cumulative progress is one running dict; each stage's own keys first appear in the NEXT report (fetch reports {}), and store adds its own before reporting"
-  - "A chunker exception on one file is skipped and counted (parse_errors), as IngestionPipeline always did, rather than dead-lettering the repository"
+  - "A chunker exception on one file is skipped and counted (parse_errors), as IngestionPipeline always did, rather than dead-lettering the repository; but when EVERY indexable file raises, the job fails (ParseFailed, retried) instead of replacing a good index with nothing (PR #58's review, B-M3)"
+  - "An archive member whose name holds a control character (Unicode Cc: C0, DEL, C1) is refused as unsafe_path, so no customer file name reaches a log line, the disk or chunks.file_path (PR #58's review, A-L1)"
+  - "Compose gives the worker stop_grace_period 2m and restart on-failure:5; the values' reasons sit beside them (PR #58's review, A-L4)"
+  - "The heartbeat's options start from PGOPTIONS when the DSN names none, as libpq would; the scope check accepts metadata beside contents only at read (PR #58's review, A-N3 and A-N2)"
   - "Distinct chunk texts are embedded once, in slices of 1,000 with a checkpoint between, and with use_cache=False so a long-lived worker's generator does not accumulate every vector it ever made"
   - "write_results replaces the repository's chunks (DELETE by repository, then INSERT) in complete()'s transaction; retrievals citing a replaced chunk are left dangling, consciously (U9, P17), pinned by a test"
   - "A write_results exception is settled like a handler's (normally fail) after the rollback, rather than escaping and stranding the job running"
@@ -89,7 +94,8 @@ key-decisions:
 
 issues-closed: []
 issues-updated: [ISS-027]
-review: "pending (PR #58)"
+issues-filed: [ISS-039, ISS-040]
+review: "PR #58 — reviewer B (the phase's records, the endings and their tests): CHANGES REQUESTED, small; three mediums (M1 the locked 22.2 order missing from the hand-off, M2 A10's dated qualification, M3 a chunker failing on every file completing the job over an emptied index), five lows, five nits; M1, M7, M10 and M17 re-run and killed. Reviewer A (security, runtime, live proof): approve with nits; one medium (M1 the lease owner in the worker's logs, now ISS-039), seven lows (L1 control characters in file names forging log lines, L2 a refusal from another deployment, now ISS-040), eight nits. Everything applied 2026-09-29, the two correctness fixes with tests and mutants (section 19)."
 duration: "about 2 h of wall-clock agent time on 2026-09-29 (branch from 19:02 local; first commit 19:46), against the plan's 15-21 h estimate"
 completed: 2026-09-29
 ---
@@ -164,10 +170,11 @@ point at it rather than restating it -- a first draft carried a copy in
 | **`InstallationSuspended`** | the token route's marked `409 installation_suspended` | **`defer` 60 minutes**, attempt handed back, **no projection** (reads `syncing`; below) | `test_the_installation_exceptions_propagate_unchanged[suspended]` | `test_a_mid_run_suspension_defers_an_hour_and_never_dead_letters`; `test_each_handler_exception_takes_its_ending[suspended]` |
 | **`InstallationUninstalled`** | the marked `409 installation_uninstalled` | **`abandon`**: `superseded`, `never_synced` | `...propagate_unchanged[uninstalled]` | `test_a_mid_run_uninstall_abandons`; `...takes_its_ending[uninstalled]` |
 | **`LeaseLost`** for `TokenRefused` | the route's **marked** 404, the fixed body | **nothing written**; the job stays `running` under its lease until reclaimed | `test_a_refused_token_raises_lease_lost_and_touches_github_not_at_all` | `test_a_refused_token_writes_nothing_and_the_job_stays_running` (the lease asserted live when refused, the heartbeat never ticked); `test_a_lease_lost_raised_by_the_handler_writes_nothing` |
-| **`LeaseLost`** for `should_abort()` | at a checkpoint | nothing written | `test_a_lost_lease_between_stages_raises_lease_lost[fetch/parse/embed]`; `test_a_progress_report_that_matches_no_row_raises_lease_lost`; `test_a_lost_lease_and_a_shutdown_at_once_is_a_lost_lease`; `test_a_lease_lost_after_the_store_report_is_left_to_the_runtime` | the runtime's supersede tests (21-06) |
+| **`LeaseLost`** for `should_abort()` | at a checkpoint | nothing written | `test_a_lost_lease_between_stages_raises_lease_lost[fetch/parse/embed]`; `test_a_progress_report_that_matches_no_row_raises_lease_lost`; `test_a_fetch_report_that_matches_no_row_stops_before_asking_for_a_token` (the review's L1: no token requested); `test_a_lost_lease_and_a_shutdown_at_once_is_a_lost_lease`; `test_a_lease_lost_after_the_store_report_is_left_to_the_runtime` | the runtime's supersede tests (21-06), `test_a_supersede_mid_run_aborts_the_handler_and_writes_nothing` for the runtime's check before `complete` |
+| **`ParseFailed`** (PR #58's review, B-M3) | **every** indexable file raised in the chunker | **`fail`**: attempt consumed, backoff, `last_error` names the count; **the index it would have replaced is untouched** | `test_a_chunker_that_fails_on_every_file_fails_the_job_instead_of_emptying_the_index`; `test_a_tree_with_nothing_indexable_is_not_a_parse_failure` | `test_a_chunker_that_fails_on_every_file_fails_the_job_and_keeps_the_index` (a good first ingest, then the failing one: chunks and ids unchanged) |
 | `InternalApiMisrouted`, propagated | any **unmarked** answer (chi's 404 from the public router) | **`fail`**: attempt consumed, backoff, `last_error` names `INTERNAL_API_URL` | `test_a_misrouted_internal_api_fails_plainly_never_as_a_lost_lease` | `test_a_misrouted_internal_api_fails_loudly_never_as_a_lost_lease` |
 | `TokenRequestFailed`, `FetchFailed`, anything else | a marked answer outside the contract, a transport failure, a failed download or extraction | `fail` (retried; `dead` at 5) | 22-04's client tests | `...takes_its_ending[other]` |
-| `Unfinished` | `is_shutting_down()` at a checkpoint | `defer` 0, attempt handed back (only during a shutdown; otherwise `fail`, 21-06) | `test_a_shutdown_between_stages_raises_unfinished[parse/embed/store]`; `test_a_shutdown_during_embedding_stops_at_the_next_slice` | `test_a_shutdown_during_embedding_defers_with_the_attempt_handed_back` |
+| `Unfinished` | `is_shutting_down()` at a checkpoint | `defer` 0, attempt handed back (only during a shutdown; otherwise `fail`, 21-06) | `test_a_shutdown_between_stages_raises_unfinished[parse/embed/store]`; `test_a_shutdown_during_embedding_stops_at_the_next_slice`; `test_a_shutdown_during_parsing_stops_at_the_next_file` (the review's L1) | `test_a_shutdown_during_embedding_defers_with_the_attempt_handed_back` |
 | -- `write_results` raises inside `complete()` | a failed store | rolled back, then **settled** like a handler's exception (normally `fail`) | -- | `test_a_write_results_that_raises_fails_the_job_instead_of_stranding_it` |
 
 **Re-parenting, as the plan asked:** `FetchRejected` subclasses the
@@ -211,7 +218,14 @@ Tests: `test_the_token_is_revoked_once_the_fetch_ends_with_the_token_itself`
 (the `Authorization` is the token; the revocation is the last GitHub request,
 after the download), `test_a_failed_revocation_never_fails_the_job_and_logs_no_token[status/transport]`,
 and the cap tests assert one revocation each. **Live: HTTP 204** on all
-three fetches (run 1's failed one and run 2's two good ones).
+three fetches (run 1's failed one and run 2's two good ones; the three log
+lines are quoted in the record since PR #58's review).
+
+**What revocation covers is the worker's own token, and only that** (PR #58's
+review, A-M1; section 16 is corrected). A token the route mints for anyone
+else presenting a live lease is not the worker's to revoke and lives GitHub's
+hour, and so does the worker's own when its process is killed before the
+`finally` runs.
 
 ## 4. Cumulative progress
 
@@ -230,7 +244,9 @@ before; the end-to-end test and the live job assert the **completed row**
 still holds `skipped` (the fixture's `.env`: `{"secret": 1}`; the live
 repository: `{"unsupported": 6}`). Mutation M7 (a `store` report of
 `chunks_stored` alone) is killed by both. `parse_errors` is a key the plan
-did not list (deviation 3). 22.1-03 turns this into the documented contract.
+did not list (deviation 3); when **every** file raises, the job fails with
+`ParseFailed` instead and never reaches `embed` (section 19). 22.1-03 turns
+this into the documented contract.
 
 ## 5. `write_results`: the replacement, the run, and the dangling retrievals
 
@@ -322,7 +338,9 @@ unchanged.
 `workers`: `profiles: ["ingest"]`; `DATABASE_URL` (compose's `coderag`, as
 compose's other services use it -- deviation 5); `OPENAI_API_KEY=${OPENAI_API_KEY}`;
 `INTERNAL_API_URL=http://backend:8081`; `depends_on: postgres: service_healthy`;
-`deploy: replicas: ${WORKER_REPLICAS:-2}`. **`backend`:
+`deploy: replicas: ${WORKER_REPLICAS:-2}`; since PR #58's review (A-L4),
+`stop_grace_period: 2m` and `restart: on-failure:5`, each with its reason
+beside it (section 19). **`backend`:
 `INTERNAL_ADDR=backend:8081`** -- the service name, as 22-04's guard asks, not
 the plan's `0.0.0.0:8081`, which the backend refuses without the override
 (deviation 6) -- and `expose: ["8081"]`, never `ports:`; a comment says
@@ -354,7 +372,8 @@ Scenario6 assert both; M16 (the attribute not logged) is killed.
 
 ## 11. The end-to-end test
 
-`tests/isolation/test_ingest_end_to_end.py`, ten tests through the real
+`tests/isolation/test_ingest_end_to_end.py`, ten tests (eleven since PR
+#58's review added the all-files parse failure) through the real
 `Worker` on `app_dsn` (`rag_doc_app` asserted, `rolsuper` and
 `rolbypassrls` false), two organizations with installations, jobs enqueued
 with `ENQUEUE_UPSERT_SQL`. Fakes only at the network edges: the token route
@@ -375,7 +394,8 @@ the expected file first with the fixture's commit as provenance, and
 nothing as B with A's repository id. Then idempotency, the dangling
 retrieval, and each ending (section 2), with `caplog` over every test
 showing no `ghs_` and no `Authorization`. **Five consecutive runs: 10 passed
-each.**
+each**; after PR #58's review, with the all-files parse failure added, **11
+passed each**.
 
 ## 12. The live proof
 
@@ -460,6 +480,35 @@ proof.
 | M16 | the reported permissions not logged (Go) | **killed** -- Scenario6 |
 | M17 | the private (full-SHA) directory refused again, as 22-04 did | **killed** -- 29 tests, including the two new fetcher tests and the handler's whole happy path |
 
+**Extended at PR #58's review**, the same tool and byte proof, on a fresh
+`git archive` copy of `46aa287` (the review's code fixes plus `main`
+merged): **M0 on that copy, 214 passed and 3 skipped** over the six target
+files (the handler, the end-to-end file, both runtime files, the compose
+test and the hostile-archive file), Go `pkg/internalapi` and `pkg/github`
+ok. Every mutation below printed `mutated present=1 original absent=True`
+before it ran and `restored: identical to the committed copy = True` after.
+Fourteen mutations, **fourteen killed**:
+
+| # | Mutation | Result |
+|---|---|---|
+| M18 | the all-files parse guard neutered (`if files and parsed == 0 and False`) -- B-M3 | **killed** -- the handler's all-files test and the end-to-end one (the good index would have been emptied); the one-file and nothing-indexable tests still pass under it, as they must |
+| M19 | the control-character refusal neutered -- A-L1 | **killed** by 10 -- the eight parametrised member names (LF, CR, TAB, SOH, ESC, DEL, NEL, CSI), the directory name, and the handler's forged-log test; the non-ASCII test passes under it, as it must |
+| M20 | the parse warning logs `str(exc)` -- B-L2 (the review's X2) | **killed** -- `test_a_chunker_failure_on_one_file_is_counted_not_fatal`, reading the `LogRecord` |
+| M21 | the write-step warning logs `str(exc)` -- B-L2 (X4) | **killed** -- `test_a_write_results_that_raises_fails_the_job_instead_of_stranding_it`, reading the `LogRecord` |
+| M22 | `_enter`'s no-row guard neutered, the report still made -- B-L1 (X1) | **killed** -- `test_a_fetch_report_that_matches_no_row_stops_before_asking_for_a_token` (without the guard the stop comes from the next checkpoint, after the token request); the older no-row test still passes, which is why it could not pin the guard |
+| M23 | `_parse`'s per-file checkpoint -> `pass` -- B-L1 (X5) | **killed** -- `test_a_shutdown_during_parsing_stops_at_the_next_file` (the chunker kept being called after the shutdown arrived, where the test allows one call) |
+| M24 | `metadata` allowed at any level (Go) -- A-N2 | **killed** -- `TestRepositoryToken_RefusesAScopeWiderThanAsked/metadata_above_read` |
+| M25 | `PGOPTIONS` not merged -- A-N3 | **killed** -- `test_the_heartbeat_keeps_an_identity_set_through_pgoptions` (the heartbeat connected as the DSN's own role) and the unit test of `_merged_options_dsn` |
+| M26 | `stop_grace_period` back to `10s` -- A-L4 | **killed** -- the compose stop-and-restart test |
+| M27 | `restart: on-failure`, unbounded -- A-L4 | **killed** -- the same test |
+| M28 | `_embed`'s missing-vector guard neutered -- B-N2 | **killed** -- `test_an_embedder_that_returns_no_vector_fails_plainly` |
+| M29 | a zero or negative heartbeat timeout accepted -- B-N2 | **killed** -- both cases of `test_a_heartbeat_timeout_that_is_not_positive_is_refused` |
+| M30 | the startup sweep removed -- B-N2 | **killed** -- `test_the_entrypoint_sweeps_stale_job_directories_once_before_it_runs` |
+| M31 | `REJECT_SQL`'s state half -> `(state = 'running' OR true)` -- the review's X3 | **killed** -- `test_a_superseded_workers_writes_all_raise_lease_lost[reject]` (the owner half is M1's) |
+
+The review's four survivors (X1, X2, X4, X5) are M22, M20, M21 and M23:
+each now fails a test written for it, so **no survivor is recorded**.
+
 ## 14. Verification
 
 | Check | Result |
@@ -475,6 +524,12 @@ proof.
 | compose | `docker compose config` resolved (with and without the profile); **never started** |
 | port 5434, compose's Postgres, the compose volumes | never touched; `docker ps -a` identical before and after the live proof |
 | commits | one sentence, a conventional prefix, no trailers (`git log --format=%B`) |
+| **At PR #58's review**, on `46aa287` (the fixes plus `main` merged): `pytest tests/ workers/` in CI's shape, as above (a new scratch Redis, db 15) | **602 passed, 3 skipped** -- the 24 new tests are the difference from 578; the same three skips |
+| the same in **`python:3.11-slim`** (3.11.16), on a `git archive` copy of `46aa287` | **599 passed, 6 skipped** -- the five compose tests (no Docker CLI, by design) and the tiny-filesystem case |
+| `tests/isolation/test_ingest_end_to_end.py`, five consecutive runs | **11 passed, five times** |
+| Go: `go build ./...`, `go vet` and gofmt (LF-normalised) on the touched packages; `go test ./pkg/github/... ./pkg/internalapi/...` on the worktree (the harness's container named for this session, ISS-037's override) | clean; ok, the seven `TestRepositoryTokenIsolation` scenarios run |
+| Go: `-race` in `golang:1.25` (go1.25.14 linux/amd64), `./pkg/internalapi/... ./pkg/github/...`, on a `git archive` copy of `46aa287` | ok, **0 data races** |
+| `scripts/ci/check-isolation-tests.py --base-ref RAG-Doc/main --head-ref HEAD` | **PASS** |
 
 ## 15. Acceptance criteria
 
@@ -482,19 +537,20 @@ proof.
 |---|---|---|---|
 | A1 | pgvector everywhere | met (22-01) | the live proof ran on the pinned digest |
 | A2 | migrations proven in the deployment shape | met (22-01) | no migration in 22-05 |
-| A3 | tenant isolation on `chunks` by schema | met (22-02) | the end-to-end drift check; the live proof's writes as `rag_doc_app` |
+| A3 | tenant isolation on `chunks` by schema | met as corrected (2026-09-29, in `22-ACCEPTANCE.md`) (22-02) | the end-to-end drift check, on the first ingest and on the replacement since PR #58's review; the live proof's writes as `rag_doc_app` |
 | A4 | every writer honest about tenancy and vectors | advanced by 22-02; **the new writer** (`insert_chunks_on`, the same statement and refusals) supplies the tenant, the vector and the model on every row | the end-to-end chunk assertions; live item 4 |
 | A5 | partition pruning | met (22-02, 22-03) | -- |
 | A6 | retrieval on pgvector, rankings unchanged | met as qualified (22-03) | -- |
 | A7 | Qdrant retired | met (22-03) | -- |
-| **A8** | fetching is safe | **met: 22-05 completes it** -- the **100,000-chunk cap** is enforced after parsing and before embedding, `Rejected` -> `dead` in one attempt (the handler and end-to-end cap tests; M11); the token is **revoked** when the fetch ends (M6; live 204); the scope check is **confirmed against the real API**; and the archive check now accepts the private directory name (M17) | sections 2, 3, 12, 13 |
-| **A9** | the worker processes real jobs safely | **met** -- `REGISTRY` has both keys; the endings table and its tests (section 2); cumulative progress (M7); the heartbeat's timeout merged (M4, M5); compose behind a profile without the App key (M14, M15) | sections 2, 4, 7, 9, 13 |
-| **A10** | one real repository indexed and searchable end to end | **met** -- `ES-SC-API-Navigator`, connect-shaped seed -> queue -> worker -> pgvector -> `/search`, scratch database, every process as `rag_doc_app`, the expected file returned for every question (ranks 1, 1, 2), refused to B, compose untouched | `22-05-live-proof.md`; section 12 |
-| **A11** | the phase leaves honest records | **met for 22-05, on this evidence**: measured and inferred are marked (section 16); every "does NOT pin" from 22-01 to 22-05 is carried to the hand-off (section 17); ISS-027 is current; the one guarantee this plan found false (22-04's archive check) is corrected in code, docs and here, and the broken first mutation pass is recorded rather than used | sections 12, 13, 16, 17 |
+| **A8** | fetching is safe | **met: 22-05 completes it** -- the **100,000-chunk cap** is enforced after parsing and before embedding, `Rejected` -> `dead` in one attempt (the handler and end-to-end cap tests; M11); the token is **revoked** when the fetch ends (M6; live 204); the scope check is **confirmed against the real API**, and since the review accepts `metadata` only at `read` (M24); the archive check now accepts the private directory name (M17); and since the review a member name holding a control character is refused (M19) | sections 2, 3, 12, 13, 19 |
+| **A9** | the worker processes real jobs safely | **met** -- `REGISTRY` has both keys; the endings table and its tests (section 2), with the review's `ParseFailed` so a chunker failing on every file never empties an index (M18); cumulative progress (M7); the heartbeat's timeout merged (M4, M5), `PGOPTIONS` included since the review (M25); compose behind a profile without the App key (M14, M15), stopping gracefully (M26, M27) | sections 2, 4, 7, 9, 13, 19 |
+| **A10** | one real repository indexed and searchable end to end | **met as qualified (2026-09-29, in `22-ACCEPTANCE.md`, at PR #58's review)** -- `ES-SC-API-Navigator`, connect-shaped seed -> queue -> worker -> pgvector -> the RAG API's `/search`, scratch database, every process as `rag_doc_app`, the expected file returned for every question (ranks 1, 1, 2), refused to B, compose untouched. The real connect path is Phases 20-21's tests; the backend's search relay is `search_isolation_test.go`'s | `22-05-live-proof.md` and its committed scripts; section 12 |
+| **A11** | the phase leaves honest records | **met for 22-05, on this evidence**: measured and inferred are marked (section 16); every "does NOT pin" from 22-01 to 22-05 is carried to the hand-off (section 18, completed at PR #58's review with the notes the review found missing); ISS-027 is current, and ISS-039 and ISS-040 are filed; the guarantees this plan found false (22-04's archive check, and at the review the lease-owner exposure understated in section 16 and `repository_token.go`) are corrected in code, docs and here; the broken first mutation pass is recorded rather than used | sections 12, 13, 16, 18, 19 |
 
 **Every criterion A1-A11 is met with evidence recorded in a SUMMARY**
-(A1-A7 in 22-01 to 22-03's, A8-A11 here), so Phase 22 closes on evidence,
-subject to this PR's review.
+(A1-A7 in 22-01 to 22-03's, A8-A11 here; A3 as corrected, A6 and A10 as
+qualified, each with its dated note in `22-ACCEPTANCE.md`), so Phase 22
+closes on evidence when this PR merges.
 
 ## 16. Measured, inferred, and not pinned (22-05)
 
@@ -509,30 +565,76 @@ subject to this PR's review.
     (8-byte pointers plus 24-byte floats) -- so a repository at the cap
     would need about 5 GB of worker memory for vectors alone, and
     `write_results` sends each vector as text (about 30 KB) in one
-    transaction. **Inferred, not measured**; 22.1-05's timings will show it;
+    transaction. **And the vectors are not all of it** (PR #58's review,
+    B-L4): the whole fetched tree is held in memory as well --
+    `FetchedFile.content` for every indexable file, up to the 500 MB
+    expansion cap -- through parse and embed. **Inferred, not measured**;
+    22.1-05's timings will show it. An OOM kill there is a crash: the job is
+    re-fetched and re-embedded from scratch up to five times, then `dead`
+    with `last_error` NULL;
+  - **a job that deterministically overruns `max_job_duration`** (the
+    review's B-L4) is cut loose (`LeaseLost`, nothing written), reclaimed,
+    re-fetched and re-embedded -- nothing is reused until 22.1-02 -- up to
+    five times, then dead-lettered by the sweeper with `last_error` NULL
+    (`_SWEEP_SQL` writes no reason). That is the price of a wrong
+    provisional number, and 22.1-05's to measure away;
+  - **a store longer than the lease blocks its own heartbeat** (the review's
+    A-L3, measured by the review with the runtime suite's timings and a 4 s
+    store): `attach_ingestion_run` updates the job row inside `complete()`'s
+    transaction, so the heartbeat's `UPDATE` waits on the worker's own lock,
+    times out (`57014`) and, once a lease has passed, logs a false
+    "assuming it is lost" ERROR. The job still completes -- the row lock
+    keeps claimers out -- but if that store then rolled back, the job would
+    be claimable at once (inferred). At the cap it is the normal case,
+    inferred: 82 chunks stored in 0.26 s live scales to about 317 s for
+    100,000, past the 300 s lease;
   - `chunks_stored` is reported before the store runs, so it is true of a
     `completed` row only; a failed store leaves the count and a `last_error`;
   - a token the worker never received (a malformed 200) or a revocation that
     fails lives out GitHub's hour; so does one held by a worker killed
-    mid-fetch (SIGKILL);
+    mid-fetch (SIGKILL, an OOM kill, a compose stop past its grace period);
   - **the worker's own logs carry its worker id, which is the lease owner**,
-    on every transition line (21-06's format): whoever can read a worker's
-    logs while a job runs, and reach the internal listener, could mint a
-    token for that job's repository -- still one repository, read-only, an
-    hour, and revoked at fetch end. The live-proof record masks it. Logged
-    here for Phase 24's log-access and internal-listener decisions;
+    on every transition line (21-06's format) and on the runtime's startup,
+    progress and heartbeat lines. **Corrected at PR #58's review (A-M1):**
+    this bullet first said an attacker would have to read the logs "while a
+    job runs" and that the token was "revoked at fetch end". Both
+    understated it. The id is generated once per process and serves every
+    job that process claims, the heartbeat keeps each lease live for the
+    whole job, and the route mints a fresh token on every call, so **no race
+    is needed**: whoever can read a live worker's logs and reach the
+    internal listener can mint a token for any repository that worker is
+    ingesting, across tenants. **Nothing revokes that token**: the worker's
+    revocation covers only the token its own fetch used, so each one so
+    minted lives GitHub's full hour. Still one repository and read-only. The
+    live-proof record masks the id. **Filed as ISS-039, a Phase 24 gate**;
+    no exposure under compose today (reading the logs needs the Docker
+    daemon, which can already read `ingestion_jobs.lease_owner`);
   - a file whose chunking raises is skipped and counted (`parse_errors`),
-    so it is missing from search with only that count to say so;
+    so it is missing from search with only that count to say so; **when
+    every file raises, the job fails instead** (`ParseFailed`, section 19);
   - `incremental` is the full ingest until 22.1-02;
   - compose's `workers` connects as compose's superuser `coderag`, like the
     other compose services, so RLS does not bind it there; the unprivileged
-    role and its grants are Phase 24's;
+    role and its grants are Phase 24's. Since PR #58's review (A-L7) the
+    operator docs say so where operators read (`docs/local-development.md`,
+    `docs/api-ingestion-jobs.md`'s "What a deployed worker needs"): a
+    deployment's `DATABASE_URL` must log in as a `NOSUPERUSER NOBYPASSRLS`
+    role;
   - the startup sweep's bound (`max_job_duration + lease`) assumes the
     workdir is per host or per container;
   - an archive directory name of another abbreviation length has never been
     observed and would be refused, loudly (fail closed, by choice);
   - the API's `/search` response carries no provenance (the `QueryEngine`
-    does); the live proof read the commit by chunk id.
+    does); the live proof read the commit by chunk id;
+  - **a marked refusal from another deployment's token route** reads as a
+    lost lease (PR #58's review, A-L2): every job is left `running`,
+    reclaimed and refused until the sweeper dead-letters it with
+    `last_error` NULL. **Filed as ISS-040, a Phase 24 gate** (reasoned, not
+    measured);
+  - a repository over a cap is rejected per **job**, so it is re-fetched --
+    up to 500 MB -- on every push, only to be rejected again (the review's
+    A-N7; `test_a_rejected_job_is_terminal_and_the_repository_can_be_queued_again`
+    pins the re-queue) -> 24-05's cost controls.
 
 ## 17. Deviations from the plan
 
@@ -569,15 +671,40 @@ subject to this PR's review.
     docstring as well as the doc**, and replaced by a pointer (`fe61756`)
     under the one-authority rule.
 
+**Added at PR #58's review** (section 19 has each one's test and mutant):
+
+12. **`ParseFailed`**: when every indexable file raises in the chunker, the
+    job fails (retried) instead of storing nothing over a good index -- a
+    new exception the plan's endings did not have (B-M3, A-L5).
+13. **22-04's fetcher refuses a member name holding a control character**
+    (`unsafe_path`), so no customer file name reaches a log line (A-L1).
+14. **Compose's `workers` stops in two minutes and restarts at most five
+    times** (`stop_grace_period: 2m`, `restart: on-failure:5`) (A-L4).
+15. **22-04's scope check accepts `metadata` only at `read`** (A-N2).
+16. **The heartbeat's options start from `PGOPTIONS`** when the DSN names
+    none, as libpq itself would (A-N3).
+
+The PR body's list was ten long while this one was eleven (the review's
+B-N4); both now carry these sixteen.
+
 ---
 
-## 18. Phase-level hand-off: Phase 22 -> Phase 22.1
+## 18. Phase-level hand-off: Phase 22 -> Phases 22.1 and 22.2
 
 Phase 22 ends with the goal met: a real GitHub repository indexed end to end
 -- connect-shaped seed, queue, worker, pgvector, search -- under tenant
-isolation on both legs. What Phase 22.1, the retrieval-quality track and
-Phases 23-24 inherit, **including every "does NOT pin" item from 22-01 to
-22-05**, by plan of origin:
+isolation on both legs. What Phase 22.1, the retrieval-quality track (now
+Phase 22.2) and Phases 23-24 inherit, **including every "does NOT pin" item
+from 22-01 to 22-05**, by plan of origin.
+
+**The order after 22-05 is the user's, locked 2026-09-29, and
+`22.2-CONTEXT.md` QD11 is its authority** (merged with PR #57): on the
+chunker, **22.2-02** (the chunker's bug fixes) first, then **22.1-01**
+(symbol identity, including TypeScript symbols, and not changing the
+display breadcrumb), then **22.2-04** (the chunk-shape candidate). 22.2-01
+and 22.2-03 touch neither the chunker nor this plan's files and can run
+alongside. This section records the order and does not restate QD11's
+reasons.
 
 **From 22-01 (pgvector everywhere, the seeded-migration gate)**
 - The gate cannot see DML that inherits a tenant beyond 000013's and
@@ -586,6 +713,10 @@ Phases 23-24 inherit, **including every "does NOT pin" item from 22-01 to
   need `relrowsecurity` alone) -- Phase 24's grant model.
 - `CREATE EXTENSION vector` needs a superuser: production's operator creates
   it once before migrating (Phase 24).
+- **Phase 24's host must offer pgvector 0.8 or later** (iterative scans,
+  which the repository filter depends on) **and a container `--shm-size`
+  large enough for HNSW index builds** (carried at PR #58's review, B-L4;
+  also in ROADMAP's Phase 24 research topics).
 - An old compose volume initialised by the Alpine image needs a `REINDEX`
   (musl -> glibc collation) before use; documented, nothing does it for you.
 
@@ -616,6 +747,10 @@ Phases 23-24 inherit, **including every "does NOT pin" item from 22-01 to
   committed first (its tolerance ~2e-6, fixed before its next rule).
 - ISS-021: the semantic cache's constructor is still broken; its key must
   carry the model (P4).
+- **For 22.1-02:** the benchmark harness's `--ingest` refuses an indexed
+  corpus without `--clear` until per-file currency lands (22-03's note in
+  ISS-027, carried here at PR #58's review, B-L4). The worker's full ingest
+  replaces a repository's chunks; the harness's own path does not.
 
 **From 22-04 (fetching safely)**
 - The marker's value across a protocol change: the Go and Python constants
@@ -630,15 +765,27 @@ Phases 23-24 inherit, **including every "does NOT pin" item from 22-01 to
   indexed and sent to OpenAI -> a question for the retrieval-quality track.
 - `GET /repositories/{id}` is an undocumented alias (it answered live); the
   fallback, `GET /repos/{full_name}`, is noted beside it.
+- **A caller that uses `extract_archive` directly owns its own cleanup**
+  (22-04 §15's dense-bomb note, second half, carried at PR #58's review,
+  B-L4): `fetch_repository` removes the job directory on every path, and
+  `extract_archive` alone does not. 22.1-02 is the likeliest such caller,
+  for a resumed stage.
 - **Settled by 22-05's live proof:** GitHub's mint reply shape (the scope
   check is confirmed); the private download link's credential (a `token`
-  parameter); a token's life after its lease (revoked at fetch end).
-  **Corrected by it:** the archive directory check (section 12).
+  parameter); the life of the worker's own token after its lease (revoked
+  when its fetch ends -- **only its own**: a token minted for anyone else
+  with the lease owner lives its hour, ISS-039). **Corrected by it:** the
+  archive directory check (section 12). **Corrected at PR #58's review:**
+  a member name with a control character is now refused (A-L1), and
+  `metadata` is accepted only at `read` (A-N2).
 
 **From 22-05 (this plan)** -- section 16's list, and:
-- **22.1-01:** `write_results` is where symbols join the store (upsert and
-  unarchive in the same transaction); the chunk replacement is per
-  repository today.
+- **22.1-01** (after 22.2-02, in QD11's order): `write_results` is where
+  symbols join the store (upsert and unarchive in the same transaction);
+  the chunk replacement is per repository today. A chunker change that
+  makes every file raise now fails the job (`ParseFailed`) rather than
+  emptying the index -- the guard 22.2-02 and 22.1-01, both chunker
+  changes, most need.
 - **22.1-02:** `incremental` is the full ingest; per-file currency, the
   manifest and embedding reuse replace the whole-repository `DELETE`; the
   dangling-retrieval pin must be kept or deliberately changed.
@@ -647,11 +794,231 @@ Phases 23-24 inherit, **including every "does NOT pin" item from 22-01 to
   mid-run suspension's hour of `syncing` is what a UI must read around.
 - **22.1-05:** P16's three numbers are provisional; the first data point is
   section 6's; measure memory and the store at the chunk cap, and the
-  OpenAI throughput ceiling.
+  OpenAI throughput ceiling. Also, from PR #58's review (section 16 has
+  each): a job overrunning `max_job_duration` is re-fetched and re-embedded
+  up to five times and ends `dead` with `last_error` NULL; the whole fetched
+  tree is held in memory through parse and embed, not only the vectors; and
+  **a store longer than the lease blocks its own heartbeat** (A-L3:
+  `attach_ingestion_run` locks the job row inside `complete()`, so the beat
+  waits, times out and logs a false "assuming it is lost" ERROR; about
+  317 s against a 300 s lease at the cap, inferred). The review's fixes:
+  attach last, just before the rerun clear, with an early fence check that
+  takes no lock; or have the heartbeat stand down quietly once `complete`
+  begins. Either way, measure the store at scale.
 - **Phase 24:** secrets in compose (the backend does not start there
-  today); the unprivileged role and grants for compose's services; log
-  access (the lease owner in worker logs); the internal listener stays
-  unpublished (a bearer secret or mTLS if the worker and the backend ever
-  sit on different hosts); the workdir's disk (about 1 GB per process).
+  today); the unprivileged role and grants for compose's services; the
+  internal listener stays unpublished (a bearer secret or mTLS if the
+  worker and the backend ever sit on different hosts); the workdir's disk
+  (about 1 GB per process) and, if a worker ever shares a host with other
+  users, its ownership (the review's A-N5: the default is a predictable
+  path under the shared temporary directory, so refuse a workdir that is a
+  symlink, not the process's own, or group- or world-writable); and **two
+  gates filed by PR #58's review:
+  ISS-039** (the lease owner in the worker's logs: hash it before any
+  deployment ships worker logs off the host) **and ISS-040** (a refusal
+  from another deployment's token route reads as a lost lease: check the
+  worker's own database before believing it). A killed worker cannot
+  revoke its token (bounded by GitHub's hour; compose's two-minute grace
+  period makes it rare, `docs/internal-api.md`).
+- **24-05:** a repository over a cap is rejected per job, so it is
+  re-fetched (up to 500 MB) on every push only to be rejected again
+  (A-N7). Whether the cost controls remember a rejection per repository,
+  and for how long, is 24-05's decision; nothing remembers it today.
 
-**Next: 22.1-01**, whose plan is not yet written.
+**Next: merge 22-05; then, on the chunker, 22.2-02, 22.1-01 and 22.2-04 in
+the order `22.2-CONTEXT.md` QD11 locks** (above). None of their plans is
+written yet.
+
+---
+
+## 19. PR #58's review, applied 2026-09-29
+
+Two reviewers. **Reviewer B** (the records, the endings and their tests):
+CHANGES REQUESTED, small -- three mediums, five lows, five nits; re-ran M1,
+M7, M10 and M17 (all killed, as recorded) and found four survivors of its
+own (X1, X2, X4, X5). **Reviewer A** (security, the runtime, the live
+proof): approve with nits -- one medium, seven lows, eight nits; re-ran M3
+and M6 (killed) and probed revocation on every failure path, file-name log
+injection, the lease owner in a real run's logs, a store longer than the
+lease, and `PGOPTIONS`. The coordinator's list decided what was fixed and
+what was filed. Commits: `c9dba88` (the fetcher), `81fcc32` (the handler),
+`165b6a6` (the runtime), `f34b3cc` (the end-to-end tests), `9a5f020` (Go),
+`6924b06` (compose), `905d7ca` (the docs), then `main` merged (`46aa287`,
+bringing PR #57's `22.2-CONTEXT.md`), `2fc58ad` (a comment in the fetcher,
+nothing else: `tests/fetch` and `tests/ingest` re-run on it, 209 passed and
+3 skipped), then the records.
+
+### Correctness: both fixed, tested and mutation-checked
+
+- **A chunker failing on every file emptied the index (B-M3 = A-L5).** The
+  reviewer's probe: a chunker that always raises reached `store` with no
+  chunks, and `write_results`, which *replaces* the repository's chunks,
+  would have deleted a good index, inserted nothing and projected `synced`.
+  **Fix:** `_parse` raises **`ParseFailed`** when there were indexable
+  files and none parsed -- an ordinary failure (`fail`: the attempt
+  consumed, a backoff, retried, `dead` at 5), `last_error` reading
+  `ParseFailed: every one of the N indexable files failed to parse (N
+  raised in the chunker); refusing to replace the repository's index with
+  nothing`. Not `Rejected`: nothing is over a cap, and a fixed chunker will
+  parse the repository. **Tests:** the handler's
+  `test_a_chunker_that_fails_on_every_file_fails_the_job_instead_of_emptying_the_index`
+  (the type is `ParseFailed` and not `Rejected`, `LeaseLost` or
+  `Unfinished`; the count in the message; every file tried; nothing sent to
+  the embedder; stages `fetch, parse`; the token revoked; the workdir
+  clean); the end-to-end
+  `test_a_chunker_that_fails_on_every_file_fails_the_job_and_keeps_the_index`
+  (a good first ingest, then the failing one: `queued`, `attempts = 1`,
+  `ParseFailed` and the count in `last_error`, `run_after` pushed out,
+  `last_stage = 'parse'`, **every chunk, its id and the run exactly as the
+  first ingest left them**, `sync_state = 'failed'`). The partial case stays
+  counted (`test_a_chunker_failure_on_one_file_is_counted_not_fatal`), and
+  a tree with nothing indexable still completes with an empty index
+  (`test_a_tree_with_nothing_indexable_is_not_a_parse_failure`): nothing
+  raised there. **M18** killed.
+- **File names with control characters reached the log raw (A-L1).** The
+  reviewer extracted, indexed and logged a member named
+  `app/x\n2026-09-29 20:17:10,248 INFO workers.jobs.transitions job FORGED:
+  complete.py` in `python:3.11-slim`. **Fix:** `_unsafe` refuses any name
+  holding a Unicode `Cc` character -- C0, DEL and C1 -- counted
+  `unsafe_path`, which keeps such a name off the disk, out of every log line
+  and out of `chunks.file_path`. A tab is refused too, as a control
+  character: a repository with such a name loses that one file from the
+  index, counted, and says so in `skipped`. **Tests:** eight parametrised
+  hostile archives (LF, CR, TAB, SOH,
+  ESC, DEL, NEL, CSI), a control character in a directory name, a
+  non-ASCII name still extracted (the refusal is `Cc`, not "unusual"), and
+  the handler-level test with the reviewer's own forged line: never
+  chunked, `unsafe_path` counted, `"FORGED" not in caplog.text`. **M19**
+  killed by 10.
+
+### Records
+
+- **B-M1, the locked order.** Section 18, `STATE.md` and `ROADMAP.md` now
+  name 22.2-02, then 22.1-01, then 22.2-04, each pointing at
+  `22.2-CONTEXT.md` QD11 (on `main` since PR #57) rather than restating it.
+  The three lines that named 22.1-01 as next are corrected.
+- **B-M2, A10.** `22-ACCEPTANCE.md` carries a dated qualification: a
+  connect-shaped seed, the enqueue by `ENQUEUE_UPSERT_SQL`, the real connect
+  path Phases 20-21's tests, `/search` the RAG API's, the backend's relay
+  `search_isolation_test.go`'s. Section 15's A10 row reads "met as
+  qualified".
+- **A-M1, the lease owner in the worker's logs: ISS-039**, a Phase 24 gate,
+  with the reviewer's text, measurement and fix plan (a 12-hex hash of the
+  lease owner through one helper at about 30 sites; the end-to-end secret
+  check extended; a mutation). **No logging code changed here**, as the
+  coordinator asked. The record is corrected now: section 16 and the PR
+  body had said an attacker's token is "revoked at fetch end" and that the
+  logs must be read "while a job runs"; the id is per process, the heartbeat
+  keeps the lease live, the route mints on every call, and a token minted
+  for anyone else lives GitHub's hour. `repository_token.go`'s package
+  comment (the review's A-N6) and `docs/internal-api.md` say the same.
+- **A-L6, the live proof's scripts:** committed verbatim in
+  `22-05-live-proof-scripts/` (checked: `.gitignore` does not exclude them,
+  and they hold no secret), described in the record, with the three HTTP
+  204 lines quoted.
+- **B-L3:** the handler test's docstring points at
+  `test_job_worker_runtime.py::test_a_supersede_mid_run_aborts_the_handler_and_writes_nothing`.
+- **B-L5:** section 15's "section 17" is section 18;
+  `docs/api-ingestion-jobs.md` no longer calls the runtime's pointer a
+  table.
+
+### Tests
+
+- **B-L2, the two new warning lines.** Both tests now read the
+  `LogRecord`: the chunker's warning and the runtime's write-step warning
+  each carry the exception's text with `[REDACTED]` where the token was, and
+  never the token. **M20, M21** killed.
+- **B-L1, the two guards that survived their removal.** Both are now
+  observable, so neither is recorded as a survivor:
+  `test_a_fetch_report_that_matches_no_row_stops_before_asking_for_a_token`
+  (without the guard the next checkpoint still stops the job, but only after
+  a token was requested for a job that is not ours) and
+  `test_a_shutdown_during_parsing_stops_at_the_next_file` (a chunker that
+  raises the shutdown flag on its first call is called once). **M22, M23**
+  killed.
+
+### Operations
+
+- **A-L7:** "a deployment's `DATABASE_URL` logs in as a `NOSUPERUSER
+  NOBYPASSRLS` role; compose's `coderag` is a superuser, so tenant isolation
+  is not exercised under compose" is in `docs/local-development.md`'s
+  worker section, `docs/api-ingestion-jobs.md`'s "What a deployed worker
+  needs" and the compose comment.
+- **A-L4, compose's stop and restart.** `stop_grace_period: 2m`: SIGTERM
+  lets the worker reach its next checkpoint and hand the job back, and two
+  minutes covers the stretches measured (the live job took 8 s whole; one
+  embedding slice is ten API calls); a fetch near the 500 MB cap on a slow
+  link, or a store near the chunk cap, can outlast it, and then the open
+  transaction rolls back and the job is reclaimed. `restart: on-failure:5`:
+  exit 1 (the database stayed unreachable) is what a restart is for, but
+  Docker cannot tell it from exit 2, a refusal no restart fixes, so the
+  retries are bounded -- six runs of about three minutes of reconnecting
+  each ride out a twenty-minute outage, and a refusal stops after six
+  lines. The reasons are beside the values; `test_compose_environment.py`
+  pins both (**M26, M27** killed); `docs/local-development.md` and
+  `docs/internal-api.md` say a killed worker cannot revoke its token, which
+  GitHub ends within the hour.
+- **A-L2, a refusal from another deployment's token route: filed as
+  ISS-040, a Phase 24 gate, not fixed here.** Chosen over fixing now
+  because the fix changes what the c2 end-to-end test means (a refused
+  token with a live lease would stop being "write nothing"), needs a new
+  question to the worker's own database that duplicates the Go route's
+  predicate in Python -- including the lease's expiry, which the progress
+  fence alone does not check -- and the review ruled filing it fine, since
+  it bites only where staging and production can reach each other. The
+  review's startup probe (A-N8) is in the same issue.
+
+### The hand-off's gaps (B-L4, and reviewer A's for 22.1-05 and 24-05)
+
+All carried, in section 18 or section 16: 22-04's note that a caller using
+`extract_archive` directly owns its own cleanup; 22-03's `--ingest` /
+`--clear` note for 22.1-02; pgvector 0.8 or later and `--shm-size` for
+Phase 24; a job overrunning `max_job_duration` re-embedded up to five times
+and `dead` with `last_error` NULL; the whole fetched tree held in memory;
+A-L3's store that blocks its own heartbeat, for 22.1-05; A-N7's re-fetch on
+every push of a repository over a cap, for 24-05.
+
+### The nits
+
+**Applied:**
+- **B-N1:** one authority per list -- the handler's docstring points at the
+  doc for the progress keys, and `workers/fetch/__init__.py` for the
+  endings.
+- **B-N2:** the three unpinned guards are pinned: `_embed`'s missing
+  vector (M28), `Worker`'s refusal of a zero or negative heartbeat timeout
+  (M29; a zero `timedelta` is falsy, so it would have switched the timeout
+  off without a word), and `__main__`'s startup sweep, run in-process with
+  its bound asserted (M30).
+- **B-N3:** the endings' remaining side effects -- the cap tests'
+  `last_stage` (`parse` for the chunk cap, `fetch` for the file cap) and no
+  run; the shutdown test's `sync_state` still `syncing`; the uninstall
+  test's chunks and runs empty; and the drift check after the re-ingest,
+  not only the first ingest.
+- **B-N4:** section 15's A3 row reads "met as corrected"; `STATE.md`'s Phase
+  line is current; the deviation count now matches the PR body's
+  (section 17, sixteen); `REJECT_SQL`'s state half joined the table (M31).
+- **B-N5:** the lease-owner finding has a number, ISS-039 (with A-M1).
+- **A-N1:** the printable top-level check is a full match, with a test for
+  the trailing newline `$` let through.
+- **A-N2:** `metadata` is accepted beside `contents` only at `read`, with a
+  `metadata:write` case (M24).
+- **A-N3:** the heartbeat's options start from `PGOPTIONS` when the DSN
+  names none, pinned on real connections where `PGOPTIONS` sets the role
+  (without it the heartbeat connected as the DSN's own role) and by a unit
+  test of libpq's rule (M25).
+- **A-N6:** `repository_token.go`'s package comment corrected (with A-M1).
+
+**Not applied, with the reason:**
+- **A-N4** (`embedding_generator.py` and `openai_client.py` log raw OpenAI
+  exception text): it predates 22-05, lives in the embeddings package this
+  PR does not otherwise touch, and no leak is known (OpenAI masks keys). It
+  is folded into ISS-039, so the worker's log hygiene is fixed in one pass.
+- **A-N5** (refuse a workdir that is a symlink, foreign-owned or
+  group-writable): the worker runs in its own container, where the
+  temporary directory is private; the check matters on a shared host, which
+  is a deployment decision -- carried to Phase 24 in section 18.
+- **A-N7** (a repository over a cap re-fetched on every push): a cost
+  question for 24-05, carried in section 18; no code change asked.
+- **A-N8** (a startup probe of the token route): part of ISS-040's fix,
+  since the probe that catches a misrouted URL is the natural place to
+  catch the wrong deployment too.
