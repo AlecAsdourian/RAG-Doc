@@ -22,9 +22,11 @@ NULL, which is the failure fact-check c3 named.
 ⚠ TWO DISTINCT 409s, NEVER A GENERIC ONE. `installation_suspended` and
 `installation_uninstalled` are different endings in Phase 21's policy (a
 suspension DEFERS an hour with the attempt handed back; an uninstall
-ABANDONS), and 22-05 dispatches on the exception TYPE. Neither may ever end
-a job `dead`: a suspension mid-run must not dead-letter a healthy
-repository.
+ABANDONS), and the runtime dispatches on the exception TYPE. Neither may
+ever end a job `dead`: a suspension mid-run must not dead-letter a healthy
+repository. Since 22-05 both classes are DEFINED in `workers.jobs.runtime`,
+which owns every ending, and re-exported here, so there is one class each
+and an `except` in either place catches the same thing.
 
 ⚠ NOTHING HERE LOGS OR RAISES THE TOKEN, THE LEASE OWNER OR A URL WITH
 EITHER IN IT. The lease owner is the credential this route accepts, so it
@@ -42,6 +44,10 @@ from typing import Any, Optional
 from urllib.parse import urlsplit
 
 import httpx
+
+# Defined by the runtime, which owns every handler ending (22-05); re-exported
+# from here, where 22-04 first raised them, so there is one class of each.
+from workers.jobs.runtime import InstallationSuspended, InstallationUninstalled
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +72,9 @@ class TokenRefused(Exception):
     """A MARKED 404: no live lease for this job under this owner.
 
     The job is not ours -- reclaimed, superseded, completed, or the lease
-    expired. 22-05 maps this onto `LeaseLost`, so nothing is written.
+    expired. The ingest handler raises `LeaseLost` for it, so nothing is
+    written: returning instead would reach `complete`, whose fence does not
+    check the lease's expiry, and write `completed` for undone work.
     """
 
 
@@ -77,14 +85,6 @@ class InternalApiMisrouted(Exception):
     and records where the request went (host only). It must never look like
     a lost lease.
     """
-
-
-class InstallationSuspended(Exception):
-    """409 `installation_suspended`: 22-05 DEFERS, attempt handed back."""
-
-
-class InstallationUninstalled(Exception):
-    """409 `installation_uninstalled`: 22-05 ABANDONS (`superseded`)."""
 
 
 class TokenRequestFailed(Exception):
@@ -149,7 +149,8 @@ def request_token(
 
     Raises:
         TokenRefused, InternalApiMisrouted, InstallationSuspended,
-        InstallationUninstalled, TokenRequestFailed -- see each class.
+        InstallationUninstalled, TokenRequestFailed -- see each class. The
+        two installation classes are `workers.jobs.runtime`'s.
     """
     canonical_job = str(uuid.UUID(str(job_id)))
     base = internal_api_url.rstrip("/")

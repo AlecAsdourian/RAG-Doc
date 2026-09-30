@@ -72,8 +72,16 @@ status and a count, never a link -- and every `httpx` exception is
 re-raised `from None`, because a chained traceback prints the original's
 message, and that is where the URL would be.
 
-What `FetchRejected` means for the job: a hard cap, so 22-05 ends it `dead`
-in one attempt (U6). `FetchFailed` is an ordinary failure: retried.
+What `FetchRejected` means for the job: a hard cap, so the runtime ends it
+`dead` in one attempt (U6) -- it subclasses `workers.jobs.runtime.Rejected`
+since 22-05. `FetchFailed` is an ordinary failure: retried.
+
+THE TOKEN IS REVOKED WHEN THE FETCH ENDS (22-05, `revoke_token`). The lease
+gates a token's ISSUANCE, not its validity: a token the backend issued stays
+valid for GitHub's full hour after the lease that bought it has expired
+(measured in PR #52's review). The ingest handler therefore revokes it as
+soon as the fetch no longer needs it, on every path, so the credential's
+life is the fetch rather than the hour.
 """
 
 from __future__ import annotations
@@ -101,6 +109,7 @@ import httpx
 
 from workers.fetch import filters
 from workers.fetch.client import RepositoryToken
+from workers.jobs.runtime import Rejected
 
 logger = logging.getLogger(__name__)
 
@@ -167,17 +176,18 @@ class Limits:
 DEFAULT_LIMITS = Limits()
 
 
-class FetchRejected(Exception):
-    """A hard cap tripped. 22-05 ends the job `dead` in one attempt (U6).
+class FetchRejected(Rejected):
+    """A hard cap tripped. The runtime ends the job `dead` in one attempt (U6).
 
-    `reason` is plain and token-free. `members_seen` says how far the
-    extractor got, so a test can prove it stopped at the cap rather than
-    after reading everything.
+    A `workers.jobs.runtime.Rejected` since 22-05, so the runtime's one
+    `except Rejected` covers the fetcher's caps and the ingest handler's
+    chunk cap alike. `reason` is plain and token-free. `members_seen` says
+    how far the extractor got, so a test can prove it stopped at the cap
+    rather than after reading everything.
     """
 
     def __init__(self, reason: str, *, members_seen: int = 0) -> None:
         super().__init__(reason)
-        self.reason = reason
         self.members_seen = members_seen
 
 
@@ -346,6 +356,81 @@ def download_archive(
         stats.final_host,
     )
     return stats
+
+
+#: Seconds a revocation may take. Short: nothing waits on its answer, and a
+#: failed revocation costs only the rest of the token's own hour.
+REVOKE_TIMEOUT_SECONDS = 10.0
+
+
+def revoke_token(
+    token: RepositoryToken,
+    *,
+    api_base: str = GITHUB_API,
+    transport: Optional[httpx.BaseTransport] = None,
+    timeout: float = REVOKE_TIMEOUT_SECONDS,
+) -> Optional[int]:
+    """Revoke an installation token the moment the fetch stops needing it.
+
+    `DELETE /installation/token`, authenticated BY THE TOKEN BEING REVOKED
+    -- GitHub's documented way for a token to end itself; no App key, no
+    JWT, nothing the worker does not already hold. GitHub answers `204 No
+    Content`.
+
+    ⚠ WHY IT EXISTS (PR #52's review, L1, measured): the lease gates the
+    token's ISSUANCE, not its VALIDITY. Once the lease expires the route
+    refuses to mint again, but a token it already handed out stays valid
+    for GitHub's full hour, and nothing on the backend's side can shorten
+    it. A worker that lost its lease mid-fetch, or simply finished, would
+    otherwise leave a live read credential for the repository behind it.
+
+    ⚠ IT NEVER RAISES. A failed revocation must not fail the job: the fetch
+    already succeeded or already failed for its own reason, and either
+    outcome is the one to record. It is LOGGED instead -- the repository,
+    the host and the status or the exception's CLASS, never the token and
+    never an exception message (an `httpx` message can carry request
+    detail). The token then simply lives out its hour, which is 22-04's
+    behaviour and no worse.
+
+    Returns:
+        The HTTP status GitHub answered (204 when revoked), or None when no
+        answer arrived. The status is logged at INFO when it is 204, which
+        is where 22-05's live proof reads it from.
+    """
+    _silence_library_request_logging()
+    url = f"{api_base.rstrip('/')}/installation/token"
+    host = _host(api_base)
+    try:
+        with httpx.Client(transport=transport, timeout=timeout, follow_redirects=False) as client:
+            response = client.delete(url, headers=_headers(token.token))
+    except Exception as exc:  # noqa: BLE001 - a revocation never fails the job
+        logger.warning(
+            "could not revoke the repository token for %s at %s: %s; it expires on "
+            "its own at %s",
+            token.full_name,
+            host,
+            type(exc).__name__,
+            token.expires_at.isoformat(),
+        )
+        return None
+    status = response.status_code
+    if status == 204:
+        logger.info(
+            "revoked the repository token for %s at %s (HTTP %d)",
+            token.full_name,
+            host,
+            status,
+        )
+    else:
+        logger.warning(
+            "revoking the repository token for %s: %s answered HTTP %d; it expires "
+            "on its own at %s",
+            token.full_name,
+            host,
+            status,
+            token.expires_at.isoformat(),
+        )
+    return status
 
 
 # ---------------------------------------------------------------------

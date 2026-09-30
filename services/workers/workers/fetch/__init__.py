@@ -17,11 +17,14 @@ Three modules, one rule each:
   plus the vendored, generated and lockfile rules, applied BEFORE a file
   is written to disk, so a committed `.env` never lands anywhere.
 
-22-05 wires these into the `full_ingest` handler and maps the exceptions
-onto Phase 21's endings: `TokenRefused` -> `LeaseLost` (write nothing);
-`InstallationSuspended` -> defer; `InstallationUninstalled` -> abandon;
-`FetchRejected` -> `Rejected` (`dead` in one attempt); anything else ->
-`fail`.
+22-05 wires these into the `full_ingest` handler (`workers.ingest`) and
+maps the exceptions onto Phase 21's endings: `TokenRefused` -> `LeaseLost`
+(write nothing); `InstallationSuspended` -> defer; `InstallationUninstalled`
+-> abandon; `FetchRejected`, a `workers.jobs.runtime.Rejected` -> `dead` in
+one attempt; anything else -> `fail`. The two installation classes are
+defined by the runtime and re-exported here. `revoke_token` ends the
+token the moment the fetch is over, because the lease gates a token's
+issuance, not its hour of validity.
 """
 
 from workers.fetch.archive import (
@@ -40,6 +43,7 @@ from workers.fetch.archive import (
     fetch_repository,
     job_directory,
     resolve_head,
+    revoke_token,
     sweep_stale_workdirs,
 )
 from workers.fetch.client import (
@@ -87,5 +91,6 @@ __all__ = [
     "job_directory",
     "request_token",
     "resolve_head",
+    "revoke_token",
     "sweep_stale_workdirs",
 ]
