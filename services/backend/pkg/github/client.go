@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -344,11 +345,46 @@ type ScopedToken struct {
 	FullName      string `json:"full_name"`
 	DefaultBranch string `json:"default_branch"`
 	Private       bool   `json:"private"`
+
+	// ReportedRepositoryIDs and ReportedPermissions are the scope GitHub
+	// REPORTED for the token in its mint reply, as RepositoryToken's
+	// fail-closed checks accepted it: exactly the one repository, contents
+	// read, and nothing beyond metadata. pkg/internalapi logs them on every
+	// mint (22-05), so an operator and the live proof read what GitHub
+	// granted rather than what was asked for. Neither carries the token.
+	ReportedRepositoryIDs []int64           `json:"-"`
+	ReportedPermissions   map[string]string `json:"-"`
 }
 
 // String renders the token without the token. fmt's %v and %s call it.
 func (t ScopedToken) String() string {
 	return fmt.Sprintf("ScopedToken{%s expires %s}", t.FullName, t.ExpiresAt.UTC().Format(time.RFC3339))
+}
+
+// ReportedRepositoryIDList renders ReportedRepositoryIDs for a log line:
+// the ids in the order GitHub listed them, comma-separated.
+func (t ScopedToken) ReportedRepositoryIDList() string {
+	ids := make([]string, len(t.ReportedRepositoryIDs))
+	for i, id := range t.ReportedRepositoryIDs {
+		ids[i] = strconv.FormatInt(id, 10)
+	}
+	return strings.Join(ids, ",")
+}
+
+// ReportedPermissionList renders ReportedPermissions for a log line as
+// name:level pairs, sorted by name, comma-separated. Names and levels are
+// GitHub's permission vocabulary, never a credential.
+func (t ScopedToken) ReportedPermissionList() string {
+	names := make([]string, 0, len(t.ReportedPermissions))
+	for name := range t.ReportedPermissions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	pairs := make([]string, len(names))
+	for i, name := range names {
+		pairs[i] = name + ":" + t.ReportedPermissions[name]
+	}
+	return strings.Join(pairs, ",")
 }
 
 // GoString covers %#v, which bypasses String.
@@ -481,12 +517,23 @@ func (c *Client) RepositoryToken(ctx context.Context, installationID, githubRepo
 			"github: repository %d has no full_name or default_branch in its metadata", githubRepoID)
 	}
 
+	reportedIDs := make([]int64, len(out.Repositories))
+	for i, r := range out.Repositories {
+		reportedIDs[i] = r.ID
+	}
+	reportedPermissions := make(map[string]string, len(out.Permissions))
+	for name, level := range out.Permissions {
+		reportedPermissions[name] = level
+	}
+
 	return ScopedToken{
-		Token:         out.Token,
-		ExpiresAt:     out.ExpiresAt,
-		FullName:      repo.FullName,
-		DefaultBranch: repo.DefaultBranch,
-		Private:       repo.Private,
+		Token:                 out.Token,
+		ExpiresAt:             out.ExpiresAt,
+		FullName:              repo.FullName,
+		DefaultBranch:         repo.DefaultBranch,
+		Private:               repo.Private,
+		ReportedRepositoryIDs: reportedIDs,
+		ReportedPermissions:   reportedPermissions,
 	}, nil
 }
 

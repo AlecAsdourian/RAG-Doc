@@ -317,14 +317,20 @@ func (h *Handler) Mint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. One line per mint. Never the token.
+	// 4. One line per mint. Never the token. Since 22-05 it carries the
+	// scope GitHub REPORTED in the mint reply -- repository ids and
+	// permission name:level pairs, as the client's fail-closed checks
+	// accepted them -- so what GitHub granted is on record, not only what
+	// was asked for.
 	h.logger.Info("repository token minted",
 		slog.String("job", id), slog.String("organization", orgID),
 		slog.String("repository", repoID),
 		slog.Int64("github_repo_id", *githubRepoID),
 		slog.Int64("installation", *installationID),
 		slog.String("full_name", scoped.FullName),
-		slog.Time("expires_at", scoped.ExpiresAt))
+		slog.Time("expires_at", scoped.ExpiresAt),
+		slog.String("reported_repository_ids", scoped.ReportedRepositoryIDList()),
+		slog.String("reported_permissions", scoped.ReportedPermissionList()))
 
 	out, err := json.Marshal(tokenResponse{
 		Token:         scoped.Token,
