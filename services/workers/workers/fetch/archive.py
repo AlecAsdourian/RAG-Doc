@@ -488,12 +488,13 @@ def _unsafe(name: str) -> bool:
     # ⚠ NO CONTROL CHARACTER, ANYWHERE IN THE NAME (PR #58's review, A-L1).
     # A file name is customer-controlled text that the worker writes into
     # plain-text log lines (the chunker logs the path it is chunking) and
-    # into `chunks.file_path`, which every UI shows. Measured: a member named
-    # `app/x\n2026-09-29 ... INFO workers.jobs.transitions job FORGED:
-    # complete.py` was extracted, indexed, and logged with its raw newline --
-    # a tenant forging the worker's log. Refused here, counted `unsafe_path`,
-    # so no such name reaches the disk, a log line or a row. A tab is refused
-    # too: it is a control character, and no real source tree needs one.
+    # into `chunks.file_path`, which every UI shows. Measured by the review: a
+    # member named `app/x\n2026-09-29 ... INFO workers.jobs.transitions job
+    # FORGED: complete.py` was extracted, indexed, and logged with its raw
+    # newline -- a tenant forging the worker's log. Refused here, counted
+    # `unsafe_path`, so no such name reaches the disk, a log line or a row. A
+    # tab is refused too, as a control character: a repository holding such
+    # a name loses that one file from the index, and `skipped` counts it.
     if _has_control_character(name):
         return True
     try:
