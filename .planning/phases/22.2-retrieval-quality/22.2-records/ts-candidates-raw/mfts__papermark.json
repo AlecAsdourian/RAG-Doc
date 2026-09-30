@@ -1,0 +1,560 @@
+{
+ "repo": "mfts/papermark",
+ "branch": "main",
+ "sha": "ed19717ec02a1ac79aecf5569159aa9d2d869312",
+ "license": "NOASSERTION",
+ "archived": false,
+ "pushed_at": "2026-08-28T15:58:25Z",
+ "stars": 9229,
+ "truncated": false,
+ "counts": {
+  "tsx": 666,
+  "ts": 709,
+  "js": 3,
+  "vendored": 1
+ },
+ "bytes": {
+  "tsx": 4499858,
+  "ts": 2868095,
+  "js": 9950,
+  "vendored": 889211
+ },
+ "by_top": {
+  "pages/api": {
+   "files": 236,
+   "bytes": 1110238
+  },
+  "ee/features": {
+   "files": 136,
+   "bytes": 774283
+  },
+  "components/view": {
+   "files": 62,
+   "bytes": 582801
+  },
+  "components/links": {
+   "files": 51,
+   "bytes": 397932
+  },
+  "components/datarooms": {
+   "files": 49,
+   "bytes": 394711
+  },
+  "components/documents": {
+   "files": 48,
+   "bytes": 347755
+  },
+  "pages/settings": {
+   "files": 20,
+   "bytes": 253747
+  },
+  "components/ui": {
+   "files": 66,
+   "bytes": 234486
+  },
+  "components/visitors": {
+   "files": 25,
+   "bytes": 205596
+  },
+  "app/(ee)": {
+   "files": 30,
+   "bytes": 187106
+  },
+  "pages/datarooms": {
+   "files": 28,
+   "bytes": 183936
+  },
+  "lib/api": {
+   "files": 23,
+   "bytes": 125226
+  },
+  "app/api": {
+   "files": 20,
+   "bytes": 122564
+  },
+  "lib/trigger": {
+   "files": 15,
+   "bytes": 114868
+  },
+  "components/welcome": {
+   "files": 15,
+   "bytes": 111627
+  },
+  "components/billing": {
+   "files": 11,
+   "bytes": 106462
+  },
+  "lib/utils": {
+   "files": 44,
+   "bytes": 104805
+  },
+  "components/emails": {
+   "files": 36,
+   "bytes": 102327
+  },
+  "pages/branding.tsx": {
+   "files": 1,
+   "bytes": 88074
+  },
+  "components/shared": {
+   "files": 59,
+   "bytes": 83833
+  },
+  "components/layouts": {
+   "files": 10,
+   "bytes": 82994
+  },
+  "lib/swr": {
+   "files": 43,
+   "bytes": 81005
+  },
+  "pages/view": {
+   "files": 8,
+   "bytes": 73685
+  },
+  "components/upload-zone.tsx": {
+   "files": 1,
+   "bytes": 69355
+  },
+  "components/analytics": {
+   "files": 7,
+   "bytes": 65365
+  },
+  "lib/dataroom": {
+   "files": 7,
+   "bytes": 57709
+  },
+  "lib/files": {
+   "files": 18,
+   "bytes": 57025
+  },
+  "components/sidebar": {
+   "files": 7,
+   "bytes": 55247
+  },
+  "components/ai-elements": {
+   "files": 4,
+   "bytes": 52813
+  },
+  "lib/signing": {
+   "files": 10,
+   "bytes": 52353
+  },
+  "lib/folders": {
+   "files": 4,
+   "bytes": 49115
+  },
+  "app/(auth)": {
+   "files": 17,
+   "bytes": 48034
+  },
+  "components/settings": {
+   "files": 9,
+   "bytes": 44479
+  },
+  "lib/hooks": {
+   "files": 17,
+   "bytes": 43374
+  },
+  "lib/integrations": {
+   "files": 9,
+   "bytes": 41480
+  },
+  "components/yearly-recap": {
+   "files": 4,
+   "bytes": 40012
+  },
+  "components/folders": {
+   "files": 5,
+   "bytes": 38978
+  },
+  "pages/room_ppreview_demo.tsx": {
+   "files": 1,
+   "bytes": 37609
+  },
+  "ee/stripe": {
+   "files": 13,
+   "bytes": 37282
+  },
+  "components/domains": {
+   "files": 5,
+   "bytes": 34913
+  },
+  "lib/emails": {
+   "files": 30,
+   "bytes": 31760
+  },
+  "lib/utils.ts": {
+   "files": 1,
+   "bytes": 27142
+  },
+  "lib/year-in-review": {
+   "files": 4,
+   "bytes": 26260
+  },
+  "lib/tracking": {
+   "files": 4,
+   "bytes": 26248
+  },
+  "components/tokens": {
+   "files": 4,
+   "bytes": 26246
+  },
+  "lib/auth": {
+   "files": 5,
+   "bytes": 24912
+  },
+  "lib/zod": {
+   "files": 6,
+   "bytes": 24699
+  },
+  "components/teams": {
+   "files": 4,
+   "bytes": 20930
+  },
+  "pages/documents": {
+   "files": 6,
+   "bytes": 20734
+  },
+  "components/agreements": {
+   "files": 2,
+   "bytes": 19504
+  },
+  "components/upload-notification.tsx": {
+   "files": 1,
+   "bytes": 17554
+  },
+  "lib/constants.ts": {
+   "files": 1,
+   "bytes": 16574
+  },
+  "lib/notion": {
+   "files": 5,
+   "bytes": 16397
+  },
+  "lib/documents": {
+   "files": 6,
+   "bytes": 15826
+  },
+  "lib/i18n": {
+   "files": 4,
+   "bytes": 14023
+  },
+  "context/upload-progress-context.tsx": {
+   "files": 1,
+   "bytes": 13205
+  },
+  "lib/webhook": {
+   "files": 7,
+   "bytes": 13181
+  },
+  "lib/tinybird": {
+   "files": 3,
+   "bytes": 12562
+  },
+  "ee/limits": {
+   "files": 4,
+   "bytes": 12289
+  },
+  "pages/notification-preferences.tsx": {
+   "files": 1,
+   "bytes": 11709
+  },
+  "pages/account": {
+   "files": 2,
+   "bytes": 11405
+  },
+  "lib/types.ts": {
+   "files": 1,
+   "bytes": 10088
+  },
+  "pages/custom_fields_ppreview_demo.tsx": {
+   "files": 1,
+   "bytes": 9696
+  },
+  "pages/dashboard.tsx": {
+   "files": 1,
+   "bytes": 9696
+  },
+  "components/charts": {
+   "files": 3,
+   "bytes": 9311
+  },
+  "components/viewer-upload-component.tsx": {
+   "files": 1,
+   "bytes": 9280
+  },
+  "components/document-upload.tsx": {
+   "files": 1,
+   "bytes": 8250
+  },
+  "lib/redis-job-store.ts": {
+   "files": 1,
+   "bytes": 8225
+  },
+  "pages/visitors": {
+   "files": 2,
+   "bytes": 8139
+  },
+  "components/profile-menu.tsx": {
+   "files": 1,
+   "bytes": 8033
+  },
+  "lib/middleware": {
+   "files": 4,
+   "bytes": 7873
+  },
+  "components/viewer-upload-zone.tsx": {
+   "files": 1,
+   "bytes": 7493
+  },
+  "components/webhooks": {
+   "files": 1,
+   "bytes": 7122
+  },
+  "lib/redis-download-job-store.ts": {
+   "files": 1,
+   "bytes": 6529
+  },
+  "components/search-box.tsx": {
+   "files": 1,
+   "bytes": 6496
+  },
+  "lib/featureFlags": {
+   "files": 4,
+   "bytes": 6484
+  },
+  "components/sidebar-folders.tsx": {
+   "files": 1,
+   "bytes": 6379
+  },
+  "context/pending-uploads-context.tsx": {
+   "files": 1,
+   "bytes": 6086
+  },
+  "lib/video-analytics": {
+   "files": 2,
+   "bytes": 5725
+  },
+  "pages/welcome.tsx": {
+   "files": 1,
+   "bytes": 5523
+  },
+  "components/tags": {
+   "files": 1,
+   "bytes": 5508
+  },
+  "components/account": {
+   "files": 3,
+   "bytes": 5197
+  },
+  "lib/redis": {
+   "files": 2,
+   "bytes": 4998
+  },
+  "ee/emails": {
+   "files": 1,
+   "bytes": 4917
+  },
+  "pages/nav_ppreview_demo.tsx": {
+   "files": 1,
+   "bytes": 4902
+  },
+  "lib/constants": {
+   "files": 1,
+   "bytes": 4789
+  },
+  ".": {
+   "files": 2,
+   "bytes": 4614
+  },
+  "lib/types": {
+   "files": 3,
+   "bytes": 4338
+  },
+  "lib/domains.ts": {
+   "files": 1,
+   "bytes": 4001
+  },
+  "lib/resend.ts": {
+   "files": 1,
+   "bytes": 3873
+  },
+  "pages/_app.tsx": {
+   "files": 1,
+   "bytes": 3840
+  },
+  "components/navigation-menu.tsx": {
+   "files": 1,
+   "bytes": 3819
+  },
+  "lib/edge-config": {
+   "files": 4,
+   "bytes": 3802
+  },
+  "pages/entrance_ppreview_demo.tsx": {
+   "files": 1,
+   "bytes": 3598
+  },
+  "lib/video": {
+   "files": 3,
+   "bytes": 3419
+  },
+  "components/search-command.tsx": {
+   "files": 1,
+   "bytes": 3109
+  },
+  "lib/notifications": {
+   "files": 2,
+   "bytes": 3066
+  },
+  "components/providers": {
+   "files": 2,
+   "bytes": 3059
+  },
+  "lib/jackson.ts": {
+   "files": 1,
+   "bytes": 2948
+  },
+  "lib/billing": {
+   "files": 1,
+   "bytes": 2917
+  },
+  "lib/links": {
+   "files": 1,
+   "bytes": 2650
+  },
+  "lib/team": {
+   "files": 1,
+   "bytes": 2647
+  },
+  "pages/unsubscribe.tsx": {
+   "files": 1,
+   "bytes": 2400
+  },
+  "components/tab-menu.tsx": {
+   "files": 1,
+   "bytes": 2319
+  },
+  "components/user-agent-icon.tsx": {
+   "files": 1,
+   "bytes": 2138
+  },
+  "context/team-context.tsx": {
+   "files": 1,
+   "bytes": 2117
+  },
+  "components/hooks": {
+   "files": 2,
+   "bytes": 2088
+  },
+  "lib/incoming-webhooks": {
+   "files": 1,
+   "bytes": 2029
+  },
+  "lib/team-name.ts": {
+   "files": 1,
+   "bytes": 1844
+  },
+  "components/EmailForm.tsx": {
+   "files": 1,
+   "bytes": 1791
+  },
+  "pages/404.tsx": {
+   "files": 1,
+   "bytes": 1753
+  },
+  "lib/errorHandler.ts": {
+   "files": 1,
+   "bytes": 1570
+  },
+  "lib/sheet": {
+   "files": 1,
+   "bytes": 1536
+  },
+  "lib/cron": {
+   "files": 2,
+   "bytes": 1535
+  },
+  "components/theme-toggle.tsx": {
+   "files": 1,
+   "bytes": 1473
+  },
+  "lib/unsend.ts": {
+   "files": 1,
+   "bytes": 1447
+  },
+  "lib/id-helper.ts": {
+   "files": 1,
+   "bytes": 1410
+  },
+  "app/layout.tsx": {
+   "files": 1,
+   "bytes": 1242
+  },
+  "lib/analytics": {
+   "files": 1,
+   "bytes": 1235
+  },
+  "lib/webstorage.ts": {
+   "files": 1,
+   "bytes": 1097
+  },
+  "components/blur-image.tsx": {
+   "files": 1,
+   "bytes": 1071
+  },
+  "lib/redis.ts": {
+   "files": 1,
+   "bytes": 826
+  },
+  "lib/dub.ts": {
+   "files": 1,
+   "bytes": 721
+  },
+  "lib/hanko.ts": {
+   "files": 1,
+   "bytes": 528
+  },
+  "pages/workflows": {
+   "files": 3,
+   "bytes": 461
+  },
+  "components/profile-search-trigger.tsx": {
+   "files": 1,
+   "bytes": 453
+  },
+  "pages/_document.tsx": {
+   "files": 1,
+   "bytes": 436
+  },
+  "lib/posthog.ts": {
+   "files": 1,
+   "bytes": 323
+  },
+  "components/theme-provider.tsx": {
+   "files": 1,
+   "bytes": 297
+  },
+  "components/Skeleton.tsx": {
+   "files": 1,
+   "bytes": 285
+  },
+  "lib/prisma.ts": {
+   "files": 1,
+   "bytes": 253
+  },
+  "components/gtm-component.tsx": {
+   "files": 1,
+   "bytes": 232
+  },
+  "lib/openai.ts": {
+   "files": 1,
+   "bytes": 168
+  },
+  "pages/partners.tsx": {
+   "files": 1,
+   "bytes": 72
+  }
+ }
+}

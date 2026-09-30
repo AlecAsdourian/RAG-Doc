@@ -1,0 +1,116 @@
+{
+ "repo": "sct/overseerr",
+ "branch": "develop",
+ "sha": "98ea135f2d370faba0362d259fccf51d8fd44a16",
+ "license": "MIT",
+ "archived": true,
+ "pushed_at": "2026-02-15T20:34:21Z",
+ "stars": 4975,
+ "truncated": false,
+ "counts": {
+  "js": 9,
+  "ts": 139,
+  "test": 13,
+  "generated": 6,
+  "migration": 33,
+  "tsx": 271
+ },
+ "bytes": {
+  "js": 10121,
+  "ts": 675781,
+  "test": 20984,
+  "generated": 2646,
+  "migration": 114771,
+  "tsx": 1314496
+ },
+ "by_top": {
+  "src/components": {
+   "files": 182,
+   "bytes": 1267781
+  },
+  "server/lib": {
+   "files": 27,
+   "bytes": 196335
+  },
+  "server/routes": {
+   "files": 21,
+   "bytes": 184654
+  },
+  "server/api": {
+   "files": 16,
+   "bytes": 102629
+  },
+  "src/pages": {
+   "files": 87,
+   "bytes": 48145
+  },
+  "server/entity": {
+   "files": 11,
+   "bytes": 47923
+  },
+  "server/subscriber": {
+   "files": 4,
+   "bytes": 39968
+  },
+  "server/models": {
+   "files": 6,
+   "bytes": 23824
+  },
+  "src/hooks": {
+   "files": 15,
+   "bytes": 23414
+  },
+  "src/utils": {
+   "files": 7,
+   "bytes": 14011
+  },
+  "server/index.ts": {
+   "files": 1,
+   "bytes": 7200
+  },
+  "server/interfaces": {
+   "files": 11,
+   "bytes": 6748
+  },
+  "server/job": {
+   "files": 1,
+   "bytes": 5976
+  },
+  "src/context": {
+   "files": 4,
+   "bytes": 5502
+  },
+  "server/utils": {
+   "files": 6,
+   "bytes": 4614
+  },
+  "server/constants": {
+   "files": 4,
+   "bytes": 2430
+  },
+  "server/logger.ts": {
+   "files": 1,
+   "bytes": 2115
+  },
+  "server/scripts": {
+   "files": 1,
+   "bytes": 2099
+  },
+  "server/middleware": {
+   "files": 2,
+   "bytes": 1693
+  },
+  "src/i18n": {
+   "files": 1,
+   "bytes": 1604
+  },
+  "server/datasource.ts": {
+   "files": 1,
+   "bytes": 1222
+  },
+  ".": {
+   "files": 1,
+   "bytes": 390
+  }
+ }
+}

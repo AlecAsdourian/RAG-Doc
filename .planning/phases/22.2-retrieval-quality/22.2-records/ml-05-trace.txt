@@ -1,0 +1,18 @@
+ml-05 (tuning): When moving my recipes over from Paprika, how do the photos stored inside the export file end up attached to the newly created recipes?
+expected: mealie/services/migrations/paprika.py :: PaprikaMigrator._migrate   recorded file_rank=None symbol_rank=None   keyword leg: 0 results
+vector leg, top 8:
+  #1  0.7847 x0.3  function      mealie/services/migrations/paprika.py :: PaprikaMigrator._migrate
+  #2  0.7738 x0.3  class         mealie/services/migrations/paprika.py :: PaprikaMigrator
+  #3  0.7557 x1.0  function      mealie/routes/recipe/bulk_actions.py :: RecipeBulkActionsController.bulk_export_recipes
+  #4  0.7493 x0.3  function      mealie/services/migrations/recipekeeper.py :: RecipeKeeperMigrator._migrate
+  #5  0.7462 x0.3  function      mealie/services/migrations/paprika.py :: paprika_recipes
+  #6  0.7438 x0.3  file_summary  mealie/services/migrations/paprika.py :: paprika.py
+  #7  0.7410 x0.3  function      mealie/services/migrations/copymethat.py :: CopyMeThatMigrator._migrate
+  #8  0.7405 x1.0  class         mealie/schema/recipe/recipe_bulk_actions.py :: ExportRecipes
+the vector leg's #1 is #26 in the boosted list
+final top five:
+  #1 mealie/routes/recipe/bulk_actions.py :: RecipeBulkActionsController.bulk_export_recipes
+  #2 mealie/schema/recipe/recipe_bulk_actions.py :: ExportRecipes
+  #3 mealie/services/recipe/recipe_bulk_service.py :: RecipeBulkActionsService.export_recipes
+  #4 mealie/schema/recipe/recipe_bulk_actions.py :: DeleteRecipes
+  #5 mealie/schema/recipe/recipe.py :: Recipe

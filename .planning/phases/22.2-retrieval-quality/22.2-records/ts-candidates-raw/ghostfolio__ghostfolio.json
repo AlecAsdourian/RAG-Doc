@@ -1,0 +1,54 @@
+{
+ "repo": "ghostfolio/ghostfolio",
+ "branch": "main",
+ "sha": "c13a0c18fb9c221adc4fed02d3ba32b274c8dc80",
+ "license": "AGPL-3.0",
+ "archived": false,
+ "pushed_at": "2026-09-29T19:56:17Z",
+ "stars": 9383,
+ "truncated": false,
+ "counts": {
+  "ts": 830,
+  "js": 3,
+  "test": 91
+ },
+ "bytes": {
+  "ts": 2280168,
+  "js": 2324,
+  "test": 599827
+ },
+ "by_top": {
+  "apps/api": {
+   "files": 323,
+   "bytes": 1128062
+  },
+  "apps/client": {
+   "files": 207,
+   "bytes": 619116
+  },
+  "libs/common": {
+   "files": 181,
+   "bytes": 281757
+  },
+  "libs/ui": {
+   "files": 115,
+   "bytes": 249663
+  },
+  "prisma/seed.mts": {
+   "files": 1,
+   "bytes": 791
+  },
+  ".config/prisma.ts": {
+   "files": 1,
+   "bytes": 505
+  },
+  "tools/load-env.ts": {
+   "files": 1,
+   "bytes": 146
+  },
+  ".": {
+   "files": 1,
+   "bytes": 128
+  }
+ }
+}

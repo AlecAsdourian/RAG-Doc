@@ -1,0 +1,140 @@
+{
+ "repo": "seerr-team/seerr",
+ "branch": "develop",
+ "sha": "e9590629b8215676a352ec2413d7c8ee7e6974df",
+ "license": "MIT",
+ "archived": false,
+ "pushed_at": "2026-09-29T21:43:30Z",
+ "stars": 12747,
+ "truncated": false,
+ "counts": {
+  "js": 8,
+  "ts": 192,
+  "test": 39,
+  "tsx": 303,
+  "migration": 83,
+  "generated": 4
+ },
+ "bytes": {
+  "js": 9663,
+  "ts": 1090901,
+  "test": 310067,
+  "tsx": 1746029,
+  "migration": 347788,
+  "generated": 1603
+ },
+ "by_top": {
+  "src/components": {
+   "files": 207,
+   "bytes": 1694155
+  },
+  "server/lib": {
+   "files": 31,
+   "bytes": 347629
+  },
+  "server/routes": {
+   "files": 26,
+   "bytes": 287444
+  },
+  "server/api": {
+   "files": 21,
+   "bytes": 161305
+  },
+  "server/entity": {
+   "files": 14,
+   "bytes": 69682
+  },
+  "server/subscriber": {
+   "files": 4,
+   "bytes": 53556
+  },
+  "src/pages": {
+   "files": 92,
+   "bytes": 51183
+  },
+  "src/hooks": {
+   "files": 18,
+   "bytes": 33002
+  },
+  "server/models": {
+   "files": 6,
+   "bytes": 24005
+  },
+  "server/utils": {
+   "files": 18,
+   "bytes": 21098
+  },
+  "src/utils": {
+   "files": 11,
+   "bytes": 17170
+  },
+  "server/job": {
+   "files": 2,
+   "bytes": 16050
+  },
+  "server/index.ts": {
+   "files": 1,
+   "bytes": 9983
+  },
+  "server/interfaces": {
+   "files": 14,
+   "bytes": 9034
+  },
+  "server/i18n": {
+   "files": 3,
+   "bytes": 6178
+  },
+  "src/context": {
+   "files": 4,
+   "bytes": 5850
+  },
+  "server/datasource.ts": {
+   "files": 1,
+   "bytes": 5743
+  },
+  "gen-docs/docusaurus.config.ts": {
+   "files": 1,
+   "bytes": 4604
+  },
+  "server/constants": {
+   "files": 7,
+   "bytes": 3668
+  },
+  ".": {
+   "files": 3,
+   "bytes": 3612
+  },
+  "server/middleware": {
+   "files": 3,
+   "bytes": 2881
+  },
+  "src/i18n": {
+   "files": 1,
+   "bytes": 2289
+  },
+  "gen-docs/src": {
+   "files": 1,
+   "bytes": 2187
+  },
+  "server/logger.ts": {
+   "files": 1,
+   "bytes": 2081
+  },
+  "gen-docs/sidebars.ts": {
+   "files": 1,
+   "bytes": 937
+  },
+  "server/types": {
+   "files": 2,
+   "bytes": 661
+  },
+  "server/scripts": {
+   "files": 1,
+   "bytes": 515
+  },
+  "server/repositories": {
+   "files": 1,
+   "bytes": 428
+  }
+ }
+}

@@ -1,0 +1,78 @@
+{
+ "repo": "lukevella/rallly",
+ "branch": "main",
+ "sha": "b180b2b87610590347f5deb548c5f3a16fe1dead",
+ "license": "AGPL-3.0",
+ "archived": false,
+ "pushed_at": "2026-09-29T23:10:55Z",
+ "stars": 5282,
+ "truncated": false,
+ "counts": {
+  "generated": 6,
+  "ts": 396,
+  "tsx": 530,
+  "test": 130,
+  "js": 1
+ },
+ "bytes": {
+  "generated": 1446,
+  "ts": 1171487,
+  "tsx": 2108977,
+  "test": 655405,
+  "js": 292
+ },
+ "by_top": {
+  "apps/web": {
+   "files": 686,
+   "bytes": 2131967
+  },
+  "packages/ui": {
+   "files": 73,
+   "bytes": 484764
+  },
+  "apps/landing": {
+   "files": 99,
+   "bytes": 436124
+  },
+  "packages/emails": {
+   "files": 28,
+   "bytes": 87577
+  },
+  "packages/database": {
+   "files": 4,
+   "bytes": 51965
+  },
+  "packages/posthog": {
+   "files": 8,
+   "bytes": 37701
+  },
+  "packages/billing": {
+   "files": 12,
+   "bytes": 32972
+  },
+  "packages/test-helpers": {
+   "files": 4,
+   "bytes": 6745
+  },
+  "packages/utils": {
+   "files": 4,
+   "bytes": 5190
+  },
+  "packages/logger": {
+   "files": 2,
+   "bytes": 3079
+  },
+  "packages/languages": {
+   "files": 3,
+   "bytes": 1588
+  },
+  "packages/screenshots": {
+   "files": 2,
+   "bytes": 715
+  },
+  ".": {
+   "files": 1,
+   "bytes": 77
+  }
+ }
+}

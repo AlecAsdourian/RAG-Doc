@@ -1,0 +1,124 @@
+{
+ "repo": "AmruthPillai/Reactive-Resume",
+ "branch": "main",
+ "sha": "1fc835e5f296d579ab88685de9dc573b174c6533",
+ "license": "MIT",
+ "archived": false,
+ "pushed_at": "2026-09-29T23:27:26Z",
+ "stars": 43567,
+ "truncated": false,
+ "counts": {
+  "ts": 384,
+  "test": 460,
+  "generated": 9,
+  "tsx": 310
+ },
+ "bytes": {
+  "ts": 1530580,
+  "test": 2130480,
+  "generated": 32361,
+  "tsx": 1592293
+ },
+ "by_top": {
+  "apps/web": {
+   "files": 301,
+   "bytes": 1362414
+  },
+  "packages/pdf": {
+   "files": 86,
+   "bytes": 409606
+  },
+  "packages/api": {
+   "files": 72,
+   "bytes": 359622
+  },
+  "packages/resume": {
+   "files": 64,
+   "bytes": 343370
+  },
+  "packages/ui": {
+   "files": 44,
+   "bytes": 139895
+  },
+  "packages/schema": {
+   "files": 14,
+   "bytes": 94963
+  },
+  "packages/mcp": {
+   "files": 8,
+   "bytes": 68519
+  },
+  "apps/server": {
+   "files": 27,
+   "bytes": 65795
+  },
+  "packages/import": {
+   "files": 10,
+   "bytes": 65764
+  },
+  "packages/docx": {
+   "files": 7,
+   "bytes": 45220
+  },
+  "packages/db": {
+   "files": 10,
+   "bytes": 33305
+  },
+  "packages/auth": {
+   "files": 6,
+   "bytes": 23824
+  },
+  "tooling/ats-export-evaluation": {
+   "files": 3,
+   "bytes": 20597
+  },
+  "packages/ai": {
+   "files": 8,
+   "bytes": 19963
+  },
+  "packages/utils": {
+   "files": 9,
+   "bytes": 13617
+  },
+  "packages/fonts": {
+   "files": 2,
+   "bytes": 10249
+  },
+  "tooling/recovery": {
+   "files": 1,
+   "bytes": 8400
+  },
+  "packages/email": {
+   "files": 6,
+   "bytes": 8172
+  },
+  "tooling/semantic-css": {
+   "files": 1,
+   "bytes": 7923
+  },
+  "packages/dsh-plugin": {
+   "files": 5,
+   "bytes": 7095
+  },
+  ".": {
+   "files": 3,
+   "bytes": 5682
+  },
+  "packages/env": {
+   "files": 3,
+   "bytes": 5566
+  },
+  "tooling/locales": {
+   "files": 2,
+   "bytes": 1922
+  },
+  "tooling/database": {
+   "files": 1,
+   "bytes": 938
+  },
+  "tooling/vitest.config.ts": {
+   "files": 1,
+   "bytes": 452
+  }
+ }
+}
