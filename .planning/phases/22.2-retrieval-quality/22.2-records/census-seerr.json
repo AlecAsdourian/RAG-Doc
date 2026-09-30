@@ -1,0 +1,174 @@
+{
+ "corpus": "seerr",
+ "commit": "e9590629b8215676a352ec2413d7c8ee7e6974df",
+ "repository": "https://github.com/seerr-team/seerr",
+ "files": 501,
+ "files_by_language": {
+  "typescript": 501
+ },
+ "files_by_extension": {
+  ".ts": 199,
+  ".tsx": 302
+ },
+ "source_chars": 2839637,
+ "source_lines": 87560,
+ "chunks": 1924,
+ "chunks_by_type": {
+  "fixed_size": 1507,
+  "function": 261,
+  "file_summary": 95,
+  "class": 48,
+  "class_summary": 13
+ },
+ "chunk_chars_total": 2565799,
+ "index_text_over_source": 0.904,
+ "code_chunk_chars": {
+  "p50": 1394,
+  "p90": 2152,
+  "p99": 3527,
+  "max": 46071,
+  "over_2000": 300,
+  "over_5000": 15,
+  "over_8000": 12
+ },
+ "largest_chunks": [
+  {
+   "file": "server/lib/overseerrMerge.ts",
+   "breadcrumb": "SeerrMigration1759769291608",
+   "type": "class",
+   "chars": 46071,
+   "lines": 393
+  },
+  {
+   "file": "server/lib/availabilitySync.ts",
+   "breadcrumb": "AvailabilitySync",
+   "type": "class",
+   "chars": 38675,
+   "lines": 1190
+  },
+  {
+   "file": "server/subscriber/MediaRequestSubscriber.ts",
+   "breadcrumb": "MediaRequest",
+   "type": "class",
+   "chars": 35931,
+   "lines": 1098
+  },
+  {
+   "file": "server/lib/overseerrMerge.ts",
+   "breadcrumb": "SeerrMigration1759769291608.up",
+   "type": "function",
+   "chars": 24034,
+   "lines": 199
+  },
+  {
+   "file": "server/entity/MediaRequest.ts",
+   "breadcrumb": "MediaRequest",
+   "type": "class",
+   "chars": 22860,
+   "lines": 761
+  }
+ ],
+ "tokens": {
+  "embedded_total_if_every_chunk": 572651,
+  "billed_distinct_content": 571946,
+  "cost_full_ingest_usd": {
+   "text-embedding-ada-002": 0.0572,
+   "text-embedding-3-small": 0.0114
+  },
+  "p50": 313,
+  "p90": 439,
+  "max": 12685,
+  "chunks_over_8000_tokens_truncated": 2,
+  "tokens_cut_by_truncation": 5824,
+  "truncated": [
+   {
+    "file": "server/lib/availabilitySync.ts",
+    "breadcrumb": "AvailabilitySync",
+    "type": "class",
+    "tokens": 9139,
+    "chars": 38675
+   },
+   {
+    "file": "server/lib/overseerrMerge.ts",
+    "breadcrumb": "SeerrMigration1759769291608",
+    "type": "class",
+    "tokens": 12685,
+    "chars": 46071
+   }
+  ]
+ },
+ "identical_content": {
+  "distinct_hashes": 1903,
+  "chunks_sharing_a_hash": 33,
+  "extra_copies": 21
+ },
+ "duplication": {
+  "class_chunks": 48,
+  "class_chunks_ge80pct_covered": 12,
+  "class_chars": 208108,
+  "class_chars_covered_by_methods": 168659,
+  "nested_function_chunks": 0,
+  "nested_function_chars": 0,
+  "go_struct_chunks_in_groups": 0,
+  "go_group_extra_chars": 0
+ },
+ "coverage_nonblank_lines_in_code_chunks": 0.767,
+ "fallback_files_fixed_size_only": 406,
+ "fixed_size_chunks": 1507,
+ "parse_errors_as_chunked": {
+  "typescript.ts": {
+   "files": 199,
+   "files_with_errors": 187,
+   "error_nodes": 5265,
+   "missing_nodes": 928
+  },
+  "typescript.tsx": {
+   "files": 302,
+   "files_with_errors": 293,
+   "error_nodes": 2344,
+   "missing_nodes": 454
+  }
+ },
+ "parse_errors_with_typescript_grammar": {
+  "typescript.ts": {
+   "files": 199,
+   "files_with_errors": 0,
+   "error_nodes": 0,
+   "missing_nodes": 0
+  },
+  "typescript.tsx": {
+   "files": 302,
+   "files_with_errors": 0,
+   "error_nodes": 0,
+   "missing_nodes": 0
+  }
+ },
+ "typescript": {
+  "real_interface_declaration": 435,
+  "real_class_declaration": 76,
+  "sim_chunkable_declarations": 992,
+  "sim_files_with_no_chunkable_declaration": 54,
+  "chunked_function_chunks": 261,
+  "chunked_class_chunks": 48,
+  "chunked_fixed_size_chunks": 1507,
+  "chunked_with_docstring": 0,
+  "real_method_definition": 390,
+  "real_type_alias_declaration": 116,
+  "real_top_level_const_function": 466,
+  "real_function_declaration": 60,
+  "real_declarations_with_jsdoc_above": 25,
+  "real_enum_declaration": 23,
+  "real_decorators": 228,
+  "real_abstract_class_declaration": 1,
+  "real_abstract_method_signature": 1,
+  "real_top_level_const_function_capitalised": 322
+ },
+ "versions": {
+  "tree_sitter_go": "0.25.0",
+  "tree_sitter_javascript": "0.25.0",
+  "tree_sitter_python": "0.25.0",
+  "tree_sitter_typescript": "0.23.2",
+  "tiktoken": "0.12.0",
+  "tree-sitter": "0.25.2"
+ }
+}

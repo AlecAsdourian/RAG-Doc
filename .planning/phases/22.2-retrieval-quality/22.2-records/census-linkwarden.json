@@ -1,0 +1,157 @@
+{
+ "corpus": "linkwarden",
+ "commit": "952ac4540657cae3a67c3ca59433899d2fda8374",
+ "repository": "https://github.com/linkwarden/linkwarden",
+ "files": 379,
+ "files_by_language": {
+  "typescript": 379
+ },
+ "files_by_extension": {
+  ".tsx": 164,
+  ".ts": 215
+ },
+ "source_chars": 1197322,
+ "source_lines": 40557,
+ "chunks": 959,
+ "chunks_by_type": {
+  "fixed_size": 367,
+  "function": 343,
+  "file_summary": 248,
+  "class": 1
+ },
+ "chunk_chars_total": 1006512,
+ "index_text_over_source": 0.841,
+ "code_chunk_chars": {
+  "p50": 1241,
+  "p90": 2392,
+  "p99": 6533,
+  "max": 13444,
+  "over_2000": 98,
+  "over_5000": 19,
+  "over_8000": 2
+ },
+ "largest_chunks": [
+  {
+   "file": "apps/web/components/ModalContent/EditCollectionSharingModal.tsx",
+   "breadcrumb": "EditCollectionSharingModal",
+   "type": "function",
+   "chars": 13444,
+   "lines": 373
+  },
+  {
+   "file": "apps/web/pages/register.tsx",
+   "breadcrumb": "Register",
+   "type": "function",
+   "chars": 8471,
+   "lines": 278
+  },
+  {
+   "file": "apps/web/pages/login.tsx",
+   "breadcrumb": "Login",
+   "type": "function",
+   "chars": 7550,
+   "lines": 252
+  },
+  {
+   "file": "apps/web/lib/api/controllers/users/userId/deleteUserById.ts",
+   "breadcrumb": "deleteUserById",
+   "type": "function",
+   "chars": 7438,
+   "lines": 253
+  },
+  {
+   "file": "apps/web/pages/api/v1/auth/[...nextauth].ts",
+   "breadcrumb": "auth",
+   "type": "function",
+   "chars": 7137,
+   "lines": 238
+  }
+ ],
+ "tokens": {
+  "embedded_total_if_every_chunk": 236374,
+  "billed_distinct_content": 235774,
+  "cost_full_ingest_usd": {
+   "text-embedding-ada-002": 0.0236,
+   "text-embedding-3-small": 0.0047
+  },
+  "p50": 191,
+  "p90": 463,
+  "max": 2251,
+  "chunks_over_8000_tokens_truncated": 0,
+  "tokens_cut_by_truncation": 0,
+  "truncated": []
+ },
+ "identical_content": {
+  "distinct_hashes": 952,
+  "chunks_sharing_a_hash": 14,
+  "extra_copies": 7
+ },
+ "duplication": {
+  "class_chunks": 1,
+  "class_chunks_ge80pct_covered": 0,
+  "class_chars": 164,
+  "class_chars_covered_by_methods": 91,
+  "nested_function_chunks": 22,
+  "nested_function_chars": 20894,
+  "go_struct_chunks_in_groups": 0,
+  "go_group_extra_chars": 0
+ },
+ "coverage_nonblank_lines_in_code_chunks": 0.778,
+ "fallback_files_fixed_size_only": 131,
+ "fixed_size_chunks": 367,
+ "parse_errors_as_chunked": {
+  "typescript.tsx": {
+   "files": 164,
+   "files_with_errors": 151,
+   "error_nodes": 1681,
+   "missing_nodes": 204
+  },
+  "typescript.ts": {
+   "files": 215,
+   "files_with_errors": 200,
+   "error_nodes": 1635,
+   "missing_nodes": 160
+  }
+ },
+ "parse_errors_with_typescript_grammar": {
+  "typescript.tsx": {
+   "files": 164,
+   "files_with_errors": 0,
+   "error_nodes": 0,
+   "missing_nodes": 0
+  },
+  "typescript.ts": {
+   "files": 215,
+   "files_with_errors": 0,
+   "error_nodes": 0,
+   "missing_nodes": 0
+  }
+ },
+ "typescript": {
+  "real_function_declaration": 386,
+  "sim_chunkable_declarations": 601,
+  "sim_files_with_no_chunkable_declaration": 22,
+  "chunked_function_chunks": 343,
+  "chunked_class_chunks": 1,
+  "chunked_fixed_size_chunks": 367,
+  "chunked_with_docstring": 0,
+  "real_type_alias_declaration": 150,
+  "real_interface_declaration": 40,
+  "real_top_level_const_function": 213,
+  "real_top_level_const_function_capitalised": 50,
+  "real_declarations_with_jsdoc_above": 17,
+  "real_method_definition": 12,
+  "real_class_declaration": 1,
+  "real_enum_declaration": 8,
+  "real_top_level_const_function_in_a_fixed_size_window_today": 146,
+  "real_top_level_const_function_in_no_chunk_today": 67
+ },
+ "versions": {
+  "tree_sitter_go": "0.25.0",
+  "tree_sitter_javascript": "0.25.0",
+  "tree_sitter_python": "0.25.0",
+  "tree_sitter_typescript": "0.23.2",
+  "tiktoken": "0.12.0",
+  "tree-sitter": "0.25.2"
+ }
+}
