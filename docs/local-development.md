@@ -440,6 +440,15 @@ source file's path, not from git. Every package in one checkout uses the
 same container, and every run finds the same one again; CI has one
 checkout, so it has one container, as before.
 
+Symlinks and Windows letter case are resolved, so two spellings of one
+checkout share its container, but a Windows junction is not (measured on
+go1.25), so a checkout reached both through a junction and directly gets
+two containers: that costs a container and never makes two checkouts share
+one. Under `go test -trimpath` the compiler records the source file's
+import path instead of its location, so the harness cannot find the
+checkout and refuses to start before it creates anything; run the tests
+without `-trimpath`.
+
 **Why (ISS-037).** The harness applies its own tree's migrations to the
 database it finds, and golang-migrate refuses a database recorded at a
 version the tree does not have. With one name for the whole machine,
@@ -453,20 +462,30 @@ in the other then failed with `no migration found for version N`.
   anything else fails the harness with a message naming the variable. Unset
   or empty means the derived name.
 - **List them.** Each records the checkout that created it in the label
-  `rag-doc.isolation.checkout`:
+  `rag-doc.isolation.checkout`, so filtering on the label lists every
+  harness container made since ISS-037, whatever its name, override ones
+  included:
 
   ```bash
-  docker ps -a --filter name=rag-doc-isolation-tests- \
+  docker ps -a --filter label=rag-doc.isolation.checkout \
     --format '{{.Names}}  {{.Status}}  {{.Label "rag-doc.isolation.checkout"}}'
   ```
 
-  A container listed with no checkout predates ISS-037 (see the last item).
-- **Remove one** with `docker rm -f <name>`: when its worktree is gone, or
-  to give a checkout a fresh database after editing a migration its
-  container already applied (golang-migrate never re-applies a recorded
-  version). The harness removes nothing itself, and the next run in that
-  checkout creates the container again. Do not remove one while its
-  worktree's tests are running.
+  The old shared container carries no label (see the last item). Filtering
+  on the name, `docker ps -a --filter name=rag-doc-isolation-tests-`, lists
+  it along with the derived containers, but not override ones.
+- **Remove one** with `docker rm -f <name>`. The harness removes nothing
+  itself, and the next run in that checkout creates the container again.
+  Remove it:
+  - when its worktree is gone;
+  - after editing a migration its container already applied
+    (golang-migrate never re-applies a recorded version);
+  - when the checkout moves to a branch that lacks a migration its
+    container already recorded, such as an older branch. One checkout
+    still has one container, so every run then fails with ISS-037's own
+    error, `no migration found for version N` (measured).
+
+  Do not remove one while its worktree's tests are running.
 - **The cost** is one Postgres per worktree. A stopped one is started again
   by the next run, so a Docker restart costs a start, not a new database.
 - **The old shared container,** `rag-doc-isolation-tests-pgv16`, is the one
