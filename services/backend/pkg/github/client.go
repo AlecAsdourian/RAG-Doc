@@ -483,11 +483,15 @@ func (c *Client) RepositoryToken(ctx context.Context, installationID, githubRepo
 			installationID, got)
 	}
 	for name, level := range out.Permissions {
-		if name != "contents" && name != "metadata" {
-			return ScopedToken{}, fmt.Errorf(
-				"github: installation %d returned a token carrying %s=%s beyond contents:read; "+
-					"refusing to hand it out", installationID, name, level)
+		// metadata is allowed only at read, the level GitHub adds by itself
+		// (measured on the live mint, 22-05). Any other level is wider than
+		// asked for, like any other permission (PR #58's review, A-N2).
+		if name == "contents" || (name == "metadata" && level == "read") {
+			continue
 		}
+		return ScopedToken{}, fmt.Errorf(
+			"github: installation %d returned a token carrying %s=%s beyond contents:read; "+
+				"refusing to hand it out", installationID, name, level)
 	}
 
 	// `GET /repositories/{id}` is the by-id alias of `GET /repos/{owner}/{repo}`.

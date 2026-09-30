@@ -209,6 +209,9 @@ func TestRepositoryToken_RefusesAScopeWiderThanAsked(t *testing.T) {
 		{"no contents at all", "", `{"metadata":"read"}`, `contents=""`},
 		{"permissions object absent", "", absentField, "no permissions object"},
 		{"an extra permission", "", `{"contents":"read","metadata":"read","issues":"read"}`, "issues=read"},
+		// PR #58's review, A-N2: GitHub adds metadata at read; any other
+		// level is wider than asked for.
+		{"metadata above read", "", `{"contents":"read","metadata":"write"}`, "metadata=write"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
