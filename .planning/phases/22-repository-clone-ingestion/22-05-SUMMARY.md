@@ -89,7 +89,7 @@ key-decisions:
 
 issues-closed: []
 issues-updated: [ISS-027]
-review: "pending (PR open)"
+review: "pending (PR #58)"
 duration: "about 2 h of wall-clock agent time on 2026-09-29 (branch from 19:02 local; first commit 19:46), against the plan's 15-21 h estimate"
 completed: 2026-09-29
 ---

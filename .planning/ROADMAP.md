@@ -161,7 +161,7 @@ this entry was one of the three.
 **Goal:** Move the vectors into Postgres under tenant isolation, retire Qdrant, and index one real GitHub repository end to end through the Phase 21 queue: connect → queue → worker → pgvector → search.
 **Depends on:** Phase 21 (job infra)
 **Research:** Complete — `22-RESEARCH.md`; decisions locked in `22-CONTEXT.md` (2026-09-17, user answers U1–U10)
-**Plans:** 5, written 2026-09-17 (`22-01-PLAN.md` … `22-05-PLAN.md`). Fact-checked and revised the same day. The user decided P3 and P7 (both as recommended) and approved 22-05's live repository. Merged as `ac95151` (PR #47). 22-01 merged as `4a3b16c` (PR #48); 22-02 as `68a3af2` (PR #49); 22-03 as `b553ac8` (PR #53); 22-04 as `e2c25ff` (PR #52). 22-05 executed 2026-09-29, in review; with it every acceptance criterion in `22-ACCEPTANCE.md` is met with evidence recorded in a SUMMARY, so the phase closes on that evidence when 22-05 merges. Next: 22.1-01.
+**Plans:** 5, written 2026-09-17 (`22-01-PLAN.md` … `22-05-PLAN.md`). Fact-checked and revised the same day. The user decided P3 and P7 (both as recommended) and approved 22-05's live repository. Merged as `ac95151` (PR #47). 22-01 merged as `4a3b16c` (PR #48); 22-02 as `68a3af2` (PR #49); 22-03 as `b553ac8` (PR #53); 22-04 as `e2c25ff` (PR #52). 22-05 executed 2026-09-29, in review (PR #58); with it every acceptance criterion in `22-ACCEPTANCE.md` is met with evidence recorded in a SUMMARY, so the phase closes on that evidence when 22-05 merges. Next: 22.1-01.
 
 **What changed from the original sketch, and why.** The sketch said "Research: Unlikely". That was written before D1–D5, all of which land here. The research measured three contradictions in them, now recorded as dated corrections in `.planning/v2-substrate/DECISIONS.md`. The user split the work in two (U1):
 - this phase ends with a real repository indexed and searchable;
@@ -194,7 +194,7 @@ Plans:
   - an archive fetch through the GitHub API (U5);
   - v1 caps (U6) and a secret-file deny-list (U7);
   - hostile-archive tests.
-- [x] 22-05: the `full_ingest` handler and the worker switched on (the Phase 21 hand-off in `docs/api-ingestion-jobs.md`), with a fourth handler ending, `Rejected`, so a cap ends the job `dead` in one attempt (U6). Ends with `AlecAsdourian/ES-SC-API-Navigator` indexed from the development App into a scratch database and searched end to end. **Executed 2026-09-29, in review** (`22-05-SUMMARY.md`, `22-05-live-proof.md`): every ending mapped onto Phase 21's policy and tested, the token revoked when the fetch ends (live: HTTP 204), the fail-closed scope check confirmed against the real API, P16's numbers set provisionally, compose's `workers` behind a profile without the App key; the live proof indexed the repository in one attempt as `rag_doc_app` (82 chunks, the expected file at ranks 1, 1 and 2, nothing for another tenant, idempotent on re-index) after its first fetch found GitHub archiving private repositories under the full SHA, which 22-04's check refused, now fixed.
+- [x] 22-05: the `full_ingest` handler and the worker switched on (the Phase 21 hand-off in `docs/api-ingestion-jobs.md`), with a fourth handler ending, `Rejected`, so a cap ends the job `dead` in one attempt (U6). Ends with `AlecAsdourian/ES-SC-API-Navigator` indexed from the development App into a scratch database and searched end to end. **Executed 2026-09-29, in review (PR #58)** (`22-05-SUMMARY.md`, `22-05-live-proof.md`): every ending mapped onto Phase 21's policy and tested, the token revoked when the fetch ends (live: HTTP 204), the fail-closed scope check confirmed against the real API, P16's numbers set provisionally, compose's `workers` behind a profile without the App key; the live proof indexed the repository in one attempt as `rag_doc_app` (82 chunks, the expected file at ranks 1, 1 and 2, nothing for another tenant, idempotent on re-index) after its first fetch found GitHub archiving private repositories under the full SHA, which 22-04's check refused, now fixed.
 
 ### Phase 22.1: Symbols, Incremental Updates, Progress & the Code Graph
 
@@ -300,7 +300,7 @@ Plans:
 | 19. Auth Wiring & Org Provisioning | v1.0 | 4/4 | Complete | 2026-09-08 |
 | 20. Repository Integration Backend | v1.0 | 5/5 | Complete | 2026-09-09 |
 | 21. Ingestion Job Infrastructure | v1.0 | 7/7 | Complete | 2026-09-16 |
-| 22. pgvector Storage & the First Real Repository | v1.0 | 5/5 | Executed: 22-01 to 22-04 merged (PRs #48, #49, #53, #52); 22-05 in review; A1–A11 met with evidence (`22-05-SUMMARY.md`) | - |
+| 22. pgvector Storage & the First Real Repository | v1.0 | 5/5 | Executed: 22-01 to 22-04 merged (PRs #48, #49, #53, #52); 22-05 in review (PR #58); A1–A11 met with evidence (`22-05-SUMMARY.md`) | - |
 | 22.1. Symbols, Incremental Updates, Progress & the Code Graph | v1.0 | 0/5 | Researched, decisions locked; plans not written | - |
 | 23. Frontend Wiring & Onboarding UX | v1.0 | 0/5 | Not started | - |
 | 24. Production Deployment & Cost Controls | v1.0 | 0/5 | Not started | - |
