@@ -33,7 +33,12 @@ GITHUB_API = "https://api.github.test"
 FULL_NAME = "acme/widgets"
 BRANCH = "main"
 SHA = "3f7c2a9e5b1d4c6f8a0e2b4d6f8a1c3e5b7d9f01"
-TOP = f"acme-widgets-{SHA[:7]}"
+#: The directory a PRIVATE repository's archive sits under: the FULL SHA,
+#: as 22-05's live proof measured on the approved repository (a public one
+#: gets `{sha7}`; `workers.fetch.archive.expected_top_levels_for`). The
+#: handler's tests use the private form because customers' repositories are
+#: private; 22-04's fetcher tests keep the public one.
+TOP = f"acme-widgets-{SHA}"
 LINK_SECRET = "LINKSECRET-ingest-must-never-be-logged"
 DOWNLOAD_PATH = f"/acme/widgets/legacy.tar.gz/{SHA}"
 

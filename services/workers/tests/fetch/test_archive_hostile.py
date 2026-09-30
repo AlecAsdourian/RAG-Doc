@@ -323,6 +323,60 @@ def test_the_top_level_directory_is_checked_against_the_expected_name(tmp_path) 
     assert everything_under(dest2) == []
 
 
+PRIVATE_SHA = "f798806452c0743312780e0cc3e97301286696bd"
+
+
+def test_both_measured_directory_names_are_accepted_and_nothing_else(tmp_path) -> None:
+    # 22-05's live proof: GitHub archives a PRIVATE repository under
+    # `{owner}-{repo}-{sha}`, the FULL SHA (measured on
+    # AlecAsdourian/ES-SC-API-Navigator, by SHA and by branch), and a PUBLIC
+    # one under `{sha7}` (mealie and octocat/Hello-World, with and without
+    # authentication). 22-04 knew only the public form and refused every
+    # private repository's archive. Both forms name the commit asked for;
+    # every other name -- an unobserved abbreviation length included -- is
+    # still refused before anything is written.
+    short, full = archive_module.expected_top_levels_for("acme/widgets", PRIVATE_SHA)
+    assert short == f"acme-widgets-{PRIVATE_SHA[:7]}"
+    assert full == f"acme-widgets-{PRIVATE_SHA}"
+
+    for label, top in (("public", short), ("private", full)):
+        archive = write(tmp_path, build([Member(top, kind=tarfile.DIRTYPE), Member(f"{top}/src/a.py", b"#\n")]))
+        dest = os.path.join(str(tmp_path), f"dest-{label}")
+        stats = extract_archive(archive, dest, DEFAULT_LIMITS, expected_top_level=(short, full))
+        assert stats.top_level == top
+        assert everything_under(dest) == ["src/a.py"], f"the {label} form must be accepted"
+
+    for label, top in (
+        ("a twelve-character abbreviation, never observed", f"acme-widgets-{PRIVATE_SHA[:12]}"),
+        ("another commit's full SHA", "acme-widgets-" + "0" * 40),
+        ("another repository", f"acme-gadgets-{PRIVATE_SHA}"),
+    ):
+        archive = write(tmp_path, build([Member(f"{top}/src/a.py", b"#\n")]))
+        dest = os.path.join(str(tmp_path), "dest-refused")
+        with pytest.raises(FetchFailed) as raised:
+            extract_archive(archive, dest, DEFAULT_LIMITS, expected_top_level=(short, full))
+        assert everything_under(dest) == [], label
+        # The message says what the archive HELD, which is what made the
+        # live failure diagnosable only by downloading the archive again.
+        assert repr(top) in str(raised.value), label
+        assert repr(full) in str(raised.value) and repr(short) in str(raised.value)
+
+
+def test_a_top_level_name_that_is_not_plain_is_described_not_printed(tmp_path) -> None:
+    # The directory name is archive-controlled text: it reaches `last_error`
+    # only when it is the kind of name GitHub builds.
+    hostile = "acme-widgets-‮evil\x1b[31m"
+    archive = write(tmp_path, build([Member(f"{hostile}/src/a.py", b"#\n")]))
+    with pytest.raises(FetchFailed) as raised:
+        extract_archive(
+            archive, os.path.join(str(tmp_path), "dest"), DEFAULT_LIMITS,
+            expected_top_level=archive_module.expected_top_levels_for("acme/widgets", PRIVATE_SHA),
+        )
+    message = str(raised.value)
+    assert "evil" not in message and "\x1b" not in message
+    assert f"(a {len(hostile)}-character name, not printed)" in message
+
+
 def test_the_data_filter_alone_refuses_traversal(tmp_path, monkeypatch) -> None:
     # The header check is strictly broader than `filter="data"`, so with
     # both in place the filter never fires and its contribution is

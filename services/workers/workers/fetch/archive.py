@@ -24,8 +24,12 @@ WHAT HAPPENS, IN ORDER (`fetch_repository`):
    which is stricter than the wire if the host ever compresses the stream
    again; recorded, not relied on.)
 3. **Extract**, streaming, member by member, into `<job dir>/tree/`. The
-   first member's top-level directory must be the `{owner}-{repo}-{sha7}`
-   GitHub builds, or the archive is refused as not the one asked for.
+   first member's top-level directory must be one GitHub builds for the
+   requested commit -- `{owner}-{repo}-{sha7}` for a public repository,
+   `{owner}-{repo}-{sha}` (the full SHA) for a private one, both measured
+   (`expected_top_levels_for`; 22-04 had measured only the public form, and
+   22-05's live proof found the private one) -- or the archive is refused as
+   not the one asked for.
    Before a member is written its HEADER is checked: regular files only
    (symlinks, hardlinks, devices and FIFOs are skipped and counted); its
    DECLARED size is charged to the expansion budget; a sparse member is
@@ -102,7 +106,7 @@ from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Any, Dict, Iterator, List, NamedTuple, Optional, Tuple
+from typing import Any, Dict, Iterator, List, NamedTuple, Optional, Sequence, Tuple, Union
 from urllib.parse import quote, urlsplit
 
 import httpx
@@ -503,13 +507,17 @@ def extract_archive(
     dest: str,
     limits: Limits = DEFAULT_LIMITS,
     *,
-    expected_top_level: Optional[str] = None,
+    expected_top_level: Optional[Union[str, Sequence[str]]] = None,
 ) -> ExtractStats:
     """Extract the regular files that pass every check into `dest`, streaming.
 
     See the module docstring, step 3. Raises `FetchRejected` at a cap and
     `FetchFailed` for an archive that cannot be read, is not the expected
     one, or cannot be written for a reason other than a member's name.
+
+    `expected_top_level` is the name, or the names, the archive's single
+    top-level directory may have (`expected_top_levels_for`); None skips the
+    check.
     """
     stats = ExtractStats()
     skipped: Counter = Counter()
@@ -517,6 +525,13 @@ def extract_archive(
     real_dest = os.path.realpath(dest)
     cap_mb = limits.max_expanded_bytes // MB
     target: Optional[str] = None
+    accepted: Optional[Tuple[str, ...]] = None
+    if expected_top_level is not None:
+        accepted = (
+            (expected_top_level,)
+            if isinstance(expected_top_level, str)
+            else tuple(expected_top_level)
+        )
 
     try:
         with gzip.open(archive_path, "rb") as raw:
@@ -530,15 +545,19 @@ def extract_archive(
                     target = None
 
                     # GitHub's archives put everything under one directory,
-                    # `{owner}-{repo}-{sha7}`. The FIRST member fixes it, and
-                    # when the caller knows what it must be, it is checked:
-                    # an archive under another name is not the one asked for.
+                    # `{owner}-{repo}-{sha7}` for a public repository and
+                    # `{owner}-{repo}-{sha}` for a private one (both measured;
+                    # `expected_top_levels_for`). The FIRST member fixes it,
+                    # and when the caller knows what it must be, it is
+                    # checked: an archive under another name is not the one
+                    # asked for.
                     top, _, rel = member.name.partition("/")
                     if stats.top_level is None:
-                        if expected_top_level is not None and top != expected_top_level:
+                        if accepted is not None and top not in accepted:
                             raise FetchFailed(
-                                f"archive top-level directory is not the expected "
-                                f"{expected_top_level!r}"
+                                f"archive top-level directory {_describe_top_level(top)} "
+                                "is not one of the expected "
+                                + ", ".join(repr(name) for name in accepted)
                             )
                         stats.top_level = top
 
@@ -746,10 +765,38 @@ def sweep_stale_workdirs(workdir: str, older_than: timedelta) -> int:
 # ---------------------------------------------------------------------
 
 
-def expected_top_level_for(full_name: str, sha: str) -> str:
-    """The directory GitHub puts an archive under: `{owner}-{repo}-{sha7}`."""
+def expected_top_levels_for(full_name: str, sha: str) -> Tuple[str, str]:
+    """The directory names GitHub puts an archive of `sha` under. BOTH MEASURED.
+
+    - `{owner}-{repo}-{sha7}` for a PUBLIC repository: `mealie-recipes-mealie-
+      84b2677` (22-04, twice), and on 2026-09-29 again for mealie and for
+      `octocat/Hello-World`, unauthenticated and authenticated alike;
+    - `{owner}-{repo}-{sha}` -- the FULL 40-hex SHA -- for a PRIVATE one:
+      `AlecAsdourian-ES-SC-API-Navigator-f798806452c0743312780e0cc3e97301286696bd`,
+      found by 22-05's live proof when 22-04's sha7-only check refused the
+      archive (and confirmed by branch name and by SHA through `gh api`).
+
+    Both name exactly the commit that was asked for, which is what the check
+    exists to establish. Anything else -- another abbreviation length
+    included, which has never been observed -- is refused, loudly.
+    """
     owner, _, repo = full_name.partition("/")
-    return f"{owner}-{repo}-{sha[:7]}"
+    prefix = f"{owner}-{repo}-"
+    return (prefix + sha[:7], prefix + sha)
+
+
+_PRINTABLE_TOP_LEVEL = re.compile(r"^[A-Za-z0-9._-]{1,200}$")
+
+
+def _describe_top_level(name: str) -> str:
+    """The archive's own directory name for an error message, when it is plain.
+
+    It is archive-controlled text, so it is printed only when it is the kind
+    of name GitHub builds; anything else is described by its length alone.
+    """
+    if _PRINTABLE_TOP_LEVEL.match(name):
+        return repr(name)
+    return f"(a {len(name)}-character name, not printed)"
 
 
 @contextmanager
@@ -790,7 +837,7 @@ def fetch_repository(
         tree_dir = os.path.join(jobdir, "tree")
         extract = extract_archive(
             archive, tree_dir, limits,
-            expected_top_level=expected_top_level_for(token.full_name, sha),
+            expected_top_level=expected_top_levels_for(token.full_name, sha),
         )
         os.remove(archive)
         files, walk_skipped = collect_tree(tree_dir, limits)
