@@ -216,7 +216,15 @@ refused; the check was not changed. The by-id lookup
 
 **The revocation:** `DELETE /installation/token`, authenticated by the token
 itself, answered **HTTP 204** at the end of the fetch, before parsing began --
-on run 1's failed fetch as on run 2's two good ones.
+on run 1's failed fetch as on run 2's two good ones. The three lines,
+verbatim from the worker's logs (run 1's, then run 2's two ingests; added
+2026-09-29 at PR #58's review, A-L6, which found only the second shown):
+
+```
+2026-09-29 20:09:31,267 INFO workers.fetch.archive revoked the repository token for AlecAsdourian/ES-SC-API-Navigator at api.github.com (HTTP 204)
+2026-09-29 20:17:05,717 INFO workers.fetch.archive revoked the repository token for AlecAsdourian/ES-SC-API-Navigator at api.github.com (HTTP 204)
+2026-09-29 20:18:20,393 INFO workers.fetch.archive revoked the repository token for AlecAsdourian/ES-SC-API-Navigator at api.github.com (HTTP 204)
+```
 
 ### The nine items
 
@@ -336,3 +344,41 @@ included) was touched at any point.
 **Cost:** two ingests of 30,728 tokens each and six one-question query
 embeddings (18-19 tokens each) -- about 61,600 tokens of
 `text-embedding-ada-002`, about $0.006.
+
+### The scripts (committed 2026-09-29, at PR #58's review, A-L6)
+
+Every command above ran from these, now committed **verbatim** -- byte for
+byte what ran, machine paths included -- in
+[`22-05-live-proof-scripts/`](22-05-live-proof-scripts/), so the role probe,
+the `pg_stat_activity` query, the log-scan patterns and the tracked-at-SHA
+and deny-list checks can be audited and re-run rather than taken from prose.
+**They hold no secret by construction:** the two database passwords are
+generated at run time (`secrets.token_urlsafe`) and written only to the
+scratch directory's `state.json` and `app_dsn`, which were deleted with the
+container; the keys are read from the `.env` files at run time and never
+printed; the backend's `.env` is sourced only into the backend's shell.
+
+- `live_setup.py` -- the scratch pgvector container on a free loopback port
+  (refusing 5434), `CREATE EXTENSION`, the migrations through the `migrate`
+  CLI on the container's own network, the `rag_doc_app` role with the
+  harness's grants, the role probe, and the seed and the enqueue as
+  `rag_doc_app` ("Run 2: setup" above).
+- `live_ports.py` -- the three free loopback ports for the backend's two
+  listeners and the RAG API.
+- `live_backend.sh`, `live_rag.sh`, `live_worker.sh` -- the three processes,
+  each with its own environment: the backend's `.env` (CRLF stripped) only
+  in the backend's, the workers' `.env` for the OpenAI key in the other two,
+  and every `DATABASE_URL` the scratch database as `rag_doc_app`.
+- `env_shape.py` -- the "checked by presence and length only" line: the
+  `.env` files' shape (BOM, CRLF, each named variable's presence, length and
+  quoting, and whether the key's path exists outside the repository), never
+  a value.
+- `live_check.py` -- items 1 to 8: `wait`, `record` (the job row, the
+  projection, the run against `gh api`'s head, the chunks, the tracked-at-SHA
+  and deny-list checks, and the `pg_stat_activity` identities), `search` (A's
+  three questions and B's), `enqueue`, `snapshot`/`replaced`/`idempotency`,
+  `logs` (the six secret-shape patterns) and `quote` (log lines with the
+  lease owner replaced by `<worker>`).
+
+They are evidence, not tooling: the paths are this machine's, and nothing
+imports or runs them.
