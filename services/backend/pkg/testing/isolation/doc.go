@@ -21,4 +21,10 @@
 // stable name so subsequent runs start in <2s. Migrations are idempotent so
 // reuse is safe. Each returned pool is closed on t.Cleanup; the container
 // itself persists for the developer's session.
+//
+// The name is per checkout (ISS-037): a fixed prefix and a short hash of the
+// checkout's root directory, so parallel worktrees at different migration
+// versions never share a database. ISOLATION_CONTAINER_NAME overrides it.
+// See resolveContainerName, and docs/local-development.md for listing and
+// removing the containers.
 package isolation
