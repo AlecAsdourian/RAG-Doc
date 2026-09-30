@@ -174,17 +174,49 @@ func TestCheckoutRoot_OneCheckoutTwoSpellings(t *testing.T) {
 }
 
 func TestResolveContainerName_ReadsTheEnvironment(t *testing.T) {
+	root := checkoutRoot()
+
 	t.Setenv(containerNameEnv, "rag-doc-override-test")
-	name, err := resolveContainerName()
+	name, err := resolveContainerName(root)
 	require.NoError(t, err)
 	assert.Equal(t, "rag-doc-override-test", name)
 
 	t.Setenv(containerNameEnv, "")
-	name, err = resolveContainerName()
+	name, err = resolveContainerName(root)
 	require.NoError(t, err)
-	want, err := containerNameFor("", checkoutRoot())
+	want, err := containerNameFor("", root)
 	require.NoError(t, err)
 	assert.Equal(t, want, name, "an empty override counts as unset")
 
-	t.Logf("this checkout (%s) uses container %s", checkoutRoot(), name)
+	t.Logf("this checkout (%s) uses container %s", root, name)
+}
+
+// TestResolveContainerName_RefusesTheRootTrimpathGives covers go test
+// -trimpath, under which the compiler records container.go under its import
+// path. The root is then relative and the same in every checkout, so every
+// checkout would derive one name again (PR #56's review measured two
+// checkouts both deriving the name ending 587fa80cee2f). It must be refused
+// before any container exists, and the override is no way out, because the
+// migrations are found from the same path.
+func TestResolveContainerName_RefusesTheRootTrimpathGives(t *testing.T) {
+	// What -trimpath records for this file: the module path, then the file's
+	// path in the module. Measured through the failure it caused: the
+	// harness then looked for its migrations under the package directory
+	// joined with github.com/yourusername/smart-docs-platform/services/...
+	const trimmed = "github.com/yourusername/smart-docs-platform/services/backend/pkg/testing/isolation/container.go"
+	root := rootFromSource(trimmed)
+	require.False(t, filepath.IsAbs(root), "premise: the root from a trimmed path is relative, got %q", root)
+
+	for _, override := range []string{"", "rag-doc-shared-pg"} {
+		t.Setenv(containerNameEnv, override)
+		name, err := resolveContainerName(root)
+		require.Error(t, err, "override %q: root %q must be refused, got name %q", override, root, name)
+		assert.Contains(t, err.Error(), "-trimpath", "the error must name the cause")
+		assert.Contains(t, err.Error(), containerNameEnv, "the error must say the override is no way around it")
+	}
+
+	// The guard refuses only what it should: the real checkout's root passes.
+	t.Setenv(containerNameEnv, "")
+	_, err := resolveContainerName(checkoutRoot())
+	require.NoError(t, err)
 }

@@ -83,10 +83,10 @@ var (
 // matches it by construction: the prefix, a dash and hex digits.
 var validContainerName = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]+$`)
 
-// resolveContainerName returns the name of the container this checkout's
-// harness creates or reuses: ISOLATION_CONTAINER_NAME when it is set,
-// otherwise containerNamePrefix, a dash, and a short hash of the checkout's
-// root directory.
+// resolveContainerName returns the name of the container the harness
+// creates or reuses for the checkout at root (checkoutRoot):
+// ISOLATION_CONTAINER_NAME when it is set, otherwise containerNamePrefix, a
+// dash, and a short hash of root.
 //
 // ONE CONTAINER PER CHECKOUT, NOT ONE PER MACHINE (ISS-037). The harness
 // applies its own tree's migrations to whatever database it finds, and
@@ -102,8 +102,27 @@ var validContainerName = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]+$`)
 // The derived name is the default, and the variable only an override,
 // because a safety that has to be remembered brings the collision back the
 // first time someone forgets it.
-func resolveContainerName() (string, error) {
-	return containerNameFor(os.Getenv(containerNameEnv), checkoutRoot())
+//
+// A ROOT THAT IS NOT ABSOLUTE IS REFUSED, WITH OR WITHOUT THE OVERRIDE.
+// Under `go test -trimpath` the compiler records this file under its import
+// path instead of its directory, so the root is the same relative path in
+// every checkout, and every checkout derives one name again: PR #56's
+// review measured two checkouts both deriving the name ending
+// 587fa80cee2f. The migrations are found from the same path, so the
+// override is no way out either: measured, the harness created the
+// override's container and then failed to open the migrations.
+// setupContainer calls this before anything else, so the refusal comes
+// before any container exists.
+func resolveContainerName(root string) (string, error) {
+	if !filepath.IsAbs(root) {
+		return "", fmt.Errorf("cannot place this checkout: its root came out "+
+			"as %q, which is not absolute, because the compiler recorded "+
+			"container.go without its directory, as go test -trimpath does; "+
+			"run the tests without -trimpath. %s is no way around it: it "+
+			"names the container, but the migrations are found from the "+
+			"same path", root, containerNameEnv)
+	}
+	return containerNameFor(os.Getenv(containerNameEnv), root)
 }
 
 // containerNameFor is resolveContainerName with its two inputs passed in,
@@ -190,7 +209,10 @@ func setupContainer(ctx context.Context) error {
 		return fmt.Errorf("set ryuk-disabled env: %w", err)
 	}
 
-	name, err := resolveContainerName()
+	// Before anything touches Docker: resolveContainerName refuses a root
+	// that is not absolute, the one go test -trimpath gives.
+	root := checkoutRoot()
+	name, err := resolveContainerName(root)
 	if err != nil {
 		return err
 	}
@@ -200,7 +222,7 @@ func setupContainer(ctx context.Context) error {
 		postgres.WithUsername(postgresUser),
 		postgres.WithPassword(postgresPass),
 		testcontainers.WithReuseByName(name),
-		testcontainers.WithLabels(map[string]string{checkoutLabel: checkoutRoot()}),
+		testcontainers.WithLabels(map[string]string{checkoutLabel: root}),
 		testcontainers.WithWaitStrategy(
 			wait.ForLog("database system is ready to accept connections").
 				WithOccurrence(2).
@@ -384,19 +406,32 @@ func migrationsDir() string {
 // checkoutRoot returns the absolute path of the repository checkout (a
 // worktree's own root, in a worktree) that this source file was compiled
 // from. It reads the path the compiler recorded, via runtime.Caller, so it
-// needs no git and works whatever directory `go test` runs in.
+// needs no git and works whatever directory `go test` runs in. Under
+// go test -trimpath that path has no directory and the result is relative,
+// which resolveContainerName refuses.
 func checkoutRoot() string {
 	_, thisFile, _, _ := runtime.Caller(0)
+	return rootFromSource(thisFile)
+}
+
+// rootFromSource is checkoutRoot with this file's compiled path passed in,
+// so a test can hand it the path go test -trimpath records.
+func rootFromSource(file string) string {
 	// this file: services/backend/pkg/testing/isolation/container.go
 	// target:    the checkout root, five directories up from its directory
-	return canonicalPath(filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "..", ".."))
+	return canonicalPath(filepath.Join(filepath.Dir(file), "..", "..", "..", "..", ".."))
 }
 
 // canonicalPath resolves symlinks and, on Windows, letter case, so one
 // checkout reached by two spellings derives one container name (measured on
 // go1.25, windows: a lower-cased checkout path comes back in its on-disk
-// case). A path that cannot be resolved is returned cleaned; the harness
-// then fails on the migrations under it, which says more than a name would.
+// case). Not Windows junctions: under this module's go 1.25 line, whose
+// GODEBUG default is winsymlink=1, EvalSymlinks returns a junction's path
+// unresolved (measured), so a checkout reached through a junction and
+// directly gets two containers; that costs a container and never makes two
+// checkouts share one. A path that cannot be resolved is returned cleaned:
+// resolveContainerName refuses it if it is relative, and otherwise the
+// harness fails on the migrations under it.
 func canonicalPath(p string) string {
 	if resolved, err := filepath.EvalSymlinks(p); err == nil {
 		return resolved
