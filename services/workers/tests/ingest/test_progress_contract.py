@@ -38,6 +38,11 @@ DOC = os.path.normpath(
 #: The reasons 22.1-03's plan read from the code on 2026-10-06. The static
 #: collector must find AT LEAST these, or "every collected reason is
 #: documented" would pass on a collector that finds nothing.
+#:
+#: ⚠ A PREMISE, NOT A SECOND AUTHORITY. The list of reasons is the doc's
+#: `skip-reasons` table; this set exists only to prove the collector works.
+#: Renaming or removing a reason changes the code, that table and this set
+#: in the same commit (the contract's stability rule).
 REASONS_READ_FROM_THE_CODE = {
     # by name (`filters.classify_path`)
     "unsafe_path", "secret", "vendored", "generated", "lockfile", "unsupported",

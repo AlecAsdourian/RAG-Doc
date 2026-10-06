@@ -213,9 +213,16 @@ authorized by the lease (`id`, `lease_owner`, `state = 'running'`, a live
 `lease_expires_at`) rather than by a tenant, on the internal listener only.
 The organization comes out of that statement, not into it.
 
-`claimSQL` and `sweepSQL` (`pkg/jobs`) are cross-tenant by construction and
-must never reach a request handler; `TestClaimAndSweepNeverReachARequestHandler`
-is the gate for that.
+The worker's `CLAIM_SQL` and `_SWEEP_SQL` (`workers/jobs/transitions.py`;
+their canonical Go copies, `claimSQL` and `sweepSQL`, live in
+`pkg/jobs/schema_test.go`) are cross-tenant by construction and must never
+reach a request handler; `TestClaimAndSweepNeverReachARequestHandler` is the
+gate for that.
+
+**Writers are out of this table on purpose.** Connect's path also reads the
+queue through `RETURNING` on `pkg/jobs`' enqueue and supersede statements;
+those are writers, covered by the POST gate and `pkg/jobs`' own isolation
+tests, not by this list of tenant-facing readers.
 
 **The rule for the next tenant-facing reader:** filter by the claim in the
 statement, write its isolation test on purpose, make the filter's mutation
