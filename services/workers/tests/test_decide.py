@@ -502,6 +502,32 @@ class TestRefusal1QuestionSets:
         refused(*world.run(capsys), "linkwarden: current-ada vs candidate-ada: lw-01: the question's symbol differs "
                                     "between the arms")
 
+    def test_a_symbol_clause_over_a_question_with_no_symbol_is_refused(self, world, capsys):
+        """M2's symbol MRR is over all the questions, so every one must name a symbol."""
+        spec_path = world.repo / "specs" / "miniflux.json"
+        changed = json.loads(spec_path.read_text(encoding="utf-8"))
+        next(q for q in changed["questions"] if q["id"] == "mf-01").pop("symbol")
+        spec_path.write_text(json.dumps(changed), encoding="utf-8")
+        _git(world.repo, "commit", "-q", "-am", "mf-01 names no symbol")
+
+        def drop_symbol(h, r):
+            r["mf-01"].update(symbol=None, symbol_rank=None)
+        for arm in ARMS:
+            world.edit(arm, "miniflux", drop_symbol)
+        refused(*world.run(capsys), "M2 has a symbol clause, and ['mf-01'] name no symbol")
+
+    @pytest.mark.parametrize("key, value, fragment", [
+        ("set", "tuning", "the header's set is 'tuning', not the rule's 'shape-model'"),
+        ("top_k", 10, "the header's top_k is 10, not the rule's 5"),
+        ("corpus", "mealie", "the header's corpus is 'mealie'"),
+    ])
+    def test_arms_that_agree_with_each_other_but_not_the_rule_are_refused(self, world, capsys, key, value, fragment):
+        for arm in ARMS:
+            world.edit(arm, "miniflux", lambda h, r: h.update({key: value}))
+        code, out = world.run(capsys)
+        refused(code, out, fragment)
+        assert "the arms differ" not in out, "every arm agrees, so only the check against the rule can refuse"
+
     def test_a_spec_with_no_question_in_the_set_is_refused(self, world, capsys):
         rule = json.loads((world.repo / "rules" / M2_RULE.name).read_text(encoding="utf-8"))
         rule["set"] = "keyword-leg"
