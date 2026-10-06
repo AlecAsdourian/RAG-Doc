@@ -45,6 +45,7 @@ Each corpus writes census-<name>.json (the summary) and chunks-<name>.jsonl
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import logging
@@ -282,8 +283,29 @@ class FallbackCapture(logging.Handler):
         self.messages.append(record.getMessage())
 
 
+@contextlib.contextmanager
+def capturing():
+    """The chunker's warnings routed to a fresh capture for the block, and the
+    logger's level, propagation and handlers restored after it: a census run
+    inside a larger process (a test session) leaves its logging as it found it."""
+    chunker_logger = logging.getLogger(CHUNKER_LOGGER)
+    saved = (chunker_logger.level, chunker_logger.propagate)
+    capture = FallbackCapture()
+    chunker_logger.setLevel(logging.WARNING)
+    chunker_logger.propagate = False
+    chunker_logger.addHandler(capture)
+    try:
+        yield capture
+    finally:
+        chunker_logger.removeHandler(capture)
+        chunker_logger.level, chunker_logger.propagate = saved
+
+
 def attach_capture() -> FallbackCapture:
-    """Route the chunker's warnings to a capture, and keep the rest of the workers quiet."""
+    """For a process that only runs the census (its CLI, a record script): route
+    the chunker's warnings to a capture for good, and keep the rest of the
+    workers quiet. Changes process-wide logging; inside a larger process,
+    `census()` with no capture uses `capturing()` instead."""
     logging.getLogger("workers").setLevel(logging.ERROR)
     chunker_logger = logging.getLogger(CHUNKER_LOGGER)
     chunker_logger.setLevel(logging.WARNING)
@@ -374,7 +396,14 @@ def _parity_go(tree):
 
 
 def census(name, files, meta, chunker, enc, grammars, capture: Optional[FallbackCapture] = None):
-    capture = capture or attach_capture()
+    """The census of one corpus: (summary, {path: (content, lang, chunks)}).
+
+    `capture` is an attached FallbackCapture (`attach_capture()`); with none,
+    one is attached for this call only and detached after it.
+    """
+    if capture is None:
+        with capturing() as scoped:
+            return census(name, files, meta, chunker, enc, grammars, scoped)
     r = {"corpus": name, **meta, "files": len(files)}
     by_lang = Counter(lang for _, _, lang in files)
     r["files_by_language"] = dict(by_lang)

@@ -203,6 +203,23 @@ def test_a_file_with_no_function_or_class_is_counted_as_no_chunk(tools):
     assert r["fallback_reasons"]["python"] == {"raised": 0, "no_chunk": 1, "unsupported": 0}
 
 
+def test_a_census_leaves_logging_as_it_found_it(tools, caplog):
+    """Run inside a test session, the census must not quiet anyone else's logs:
+    a later test reading a workers.* warning would otherwise see nothing."""
+    import logging
+
+    chunker_logger = logging.getLogger(chunk_census.CHUNKER_LOGGER)
+    before = (logging.getLogger("workers").level, chunker_logger.level, chunker_logger.propagate,
+              list(chunker_logger.handlers))
+    _census(tools, [("pkg/consts.py", PY_PLAIN, "python")])
+    after = (logging.getLogger("workers").level, chunker_logger.level, chunker_logger.propagate,
+             list(chunker_logger.handlers))
+    assert after == before
+    with caplog.at_level(logging.WARNING, logger="workers"):
+        tools[0].chunk_file("pkg/consts.py", PY_PLAIN, "python")
+    assert any("produced no chunks" in r.getMessage() for r in caplog.records)
+
+
 def test_an_unsupported_language_is_counted_as_unsupported(tools):
     r = _census(tools, [("src/lib.rs", "fn main() {}\n", "rust")])
     assert r["fallback_reasons"]["rust"] == {"raised": 0, "no_chunk": 0, "unsupported": 1}
