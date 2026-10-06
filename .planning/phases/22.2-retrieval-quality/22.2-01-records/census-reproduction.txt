@@ -1,0 +1,44 @@
+reproduce_census.py, run 2026-10-06 from a CLEAN EXPORT of feat/22.2-01-instruments at 0b63905584391c50588015f4e034253f8257f6fe
+(`git archive HEAD`, extracted: no .git, no untracked or ignored files), with:
+  --self-root    a clean export (`git archive 0f2e4df`) of 0f2e4dfaffa6154e9dc8bc45b6771be0b7218759, the commit the
+                 research census records name (services/backend/pkg and services/workers/workers have changed since)
+  --corpora      miniflux, mealie, linkwarden, ghostfolio and seerr, each fetched into a scratch directory by
+                 22.2-records/fetch_pinned.py, which printed "fetched <url> at <pinned sha>" for all five
+  the interpreter: a fresh venv built from this branch's services/workers/requirements.txt (python 3.13.7;
+                 tree-sitter 0.25.2, tree-sitter-python/-go/-javascript 0.25.0, tree-sitter-typescript 0.23.2,
+                 tiktoken 0.12.0: the pins), with OPENAI_API_KEY and DATABASE_URL unset (`env -u`) and no database
+
+    env -u OPENAI_API_KEY -u DATABASE_URL <venv>/python \
+        <export>/.planning/phases/22.2-retrieval-quality/22.2-01-records/reproduce_census.py \
+        --self-root <export of 0f2e4df> --self-commit 0f2e4dfaffa6154e9dc8bc45b6771be0b7218759 \
+        --corpora <scratch corpora> --out <scratch out>
+
+The tool it runs is the export's services/workers/scripts/rag_benchmarks/chunk_census.py. Its chunker is this
+branch's: workers/chunker, workers/parser and workers/embeddings are unchanged since 0f2e4df
+(`git diff --stat 0f2e4df HEAD --` on those three paths prints nothing). `self` is read from --self-root.
+
+exit code 0. Its output, verbatim:
+
+1. the tool
+   self-go: 40 files, 323 chunks, digest 21528e46034ac80d, chunker a1a44e8d682e21bb, index/source 0.638, truncated 0, billed tokens 87529
+   self-py: 39 files, 272 chunks, digest 541cc7b4ba180823, chunker a1a44e8d682e21bb, index/source 1.378, truncated 0, billed tokens 116245
+   self-ts: 43 files, 105 chunks, digest b2d467a506f1f24e, chunker a1a44e8d682e21bb, index/source 0.898, truncated 0, billed tokens 40219
+   miniflux: 335 files, 2134 chunks, digest 6e27949a7d08d384, chunker a1a44e8d682e21bb, index/source 0.881, truncated 0, billed tokens 318453
+   mealie: 390 files, 2816 chunks, digest 0afe2fc92966b0c2, chunker a1a44e8d682e21bb, index/source 1.457, truncated 0, billed tokens 427258
+   linkwarden: 379 files, 959 chunks, digest b77578ef80047545, chunker a1a44e8d682e21bb, index/source 0.841, truncated 0, billed tokens 235774
+   ghostfolio-api: 323 files, 1147 chunks, digest a55c039a79092619, chunker a1a44e8d682e21bb, index/source 0.747, truncated 0, billed tokens 191982
+   seerr: 501 files, 1924 chunks, digest e2411334d97a4d2e, chunker a1a44e8d682e21bb, index/source 0.904, truncated 2, billed tokens 571946
+2. compare with 22.2-records/, field by field
+   census-self-go.json: 93 committed fields; differing 0; missing 0; extra 9 (chunk_rows, chunk_set_digest, chunker_version, fallback_reasons, files_with_declarations_but_no_named_chunk, named_chunks_by_extension)
+   census-self-py.json: 86 committed fields; differing 0; missing 0; extra 9 (chunk_rows, chunk_set_digest, chunker_version, fallback_reasons, files_with_declarations_but_no_named_chunk, named_chunks_by_extension)
+   census-self-ts.json: 104 committed fields; differing 0; missing 0; extra 15 (chunk_rows, chunk_set_digest, chunker_version, fallback_reasons, files_with_declarations_but_no_named_chunk, named_chunks_by_extension, typescript.sim_chunkable_with_jsdoc_directly_above)
+   census-miniflux.json: 96 committed fields; differing 0; missing 0; extra 9 (chunk_rows, chunk_set_digest, chunker_version, fallback_reasons, files_with_declarations_but_no_named_chunk, named_chunks_by_extension)
+   census-mealie.json: 90 committed fields; differing 0; missing 0; extra 9 (chunk_rows, chunk_set_digest, chunker_version, fallback_reasons, files_with_declarations_but_no_named_chunk, named_chunks_by_extension)
+   census-linkwarden.json: 110 committed fields; differing 0; missing 0; extra 122 (chunk_rows, chunk_set_digest, chunker_version, fallback_reasons, files_with_declarations_but_no_named_chunk, named_chunks_by_extension, typescript.sim_chunkable_with_jsdoc_directly_above)
+   census-ghostfolio-api.json: 102 committed fields; differing 0; missing 0; extra 35 (chunk_rows, chunk_set_digest, chunker_version, fallback_reasons, files_with_declarations_but_no_named_chunk, named_chunks_by_extension, typescript.sim_chunkable_with_jsdoc_directly_above)
+   census-seerr.json: 124 committed fields; differing 0; missing 0; extra 365 (chunk_rows, chunk_set_digest, chunker_version, fallback_reasons, files_with_declarations_but_no_named_chunk, named_chunks_by_extension, typescript.sim_chunkable_with_jsdoc_directly_above)
+   extra fields, by name, over all files: chunk_rows, chunk_set_digest, chunker_version, fallback_reasons, files_with_declarations_but_no_named_chunk, named_chunks_by_extension, typescript.sim_chunkable_with_jsdoc_directly_above
+RESULT: 8 files compared, 0 differ or miss a field
+
+The eight census files the tool wrote are committed beside this file, in census-reproduction/, so the extra
+fields' values can be read without re-running it.

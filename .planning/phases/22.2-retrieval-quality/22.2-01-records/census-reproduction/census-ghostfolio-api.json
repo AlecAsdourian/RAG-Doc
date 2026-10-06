@@ -1,0 +1,194 @@
+{
+ "corpus": "ghostfolio-api",
+ "commit": "c13a0c18fb9c221adc4fed02d3ba32b274c8dc80",
+ "repository": "https://github.com/ghostfolio/ghostfolio",
+ "files": 323,
+ "files_by_language": {
+  "typescript": 323
+ },
+ "files_by_extension": {
+  ".ts": 323
+ },
+ "source_chars": 1128049,
+ "source_lines": 37575,
+ "chunks": 1147,
+ "chunks_by_type": {
+  "fixed_size": 107,
+  "class": 201,
+  "function": 549,
+  "file_summary": 250,
+  "class_summary": 40
+ },
+ "chunk_chars_total": 843182,
+ "index_text_over_source": 0.747,
+ "code_chunk_chars": {
+  "p50": 320,
+  "p90": 1851,
+  "p99": 7595,
+  "max": 35684,
+  "over_2000": 81,
+  "over_5000": 32,
+  "over_8000": 8
+ },
+ "largest_chunks": [
+  {
+   "file": "apps/api/src/app/import/import.service.ts",
+   "breadcrumb": "ImportService",
+   "type": "class",
+   "chars": 35684,
+   "lines": 1148
+  },
+  {
+   "file": "apps/api/src/app/import/import.service.ts",
+   "breadcrumb": "ImportService.getDividends",
+   "type": "function",
+   "chars": 34879,
+   "lines": 1129
+  },
+  {
+   "file": "apps/api/src/app/portfolio/portfolio.controller.ts",
+   "breadcrumb": "PortfolioController",
+   "type": "class",
+   "chars": 16793,
+   "lines": 597
+  },
+  {
+   "file": "apps/api/src/services/data-provider/financial-modeling-prep/financial-modeling-prep.service.ts",
+   "breadcrumb": "FinancialModelingPrepService",
+   "type": "class",
+   "chars": 11485,
+   "lines": 394
+  },
+  {
+   "file": "apps/api/src/app/admin/admin.controller.ts",
+   "breadcrumb": "AdminController",
+   "type": "class",
+   "chars": 9437,
+   "lines": 308
+  }
+ ],
+ "tokens": {
+  "embedded_total_if_every_chunk": 192762,
+  "billed_distinct_content": 191982,
+  "cost_full_ingest_usd": {
+   "text-embedding-ada-002": 0.0192,
+   "text-embedding-3-small": 0.0038
+  },
+  "p50": 56,
+  "p90": 371,
+  "max": 7113,
+  "chunks_over_8000_tokens_truncated": 0,
+  "tokens_cut_by_truncation": 0,
+  "truncated": []
+ },
+ "identical_content": {
+  "distinct_hashes": 1117,
+  "chunks_sharing_a_hash": 44,
+  "extra_copies": 30
+ },
+ "duplication": {
+  "class_chunks": 201,
+  "class_chunks_ge80pct_covered": 82,
+  "class_chars": 348777,
+  "class_chars_covered_by_methods": 309347,
+  "nested_function_chunks": 8,
+  "nested_function_chars": 2143,
+  "go_struct_chunks_in_groups": 0,
+  "go_group_extra_chars": 0
+ },
+ "coverage_nonblank_lines_in_code_chunks": 0.45,
+ "fallback_files_fixed_size_only": 73,
+ "fixed_size_chunks": 107,
+ "fallback_reasons": {
+  "typescript": {
+   "raised": 0,
+   "no_chunk": 73,
+   "unsupported": 0
+  }
+ },
+ "named_chunks_by_extension": {
+  ".ts": {
+   "function": 549,
+   "class": 201
+  }
+ },
+ "files_with_declarations_but_no_named_chunk": {
+  "count": 24,
+  "by_language": {
+   "typescript": 24
+  },
+  "files": [
+   "apps/api/src/app/endpoints/mcp/mcp.test-utils.ts",
+   "apps/api/src/app/portfolio/calculator/portfolio-calculator-test-utils.ts",
+   "apps/api/src/app/portfolio/rules.service.ts",
+   "apps/api/src/environments/environment.prod.ts",
+   "apps/api/src/helper/account.helper.ts",
+   "apps/api/src/helper/activity.helper.ts",
+   "apps/api/src/helper/execution-context.helper.ts",
+   "apps/api/src/helper/language.helper.ts",
+   "apps/api/src/helper/markdown-table.helper.ts",
+   "apps/api/src/interceptors/redact-values-in-response/redact-values-in-response.interceptor.ts",
+   "apps/api/src/interceptors/transform-data-source-in-response/transform-data-source-in-response.interceptor.ts",
+   "apps/api/src/models/rules/account-cluster-risk/single-account.ts",
+   "apps/api/src/models/rules/asset-class-cluster-risk/equity.ts",
+   "apps/api/src/models/rules/asset-class-cluster-risk/fixed-income.ts",
+   "apps/api/src/models/rules/currency-cluster-risk/base-currency-current-investment.ts",
+   "apps/api/src/models/rules/currency-cluster-risk/current-investment.ts",
+   "apps/api/src/models/rules/economic-market-cluster-risk/developed-markets.ts",
+   "apps/api/src/models/rules/economic-market-cluster-risk/emerging-markets.ts",
+   "apps/api/src/models/rules/regional-market-cluster-risk/asia-pacific.ts",
+   "apps/api/src/models/rules/regional-market-cluster-risk/emerging-markets.ts",
+   "apps/api/src/models/rules/regional-market-cluster-risk/europe.ts",
+   "apps/api/src/models/rules/regional-market-cluster-risk/japan.ts",
+   "apps/api/src/models/rules/regional-market-cluster-risk/north-america.ts",
+   "apps/api/src/services/api/api.service.ts"
+  ]
+ },
+ "parse_errors_as_chunked": {
+  "typescript.ts": {
+   "files": 323,
+   "files_with_errors": 257,
+   "error_nodes": 6152,
+   "missing_nodes": 557
+  }
+ },
+ "parse_errors_with_typescript_grammar": {
+  "typescript.ts": {
+   "files": 323,
+   "files_with_errors": 0,
+   "error_nodes": 0,
+   "missing_nodes": 0
+  }
+ },
+ "typescript": {
+  "sim_chunkable_declarations": 1203,
+  "sim_files_with_no_chunkable_declaration": 49,
+  "sim_chunkable_with_jsdoc_directly_above": 48,
+  "chunked_function_chunks": 549,
+  "chunked_class_chunks": 201,
+  "chunked_fixed_size_chunks": 107,
+  "chunked_with_docstring": 0,
+  "real_decorators": 951,
+  "real_class_declaration": 245,
+  "real_method_definition": 905,
+  "real_declarations_with_jsdoc_above": 47,
+  "real_interface_declaration": 58,
+  "real_function_declaration": 50,
+  "real_type_alias_declaration": 6,
+  "real_abstract_class_declaration": 2,
+  "real_abstract_method_signature": 8,
+  "real_top_level_const_function": 1,
+  "real_top_level_const_function_in_a_fixed_size_window_today": 1
+ },
+ "chunk_set_digest": "a55c039a790926197bf28b37695be6862b4500c973140698caa3d0bb06e1029d",
+ "chunk_rows": 1147,
+ "chunker_version": "a1a44e8d682e21bb",
+ "versions": {
+  "tree_sitter_go": "0.25.0",
+  "tree_sitter_javascript": "0.25.0",
+  "tree_sitter_python": "0.25.0",
+  "tree_sitter_typescript": "0.23.2",
+  "tiktoken": "0.12.0",
+  "tree-sitter": "0.25.2"
+ }
+}
