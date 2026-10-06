@@ -59,3 +59,46 @@
    restored: sha256 017b5a932b58d6b9 == pristine True; hash-object == HEAD blob True
    VERDICT T1-M5: KILLED (expected to fail: test_a_tree_is_never_queried_with_another_grammars_set)
 
+== T2-M1: services/workers/workers/chunker/semantic_chunker.py
+   HEAD a39ed170ed68, blob 60b3d56683c0; pristine sha256 b36aec3f5312aa4c; hash-object == HEAD blob: True
+   mutation: 'if node.parent is not None and node.parent.type == "decorated_definition":' -> 'if False and node.parent is not None and node.parent.type == "decorated_definition":'
+   landed: True (mutated sha256 fb023e575ae1d4ba; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest workers/parser workers/chunker: exit 1; 4 failed, 74 passed in 6.96s
+      FAILED workers/chunker/test_semantic_chunker_python.py::test_a_decorated_class_starts_at_its_decorator
+      FAILED workers/chunker/test_semantic_chunker_python.py::test_a_decorated_method_starts_at_its_decorator_and_keeps_its_breadcrumb
+      FAILED workers/chunker/test_semantic_chunker_python.py::test_a_decorated_top_level_function_starts_at_its_decorator
+      FAILED workers/chunker/test_semantic_chunker_python.py::test_stacked_decorators_start_at_the_first
+   restored: sha256 b36aec3f5312aa4c == pristine True; hash-object == HEAD blob True
+   VERDICT T2-M1: KILLED (expected to fail: test_a_decorated_top_level_function_starts_at_its_decorator, test_a_decorated_method_starts_at_its_decorator_and_keeps_its_breadcrumb)
+
+== T2-M2: services/workers/workers/chunker/metadata_builder.py
+   HEAD a39ed170ed68, blob 1f4750db5e23; pristine sha256 654f59403eeaa0ba; hash-object == HEAD blob: True
+   mutation: '        prev = outer.prev_named_sibling' -> '        prev = node.prev_sibling'
+   landed: True (mutated sha256 38bd936db10da789; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest workers/parser workers/chunker: exit 1; 3 failed, 75 passed in 4.65s
+      FAILED workers/chunker/test_semantic_chunker_ts.py::test_jsdoc_above_a_class_a_method_and_a_decorated_method
+      FAILED workers/chunker/test_semantic_chunker_ts.py::test_jsdoc_above_a_decorator_is_the_docstring_and_the_chunk_starts_at_the_decorator
+      FAILED workers/chunker/test_semantic_chunker_ts.py::test_jsdoc_above_a_function_an_exported_function_and_a_const_is_the_docstring
+   restored: sha256 654f59403eeaa0ba == pristine True; hash-object == HEAD blob True
+   VERDICT T2-M2: KILLED (expected to fail: test_jsdoc_above_a_function_an_exported_function_and_a_const_is_the_docstring)
+
+== T2-M3: services/workers/workers/parser/tree_sitter_parser.py
+   HEAD a39ed170ed68, blob 01788222710f; pristine sha256 fa18d7868873594a; hash-object == HEAD blob: True
+   mutation: 'if language == "go" and spec_nodes and self._is_grouped(class_node):' -> 'if False and language == "go" and spec_nodes and self._is_grouped(class_node):'
+   landed: True (mutated sha256 fb14497bdb447cf0; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest workers/parser workers/chunker: exit 1; 1 failed, 77 passed in 4.05s
+      FAILED workers/chunker/test_semantic_chunker_go.py::test_each_struct_in_a_group_is_chunked_as_its_own_spec
+   restored: sha256 fa18d7868873594a == pristine True; hash-object == HEAD blob True
+   VERDICT T2-M3: KILLED (expected to fail: test_each_struct_in_a_group_is_chunked_as_its_own_spec)
+
+== T2-M4: services/workers/workers/chunker/semantic_chunker.py
+   HEAD a39ed170ed68, blob 60b3d56683c0; pristine sha256 b36aec3f5312aa4c; hash-object == HEAD blob: True
+   mutation: '            if decorators:' -> '            if False and decorators:'
+   landed: True (mutated sha256 3e2a01c840411215; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest workers/parser workers/chunker: exit 1; 3 failed, 75 passed in 4.26s
+      FAILED workers/chunker/test_semantic_chunker_ts.py::test_a_decorated_method_starts_at_its_first_decorator_and_keeps_its_breadcrumb
+      FAILED workers/chunker/test_semantic_chunker_ts.py::test_an_exported_class_starts_at_the_decorator_before_export
+      FAILED workers/chunker/test_semantic_chunker_ts.py::test_jsdoc_above_a_decorator_is_the_docstring_and_the_chunk_starts_at_the_decorator
+   restored: sha256 b36aec3f5312aa4c == pristine True; hash-object == HEAD blob True
+   VERDICT T2-M4: KILLED (expected to fail: test_a_decorated_method_starts_at_its_first_decorator_and_keeps_its_breadcrumb, test_an_exported_class_starts_at_the_decorator_before_export)
+
