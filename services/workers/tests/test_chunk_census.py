@@ -144,12 +144,21 @@ class TestChunkerVersion:
         assert chunk_digest.chunker_version(root) == before
 
     def test_line_endings_do_not_change_it(self, tmp_path):
-        root = self._copy(tmp_path)
-        before = chunk_digest.chunker_version(root)
-        for _, path in chunk_digest.chunker_files(root):
-            data = path.read_bytes().replace(b"\r\n", b"\n")
-            path.write_bytes(data.replace(b"\n", b"\r\n"))
-        assert chunk_digest.chunker_version(root) == before
+        """An all-LF copy and an all-CRLF copy name one version, the checkout's own.
+
+        Both copies are written explicitly, so the test can fail on any checkout:
+        comparing a copy with itself converted would pass on a CRLF checkout
+        whatever the code did (review A, finding 4)."""
+        lf = self._copy(tmp_path / "lf")
+        crlf = self._copy(tmp_path / "crlf")
+        for root, ending in ((lf, b"\n"), (crlf, b"\r\n")):
+            for _, path in chunk_digest.chunker_files(root):
+                data = path.read_bytes().replace(b"\r\n", b"\n")
+                path.write_bytes(data.replace(b"\n", ending))
+        some = chunk_digest.chunker_files(lf)[0][1]
+        assert b"\r\n" not in some.read_bytes()
+        assert b"\r\n" in (crlf / some.relative_to(lf)).read_bytes()
+        assert chunk_digest.chunker_version(lf) == chunk_digest.chunker_version(crlf) == chunk_digest.chunker_version()
 
     def test_a_parser_package_version_changes_it(self, monkeypatch):
         before = chunk_digest.chunker_version()
@@ -209,12 +218,15 @@ def test_a_census_leaves_logging_as_it_found_it(tools, caplog):
     import logging
 
     chunker_logger = logging.getLogger(chunk_census.CHUNKER_LOGGER)
-    before = (logging.getLogger("workers").level, chunker_logger.level, chunker_logger.propagate,
-              list(chunker_logger.handlers))
     _census(tools, [("pkg/consts.py", PY_PLAIN, "python")])
-    after = (logging.getLogger("workers").level, chunker_logger.level, chunker_logger.propagate,
-             list(chunker_logger.handlers))
-    assert after == before
+    # The ABSOLUTE pristine state, not a before/after pair: earlier tests in this
+    # file run censuses too, so a leak would already be in a "before" (review B,
+    # finding 2). Nothing in the suite calls attach_capture(), the CLI's
+    # process-wide variant.
+    assert logging.getLogger("workers").level == logging.NOTSET
+    assert chunker_logger.level == logging.NOTSET
+    assert chunker_logger.propagate is True
+    assert not [h for h in chunker_logger.handlers if isinstance(h, chunk_census.FallbackCapture)]
     with caplog.at_level(logging.WARNING, logger="workers"):
         tools[0].chunk_file("pkg/consts.py", PY_PLAIN, "python")
     assert any("produced no chunks" in r.getMessage() for r in caplog.records)
@@ -377,11 +389,14 @@ def test_a_different_installed_version_is_refused_with_exit_2(monkeypatch, tmp_p
 
 def test_self_go_plus_self_py_is_exactly_self():
     h = chunk_census.harness()
-    args = (WORKERS, h.REPO_ROOT, "fixture-commit")
+    # A checkout names its own HEAD (a different claim would be refused); a
+    # clean export of the tests has none, and takes the claim.
+    commit = h.tree_commit(h.REPO_ROOT) or "export-commit"
+    args = (WORKERS, h.REPO_ROOT, commit)
     self_files, meta = chunk_census.corpus_files("self", *args)
     go, _ = chunk_census.corpus_files("self-go", *args)
     py, _ = chunk_census.corpus_files("self-py", *args)
-    assert meta == {"commit": "fixture-commit"}
+    assert meta["commit"] == commit
     assert sorted(f[0] for f in go + py) == sorted(f[0] for f in self_files)
     assert len(go) + len(py) == len(self_files)
     assert {f[2] for f in go} == {"go"} and {f[2] for f in py} == {"python"}
@@ -397,6 +412,48 @@ def test_self_is_read_from_the_self_root(tmp_path):
     only.write_text("def only():\n    return 1\n", encoding="utf-8")
     files, meta = chunk_census.corpus_files("self", WORKERS, tmp_path, "abc123")
     assert [f[0] for f in files] == ["services/workers/workers/only.py"]
-    assert meta == {"commit": "abc123"}
+    assert meta == {"commit": "abc123", "corpus_dirty": None}
     with pytest.raises(SystemExit, match="--self-commit"):
         chunk_census.corpus_files("self", WORKERS, tmp_path, None)
+
+
+# ---------------------------------------------------------------------------
+# The corpus tree digest and the retrieval code version (review A3, A8)
+# ---------------------------------------------------------------------------
+
+FILES = [("pkg/a.py", "def a():\n    return 1\n", "python"), ("pkg/b.go", "package b\n", "go")]
+
+
+class TestTreeDigest:
+    def test_it_is_independent_of_order_and_line_endings(self):
+        crlf = [(p, c.replace("\n", "\r\n"), lang) for p, c, lang in reversed(FILES)]
+        assert chunk_digest.tree_digest(crlf) == chunk_digest.tree_digest(FILES)
+
+    @pytest.mark.parametrize("change", ["content", "path", "dropped"])
+    def test_one_file_changes_it(self, change):
+        files = list(FILES)
+        if change == "content":
+            files[0] = (files[0][0], files[0][1] + "#", files[0][2])
+        elif change == "path":
+            files[0] = ("pkg/a2.py", files[0][1], files[0][2])
+        else:
+            files = files[1:]
+        assert chunk_digest.tree_digest(files) != chunk_digest.tree_digest(FILES)
+
+    def test_the_census_records_it(self, tools):
+        r = _census(tools, FILES)
+        assert r["corpus_tree_digest"] == chunk_digest.tree_digest(FILES)
+
+
+def test_the_retrieval_code_version_changes_with_its_code_not_its_tests(tmp_path):
+    for rel in chunk_digest.RETRIEVAL_DIRS:
+        shutil.copytree(WORKERS / rel, tmp_path / rel, ignore=shutil.ignore_patterns("__pycache__"))
+    before = chunk_digest.retrieval_code_version(tmp_path)
+    assert before == chunk_digest.retrieval_code_version()
+    test_file = tmp_path / "workers" / "retrieval" / "test_rrf_fusion.py"
+    assert test_file.exists()
+    test_file.write_bytes(test_file.read_bytes() + b"# a test changed\n")
+    assert chunk_digest.retrieval_code_version(tmp_path) == before
+    engine = tmp_path / "workers" / "retrieval" / "query_engine.py"
+    engine.write_bytes(engine.read_bytes() + b"#")
+    assert chunk_digest.retrieval_code_version(tmp_path) != before

@@ -35,7 +35,9 @@ IT PRINTS the table; every question whose file or symbol rank worsened or
 improved; and per corpus both chunk-set digests, marked "identical chunk set"
 when equal. Such a corpus is a control: any change on it is not the chunker's.
 
-EXIT 0 when nothing fell, 1 when anything fell, 2 when the inputs are refused.
+EXIT 0 when nothing fell, 1 when anything fell, 2 when the inputs are refused,
+malformed ones included (a final list that is not a list of results, or any
+record the reader cannot use): a malformed record never reads as "fired".
 
 USAGE
     tripwire.py --before DIR --after DIR --corpora self miniflux mealie
@@ -92,7 +94,12 @@ def refusals(name: str, before: Tuple[dict, Dict[str, dict]], after: Tuple[dict,
                 problems.append(f"{name}: {qid}: the {side} query failed ({str(rec['error'])[:60]}); "
                                 "a failed query is not a measurement")
                 continue
-            expected = ranks(exact_paths, rec["path"], rec.get("symbol"), rec["trace"]["top"])
+            top = rec["trace"].get("top") if isinstance(rec.get("trace"), dict) else None
+            if not isinstance(top, list) or not all(isinstance(e, dict) for e in top):
+                problems.append(f"{name}: {qid}: the {side} record's final list is not a list of results, "
+                                "so its ranks cannot be recomputed")
+                continue
+            expected = ranks(exact_paths, rec["path"], rec.get("symbol"), top)
             if expected != (rec["file_rank"], rec.get("symbol_rank")):
                 problems.append(f"{name}: {qid}: the {side} record's ranks {(rec['file_rank'], rec.get('symbol_rank'))} "
                                 f"are not what its final list gives {expected}")
@@ -147,6 +154,17 @@ def moves(b: Dict[str, dict], a: Dict[str, dict]) -> Tuple[List[str], List[str]]
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    """Exit 0 (quiet), 1 (fired) or 2 (refused). Input the checks above did not
+    foresee is refused too, never reported as the tripwire firing: a script
+    reading the exit code must not take a malformed record for a fallen number."""
+    try:
+        return _main(argv)
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        print(f"REFUSED: the records could not be compared ({type(exc).__name__}: {str(exc)[:120]}).")
+        return 2
+
+
+def _main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--before", type=Path, required=True)
     ap.add_argument("--after", type=Path, required=True)

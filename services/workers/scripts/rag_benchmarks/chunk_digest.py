@@ -94,10 +94,32 @@ def row_of_chunk(chunk) -> ChunkRow:
 
 # The database read of the same rows. The breadcrumb and docstring are read from
 # `metadata`, where the writer stores the chunker's metadata whole: that is what
-# the embedding text was built from (the `breadcrumb` column is a copy of it).
+# the embedding text was built from. Keyword search and the booster read the
+# `breadcrumb` column instead, which the writer copies from the same metadata
+# (`postgres_writer.py`, `... .get("breadcrumb") or None`), so the two agree by
+# construction; BREADCRUMB_MISMATCH_SQL counts the rows where they do not, and
+# the harness refuses to record a header over any such row.
 DB_ROWS_SQL = """
     SELECT file_path, start_line, end_line, chunk_type, content,
            metadata->>'breadcrumb', metadata->>'docstring'
+    FROM chunks
+    WHERE repository_id = %s AND embedding_model = %s
+"""
+
+BREADCRUMB_MISMATCH_SQL = """
+    SELECT count(*) FROM chunks
+    WHERE repository_id = %s AND embedding_model = %s
+      AND breadcrumb IS DISTINCT FROM NULLIF(metadata->>'breadcrumb', '')
+"""
+
+# The stored vectors themselves, as the identity of one ingest: each row's id and
+# the md5 of its vector's text, in id order. Two runs over the same stored
+# vectors (one ingest) give one digest; a re-ingest gives new ids, and the
+# embedding API does not repeat itself (22.2-01-records/embedding-repeatability.txt),
+# so two ingests never do. compare_runs.py --no-qdrant refuses a pair whose
+# digests differ: QD2's tolerance is for the same stored vectors only.
+STORED_VECTORS_SQL = """
+    SELECT md5(coalesce(string_agg(id::text || ':' || md5(embedding::text), ',' ORDER BY id), ''))
     FROM chunks
     WHERE repository_id = %s AND embedding_model = %s
 """
@@ -123,14 +145,30 @@ def digest_of_db_rows(records: Iterable[Sequence]) -> Tuple[str, int]:
     return chunk_set_digest(rows), len(rows)
 
 
+def tree_digest(files: Iterable[Sequence]) -> str:
+    """SHA-256 over the collected source files (path, sha256 of content), in path order.
+
+    `files` are `collect_files`'s (path, content, language) triples, read with
+    universal newlines, so the digest does not depend on the platform's line
+    endings. Two records whose corpus_tree_digest is equal read one tree,
+    whatever their commits claim (22.2-01, review A3).
+    """
+    h = hashlib.sha256()
+    for path, content, _ in sorted(files, key=lambda f: f[0]):
+        h.update(path.encode("utf-8") + b"\0")
+        data = content.replace("\r\n", "\n").encode("utf-8")
+        h.update(hashlib.sha256(data).hexdigest().encode("ascii") + b"\n")
+    return h.hexdigest()
+
+
 def _is_test_file(path: Path) -> bool:
     return path.name.startswith("test_") or path.name.endswith("_test.py")
 
 
-def chunker_files(workers_dir: Path = WORKERS_DIR) -> list:
-    """The files the chunker version hashes, as (relative posix path, Path)."""
+def source_files(dirs: Sequence[str], workers_dir: Path = WORKERS_DIR) -> list:
+    """The non-test .py files under `dirs`, as (relative posix path, Path)."""
     out = []
-    for rel in CHUNKER_DIRS:
+    for rel in dirs:
         base = workers_dir / rel
         for p in sorted(base.rglob("*.py")):
             if "__pycache__" in p.parts or _is_test_file(p):
@@ -139,20 +177,43 @@ def chunker_files(workers_dir: Path = WORKERS_DIR) -> list:
     return sorted(out)
 
 
+def chunker_files(workers_dir: Path = WORKERS_DIR) -> list:
+    """The files the chunker version hashes, as (relative posix path, Path)."""
+    return source_files(CHUNKER_DIRS, workers_dir)
+
+
 def installed_versions(packages: Sequence[str] = GRAMMAR_PACKAGES) -> Mapping[str, str]:
     return {name: metadata.version(name) for name in packages}
 
 
-def chunker_version(workers_dir: Path = WORKERS_DIR) -> str:
-    """The first 16 hex characters of the chunker's code-and-parsers hash."""
+def _code_hash(files, packages: Mapping[str, str]) -> str:
     h = hashlib.sha256()
-    files = chunker_files(workers_dir)
-    if not files:
-        raise FileNotFoundError(f"no chunker or parser source under {workers_dir}")
     for rel, path in files:
         data = path.read_bytes().replace(b"\r\n", b"\n")
         h.update(b"file\0" + rel.encode("utf-8") + b"\0")
         h.update(hashlib.sha256(data).hexdigest().encode("ascii") + b"\n")
-    for name, version in sorted(installed_versions().items()):
+    for name, version in sorted(packages.items()):
         h.update(f"package\0{name}\0{version}\n".encode("utf-8"))
     return h.hexdigest()[:16]
+
+
+def chunker_version(workers_dir: Path = WORKERS_DIR) -> str:
+    """The first 16 hex characters of the chunker's code-and-parsers hash."""
+    files = chunker_files(workers_dir)
+    if not files:
+        raise FileNotFoundError(f"no chunker or parser source under {workers_dir}")
+    return _code_hash(files, installed_versions())
+
+
+# The code that retrieves and measures, named in every run header beside the
+# harness's commit, so a run from an export (no .git, no commit to read) still
+# names the code that measured it (22.2-01, review A8).
+RETRIEVAL_DIRS = ("workers/retrieval", "workers/embeddings", "workers/storage", "scripts")
+
+
+def retrieval_code_version(workers_dir: Path = WORKERS_DIR) -> str:
+    """The first 16 hex characters of a hash over RETRIEVAL_DIRS' non-test source."""
+    files = source_files(RETRIEVAL_DIRS, workers_dir)
+    if not files:
+        raise FileNotFoundError(f"no retrieval source under {workers_dir}")
+    return _code_hash(files, {})

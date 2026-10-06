@@ -317,6 +317,9 @@ class Corpus:
     commit: str
     exact_paths: bool
     questions: List[dict] = field(default_factory=list)
+    # For `self`: whether --self-root has uncommitted changes under the corpus
+    # roots (None when it is not a checkout, so it cannot be known).
+    tree_dirty: Optional[bool] = None
 
 
 def tree_commit(root: Path) -> Optional[str]:
@@ -334,6 +337,30 @@ def tree_commit(root: Path) -> Optional[str]:
         return None
 
 
+def checked_commit(root: Path, claim: Optional[str], what: str) -> Optional[str]:
+    """`root`'s commit: its HEAD when it is a checkout, else `claim`.
+
+    A claim the tree contradicts is refused: when `root` is a checkout's top
+    level, `claim` must be its HEAD (in full, or a prefix of at least 7
+    characters). Only an export, which has no HEAD to compare, is taken on
+    the claim's word (22.2-01, review A3)."""
+    head = tree_commit(root)
+    if head and claim and not (claim == head or (len(claim) >= 7 and head.startswith(claim))):
+        sys.exit(f"{what} {claim} is not the HEAD of {root} ({head[:12]}); refusing a commit the tree contradicts")
+    return head or claim
+
+
+def tree_dirty(root: Path, paths: Sequence[str]) -> Optional[bool]:
+    """Whether the checkout at `root` has uncommitted changes under `paths`
+    (None when `root` is not a checkout's top level)."""
+    if tree_commit(root) is None:
+        return None
+    try:
+        return bool(git("status", "--porcelain", "--", *paths, cwd=root))
+    except (subprocess.CalledProcessError, OSError):
+        return None
+
+
 def load_corpus(name: str, corpora_dir: Path, self_root: Path = REPO_ROOT,
                 self_commit: Optional[str] = None) -> Corpus:
     """The corpus to index and its questions.
@@ -342,8 +369,11 @@ def load_corpus(name: str, corpora_dir: Path, self_root: Path = REPO_ROOT,
     holds `workers/chunker/` and `workers/parser/`, so a chunker change alters
     the source `self` is built from as well as how it is chunked; before and
     after are measured on one tree by pointing both at it (22.2-01). Its
-    commit is `self_commit` when given (an export has no `.git`), else the
-    tree's HEAD, else None.
+    commit is the tree's HEAD when it is a checkout (a `self_commit` that
+    differs is refused), else `self_commit` (an export has no `.git`), else
+    None; a checkout with uncommitted changes under the corpus roots is
+    flagged `tree_dirty`. A record's `corpus_tree_digest` proves the tree
+    either way.
     """
     if name == "self":
         questions = [
@@ -354,9 +384,13 @@ def load_corpus(name: str, corpora_dir: Path, self_root: Path = REPO_ROOT,
             for i, (q, p) in enumerate(HOLDOUT, 1)
         ]
         root = Path(self_root)
-        commit = self_commit or tree_commit(root)
+        commit = checked_commit(root, self_commit, "--self-commit")
+        dirty = tree_dirty(root, [rel for rel, _, _ in CORPUS_ROOTS])
+        if dirty:
+            print(f"  [WARN] {root} has uncommitted changes under the self corpus; "
+                  f"the record flags corpus_dirty and its corpus_tree_digest names what was read")
         return Corpus("self", root, CORPUS_ROOTS, SELF_EXCLUDE, REPO,
-                      "https://github.com/AlecAsdourian/RAG-Doc", commit, False, questions)
+                      "https://github.com/AlecAsdourian/RAG-Doc", commit, False, questions, dirty)
 
     spec_path = BENCHMARKS_DIR / f"{name}.json"
     if not spec_path.exists():
@@ -575,7 +609,7 @@ def do_ingest(corpus: Corpus) -> None:
     # database digest can be checked against it.
     digest, rows = offline_chunk_set(files)
     print(f"[*] offline: chunker version {chunk_digest.chunker_version()}, "
-          f"chunk set {digest} ({rows} rows)")
+          f"chunk set {digest} ({rows} rows), corpus tree {chunk_digest.tree_digest(files)}")
     ensure_fixtures(corpus)
     print("[*] fixtures ready")
 
@@ -855,11 +889,14 @@ def visible_chunks(corpus: Corpus) -> int:
         conn.close()
 
 
+# --harness-commit: the commit this harness's tree holds, for a run from an
+# export (no .git). Checked against HEAD when there is one (main()).
+_harness_commit_claim: Optional[str] = None
+
+
 def harness_commit() -> Optional[str]:
-    try:
-        return git("rev-parse", "HEAD", cwd=REPO_ROOT)
-    except (subprocess.CalledProcessError, OSError):
-        return None
+    """The commit of the code measuring: this checkout's HEAD, else --harness-commit."""
+    return tree_commit(REPO_ROOT) or _harness_commit_claim
 
 
 def short_plan(lines: List[str]) -> List[str]:
@@ -959,29 +996,60 @@ def offline_chunk_set(files) -> Tuple[str, int]:
     return chunk_digest.digest_of_chunks(chunks)
 
 
-def database_chunk_set(corpus: Corpus, model: str) -> dict:
+def database_chunk_set(corpus: Corpus, model: str, dsn: Optional[str] = None,
+                       org: Optional[UUID] = None) -> dict:
     """The corpus's stored rows as the record header names them, read as the
     configured (measuring) connection under the tenant: the digest and count of
-    the rows with the run's `model`, and a count of rows per model over all of
-    them (one repository can hold two model arms, 22.2-05)."""
-    conn = psycopg2.connect(PG)
+    the rows with the run's `model`; a count of rows per model over all of them
+    (one repository can hold two model arms, 22.2-05); the digest of the stored
+    vectors (one ingest's identity); and how many rows' `breadcrumb` column
+    differs from their metadata's (chunk_digest.py)."""
+    conn = psycopg2.connect(dsn or PG)
+    params = (str(corpus.repository_id), model)
     try:
-        with require_tenant(conn, ORG) as cur:
-            cur.execute(chunk_digest.DB_ROWS_SQL, (str(corpus.repository_id), model))
+        with require_tenant(conn, org or ORG) as cur:
+            cur.execute(chunk_digest.DB_ROWS_SQL, params)
             digest, rows = chunk_digest.digest_of_db_rows(cur.fetchall())
             cur.execute("SELECT embedding_model, count(*) FROM chunks WHERE repository_id = %s "
                         "GROUP BY embedding_model ORDER BY embedding_model", (str(corpus.repository_id),))
             models = {m: n for m, n in cur.fetchall()}
+            cur.execute(chunk_digest.STORED_VECTORS_SQL, params)
+            vectors = cur.fetchone()[0]
+            cur.execute(chunk_digest.BREADCRUMB_MISMATCH_SQL, params)
+            mismatches = cur.fetchone()[0]
     finally:
         conn.close()
-    return {"chunk_set_digest": digest, "chunk_rows": rows, "chunk_models": models}
+    return {"chunk_set_digest": digest, "chunk_rows": rows, "chunk_models": models,
+            "stored_vectors_digest": vectors, "breadcrumb_column_mismatches": mismatches}
+
+
+def chunk_provenance(offline: Tuple[str, int], db_digest: str, running_version: str) -> dict:
+    """Which code chunked the stored rows, as far as this run can tell.
+
+    The running chunker's version names the stored rows only if re-chunking the
+    corpus now gives exactly the stored set; ingest with one chunker and
+    measure with another, and it would name the wrong code (22.2-01, review
+    A1). So `chunker_version` is the running version when the offline digest
+    equals the database's, and None otherwise; `running_chunker_version` is
+    always recorded.
+    """
+    verified = offline[0] == db_digest
+    return {
+        "offline_chunk_set_digest": offline[0],
+        "offline_chunk_rows": offline[1],
+        "running_chunker_version": running_version,
+        "chunker_version_verified": verified,
+        "chunker_version": running_version if verified else None,
+    }
 
 
 def run_header(corpus: Corpus, set_name: str, top_k: int, boost_config, model: str,
                vector_tolerance: float, measured: dict) -> dict:
     """A --record file's first line. `measured` holds what was read from the
-    database (`database`, `connections`, `chunks_visible`, `explain`, and
-    `database_chunk_set`'s fields), so the rest is checkable without one."""
+    database (`database`, `connections`, `chunks_visible`, `explain`,
+    `database_chunk_set`'s fields) and computed from the corpus's files
+    (`chunk_provenance`'s fields, `corpus_tree_digest`), so the rest is
+    checkable without one."""
     return {
         "record": "run", "corpus": corpus.name, "commit": corpus.commit,
         # The tree the corpus was read from: a benchmark corpus's pin, or for
@@ -993,12 +1061,15 @@ def run_header(corpus: Corpus, set_name: str, top_k: int, boost_config, model: s
         # record's ranks can be recomputed from its final list.
         "exact_paths": corpus.exact_paths,
         "harness_commit": harness_commit(),
+        # The retrieval and measuring code, by content: named even from an export.
+        "retrieval_code_version": chunk_digest.retrieval_code_version(),
+        "corpus_dirty": corpus.tree_dirty,
         "recorded_at": datetime.now(timezone.utc).isoformat(),
         "vector_backend": "pgvector",
         "embedding_model": model,
-        # What was measured (22.2-01): the code that chunked, the rows read with
-        # this run's model, and the tolerance its ties are read at.
-        "chunker_version": chunk_digest.chunker_version(),
+        # What was measured (22.2-01): the rows read with this run's model, the
+        # code that chunked them (chunk_provenance), the source tree, and the
+        # tolerance its ties are read at.
         "vector_tolerance": vector_tolerance,
         **measured,
     }
@@ -1033,10 +1104,25 @@ def do_measure(corpus: Corpus, set_name: str, top_k: int, boost_config=None,
                          f"(rolsuper={identity['rolsuper']}, rolbypassrls={identity['rolbypassrls']}). "
                          "A superuser bypasses row-level security, so a measurement on it proves "
                          "nothing about the read path; put options=-c role=rag_doc_app in DATABASE_URL.")
+        # The corpus as it is read now: its tree, and what the chunker makes of
+        # it, with no API call; compared below with the stored rows.
+        files = collect_files(corpus)
+        stored = database_chunk_set(corpus, model)
+        if stored["breadcrumb_column_mismatches"]:
+            sys.exit(f"--record refused: {stored['breadcrumb_column_mismatches']} stored rows' breadcrumb column "
+                     "differs from their metadata's, so the digest would not name what keyword search reads")
+        provenance = chunk_provenance(offline_chunk_set(files), stored["chunk_set_digest"],
+                                      chunk_digest.chunker_version())
+        if not provenance["chunker_version_verified"]:
+            print("  [WARN] the stored rows are not what the running chunker makes of this corpus "
+                  f"(offline {provenance['offline_chunk_set_digest'][:16]}, stored {stored['chunk_set_digest'][:16]}): "
+                  "chunker_version is recorded as null, running_chunker_version names the code running now")
         header = run_header(corpus, set_name, top_k, boost_config, model, vector_tolerance, {
             "database": database_facts(),
             "connections": connections, "chunks_visible": visible_chunks(corpus),
-            **database_chunk_set(corpus, model),
+            **stored,
+            **provenance,
+            "corpus_tree_digest": chunk_digest.tree_digest(files),
             "explain": (
                 explain_legs(engine, corpus, query_vectors.vector(questions[0]["id"]))
                 if questions else None
@@ -1048,9 +1134,11 @@ def do_measure(corpus: Corpus, set_name: str, top_k: int, boost_config=None,
               f"(rolsuper={connections['fts']['rolsuper']}, "
               f"rolbypassrls={connections['fts']['rolbypassrls']}); "
               f"vector backend: {header['vector_backend']}")
-        print(f"[*] header: chunker {header['chunker_version']}, chunk set {header['chunk_set_digest']} "
-              f"({header['chunk_rows']} rows with {model}; rows per model {header['chunk_models']}), "
-              f"corpus commit {header['corpus_commit']}, vector tolerance {vector_tolerance:g}")
+        print(f"[*] header: chunker {header['chunker_version']} (verified: {header['chunker_version_verified']}), "
+              f"chunk set {header['chunk_set_digest']} ({header['chunk_rows']} rows with {model}; "
+              f"rows per model {header['chunk_models']}), stored vectors {header['stored_vectors_digest']}, "
+              f"corpus commit {header['corpus_commit']}, tree {header['corpus_tree_digest'][:16]}, "
+              f"vector tolerance {vector_tolerance:g}")
     rows = []
     for q in questions:
         row = {"id": q["id"], "set": q["set"], "question": q["question"], "path": q["path"],
@@ -1133,7 +1221,8 @@ def do_measure(corpus: Corpus, set_name: str, top_k: int, boost_config=None,
     return summary
 
 
-if __name__ == "__main__":
+def main(argv: Optional[Sequence[str]] = None) -> None:
+    global _harness_commit_claim
     ap = argparse.ArgumentParser(description="Ingest a corpus and measure retrieval against its questions.")
     ap.add_argument("--corpus", default="self",
                     help="`self` (this repository) or the name of a spec in scripts/rag_benchmarks/")
@@ -1147,6 +1236,9 @@ if __name__ == "__main__":
     ap.add_argument("--vector-tolerance", type=float, default=DEFAULT_VECTOR_TOLERANCE,
                     help="absolute tolerance on vector similarity for --exact's tie tail, recorded in the "
                          "run header (default 1e-5, 22-03's; Phase 22.2 passes QD2's 2e-6)")
+    ap.add_argument("--harness-commit", default=None,
+                    help="the commit this harness's tree holds, for a run from an export with no .git "
+                         "(refused when it is not this checkout's HEAD)")
     ap.add_argument("--fetch", action="store_true", help="clone a benchmark corpus at its pinned commit")
     ap.add_argument("--check", action="store_true",
                     help="check the questions against the corpus offline: no database, OpenAI or retrieval")
@@ -1175,8 +1267,9 @@ if __name__ == "__main__":
     ap.add_argument("--exact", type=Path, default=None,
                     help="write each question's exact-search nearest chunks (index scans off) "
                          "from the cached vectors (needs --query-vectors)")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
 
+    _harness_commit_claim = checked_commit(REPO_ROOT, a.harness_commit, "--harness-commit")
     corpus = load_corpus(a.corpus, a.corpora_dir, self_root=a.self_root, self_commit=a.self_commit)
     if (a.ingest or a.measure) and not OPENAI:
         sys.exit("OPENAI_API_KEY not set")
@@ -1218,3 +1311,7 @@ if __name__ == "__main__":
             sys.exit(2)
     if not (a.fetch or a.check or a.clear or a.ingest or a.measure or a.exact):
         ap.print_help()
+
+
+if __name__ == "__main__":
+    main()

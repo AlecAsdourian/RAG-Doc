@@ -192,15 +192,16 @@ def corpus_files(name: str, corpora: Path, self_root: Path, self_commit: Optiona
         files = h.collect_files(corpus)
         if name in SELF_SPLIT:
             files = [f for f in files if f[2] == SELF_SPLIT[name]]
-        return files, {"commit": corpus.commit}
+        return files, {"commit": corpus.commit, "corpus_dirty": corpus.tree_dirty}
     if name == "self-ts":
-        commit = self_commit or h.tree_commit(self_root)
+        commit = h.checked_commit(self_root, self_commit, "--self-commit")
         if not commit:
             sys.exit(f"{self_root} is not a git checkout's top level, so its commit is unknown; "
                      "pass --self-commit")
         corpus = _census_only_corpus(name, self_root, SELF_TS_ROOTS, [], commit,
                                      "https://github.com/AlecAsdourian/RAG-Doc")
-        return h.collect_files(corpus), {"commit": commit}
+        dirty = h.tree_dirty(self_root, [rel for rel, _, _ in SELF_TS_ROOTS])
+        return h.collect_files(corpus), {"commit": commit, "corpus_dirty": dirty}
     if (h.BENCHMARKS_DIR / f"{name}.json").exists():
         corpus = h.load_corpus(name, corpora)
         h.require_fetched(corpus)
@@ -703,6 +704,7 @@ def census(name, files, meta, chunker, enc, grammars, capture: Optional[Fallback
 
     # What a record measured: the digest of these rows, and the code that chunked them.
     r["chunk_set_digest"], r["chunk_rows"] = chunk_digest.digest_of_chunks(chunks_all)
+    r["corpus_tree_digest"] = chunk_digest.tree_digest(files)
     r["chunker_version"] = chunk_digest.chunker_version()
     return r, per_file
 

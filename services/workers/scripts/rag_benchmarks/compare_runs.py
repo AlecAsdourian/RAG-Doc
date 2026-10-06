@@ -384,7 +384,9 @@ def refusals(runs: CorpusRuns) -> List[str]:
     for side, header in (("baseline", runs.baseline_header), ("candidate", runs.candidate_header)):
         problems.extend(f"{runs.name}: the {side} run {p}" for p in connection_problems(header))
     problems.extend(f"{runs.name}: the exact list {p}" for p in exact_list_problems(runs.exact, runs.baseline_header))
+    problems.extend(f"{runs.name}: {p}" for p in tolerance_problems(runs, _vector_tolerance))
     if runs.qdrant_ids is None:  # --no-qdrant: (a) and (b) are disabled, not decided on an empty set
+        problems.extend(f"{runs.name}: {p}" for p in same_vectors_problems(runs))
         return problems
     if not runs.qdrant_ids:
         problems.append(
@@ -393,6 +395,47 @@ def refusals(runs: CorpusRuns) -> List[str]:
     if runs.qdrant_meta.get("repository_id") and runs.baseline_header.get("repository_id"):
         if runs.qdrant_meta["repository_id"] != runs.baseline_header["repository_id"]:
             problems.append(f"{runs.name}: the Qdrant point set is for another repository")
+    return problems
+
+
+def tolerance_problems(runs: CorpusRuns, tolerance: float) -> List[str]:
+    """The comparison's vector tolerance is the one the inputs were recorded at.
+
+    The exact list's tie tail was cut at its `tie_tolerance`, so judging at any
+    other tolerance reads a tail that is wrong for it, and class (c)'s cut pool
+    with it; and a tolerance chosen after seeing the verdict would be a knob
+    turned after the fact, against QD2's lock (22.2-01, review A2). So the
+    tolerance must equal the exact list's, and each run header's where the
+    header records one (22-03's records predate the field)."""
+    problems = []
+    recorded = runs.exact.get("tie_tolerance")
+    if recorded is None:
+        problems.append("the exact list does not state the tie tolerance it was recorded at")
+    elif float(recorded) != tolerance:
+        problems.append(f"the exact list was recorded at tie tolerance {float(recorded):g}, and the comparison "
+                        f"is at {tolerance:g}; judge at the tolerance the evidence was recorded at")
+    for side, header in (("baseline", runs.baseline_header), ("candidate", runs.candidate_header)):
+        if header.get("vector_tolerance") is not None and float(header["vector_tolerance"]) != tolerance:
+            problems.append(f"the {side} run was recorded at vector tolerance {float(header['vector_tolerance']):g}, "
+                            f"and the comparison is at {tolerance:g}")
+    return problems
+
+
+def same_vectors_problems(runs: CorpusRuns) -> List[str]:
+    """--no-qdrant compares two runs over ONE set of stored vectors: QD2's
+    tolerance holds only there, since the embedding API does not repeat itself
+    (22.2-01-records/embedding-repeatability.txt). Two runs from different
+    ingests are refused as the wrong input, not judged (22.2-01, review A5):
+    their chunk sets, rows per model and stored-vector digests must be equal
+    wherever the headers record them, and recorded on both sides or neither."""
+    problems = []
+    b, c = runs.baseline_header, runs.candidate_header
+    for key in ("chunk_set_digest", "chunk_models", "stored_vectors_digest"):
+        if key not in b and key not in c:
+            runs.notes.append(f"{runs.name}: neither run header records {key}, so it is not checked")
+        elif b.get(key) != c.get(key):
+            problems.append(f"the runs differ in {key} ({str(b.get(key))[:16]} vs {str(c.get(key))[:16]}): "
+                            "--no-qdrant compares two runs over one set of stored vectors")
     return problems
 
 

@@ -252,7 +252,8 @@ class TestSelfRoot:
     def test_the_commit_is_the_trees_head_or_self_commit(self, self_tree, tmp_path):
         root, head = self_tree
         assert harness.load_corpus("self", tmp_path, self_root=root).commit == head
-        assert harness.load_corpus("self", tmp_path, self_root=root, self_commit="abc").commit == "abc"
+        # A claim is taken only where there is no HEAD to check it against (TestSelfCommitIsChecked).
+        assert harness.load_corpus("self", tmp_path, self_root=tmp_path / "x", self_commit="abc").commit == "abc"
         # An export (no .git) and a directory merely inside a checkout name no commit.
         export = tmp_path / "export"
         export.mkdir()
@@ -266,7 +267,11 @@ class TestSelfRoot:
                     "chunk_set_digest": "d" * 64, "chunk_rows": 3, "chunk_models": {"text-embedding-ada-002": 3}}
         header = harness.run_header(corpus, "all", 5, None, "text-embedding-ada-002", 2e-6, measured)
         assert header["corpus_commit"] == head and header["commit"] == head
-        assert header["chunker_version"] == harness.chunk_digest.chunker_version()
+        assert header["corpus_dirty"] is False
+        assert header["retrieval_code_version"] == harness.chunk_digest.retrieval_code_version()
+        # The chunker version is not run_header's to state: chunk_provenance
+        # decides it from the stored rows (review A, finding 1).
+        assert "chunker_version" not in header
         assert header["vector_tolerance"] == 2e-6
         assert header["embedding_model"] == "text-embedding-ada-002"
         for key, value in measured.items():
@@ -283,14 +288,67 @@ class TestSelfRoot:
         assert harness.offline_chunk_set(files) == harness.chunk_digest.digest_of_chunks(chunks)
 
 
-def test_the_database_digest_reads_the_runs_model_under_the_tenant():
-    """The header's digest is over the rows with the run's model only, read
-    through chunk_digest's one statement (no copy of it here)."""
-    import inspect
+class TestSelfCommitIsChecked:
+    """--self-commit and --harness-commit are claims; a checkout's HEAD is a fact (review A, finding 3)."""
 
-    source = inspect.getsource(harness.database_chunk_set)
-    assert "chunk_digest.DB_ROWS_SQL" in source and "require_tenant(conn, ORG)" in source
-    assert "(str(corpus.repository_id), model)" in source
+    def test_a_claim_the_checkout_contradicts_is_refused(self, self_tree, tmp_path):
+        root, head = self_tree
+        with pytest.raises(SystemExit, match="refusing a commit the tree contradicts"):
+            harness.load_corpus("self", tmp_path, self_root=root, self_commit="0" * 40)
+        with pytest.raises(SystemExit, match="--harness-commit"):
+            harness.checked_commit(root, "f" * 12, "--harness-commit")
+
+    def test_the_head_in_full_or_a_prefix_is_accepted(self, self_tree, tmp_path):
+        root, head = self_tree
+        assert harness.load_corpus("self", tmp_path, self_root=root, self_commit=head).commit == head
+        assert harness.load_corpus("self", tmp_path, self_root=root, self_commit=head[:7]).commit == head
+        assert harness.checked_commit(tmp_path / "no-such-export", "abc", "x") == "abc"
+
+    def test_a_dirty_tree_is_flagged_and_a_clean_one_is_not(self, self_tree, tmp_path):
+        root, _ = self_tree
+        assert harness.load_corpus("self", tmp_path, self_root=root).tree_dirty is False
+        target = root / "services" / "workers" / "workers" / "chunker" / "split.py"
+        target.write_text(target.read_text(encoding="utf-8") + "# edited\n", encoding="utf-8")
+        assert harness.load_corpus("self", tmp_path, self_root=root).tree_dirty is True
+        export = tmp_path / "export"
+        export.mkdir()
+        assert harness.load_corpus("self", tmp_path, self_root=export, self_commit="x").tree_dirty is None
+
+
+class TestChunkProvenance:
+    """The header's chunker_version names the stored rows' chunker only when
+    re-chunking now gives the stored set (review A, finding 1)."""
+
+    def test_equal_digests_verify_the_running_version(self):
+        p = harness.chunk_provenance(("d" * 64, 10), "d" * 64, "abcdef0123456789")
+        assert p == {"offline_chunk_set_digest": "d" * 64, "offline_chunk_rows": 10,
+                     "running_chunker_version": "abcdef0123456789", "chunker_version_verified": True,
+                     "chunker_version": "abcdef0123456789"}
+
+    def test_different_digests_record_no_chunker_version(self):
+        p = harness.chunk_provenance(("d" * 64, 10), "e" * 64, "abcdef0123456789")
+        assert p["chunker_version"] is None and p["chunker_version_verified"] is False
+        assert p["running_chunker_version"] == "abcdef0123456789"
+
+
+def test_exact_passes_the_vector_tolerance_through(tmp_path, monkeypatch):
+    """--exact's tie tail is cut at --vector-tolerance (review B, finding 4)."""
+    seen = {}
+
+    def fake_do_exact(corpus, questions, vectors, model, out, tolerance=None):
+        seen.update(tolerance=tolerance, out=out, questions=len(questions), model=model)
+
+    client = SimpleNamespace(generate_embeddings_batch=lambda texts: [[0.5, 0.25] for _ in texts])
+    engine = SimpleNamespace(vector_retriever=SimpleNamespace(
+        embedding_generator=SimpleNamespace(model="m-test", client=client)))
+    monkeypatch.setattr(harness, "QueryEngine", lambda **kwargs: engine)
+    monkeypatch.setattr(harness, "do_exact", fake_do_exact)
+    monkeypatch.setattr(harness, "OPENAI", "not-a-real-key")
+    out = tmp_path / "exact.json"
+    harness.main(["--corpus", "self", "--corpora-dir", str(tmp_path), "--set", "all",
+                  "--query-vectors", str(tmp_path / "vecs.json"), "--exact", str(out),
+                  "--vector-tolerance", "2e-6"])
+    assert seen == {"tolerance": 2e-6, "out": out, "questions": 40, "model": "m-test"}
 
 
 class TestExactTieTail:

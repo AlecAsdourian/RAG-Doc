@@ -111,11 +111,13 @@ def _header(backend: str) -> dict:
     }
 
 
-def _exact(question_ids: Dict[str, List[Tuple[str, float]]], hashes: Dict[str, str]) -> dict:
+def _exact(question_ids: Dict[str, List[Tuple[str, float]]], hashes: Dict[str, str],
+           tie_tolerance: float = 1e-5) -> dict:
     return {
         "corpus": "toy",
         "repository_id": "repo-1",
         "model": MODEL,
+        "tie_tolerance": tie_tolerance,
         "connection": dict(APP_ROLE),
         "questions": {
             qid: {
@@ -608,26 +610,31 @@ def test_the_committed_22_03_records_rejudge_byte_identically_at_the_default(cap
     assert out.replace("\r\n", "\n") == committed.replace("\r\n", "\n")
 
 
-def _tolerance_pair() -> Tuple[List[dict], List[dict], dict]:
+def _tolerance_pair(tie_tolerance: float = 1e-5) -> Tuple[List[dict], List[dict], dict]:
     """B and C at the top-2 cut, their vector scores 5e-6 apart, in the other
     order on the other side: a tie at 1e-5, distinguishable at 2e-6."""
     baseline = [_record("q-t", "tuning", [("A", 0.5)], [("A", 0.8), ("B", 0.700005), ("C", 0.7)], "B")]
     candidate = [_record("q-t", "tuning", [("A", 0.5)], [("A", 0.8), ("C", 0.700005), ("B", 0.7)], "B")]
-    exact = _exact({"q-t": [("A", 0.8), ("B", 0.700005), ("C", 0.7)]}, {})
+    exact = _exact({"q-t": [("A", 0.8), ("B", 0.700005), ("C", 0.7)]}, {}, tie_tolerance)
     assert baseline[0]["file_rank"] == 2 and candidate[0]["file_rank"] is None
     return baseline, candidate, exact
 
 
 def test_the_vector_tolerance_changes_the_class(tmp_path, capsys):
-    _write(tmp_path, *_tolerance_pair())
+    _write(tmp_path, *_tolerance_pair(2e-6))
 
     code = compare_runs.main(["--records", str(tmp_path), "--corpora", "toy", "--vector-tolerance", "2e-6"])
     out = capsys.readouterr().out
     assert code == 1, out
     assert _class_of(out, "q-t") == "UNEXPLAINED"
     assert "vector tolerance: 2e-06 (absolute)" in out
+    # Restored as soon as that call returns, before anything else sets it
+    # (review B, finding 3): a direct caller of tied() sees the default again.
+    assert compare_runs._vector_tolerance == compare_runs.DEFAULT_VECTOR_TOLERANCE
+    assert compare_runs.tied(0.7, 0.700005, "vector")
 
-    # A second call in the same process, at the default: nothing leaks from the first.
+    # A second call in the same process, at the default, on evidence recorded at 1e-5.
+    _write(tmp_path, *_tolerance_pair(1e-5))
     code = compare_runs.main(["--records", str(tmp_path), "--corpora", "toy"])
     out = capsys.readouterr().out
     assert code == 0, out
@@ -636,11 +643,40 @@ def test_the_vector_tolerance_changes_the_class(tmp_path, capsys):
     assert compare_runs._vector_tolerance == compare_runs.DEFAULT_VECTOR_TOLERANCE
 
 
-def _write_no_qdrant(records_dir: pathlib.Path, baseline: List[dict], candidate: List[dict], exact: dict) -> None:
+@pytest.mark.parametrize("damage", ["exact-other", "exact-missing", "header-other"])
+def test_a_tolerance_other_than_the_evidences_is_refused(tmp_path, capsys, damage):
+    """Judging at a tolerance the exact list's tie tail was not cut at, or one
+    chosen after the fact, is refused (review A, finding 2)."""
+    baseline, candidate, exact = _tolerance_pair(2e-6)
+    _write(tmp_path, baseline, candidate, exact)
+    if damage == "exact-other":
+        doc = json.loads((tmp_path / "exact-toy.json").read_text(encoding="utf-8"))
+        doc["tie_tolerance"] = 1e-5
+        (tmp_path / "exact-toy.json").write_text(json.dumps(doc), encoding="utf-8")
+    elif damage == "exact-missing":
+        doc = json.loads((tmp_path / "exact-toy.json").read_text(encoding="utf-8"))
+        del doc["tie_tolerance"]
+        (tmp_path / "exact-toy.json").write_text(json.dumps(doc), encoding="utf-8")
+    else:
+        path = tmp_path / "pgvector-toy.jsonl"
+        lines = path.read_text(encoding="utf-8").splitlines()
+        header = json.loads(lines[0])
+        header["vector_tolerance"] = 1e-5
+        path.write_text("\n".join([json.dumps(header), *lines[1:]]) + "\n", encoding="utf-8")
+
+    code = compare_runs.main(["--records", str(tmp_path), "--corpora", "toy", "--vector-tolerance", "2e-6"])
+    out = capsys.readouterr().out
+    assert code == 2, out
+    assert "REFUSED" in out and "tolerance" in out and "VERDICT" not in out
+
+
+def _write_no_qdrant(records_dir: pathlib.Path, baseline: List[dict], candidate: List[dict], exact: dict,
+                     candidate_header: Optional[dict] = None, baseline_header: Optional[dict] = None) -> None:
     """Two pgvector runs on one database, as recorded after Qdrant's retirement: no point set."""
-    for prefix, records in (("run1", baseline), ("run2", candidate)):
+    for prefix, records, extra in (("run1", baseline, baseline_header), ("run2", candidate, candidate_header)):
         (records_dir / f"{prefix}-toy.jsonl").write_text(
-            "\n".join(json.dumps(r) for r in [_header("pgvector"), *records]) + "\n", encoding="utf-8"
+            "\n".join(json.dumps(r) for r in [{**_header("pgvector"), **(extra or {})}, *records]) + "\n",
+            encoding="utf-8",
         )
     (records_dir / "exact-toy.json").write_text(json.dumps(exact), encoding="utf-8")
 
@@ -691,6 +727,7 @@ def test_no_qdrant_disables_class_a(tmp_path, capsys):
 def test_no_qdrant_still_explains_a_tie_at_the_cut_as_c(tmp_path, capsys):
     baseline, candidate, exact = _cases()
     keep = {"q-c", "q-same"}
+    exact["tie_tolerance"] = 2e-6
     _write_no_qdrant(tmp_path, [r for r in baseline if r["id"] in keep], [r for r in candidate if r["id"] in keep],
                      exact)
 
@@ -714,3 +751,43 @@ def test_without_no_qdrant_a_missing_point_set_is_still_refused(tmp_path, capsys
 
     assert code == 2, out
     assert "REFUSED" in out and "qdrant_ids-toy.json" in out
+
+
+SAME = {"chunk_set_digest": "d" * 64, "chunk_models": {MODEL: 5}, "stored_vectors_digest": "v" * 32}
+
+
+@pytest.mark.parametrize("key", ["chunk_set_digest", "chunk_models", "stored_vectors_digest", "one-side-only"])
+def test_no_qdrant_refuses_two_runs_over_different_stored_vectors(tmp_path, capsys, key):
+    """QD2's tolerance is for one set of stored vectors; the embedding API does
+    not repeat itself, so runs over two ingests are refused as the wrong input
+    (review A, finding 5)."""
+    baseline, candidate, exact = _cases()
+    keep = {"q-c", "q-same"}
+    other = dict(SAME)
+    if key == "one-side-only":
+        del other["stored_vectors_digest"]
+    else:
+        other[key] = {MODEL: 6} if key == "chunk_models" else "e" * 64
+    _write_no_qdrant(tmp_path, [r for r in baseline if r["id"] in keep], [r for r in candidate if r["id"] in keep],
+                     exact, baseline_header=SAME, candidate_header=other)
+
+    code = compare_runs.main(["--records", str(tmp_path), *NO_QDRANT])
+    out = capsys.readouterr().out
+    assert code == 2, out
+    assert "one set of stored vectors" in out and "VERDICT" not in out
+
+
+def test_no_qdrant_passes_over_one_set_of_stored_vectors_and_notes_what_is_unrecorded(tmp_path, capsys):
+    baseline, candidate, exact = _cases()
+    keep = {"q-c", "q-same"}
+    _write_no_qdrant(tmp_path, [r for r in baseline if r["id"] in keep], [r for r in candidate if r["id"] in keep],
+                     exact, baseline_header=SAME, candidate_header=SAME)
+    code = compare_runs.main(["--records", str(tmp_path), *NO_QDRANT])
+    assert code == 0, capsys.readouterr().out
+
+    _write_no_qdrant(tmp_path, [r for r in baseline if r["id"] in keep], [r for r in candidate if r["id"] in keep],
+                     exact)
+    code = compare_runs.main(["--records", str(tmp_path), *NO_QDRANT])
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert "neither run header records stored_vectors_digest" in out

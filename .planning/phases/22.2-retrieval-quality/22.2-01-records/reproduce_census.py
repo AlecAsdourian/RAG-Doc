@@ -30,6 +30,10 @@ CORPORA = ["self-go", "self-py", "self-ts", "miniflux", "mealie", "linkwarden", 
 
 
 def flatten(obj, prefix=""):
+    """Every leaf by its path. An empty {} or [] is a leaf of its own, so "empty"
+    and "absent" are told apart (review A, nit 11)."""
+    if isinstance(obj, (dict, list)) and not obj:
+        return {prefix: obj}
     if isinstance(obj, dict):
         items = {}
         for k, v in obj.items():

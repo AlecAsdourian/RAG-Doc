@@ -175,6 +175,15 @@ def _damage(kind: str):
         ah["exact_paths"] = False
     elif kind == "no-digest":
         del bh["chunk_set_digest"]
+    elif kind == "set":
+        target["set"] = "holdout"
+    elif kind == "path":
+        target["path"] = "pkg/elsewhere.py"
+    elif kind == "symbol":
+        named = next(r for r in after if r.get("symbol"))
+        named["symbol"] = "another_symbol"
+    elif kind == "malformed-top":
+        target["trace"]["top"] = None
     return before, after, bh, ah
 
 
@@ -184,7 +193,20 @@ REFUSALS = {
     "failed-query": "not a measurement", "hash": "query-vector hash differs", "model": "differ in embedding_model",
     "top_k": "differ in top_k", "boost_config": "differ in boost_config", "exact_paths": "differ in exact_paths",
     "no-digest": "no chunk_set_digest",
+    # Deviation 3's refusals: a question measured against another target (review B, finding 1).
+    "set": "question's set differs", "path": "question's path differs", "symbol": "question's symbol differs",
+    # A malformed record is refused, never read as the tripwire firing (review A, finding 7).
+    "malformed-top": "final list is not a list of results",
 }
+
+
+def test_input_the_checks_did_not_foresee_exits_2_not_1(tmp_path, capsys):
+    """Exit 1 means a number fell; nothing else may produce it (review A, finding 7)."""
+    bh = _header()
+    bh["top_k"] = "five"
+    code, out = _run(tmp_path, _baseline(), _baseline(), before_header=bh, capsys=capsys)
+    assert code == 2, out
+    assert "REFUSED" in out and "TRIPWIRE" not in out
 
 
 @pytest.mark.parametrize("kind", sorted(REFUSALS))
