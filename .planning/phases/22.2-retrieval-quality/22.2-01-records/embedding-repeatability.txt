@@ -1,0 +1,57 @@
+embedding_repeatability.py, run once on 2026-10-06 (about 20:55 UTC) from this branch at a464d2c (the commit that
+added the script; the worktree clean), with the fresh venv built from services/workers/requirements.txt
+(openai 3.25.0, numpy 2.5.3), OPENAI_API_KEY set from services/workers/.env by a wrapper and never
+printed (the script prints only its length), and the corpora fetched at their pins (mealie at 84b2677).
+
+    <venv>/python .planning/phases/22.2-retrieval-quality/22.2-01-records/embedding_repeatability.py \
+        --vecs .planning/phases/22-repository-clone-ingestion/22-03-records/vecs.json.gz \
+        --corpora <scratch corpora> \
+        --out-vectors .planning/phases/22.2-retrieval-quality/22.2-01-records/embedding-repeatability-vectors.json.gz
+
+exit code 0. Its output, verbatim:
+
+OPENAI_API_KEY: present, 164 characters
+mealie at 84b2677f76069a6fb2bac6e2c633c9dbe7379ce4: 390 files; the first 20 chunks in (file_path, start_line) order run from mealie/__init__.py:1 to mealie/core/dependencies/dependencies.py:66
+
+1. Across days: 22-03's 130 questions (ada-002, 2026-09-29) embedded again today with ada-002
+   cl100k_base count of the 130 questions: 2848 tokens; the API reported 2848
+ada-002, 2026-09-29 cache vs today: 130 vectors; bit-identical (float32) 0/130; identical as float64 0/130; max |delta| 8.604e-03; min cosine 0.999517963; dimensions [1536]
+
+2. Within a session: mealie's first 20 chunk texts, one batch in order and one in reverse
+   text-embedding-ada-002: cl100k_base count of the 20 texts: 2147 tokens per batch; the API reported [2147, 2147]
+text-embedding-ada-002, in order vs reversed: 20 vectors; bit-identical (float32) 2/20; identical as float64 2/20; max |delta| 1.700e-03; min cosine 0.999768630; dimensions [1536]
+   text-embedding-3-small: cl100k_base count of the 20 texts: 2147 tokens per batch; the API reported [2147, 2147]
+text-embedding-3-small, in order vs reversed: 20 vectors; bit-identical (float32) 1/20; identical as float64 1/20; max |delta| 3.052e-04; min cosine 0.999996157; dimensions [1536]
+   3-small's dimensions [1536]; the column's 1536: match
+
+Tokens the API reported, and the spend:
+   text-embedding-ada-002: 3 calls, 7142 tokens, $0.000714
+   text-embedding-3-small: 2 calls, 4294 tokens, $0.000086
+   total: $0.000800 (cap $0.05)
+
+wrote embedding-repeatability-vectors.json.gz: the vectors compared, so the comparison can be recomputed offline
+
+THE FINDING, in one sentence (for 22.2-02 and 22.2-04 to cite): the embedding API does not return bit-identical
+vectors for identical text, neither across days (ada-002: 0 of 130 question vectors identical after 7 days,
+max |delta| 8.6e-3 per component, min cosine 0.99952) nor within one session (ada-002: 2 of 20 identical, max
+|delta| 1.7e-3, min cosine 0.99977; 3-small: 1 of 20, max |delta| 3.1e-4, min cosine 0.999996), so two
+separate ingests of identical text store different vectors, and no score tolerance as small as QD2's 2e-6 can be
+applied across ingests.
+
+What it decides, per 22.2-01-PLAN.md:
+- A later plan may NOT compare two ingests of identical text exactly. QD2's 2e-6 stays what it was locked as:
+  a tolerance for two runs over the SAME stored vectors (one ingest, one database); it is not touched here.
+- The measured noise a cross-ingest comparison must allow for: per component up to 8.6e-3 (ada-002, across
+  days) and 1.7e-3 (ada-002, within a session); as whole vectors, cosine as low as 0.99952.
+- So 22.2-02 reads its tripwire against miniflux, whose chunk set does not change (equal digests), as the
+  control: a move on miniflux is the API's noise, not the chunker's.
+- Query vectors stay embedded once per model and cached (QD12 item 3): re-embedding a question would itself
+  move its vector by up to the amounts above.
+
+Inferred, not measured: that the within-session differences come from the API's batching or serving (the
+script shows only that the same text in a different batch order gave a different vector); and that the
+cross-day difference includes any model-side change (the API reports the same model name).
+
+The spend: 5 calls; ada-002 7,142 tokens ($0.000714), 3-small 4,294 tokens ($0.000086), $0.000800 in all,
+exactly the plan's token estimate (2,848 + 2 x 2,147 and 2 x 2,147), against the plan's $0.05 cap.
+embedding-repeatability-vectors.json.gz holds every vector compared, so the comparison can be recomputed offline.
