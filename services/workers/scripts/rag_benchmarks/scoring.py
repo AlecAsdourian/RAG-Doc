@@ -23,6 +23,7 @@ records it in every run header.
 
 from __future__ import annotations
 
+import math
 from typing import Iterable, Mapping, Optional, Sequence, Tuple
 
 
@@ -66,6 +67,13 @@ def aggregate(ranks_: Sequence[Optional[int]]) -> dict:
 
     `ranks_` holds one rank per question, None for a miss, which counts 0 in
     the MRR. `found / questions` is recall@k, k being the run's top_k.
+
+    The reciprocal ranks are added with `math.fsum`, which is correctly
+    rounded, so the MRR is the same double on every Python. The built-in
+    `sum` of floats is not: Python 3.12 changed it to compensated summation,
+    so 3.11 (the worker images) and 3.12 (CI) could differ in the last bit,
+    and a verdict that compares MRRs must not depend on the interpreter
+    (ISS-041; 22.2-07).
     """
     found = [r for r in ranks_ if r]
     total = len(ranks_)
@@ -73,5 +81,5 @@ def aggregate(ranks_: Sequence[Optional[int]]) -> dict:
         "questions": total,
         "found": len(found),
         "rank1": sum(1 for r in found if r == 1),
-        "mrr": (sum(1.0 / r for r in found) / total) if total else 0.0,
+        "mrr": (math.fsum(1.0 / r for r in found) / total) if total else 0.0,
     }

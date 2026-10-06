@@ -170,6 +170,9 @@ def make_repo(repo: pathlib.Path, order: str) -> pathlib.Path:
     """A repository with the rules and the specs committed in `order`:
     rule-first, questions-first, together, or merged (a branch with the rule,
     then the questions, merged with a merge commit: QD12's protocol PR)."""
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed (e.g. python:3.11-slim): decide.py reads a rule's order from git, "
+                    "so every judged run needs a repository (ISS-041)")
     repo.mkdir(parents=True)
     _git(repo, "init", "-q", "-b", "main")
     # In the repository's own config, so decide.py's calls read files as written.

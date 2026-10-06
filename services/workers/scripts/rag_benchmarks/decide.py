@@ -637,7 +637,7 @@ def mrr_at_depth(records: List[dict], level: str, exact_paths: bool) -> Optional
         file_rank, symbol_rank = ranks(exact_paths, rec["path"], rec.get("symbol"), ranking[:REPORT_DEPTH])
         rank = file_rank if level == "file" else symbol_rank
         rrs.append(1.0 / rank if rank else 0.0)
-    return sum(rrs) / len(rrs) if rrs else 0.0
+    return math.fsum(rrs) / len(rrs) if rrs else 0.0  # correctly rounded, as scoring.aggregate (ISS-041)
 
 
 def ties_at_cut(rec: dict, top_k: int, exact_paths: bool) -> List[str]:
