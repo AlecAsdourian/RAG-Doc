@@ -4,23 +4,6 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 ## Open Enhancements
 
-### ISS-041: Two of 22.2-01's test files fail on Python 3.11, the version the worker images use
-
-- **Discovered:** 2026-10-06, by the 22.1-03 worker's verification of PR #64 in `python:3.11-slim`. Measured there: 701 passed, **1 failed, 7 errors**, none in PR #64's files. CI runs 3.12 (`workers-ci.yml:72`, `isolation-check.yml:28`), so it passes there.
-- **Type:** Testing / Operations
-- **Priority:** Low, but fix it with the next 22.2 PR that touches these files. Nothing in production runs these scripts today; the risk is that CI and the shipped image disagree.
-- **What:**
-  - The 7 errors are in `services/workers/tests/test_rag_quality_harness.py`, whose tests shell out to `git`, which `python:3.11-slim` does not have.
-  - The 1 failure is `services/workers/tests/test_tripwire.py:270`. It compares a summary recorded under Python 3.12 with a recomputation. Python 3.12 changed `sum()` of floats to use compensated summation, so 3.11 differs in the last digits.
-- **Why it matters:** `services/workers/Dockerfile` and `Dockerfile.api` are `FROM python:3.11-slim`, while CI tests on 3.12. A test that only passes on the CI version hides version-specific behaviour, and the decision tools (`tripwire.py`, `decide.py`) must give the same verdict wherever they run.
-- **Fix:** either align the versions (move the images to 3.12, or add 3.11 to CI's matrix), or make the tests version-independent:
-  - skip the `git`-dependent tests with a clear reason when `git` is missing;
-  - compare floats in the tripwire test with a tolerance, or compute the aggregate with `math.fsum` on both sides.
-
-  If the aggregate itself feeds a decision, `math.fsum` is the better fix, because it gives the same verdict on either version.
-- **Related:** `22.2-01-SUMMARY.md`; `22.1-03-SUMMARY.md` §7.
-- **Owner:** the 22.2 track. 22.2-07 (`decide.py`) is the natural place, because it shares the aggregate.
-
 ### ISS-040: A marked refusal from another deployment's token route reads as a lost lease, so every job dies silently
 
 - **Discovered:** 2026-09-29, by PR #58's review (22-05), reviewer A's L2. Reasoned from the code and from a signature one test already shows; not measured against two real deployments.
@@ -474,6 +457,31 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Recommendation:** the `AfterConnect` sentinel, giving deterministically **loud**. With `TenantScoper` in place an unscoped query is by definition a bug, and a bug that always throws is cheaper than one that sometimes returns `[]`. Still an operational-risk judgement — a 500 is worse than an empty list for a user who trips it — so it belongs to whoever owns that call, but it is now a pool-constructor line rather than a schema change.
 
 ## Closed Enhancements
+
+### ISS-041: Two of 22.2-01's test files fail on Python 3.11, the version the worker images use ✅
+
+- **✅ CLOSED 2026-10-06 by 22.2-07's PR (branch `feat/22.2-07-judge`), on the version-independent fix.** Evidence in `22.2-07-SUMMARY.md` §6 and `22.2-07-records/python-versions.txt`:
+  - **`scoring.aggregate` adds reciprocal ranks with `math.fsum`** (correctly rounded, the same double on every Python), and so does `decide.py`'s MRR@20. The tolerances stay explicit; no locked rule number changed.
+  - **`test_tripwire.py`** compares the 22-03 summaries and its two `sum`-based reference copies by exact counts and MRR within a named `SUM_ROUNDING = 1e-12`, and a new test pins the MRR to `fsum`'s exactly.
+  - **The git-dependent tests skip with a reason when `git` is missing:** the harness test's `self_tree` fixture (the 7 errors) and `test_decide.py`'s repository builder.
+  - **Measured in scratch containers:** at the base `5bb8693`, `tests/test_tripwire.py` fails `[mealie]` on 3.11 and passes on 3.12; on the branch, `pytest tests/ workers/ --ignore=tests/isolation` gives 583 passed, 86 skipped (git absent) on `python:3.11-slim` and 663 passed, 6 skipped (git installed) on `python:3.12-slim`, both exit 0.
+- **Not chosen:** aligning the versions (the images to 3.12, or 3.11 in CI's matrix). It stays an operations choice; the tests no longer depend on it.
+- **Seen while measuring, not part of this issue:** about 25 existing tests need tiktoken to download its encoding from the network (`test_embeddings.py`, `test_chunk_census.py`, `test_handler.py`); with the network blocked they fail.
+- *The entry as filed:*
+- **Discovered:** 2026-10-06, by the 22.1-03 worker's verification of PR #64 in `python:3.11-slim`. Measured there: 701 passed, **1 failed, 7 errors**, none in PR #64's files. CI runs 3.12 (`workers-ci.yml:72`, `isolation-check.yml:28`), so it passes there.
+- **Type:** Testing / Operations
+- **Priority:** Low, but fix it with the next 22.2 PR that touches these files. Nothing in production runs these scripts today; the risk is that CI and the shipped image disagree.
+- **What:**
+  - The 7 errors are in `services/workers/tests/test_rag_quality_harness.py`, whose tests shell out to `git`, which `python:3.11-slim` does not have.
+  - The 1 failure is `services/workers/tests/test_tripwire.py:270`. It compares a summary recorded under Python 3.12 with a recomputation. Python 3.12 changed `sum()` of floats to use compensated summation, so 3.11 differs in the last digits.
+- **Why it matters:** `services/workers/Dockerfile` and `Dockerfile.api` are `FROM python:3.11-slim`, while CI tests on 3.12. A test that only passes on the CI version hides version-specific behaviour, and the decision tools (`tripwire.py`, `decide.py`) must give the same verdict wherever they run.
+- **Fix (as filed):** either align the versions (move the images to 3.12, or add 3.11 to CI's matrix), or make the tests version-independent:
+  - skip the `git`-dependent tests with a clear reason when `git` is missing;
+  - compare floats in the tripwire test with a tolerance, or compute the aggregate with `math.fsum` on both sides.
+
+  If the aggregate itself feeds a decision, `math.fsum` is the better fix, because it gives the same verdict on either version.
+- **Related:** `22.2-01-SUMMARY.md`; `22.1-03-SUMMARY.md` §7.
+- **Owner:** the 22.2 track. 22.2-07 (`decide.py`) is the natural place, because it shares the aggregate.
 
 ### ISS-034: Nothing hands a UI a job id, so the job-status endpoint is unreachable from a repository ✅
 
