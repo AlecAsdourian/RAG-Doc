@@ -5,27 +5,108 @@ from tree_sitter import Language, Parser, Tree, Node, Query, QueryCursor
 import tree_sitter_python
 import tree_sitter_go
 import tree_sitter_javascript
+import tree_sitter_typescript
+
+
+class GrammarMismatch(RuntimeError):
+    """A tree was about to be queried with another grammar's compiled queries.
+
+    A query compiled for one grammar matches NOTHING on another grammar's tree,
+    and says nothing (measured 2026-10-06, `22.2-02-PLAN.md`: a TS-compiled
+    `function_declaration` query finds 0 matches on the TSX tree of the same
+    source). So querying with the wrong set is never silent here: it raises,
+    and `SemanticChunker.chunk_file` reports it as a raised fallback, which the
+    census counts (`fallback_reasons.raised`).
+    """
+
+
+# Functions, methods and module-level const-bound functions, the same shape in
+# the three ECMAScript grammars. QD5 (22.2-CONTEXT.md, LOCKED): named functions
+# and generators; methods ONLY inside a `class_body` (an object literal's
+# methods are not chunks); a module-level `const`/`let` -- a direct child of
+# `program`, or exported -- whose declarator's value is an arrow function or a
+# function expression, one match per such declarator, named by the variable
+# and spanning the whole declaration. Not matched, by design: `export default
+# function () {}` (no name), a function passed to a call (`wrap(() => ...)`),
+# class-field arrow functions (`public_field_definition`), interfaces, type
+# aliases and enums (22.1-01's symbols, not chunks).
+_ECMASCRIPT_FUNCTIONS = """
+[
+    (function_declaration
+        name: (identifier) @name) @function
+    (generator_function_declaration
+        name: (identifier) @name) @function
+    (class_body
+        (method_definition
+            name: (_) @name) @function)
+    (program
+        (lexical_declaration
+            (variable_declarator
+                name: (identifier) @name
+                value: [(arrow_function) (function_expression)])) @function)
+    (export_statement
+        (lexical_declaration
+            (variable_declarator
+                name: (identifier) @name
+                value: [(arrow_function) (function_expression)])) @function)
+]
+"""
+
+# TypeScript names a class with a `type_identifier`, and has abstract classes.
+# (Today's class query, `name: (identifier)`, fails to compile under both
+# TypeScript grammars: `22.2-records/ts-grammar-checks.txt`.)
+_TYPESCRIPT_CLASSES = """
+[
+    (class_declaration
+        name: (type_identifier) @name) @class
+    (abstract_class_declaration
+        name: (type_identifier) @name) @class
+]
+"""
+
+# JavaScript names a class with an `identifier`, and has no abstract classes.
+_JAVASCRIPT_CLASSES = """
+(class_declaration
+    name: (identifier) @name) @class
+"""
 
 
 class TreeSitterParser:
-    """Language-agnostic AST parser using tree-sitter."""
+    """Language-agnostic AST parser using tree-sitter.
+
+    GRAMMARS, NOT LANGUAGES. A stored `language` names what a file is
+    (`typescript` covers `.ts` and `.tsx`, `workers/fetch/filters.py`); a
+    GRAMMAR is what parses it. `grammar_for(language, path)` is the ONE place
+    a grammar is chosen: `.tsx` gets the TSX grammar, any other TypeScript
+    file the TypeScript grammar, JavaScript its own. `parse_file`,
+    `extract_functions` and `extract_classes` all choose through it, and so
+    does the census (`chunk_census.py`, through `parse_file`).
+
+    Each grammar has its OWN compiled queries (`self.queries[grammar]`): a
+    query compiled for one grammar matches nothing, silently, on another's
+    tree. The extractors check the tree's grammar against the set they chose
+    and raise `GrammarMismatch` rather than query across grammars.
+    """
 
     def __init__(self):
         """Initialize parser with language grammars."""
-        # Load language grammars
+        # Load the grammars, keyed by grammar (see the class docstring).
         self.languages = {
             "python": Language(tree_sitter_python.language()),
             "go": Language(tree_sitter_go.language()),
-            "typescript": Language(tree_sitter_javascript.language()),
+            "typescript": Language(tree_sitter_typescript.language_typescript()),
+            "tsx": Language(tree_sitter_typescript.language_tsx()),
             "javascript": Language(tree_sitter_javascript.language()),
         }
 
-        # Create parsers for each language
+        # Create parsers for each grammar
         self.parsers = {
-            lang: Parser(language) for lang, language in self.languages.items()
+            grammar: Parser(language) for grammar, language in self.languages.items()
         }
 
-        # Define tree-sitter queries for each language
+        # Compile every query for every grammar. A query that fails to compile
+        # raises `QueryError` here, from the constructor -- outside any
+        # fallback -- so it stops every ingest loudly.
         self._init_queries()
 
     def _init_queries(self):
@@ -81,60 +162,83 @@ class TreeSitterParser:
                     """
                 ),
             },
-            "typescript": {
-                "functions": Query(
-                    self.languages["typescript"],
-                    """
-                    [
-                        (function_declaration
-                            name: (identifier) @name
-                            body: (statement_block)? @body) @function
-                        (method_definition
-                            name: (property_identifier) @name
-                            body: (statement_block)? @body) @function
-                    ]
-                    """
-                ),
-                "classes": Query(
-                    self.languages["typescript"],
-                    """
-                    (class_declaration
-                        name: (identifier) @name
-                        body: (class_body)? @body) @class
-                    """
-                ),
-            },
         }
 
-        # JavaScript uses the same queries as TypeScript
-        self.queries["javascript"] = self.queries["typescript"]
+        # The three ECMAScript grammars: one compiled set EACH, never shared.
+        for grammar, classes in (
+            ("typescript", _TYPESCRIPT_CLASSES),
+            ("tsx", _TYPESCRIPT_CLASSES),
+            ("javascript", _JAVASCRIPT_CLASSES),
+        ):
+            self.queries[grammar] = {
+                "functions": Query(self.languages[grammar], _ECMASCRIPT_FUNCTIONS),
+                "classes": Query(self.languages[grammar], classes),
+            }
 
-    def parse_file(self, content: str, language: str) -> Tree:
+    def grammar_for(self, language: str, path: Optional[str] = None) -> str:
+        """The grammar that parses a file: the ONE place it is chosen.
+
+        Args:
+            language: The file's stored language (python, go, typescript,
+                javascript)
+            path: The file's path. Required for TypeScript, whose grammar
+                depends on the extension: `.tsx` is TSX, anything else is
+                TypeScript.
+
+        Returns:
+            A key of `self.languages`, `self.parsers` and `self.queries`.
+
+        Raises:
+            ValueError: If language is not supported, or is TypeScript with no
+                path to choose its grammar by
+        """
+        if language == "typescript":
+            if path is None:
+                raise ValueError(
+                    "TypeScript's grammar is chosen by the file's extension (.tsx is TSX); "
+                    "pass the file's path"
+                )
+            return "tsx" if path.lower().endswith(".tsx") else "typescript"
+        if language in ("python", "go", "javascript"):
+            return language
+        raise ValueError(
+            f"Unsupported language: {language}. "
+            f"Supported: ['python', 'go', 'typescript', 'javascript']"
+        )
+
+    def parse_file(self, content: str, language: str, path: Optional[str] = None) -> Tree:
         """
         Parse file content and return AST tree.
 
         Args:
             content: Source code content as string
             language: Language name (python, go, typescript, javascript)
+            path: The file's path, which chooses TypeScript's grammar
+                (`grammar_for`)
 
         Returns:
-            Tree-sitter Tree object
+            Tree-sitter Tree object, parsed with `grammar_for(language, path)`
 
         Raises:
             ValueError: If language is not supported
         """
-        if language not in self.parsers:
-            raise ValueError(
-                f"Unsupported language: {language}. "
-                f"Supported: {list(self.parsers.keys())}"
+        parser = self.parsers[self.grammar_for(language, path)]
+        return parser.parse(bytes(content, "utf8"))
+
+    def _queries_for(self, tree: Tree, language: str, path: Optional[str]) -> Dict[str, Query]:
+        """The query set of the grammar `tree` was parsed with, chosen by the
+        same `grammar_for` as `parse_file`; never another grammar's."""
+        grammar = self.grammar_for(language, path)
+        if tree.language != self.languages[grammar]:
+            raise GrammarMismatch(
+                f"the tree was not parsed with the {grammar!r} grammar that {language!r} "
+                f"and {path!r} choose; refusing to query it with {grammar!r}'s queries"
             )
+        return self.queries[grammar]
 
-        # Use language-specific parser
-        parser = self.parsers[language]
-        tree = parser.parse(bytes(content, "utf8"))
-        return tree
-
-    def extract_functions(self, tree: Tree, content: str, language: str) -> List[Dict]:
+    def extract_functions(
+        self, tree: Tree, content: str, language: str, path: Optional[str] = None
+    ) -> List[Dict]:
         """
         Extract function definitions from AST.
 
@@ -142,23 +246,22 @@ class TreeSitterParser:
             tree: Tree-sitter Tree object
             content: Original source code content
             language: Language name
+            path: The file's path (chooses TypeScript's grammar, as in
+                `parse_file`)
 
         Returns:
             List of dictionaries with function metadata:
-            - name: Function name
+            - name: Function name (for a const-bound function, the variable's)
             - start_byte: Start byte position
             - end_byte: End byte position
             - start_line: Start line number (1-indexed)
             - end_line: End line number (1-indexed)
             - docstring: Docstring if present (Python only)
         """
-        if language not in self.queries:
-            raise ValueError(f"No queries defined for language: {language}")
-
         content_bytes = bytes(content, "utf8")
         functions = []
 
-        query = self.queries[language]["functions"]
+        query = self._queries_for(tree, language, path)["functions"]
         cursor = QueryCursor(query)
         matches = cursor.matches(tree.root_node)
 
@@ -191,7 +294,9 @@ class TreeSitterParser:
 
         return functions
 
-    def extract_classes(self, tree: Tree, content: str, language: str) -> List[Dict]:
+    def extract_classes(
+        self, tree: Tree, content: str, language: str, path: Optional[str] = None
+    ) -> List[Dict]:
         """
         Extract class definitions from AST.
 
@@ -199,6 +304,8 @@ class TreeSitterParser:
             tree: Tree-sitter Tree object
             content: Original source code content
             language: Language name
+            path: The file's path (chooses TypeScript's grammar, as in
+                `parse_file`)
 
         Returns:
             List of dictionaries with class metadata:
@@ -209,13 +316,10 @@ class TreeSitterParser:
             - end_line: End line number (1-indexed)
             - docstring: Docstring if present (Python only)
         """
-        if language not in self.queries:
-            raise ValueError(f"No queries defined for language: {language}")
-
         content_bytes = bytes(content, "utf8")
         classes = []
 
-        query = self.queries[language]["classes"]
+        query = self._queries_for(tree, language, path)["classes"]
         cursor = QueryCursor(query)
         matches = cursor.matches(tree.root_node)
 

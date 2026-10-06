@@ -7,6 +7,22 @@ from tree_sitter import Node, Tree
 
 logger = logging.getLogger(__name__)
 
+#: The ECMAScript (TypeScript, TSX, JavaScript) nodes that name a scope. QD5:
+#: an abstract class is a class, a generator is a function, and a module-level
+#: `const`/`let` bound to a function is named by its variable -- so its
+#: methods and nested functions read `Owner.name`, as Python's and Go's do.
+#: The variable_declarator counts only when it is such a binding
+#: (`_is_const_bound_function`).
+_ECMASCRIPT_SCOPES = [
+    "class_declaration",
+    "abstract_class_declaration",
+    "function_declaration",
+    "generator_function_declaration",
+    "method_definition",
+    "variable_declarator",
+]
+_FUNCTION_VALUES = ("arrow_function", "function_expression")
+
 
 class MetadataBuilder:
     """Extracts metadata from AST nodes for context-enriched chunking."""
@@ -179,14 +195,24 @@ class MetadataBuilder:
         named_types = {
             "python": ["class_definition", "function_definition"],
             "go": ["function_declaration", "method_declaration", "type_declaration", "type_spec"],
-            "typescript": ["class_declaration", "function_declaration", "method_definition"],
-            "javascript": ["class_declaration", "function_declaration", "method_definition"],
+            "typescript": _ECMASCRIPT_SCOPES,
+            "javascript": _ECMASCRIPT_SCOPES,
         }
 
         lang_types = named_types.get(self.language, [])
 
         if node.type not in lang_types:
             return None
+
+        # ECMAScript: every scope node names itself in its `name` field (a
+        # method's may be a private `#name` or a computed key, which the child
+        # scan below would miss). A declarator names a scope only when it binds
+        # a module-level function (QD5).
+        if self.language in ("typescript", "javascript"):
+            if node.type == "variable_declarator" and not self._is_const_bound_function(node):
+                return None
+            name_node = node.child_by_field_name("name")
+            return self._get_node_text(name_node, content) if name_node else None
 
         # A Go method's name is a `field_identifier`, which the child scan below
         # does not look for -- so use the grammar's `name` field directly.
@@ -210,12 +236,32 @@ class MetadataBuilder:
         scope_types = {
             "python": ["class_definition", "function_definition"],
             "go": ["function_declaration", "method_declaration", "type_declaration"],
-            "typescript": ["class_declaration", "function_declaration", "method_definition"],
-            "javascript": ["class_declaration", "function_declaration", "method_definition"],
+            "typescript": _ECMASCRIPT_SCOPES,
+            "javascript": _ECMASCRIPT_SCOPES,
         }
 
         lang_types = scope_types.get(self.language, [])
+        if node.type == "variable_declarator" and self.language in ("typescript", "javascript"):
+            return self._is_const_bound_function(node)
         return node.type in lang_types
+
+    @staticmethod
+    def _is_const_bound_function(declarator: Node) -> bool:
+        """A module-level `const`/`let` declarator bound to an arrow function or
+        a function expression: the binding the chunker chunks (QD5), and so the
+        one that names a scope."""
+        if declarator.type != "variable_declarator":
+            return False
+        value = declarator.child_by_field_name("value")
+        declaration = declarator.parent
+        return (
+            value is not None
+            and value.type in _FUNCTION_VALUES
+            and declaration is not None
+            and declaration.type == "lexical_declaration"
+            and declaration.parent is not None
+            and declaration.parent.type in ("program", "export_statement")
+        )
 
     def _go_receiver_type(self, node: Node, content: bytes) -> Optional[str]:
         """Return the base type a Go method is declared on.

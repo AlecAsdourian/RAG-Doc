@@ -544,7 +544,7 @@ def census(name, files, meta, chunker, enc, grammars, capture: Optional[Fallback
     ts = Counter()
     for path, (content, lang, cs) in per_file.items():
         data = content.encode("utf-8")
-        tree = chunker.parser.parse_file(content, lang) if lang in chunker.parser.parsers else None
+        tree = chunker.parser.parse_file(content, lang, path=path) if lang in chunker.parser.parsers else None
         if tree is not None:
             e, m = error_counts(tree)
             bucket = perr[f"{lang}{Path(path).suffix if lang == 'typescript' else ''}"]

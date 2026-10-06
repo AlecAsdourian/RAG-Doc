@@ -40,15 +40,16 @@ class SemanticChunker:
         chunks = []
 
         try:
-            # Parse the file
-            tree = self.parser.parse_file(content, language)
+            # Parse the file. The path chooses TypeScript's grammar (`.tsx` is
+            # TSX), and the extractors choose their queries the same way.
+            tree = self.parser.parse_file(content, language, path=file_path)
             content_bytes = bytes(content, "utf8")
 
             # Create metadata builder
             metadata_builder = MetadataBuilder(language)
 
             # Extract functions with their nodes
-            functions = self.parser.extract_functions(tree, content, language)
+            functions = self.parser.extract_functions(tree, content, language, path=file_path)
             function_nodes = self._find_function_nodes(tree, functions, language)
 
             for func_info, node in zip(functions, function_nodes):
@@ -59,7 +60,7 @@ class SemanticChunker:
                     chunks.append(chunk)
 
             # Extract classes with their nodes
-            classes = self.parser.extract_classes(tree, content, language)
+            classes = self.parser.extract_classes(tree, content, language, path=file_path)
             class_nodes = self._find_class_nodes(tree, classes, language)
 
             for cls_info, node in zip(classes, class_nodes):
