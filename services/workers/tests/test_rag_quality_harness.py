@@ -205,3 +205,109 @@ def test_vector_literal_is_the_retrievers_one_and_is_pgvectors_input_form():
 
     assert harness.vector_literal is vector_retriever.vector_literal, "one function, not a copy"
     assert harness.vector_literal([0.1, -0.5, 1e-7]) == "[0.1,-0.5,1e-07]"
+
+
+# ---------------------------------------------------------------------------
+# 22.2-01: --self-root, the record header, and the tie tail's tolerance
+# ---------------------------------------------------------------------------
+
+
+def _git(cwd, *args):
+    import subprocess
+
+    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                           "-c", "commit.gpgsign=false", *args],
+                          cwd=cwd, capture_output=True, text=True, check=True).stdout.strip()
+
+
+@pytest.fixture
+def self_tree(tmp_path):
+    """A tiny `self` tree, its own git checkout, with one Go and one Python file."""
+    root = tmp_path / "tree"
+    (root / "services" / "backend" / "pkg" / "db").mkdir(parents=True)
+    (root / "services" / "workers" / "workers" / "chunker").mkdir(parents=True)
+    (root / "services" / "backend" / "pkg" / "db" / "tenant.go").write_text(
+        "package db\n\nfunc Scope() {}\n", encoding="utf-8")
+    (root / "services" / "backend" / "pkg" / "db" / "tenant_test.go").write_text(
+        "package db\n", encoding="utf-8")
+    (root / "services" / "workers" / "workers" / "chunker" / "split.py").write_text(
+        "def split(text):\n    return [text]\n", encoding="utf-8")
+    _git(root, "init", "-q")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "fixture")
+    return root, _git(root, "rev-parse", "HEAD")
+
+
+class TestSelfRoot:
+    def test_self_root_changes_which_files_self_collects(self, self_tree, tmp_path):
+        root, head = self_tree
+        corpus = harness.load_corpus("self", tmp_path, self_root=root)
+        assert corpus.root == root
+        assert [p for p, _, _ in harness.collect_files(corpus)] == [
+            "services/backend/pkg/db/tenant.go", "services/workers/workers/chunker/split.py"]
+        default = harness.load_corpus("self", tmp_path)
+        assert default.root == harness.REPO_ROOT
+        assert len(harness.collect_files(default)) > 50, "the default is this checkout's own self corpus"
+
+    def test_the_commit_is_the_trees_head_or_self_commit(self, self_tree, tmp_path):
+        root, head = self_tree
+        assert harness.load_corpus("self", tmp_path, self_root=root).commit == head
+        assert harness.load_corpus("self", tmp_path, self_root=root, self_commit="abc").commit == "abc"
+        # An export (no .git) and a directory merely inside a checkout name no commit.
+        export = tmp_path / "export"
+        export.mkdir()
+        assert harness.load_corpus("self", tmp_path, self_root=export).commit is None
+        assert harness.tree_commit(root / "services") is None
+
+    def test_the_header_records_the_self_roots_commit_and_what_was_measured(self, self_tree, tmp_path):
+        root, head = self_tree
+        corpus = harness.load_corpus("self", tmp_path, self_root=root)
+        measured = {"database": {}, "connections": {}, "chunks_visible": 3, "explain": None,
+                    "chunk_set_digest": "d" * 64, "chunk_rows": 3, "chunk_models": {"text-embedding-ada-002": 3}}
+        header = harness.run_header(corpus, "all", 5, None, "text-embedding-ada-002", 2e-6, measured)
+        assert header["corpus_commit"] == head and header["commit"] == head
+        assert header["chunker_version"] == harness.chunk_digest.chunker_version()
+        assert header["vector_tolerance"] == 2e-6
+        assert header["embedding_model"] == "text-embedding-ada-002"
+        for key, value in measured.items():
+            assert header[key] == value
+        other = harness.run_header(harness.load_corpus("self", tmp_path, self_root=tmp_path, self_commit="x"),
+                                   "all", 5, None, "m", 1e-5, measured)
+        assert other["corpus_commit"] == "x"
+
+    def test_the_offline_digest_is_the_census_definition(self, self_tree, tmp_path):
+        root, _ = self_tree
+        files = harness.collect_files(harness.load_corpus("self", tmp_path, self_root=root))
+        chunker = harness.SemanticChunker()
+        chunks = [c for p, content, lang in files for c in chunker.chunk_file(p, content, lang)]
+        assert harness.offline_chunk_set(files) == harness.chunk_digest.digest_of_chunks(chunks)
+
+
+def test_the_database_digest_reads_the_runs_model_under_the_tenant():
+    """The header's digest is over the rows with the run's model only, read
+    through chunk_digest's one statement (no copy of it here)."""
+    import inspect
+
+    source = inspect.getsource(harness.database_chunk_set)
+    assert "chunk_digest.DB_ROWS_SQL" in source and "require_tenant(conn, ORG)" in source
+    assert "(str(corpus.repository_id), model)" in source
+
+
+class TestExactTieTail:
+    @staticmethod
+    def _rows(extra):
+        rows = [(f"c{i:02d}", 0.1 + i * 1e-3) for i in range(harness.EXACT_LIMIT)]
+        last = rows[-1][1]
+        return rows + [(cid, last + d) for cid, d in extra]
+
+    def test_the_tail_follows_the_tolerance(self):
+        rows = self._rows([("near", 1.5e-6), ("mid", 5e-6), ("far", 5e-5)])
+        wide = harness.exact_list(rows, 1e-5)
+        narrow = harness.exact_list(rows, 2e-6)
+        assert len(wide["top"]) == harness.EXACT_LIMIT
+        assert [e["chunk_id"] for e in wide["tail_ties"]] == ["near", "mid"]
+        assert [e["chunk_id"] for e in narrow["tail_ties"]] == ["near"]
+        assert wide["tail_complete"] and narrow["tail_complete"]
+
+    def test_the_default_is_22_03s(self):
+        assert harness.DEFAULT_VECTOR_TOLERANCE == 1e-5

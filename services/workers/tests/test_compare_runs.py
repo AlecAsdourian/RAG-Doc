@@ -589,3 +589,128 @@ def test_rrf_matches_the_fusion_module():
     vector = [{"chunk_id": c} for c in ("C", "D", "A")]
     expected = [(r["chunk_id"], r["rrf_score"]) for r in RRFFusion().fuse({"fts": fts, "vector": vector})]
     assert compare_runs.rrf(["A", "B", "C"], ["C", "D", "A"]) == expected
+
+
+# ---------------------------------------------------------------------------
+# 22.2-01: QD2's tolerance as a flag, and --no-qdrant
+# ---------------------------------------------------------------------------
+
+RECORDS_2203 = (pathlib.Path(__file__).resolve().parents[3] / ".planning" / "phases"
+                / "22-repository-clone-ingestion" / "22-03-records")
+
+
+@pytest.mark.parametrize("extra", [[], ["--vector-tolerance", "1e-5"]])
+def test_the_committed_22_03_records_rejudge_byte_identically_at_the_default(capsys, extra):
+    code = compare_runs.main(["--records", str(RECORDS_2203), *extra])
+    out = capsys.readouterr().out
+    committed = (RECORDS_2203 / "compare_runs-rejudged-after-review.txt").read_bytes().decode("utf-8")
+    assert code == 0, out
+    assert out.replace("\r\n", "\n") == committed.replace("\r\n", "\n")
+
+
+def _tolerance_pair() -> Tuple[List[dict], List[dict], dict]:
+    """B and C at the top-2 cut, their vector scores 5e-6 apart, in the other
+    order on the other side: a tie at 1e-5, distinguishable at 2e-6."""
+    baseline = [_record("q-t", "tuning", [("A", 0.5)], [("A", 0.8), ("B", 0.700005), ("C", 0.7)], "B")]
+    candidate = [_record("q-t", "tuning", [("A", 0.5)], [("A", 0.8), ("C", 0.700005), ("B", 0.7)], "B")]
+    exact = _exact({"q-t": [("A", 0.8), ("B", 0.700005), ("C", 0.7)]}, {})
+    assert baseline[0]["file_rank"] == 2 and candidate[0]["file_rank"] is None
+    return baseline, candidate, exact
+
+
+def test_the_vector_tolerance_changes_the_class(tmp_path, capsys):
+    _write(tmp_path, *_tolerance_pair())
+
+    code = compare_runs.main(["--records", str(tmp_path), "--corpora", "toy", "--vector-tolerance", "2e-6"])
+    out = capsys.readouterr().out
+    assert code == 1, out
+    assert _class_of(out, "q-t") == "UNEXPLAINED"
+    assert "vector tolerance: 2e-06 (absolute)" in out
+
+    # A second call in the same process, at the default: nothing leaks from the first.
+    code = compare_runs.main(["--records", str(tmp_path), "--corpora", "toy"])
+    out = capsys.readouterr().out
+    assert code == 0, out
+    assert _class_of(out, "q-t") == "c"
+    assert "vector tolerance" not in out, "the default output is 22-03's, unchanged"
+    assert compare_runs._vector_tolerance == compare_runs.DEFAULT_VECTOR_TOLERANCE
+
+
+def _write_no_qdrant(records_dir: pathlib.Path, baseline: List[dict], candidate: List[dict], exact: dict) -> None:
+    """Two pgvector runs on one database, as recorded after Qdrant's retirement: no point set."""
+    for prefix, records in (("run1", baseline), ("run2", candidate)):
+        (records_dir / f"{prefix}-toy.jsonl").write_text(
+            "\n".join(json.dumps(r) for r in [_header("pgvector"), *records]) + "\n", encoding="utf-8"
+        )
+    (records_dir / "exact-toy.json").write_text(json.dumps(exact), encoding="utf-8")
+
+
+NO_QDRANT = ["--corpora", "toy", "--no-qdrant", "--baseline-prefix", "run1", "--candidate-prefix", "run2"]
+
+
+def test_no_qdrant_disables_class_b(tmp_path, capsys):
+    """The baseline's vector leg differs from exact search and the candidate's
+    matches it: (b) with a point set; with none, (b) has no meaning."""
+    baseline, candidate, exact = _cases()
+    keep = {"q-b", "q-same"}
+    _write_no_qdrant(tmp_path, [r for r in baseline if r["id"] in keep], [r for r in candidate if r["id"] in keep],
+                     exact)
+
+    code = compare_runs.main(["--records", str(tmp_path), *NO_QDRANT])
+    out = capsys.readouterr().out
+
+    assert code == 1, out
+    assert _class_of(out, "q-b") == "UNEXPLAINED"
+    assert "classes (a) and (b) are disabled" in _row(out, "q-b")
+    assert out.startswith("mode: --no-qdrant")
+    assert "(a)=0   (b)=0   (c)=0   UNEXPLAINED=1" in out
+
+
+def test_no_qdrant_disables_class_a(tmp_path, capsys):
+    """q-a: a chunk entered the candidate's leg ((a) with a point set it is not
+    in). q-a0: the baseline's vector leg is empty, which an empty point set
+    would make (a) trivially."""
+    baseline, candidate, exact = _cases()
+    baseline = [r for r in baseline if r["id"] == "q-a"]
+    candidate = [r for r in candidate if r["id"] == "q-a"]
+    baseline.append(_record("q-a0", "tuning", [("A", 0.5)], [], "B"))
+    candidate.append(_record("q-a0", "tuning", [("A", 0.5)], [("B", 0.8)], "B"))
+    exact["questions"]["q-a0"] = _exact({"q-a0": [("B", 0.8)]}, {})["questions"]["q-a0"]
+    assert baseline[1]["file_rank"] is None and candidate[1]["file_rank"] == 2
+    _write_no_qdrant(tmp_path, baseline, candidate, exact)
+
+    code = compare_runs.main(["--records", str(tmp_path), *NO_QDRANT])
+    out = capsys.readouterr().out
+
+    assert code == 1, out
+    assert _class_of(out, "q-a") == "UNEXPLAINED"
+    assert _class_of(out, "q-a0") == "UNEXPLAINED"
+    assert "(a)=0" in out
+
+
+def test_no_qdrant_still_explains_a_tie_at_the_cut_as_c(tmp_path, capsys):
+    baseline, candidate, exact = _cases()
+    keep = {"q-c", "q-same"}
+    _write_no_qdrant(tmp_path, [r for r in baseline if r["id"] in keep], [r for r in candidate if r["id"] in keep],
+                     exact)
+
+    code = compare_runs.main(["--records", str(tmp_path), *NO_QDRANT, "--vector-tolerance", "2e-6"])
+    out = capsys.readouterr().out
+
+    assert code == 0, out
+    assert _class_of(out, "q-c") == "c"
+    assert "VERDICT: PASS (0 UNEXPLAINED)" in out
+    # The sides are named by their prefixes, and no Qdrant figures are reported.
+    assert "run1" in out and "run2" in out and "Qdrant point" not in out
+
+
+def test_without_no_qdrant_a_missing_point_set_is_still_refused(tmp_path, capsys):
+    baseline, candidate, exact = _cases()
+    _write_no_qdrant(tmp_path, baseline, candidate, exact)
+
+    code = compare_runs.main(["--records", str(tmp_path), "--corpora", "toy",
+                              "--baseline-prefix", "run1", "--candidate-prefix", "run2"])
+    out = capsys.readouterr().out
+
+    assert code == 2, out
+    assert "REFUSED" in out and "qdrant_ids-toy.json" in out
