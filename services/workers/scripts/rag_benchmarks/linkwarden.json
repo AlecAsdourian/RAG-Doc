@@ -1,0 +1,39 @@
+{
+  "description": "linkwarden, a self-hosted collaborative bookmark manager that archives web pages, written in TypeScript as a Next.js web app, a background worker and shared packages.",
+  "repository": "https://github.com/linkwarden/linkwarden",
+  "commit": "952ac4540657cae3a67c3ca59433899d2fda8374",
+  "roots": [
+    {
+      "path": "apps/web",
+      "extensions": [
+        ".ts",
+        ".tsx"
+      ],
+      "language": "typescript"
+    },
+    {
+      "path": "apps/worker",
+      "extensions": [
+        ".ts",
+        ".tsx"
+      ],
+      "language": "typescript"
+    },
+    {
+      "path": "packages",
+      "extensions": [
+        ".ts",
+        ".tsx"
+      ],
+      "language": "typescript"
+    }
+  ],
+  "exclude": [
+    "\\.d\\.ts$",
+    "\\.(test|spec)\\.tsx?$",
+    "(^|/)e2e/"
+  ],
+  "scope": "TypeScript (.ts and .tsx) under apps/web, apps/worker and packages, except type declaration files (.d.ts), unit tests (.test and .spec) and e2e/ suites; the harness also skips node_modules/ and vendor/.",
+  "question_policy": "Written blind, by agents with read access to this checkout only, before any retrieval result for this corpus existed. Split fixed before any question was written: odd-numbered ids are tuning, even-numbered ids are holdout.",
+  "questions": []
+}
