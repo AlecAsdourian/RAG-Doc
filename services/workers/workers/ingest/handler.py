@@ -34,10 +34,12 @@ restated here. What this handler owns is choosing the exception:
   - `is_shutting_down()` at a checkpoint -> **`Unfinished`**.
   - a U6 cap -> **`Rejected`**: its own 100,000-chunk cap here, the
     fetcher's caps as `FetchRejected`.
-  - **every** indexable file raising in the chunker -> **`ParseFailed`**, an
-    ordinary failure: the job is retried and never replaces a good index
-    with nothing (PR #58's review, B-M3). One file raising is counted
-    (`parse_errors`) and the job goes on.
+  - the chunker raising on too much of the repository -> **`ParseFailed`**,
+    an ordinary failure: the job is retried and never replaces a good index
+    with nothing or with a sliver (PR #58's review, B-M3; tightened by
+    22.2-02). The guard's clauses are listed once, in that document's
+    parse-failure paragraph ("A parse that failed too much of the repository
+    never stores"); `_parse` implements them.
   - `InstallationSuspended` / `InstallationUninstalled` from the token route
     -> propagated unchanged.
   - `InternalApiMisrouted` (an UNMARKED answer: `INTERNAL_API_URL` reaches
@@ -111,6 +113,17 @@ MAX_CHUNKS = 100_000
 #: the moments a shutdown or a lost lease can stop the most expensive stage.
 EMBED_SLICE = 1_000
 
+#: The share of a repository's indexable files that may RAISE in the chunker
+#: before the job fails (`ParseFailed`, the guard's third clause) instead of
+#: replacing the index. Up to it the job completes and `parse_errors` counts
+#: them -- one bad file must not dead-letter a repository (22-05). Above it the
+#: chunker is broken, not the repository, and yesterday's index is kept.
+#: ⚠ AN OPERATIONAL DEFAULT, not a measured one (22.2-02): the user may change
+#: it, and a later plan may tune it on evidence. The tests derive their
+#: expected message from it; their fixtures (3 of 4 raising fails, 2 of 4
+#: completes) assert, as a premise, that it lies in [0.5, 0.75).
+MAX_PARSE_ERROR_SHARE = 0.5
+
 #: The stage vocabulary, in order. `docs/api-ingestion-jobs.md` is its
 #: authority; `last_stage` carries no `CHECK`, so this tuple is the only
 #: thing in code that says what the values are.
@@ -138,7 +151,13 @@ class ConfigurationError(RuntimeError):
 
 
 class ParseFailed(Exception):
-    """Every indexable file raised in the chunker. An ORDINARY failure: retried.
+    """The chunker raised on too much of the repository to store what is left.
+    An ORDINARY failure: retried.
+
+    Raised by `_parse`'s guard. Its clauses, and their order, are listed once,
+    in `docs/api-ingestion-jobs.md` ("A parse that failed too much of the
+    repository never stores"), the authority; the code beside each clause in
+    `_parse` names which one it is.
 
     ⚠ WHY IT EXISTS (PR #58's review, B-M3 and A-L5). One file raising is
     counted and skipped (`parse_errors`), which is right for one bad file.
@@ -150,6 +169,9 @@ class ParseFailed(Exception):
     own grammar errors and falls back, so this takes a systematic failure --
     exactly the kind a chunker change can introduce, and exactly the kind
     that would wipe every repository it touched.
+
+    22.2-02 closed the two edges PR #58's guard let through (clauses 2 and
+    3 of the authority).
 
     Not `Rejected`: nothing about the repository is over a cap, and a fixed
     chunker will parse it. The job fails with this message in `last_error`,
@@ -165,7 +187,8 @@ class IngestDeps:
     `internal_transport` and `github_transport` are `httpx` transports for
     the token route and for GitHub; production leaves both None. The
     chunker needs `chunk_file(path, content, language)`; the embedder needs
-    `.model` and `generate_embeddings_for_chunks(chunks, use_cache=False)`.
+    `.model`, `generate_embeddings_for_chunks(chunks, use_cache=False)` and
+    `tokens_over_limit(chunk)` (the truncation rule, 22.2-02).
     """
 
     internal_api_url: str
@@ -284,11 +307,10 @@ def _parse(ctx: JobContext, deps: IngestDeps, files: List[FetchedFile]) -> tuple
     cap is checked as chunks accumulate, so a repository over it stops
     being parsed the moment it crosses.
 
-    ⚠ BUT NOT WHEN EVERY FILE RAISES: that is `ParseFailed`, because the
-    store that follows would replace the repository's index with nothing.
-    A tree with no indexable files at all, or whose files parse into no
-    chunks, is not that case -- nothing raised, and an empty index is then
-    the truth about the repository.
+    ⚠ BUT NOT WHEN TOO MANY RAISE: that is `ParseFailed`, because the store
+    that follows would replace the repository's index with nothing, or with
+    a sliver. The clauses are listed in `docs/api-ingestion-jobs.md` (the
+    authority; see `ParseFailed`), and checked below in that order.
 
     The checkpoint runs before EVERY file, not only between stages, so a
     shutdown or a lost lease lands within one file's parse.
@@ -315,13 +337,70 @@ def _parse(ctx: JobContext, deps: IngestDeps, files: List[FetchedFile]) -> tuple
                 f"the repository produces more than {deps.max_chunks} chunks (U6's cap); "
                 f"stopped after {number} of {len(files)} files"
             )
+    # ⚠ THE GUARD, its three clauses checked IN THIS ORDER (22.2-02, which
+    # tightened PR #58's). Each keeps yesterday's index and fails loudly.
     if files and parsed == 0:
+        # 1. Every file raised: PR #58's guard, its message verbatim.
         raise ParseFailed(
             f"every one of the {len(files)} indexable files failed to parse "
             f"({errors} raised in the chunker); refusing to replace the repository's "
             "index with nothing"
         )
+    if files and errors and not chunks:
+        # 2. Some raised and the rest parsed to NO chunks: the store would still
+        #    replace the index with nothing. (No raise, no chunks is not this
+        #    case: an empty index is then the truth about the repository.)
+        raise ParseFailed(
+            f"{errors} of the {len(files)} indexable files failed to parse (raised in the "
+            f"chunker) and the other {parsed} produced no chunks; refusing to replace the "
+            "repository's index with nothing"
+        )
+    if errors > len(files) * MAX_PARSE_ERROR_SHARE:
+        # 3. Most files raised: a chunker bug, not the repository. A few
+        #    trivial files parsing must not replace the index with a sliver.
+        raise ParseFailed(
+            f"{errors} of the {len(files)} indexable files failed to parse (raised in the "
+            f"chunker), more than the {MAX_PARSE_ERROR_SHARE:.0%} the handler accepts "
+            f"(MAX_PARSE_ERROR_SHARE); refusing to replace the repository's index with what "
+            f"the other {parsed} produced"
+        )
     return chunks, parsed, errors
+
+
+def _count_truncated(ctx: JobContext, deps: IngestDeps, chunks: List[Chunk]) -> int:
+    """The chunk ROWS whose own embedding text is over the embedder's limit.
+
+    ⚠ ROWS, NOT DISTINCT TEXTS. `_embed` sends one representative per
+    distinct content, but each row's embedding text is its own breadcrumb,
+    docstring and content, and `chunks`, `chunks_embedded` and
+    `chunks_stored` all count rows; so does this. The rule is the
+    generator's own (`EmbeddingGenerator.tokens_over_limit`), never a copy:
+    the count and the truncation cannot disagree (22.2-02, QA6).
+
+    One WARNING per such row, naming its path and breadcrumb and the token
+    count -- never its content, which is customer code.
+    """
+    truncated = 0
+    for number, chunk in enumerate(chunks):
+        # Tokenizing every row takes a while at U6's 100,000-chunk cap, so a
+        # shutdown or a lost lease is checked every slice, as `_embed` does,
+        # while the count still reaches the `embed` report the progress
+        # contract names (PR #66's review, A N-5).
+        if number % max(1, deps.embed_slice) == 0:
+            _checkpoint(ctx)
+        tokens = deps.embedder.tokens_over_limit(chunk)
+        if tokens is None:
+            continue
+        truncated += 1
+        logger.warning(
+            "job %s: chunk %s (%s) has an embedding text of %d tokens, over the embedder's "
+            "limit; it is embedded truncated (counted in chunks_truncated)",
+            ctx.job.id,
+            chunk.file_path,
+            chunk.metadata.get("breadcrumb") or chunk.chunk_type,
+            tokens,
+        )
+    return truncated
 
 
 def _embed(ctx: JobContext, deps: IngestDeps, chunks: List[Chunk]) -> Dict[str, Any]:
@@ -488,6 +567,7 @@ def make_full_ingest_handler(deps: IngestDeps) -> Handler:
         progress["files_parsed"] = parsed
         progress["parse_errors"] = errors
         progress["chunks"] = len(chunks)
+        progress["chunks_truncated"] = _count_truncated(ctx, deps, chunks)
 
         # 3. embed --------------------------------------------------------
         _enter(ctx, "embed", progress)

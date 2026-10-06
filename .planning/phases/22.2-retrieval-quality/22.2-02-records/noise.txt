@@ -1,0 +1,18 @@
+1. This plan's before -> after, |delta similarity| of the same chunk in both vector top-50s
+   self: chunks the chunker did not change: n=1928, median 2.18e-05, p95 2.85e-04, max 2.31e-03, exactly 0: 799
+   self: chunks the chunker changed:        n=53, median 4.75e-03, p95 1.06e-02, max 1.39e-02, exactly 0: 0
+   miniflux: chunks the chunker did not change: n=2241, median 2.33e-05, p95 2.23e-04, max 6.05e-03, exactly 0: 827
+   miniflux: chunks the chunker changed:        n=0
+   mealie: chunks the chunker did not change: n=1573, median 4.36e-05, p95 2.90e-04, max 5.04e-03, exactly 0: 383
+   mealie: chunks the chunker changed:        n=529, median 2.99e-03, p95 1.30e-02, max 2.73e-02, exactly 0: 10
+
+2. 22-03's pgvector runs (2026-09-29) -> this plan's before runs (2026-10-06): one chunker, one retrieval code, the same cached query vectors, two ingests
+   miniflux: 22-03 chunks_visible 2134, before chunk_rows 2134; query-vector hashes equal on all 45 questions: True
+   miniflux: |delta similarity|, same chunk key: n=2238, median 4.14e-05, p95 2.73e-04, max 6.05e-03, exactly 0: 553
+   miniflux: 1 rank(s) differ
+      mf-34 confirm symbol #5 -> #4
+   mealie: 22-03 chunks_visible 2816, before chunk_rows 2816; query-vector hashes equal on all 45 questions: True
+   mealie: |delta similarity|, same chunk key: n=2221, median 4.80e-05, p95 2.83e-04, max 2.97e-03, exactly 0: 486
+   mealie: 2 rank(s) differ
+      ml-19 tuning file #5 -> #MISS
+      ml-19 tuning symbol #5 -> #MISS

@@ -1,0 +1,131 @@
+$ rag_quality_harness.py --corpus mealie --corpora-dir <scratch>/w2202-corpora --self-root <scratch>/w2202-base --self-commit 5bb86930d4f2bcae575888153fabc7e2f010e4f3 --harness-commit 5bb86930d4f2bcae575888153fabc7e2f010e4f3 --measure --set all --query-vectors <scratch>/w2202-bench/vecs.json --record <scratch>\w2202-bench\before-mealie.jsonl
+[*] query vectors: 45 cached, 0 embedded now (text-embedding-ada-002) -> <scratch>\w2202-bench\vecs.json
+[*] recording to <scratch>\w2202-bench\before-mealie.jsonl as rag_doc_app (rolsuper=False, rolbypassrls=False); vector backend: pgvector
+[*] header: chunker a1a44e8d682e21bb (verified: True), chunk set 0afe2fc92966b0c298467f72f85438ac79564b1c46ada9700d59f42e9c3e541b (2816 rows with text-embedding-ada-002; rows per model {'text-embedding-ada-002': 2816}), stored vectors 96fda3134c9505f4747bd864739e68a0, corpus commit 84b2677f76069a6fb2bac6e2c633c9dbe7379ce4, tree 486436999c8bf4c7, vector tolerance 1e-05
+wrote <scratch>\w2202-bench\before-mealie.jsonl
+
+[mealie / all]  45 questions, top_k=5
+
+file   symbol question                                                         top hit
+----------------------------------------------------------------------------------------------------------------------------------------
+MISS   MISS   When I paste a link to import a recipe from a website, in what   mealie/routes/recipe/recipe_crud_routes.py
+#1     #3     If I add the same thing to my grocery list twice, what decides   mealie/services/household_services/shopping_lists.py
+#2     #4     How does the server work out how long to wait before kicking o   mealie/routes/auth/auth_cache.py
+#2     MISS   When restoring a backup, what happens to rows whose references   mealie/services/backups_v2/backup_v2.py
+MISS   MISS   When moving my recipes over from Paprika, how do the photos st   mealie/routes/recipe/bulk_actions.py
+#4     MISS   What happens to an account after someone enters the wrong pass   mealie/core/exceptions.py
+#5     #5     What are the lower and upper limits on how long a person stays   mealie/core/exceptions.py
+#4     #4     When login is delegated to a corporate directory server, what    mealie/core/security/providers/credentials_provider.py
+MISS   MISS   After a user changes their password, how does the API turn awa   mealie/db/models/users/users.py
+#1     #1     Is it possible to trade a long-lived API key for a normal, ren   mealie/routes/auth/auth.py
+#1     #1     Where does the admin backup API make sure a requested backup f   mealie/routes/admin/admin_backups.py
+#2     #2     When someone asks for a random recipe to fill a meal plan slot   mealie/schema/household/household.py
+#2     #2     What checks apply when a household manager tries to change ano   mealie/routes/_base/checks.py
+#1     MISS   Can a meal plan entry be saved without linking a recipe, and w   mealie/schema/meal_plan/new_meal.py
+MISS   MISS   What happens if a recipe is given a name made up only of emoji   mealie/core/exceptions.py
+#1     MISS   If a webhook's daily send time is submitted as a full timestam   mealie/schema/household/webhook.py
+#1     #1     Where is an ingredient amount like 2.75 turned into a mixed fr   mealie/schema/recipe/recipe_ingredient.py
+MISS   MISS   How does saving a new recipe deal with a name that clashes wit   mealie/schema/recipe/recipe_tool.py
+MISS   MISS   When list results are sorted randomly, how does the app keep t   mealie/schema/response/pagination.py
+#2     #2     Which meal planning rules count as applying to, say, a Tuesday   mealie/db/models/household/mealplan.py
+#1     #1     When a user sorts or filters recipes by rating, whose rating i   mealie/repos/repository_recipes.py
+#1     #1     When a user is marked as an administrator, what happens to the   mealie/db/models/users/users.py
+#5     #5     How is a recipe's overall rating value computed from the ratin   mealie/routes/users/ratings.py
+MISS   MISS   What happens to an ingredient substitute that refers to a food   mealie/schema/recipe/recipe_ingredient.py
+MISS   MISS   Where is the search-friendly copy of a saved recipe, food or u   mealie/schema/recipe/recipe.py
+MISS   MISS   Which kinds of network addresses are refused by default when t   mealie/core/security/providers/openid_provider.py
+MISS   MISS   What does the downloader do, step by step, when a recipe site    mealie/services/recipe/import_workflow/steps/compile_sou
+#3     MISS   Where are the smaller preview versions of a recipe photo gener   mealie/schema/recipe/recipe_image_types.py
+MISS   MISS   Where is it decided which recurring background jobs run once a   mealie/services/scheduler/scheduler_service.py
+MISS   MISS   What text-direction and plural-food display settings does the    mealie/lang/locale_config.py
+MISS   MISS   In a saved filter, how can I express a date relative to today,   mealie/schema/recipe/recipe_share_token.py
+#1     #5     How does the app tack details like the event type, the event's   mealie/services/event_bus_service/event_bus_listeners.py
+#2     MISS   Is there a cap on how many ticked-off entries a shopping list    mealie/db/models/household/shopping_list.py
+#1     #1     When someone pastes a link to one of our recipes into a chat a   mealie/routes/spa/__init__.py
+#3     #3     What stops a request for a file attached to a recipe from reac   mealie/schema/recipe/recipe.py
+#2     MISS   Who is allowed to generate an invite code for joining a househ   mealie/routes/_base/checks.py
+#5     #5     If the AI model returns its JSON answer wrapped in a markdown    mealie/services/openai/openai.py
+#1     #1     Postgres sometimes gives back timestamps ending in an offset l   mealie/schema/_mealie/mealie_model.py
+#1     MISS   On SQLite, what format are record IDs actually written to the    mealie/db/models/_model_utils/guid.py
+#2     #2     After a database upgrade, what happens to meal plans, recipes    mealie/db/models/users/__init__.py
+#5     #5     When a unit like tablespoon or quart is added without any conv   mealie/services/parser_services/parser_utils/unit_utils.
+#5     #5     If someone edits a saved AI provider and doesn't send its secr   mealie/schema/group/ai_providers.py
+#1     #1     If I supply a full Postgres connection string as an override a   mealie/core/settings/db_providers.py
+#1     #1     How do translated messages choose between singular and plural    mealie/pkgs/i18n/json_provider.py
+#1     MISS   For the command-line tool that regenerates recipe pictures, ho   mealie/scripts/reprocess_images.py
+----------------------------------------------------------------------------------------------------------------------------------------
+
+recall@5 : 32/45 = 71%
+rank-1    : 15/45 = 33%
+MRR       : 0.470
+symbol level (45 questions): recall@5 23/45, rank-1 9/45, MRR 0.297
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/assets/users/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/core/dependencies/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/core/security/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/core/settings/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/core/settings/static.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/db/migration_types.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/db/models/_all_models.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/db/models/group/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/db/models/household/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/db/models/recipe/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/db/models/server/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/db/models/users/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/lang/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/pkgs/cache/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/pkgs/i18n/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/pkgs/img/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/pkgs/img/static.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/pkgs/safehttp/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/pkgs/stats/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/repos/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/repos/seed/resources/foods/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/repos/seed/resources/labels/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/repos/seed/resources/units/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/routes/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/routes/_base/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/routes/admin/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/routes/app/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/routes/auth/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/routes/explore/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/routes/groups/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/routes/households/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/routes/organizers/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/routes/parser/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/routes/recipe/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/routes/unit_and_foods/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/routes/users/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/routes/validators/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/schema/_mealie/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/schema/_mealie/types.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/schema/admin/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/schema/analytics/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/schema/cookbook/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/schema/group/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/schema/household/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/schema/labels/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/schema/meal_plan/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/schema/openai/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/schema/recipe/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/schema/reports/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/schema/response/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/schema/static/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/schema/static/recipe_keys.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/schema/user/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/services/email/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/services/exporter/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/services/migrations/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/services/openai/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/services/parser_services/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/services/parser_services/brute/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/services/parser_services/openai/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/services/parser_services/parser_utils/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/services/recipe/import_workflow/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/services/recipe/import_workflow/compilers/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/services/recipe/import_workflow/steps/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/services/scheduler/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/services/scheduler/tasks/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for mealie/services/urls/__init__.py (python), falling back to fixed-size chunking
+exit 0
+

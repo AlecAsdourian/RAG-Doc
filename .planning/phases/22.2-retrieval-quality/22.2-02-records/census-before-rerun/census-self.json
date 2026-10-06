@@ -1,0 +1,184 @@
+{
+ "corpus": "self",
+ "commit": "5bb86930d4f2bcae575888153fabc7e2f010e4f3",
+ "corpus_dirty": null,
+ "files": 81,
+ "files_by_language": {
+  "go": 40,
+  "python": 41
+ },
+ "files_by_extension": {
+  ".go": 40,
+  ".py": 41
+ },
+ "source_chars": 800438,
+ "source_lines": 20197,
+ "chunks": 637,
+ "chunks_by_type": {
+  "class": 109,
+  "function": 422,
+  "file_summary": 67,
+  "class_summary": 21,
+  "fixed_size": 18
+ },
+ "chunk_chars_total": 778820,
+ "index_text_over_source": 0.973,
+ "code_chunk_chars": {
+  "p50": 530,
+  "p90": 3138,
+  "p99": 13471,
+  "max": 35770,
+  "over_2000": 105,
+  "over_5000": 26,
+  "over_8000": 14
+ },
+ "largest_chunks": [
+  {
+   "file": "services/workers/workers/jobs/runtime.py",
+   "breadcrumb": "Worker",
+   "type": "class",
+   "chars": 35770,
+   "lines": 757
+  },
+  {
+   "file": "services/workers/workers/retrieval/query_engine.py",
+   "breadcrumb": "QueryEngine",
+   "type": "class",
+   "chars": 17303,
+   "lines": 435
+  },
+  {
+   "file": "services/backend/pkg/api/router.go",
+   "breadcrumb": "NewRouterWithValidatorAndAdmin",
+   "type": "function",
+   "chars": 15670,
+   "lines": 339
+  },
+  {
+   "file": "services/workers/workers/generation/answer_generator.py",
+   "breadcrumb": "AnswerGenerator",
+   "type": "class",
+   "chars": 14626,
+   "lines": 403
+  },
+  {
+   "file": "services/backend/pkg/api/handlers/repositories.go",
+   "breadcrumb": "RepositoriesHandler.Connect",
+   "type": "function",
+   "chars": 14110,
+   "lines": 344
+  }
+ ],
+ "tokens": {
+  "embedded_total_if_every_chunk": 222638,
+  "billed_distinct_content": 222503,
+  "cost_full_ingest_usd": {
+   "text-embedding-ada-002": 0.0223,
+   "text-embedding-3-small": 0.0045
+  },
+  "p50": 180,
+  "p90": 741,
+  "max": 7883,
+  "chunks_over_8000_tokens_truncated": 0,
+  "tokens_cut_by_truncation": 0,
+  "truncated": []
+ },
+ "identical_content": {
+  "distinct_hashes": 636,
+  "chunks_sharing_a_hash": 2,
+  "extra_copies": 1
+ },
+ "duplication": {
+  "class_chunks": 109,
+  "class_chunks_ge80pct_covered": 18,
+  "class_chars": 230780,
+  "class_chars_covered_by_methods": 186315,
+  "nested_function_chunks": 6,
+  "nested_function_chars": 5286,
+  "go_struct_chunks_in_groups": 0,
+  "go_group_extra_chars": 0
+ },
+ "coverage_nonblank_lines_in_code_chunks": 0.73,
+ "fallback_files_fixed_size_only": 14,
+ "fixed_size_chunks": 18,
+ "fallback_reasons": {
+  "go": {
+   "raised": 0,
+   "no_chunk": 2,
+   "unsupported": 0
+  },
+  "python": {
+   "raised": 0,
+   "no_chunk": 12,
+   "unsupported": 0
+  }
+ },
+ "named_chunks_by_extension": {
+  ".go": {
+   "function": 224,
+   "class": 62
+  },
+  ".py": {
+   "function": 198,
+   "class": 47
+  }
+ },
+ "files_with_declarations_but_no_named_chunk": {
+  "count": 0,
+  "by_language": {},
+  "files": []
+ },
+ "parse_errors_as_chunked": {
+  "go": {
+   "files": 40,
+   "files_with_errors": 0,
+   "error_nodes": 0,
+   "missing_nodes": 0
+  },
+  "python": {
+   "files": 41,
+   "files_with_errors": 0,
+   "error_nodes": 0,
+   "missing_nodes": 0
+  }
+ },
+ "go_type_declarations": {
+  "local:struct_type": 1,
+  "package:function_type": 1,
+  "package:interface_type": 7,
+  "package:struct_type": 61,
+  "package:type_identifier": 3
+ },
+ "go_package_types_total": 72,
+ "go_package_types_without_chunk": 11,
+ "go_local_types_total": 1,
+ "go_local_structs_chunked_twice": 1,
+ "python": {
+  "breadcrumb_collisions_extra_rows": 0,
+  "nested_functions": 6,
+  "decorated_function_definition": 10,
+  "decorators_in_no_chunk": 12,
+  "decorators_only_inside_a_class_chunk": 7,
+  "decorators_in_their_own_chunk": 0,
+  "decorators_only_inside_an_enclosing_class_chunk": 7,
+  "decorated_class_definition": 9
+ },
+ "declarations": {
+  "go_callables": 224,
+  "go_callables_with_doc_comment_above_span": 186,
+  "go_package_const_specs": 72,
+  "go_package_var_specs": 14
+ },
+ "chunk_set_digest": "fa17b901a7a28880f65caf55e293b34031f1915d330192b01ce757f4c3b5cd49",
+ "chunk_rows": 637,
+ "corpus_tree_digest": "57a4b2c39bc17752cdacf3f2c1f053394013887deaeace37925aec3e2584168c",
+ "chunker_version": "a1a44e8d682e21bb",
+ "versions": {
+  "tree_sitter_go": "0.25.0",
+  "tree_sitter_javascript": "0.25.0",
+  "tree_sitter_python": "0.25.0",
+  "tree_sitter_typescript": "0.23.2",
+  "tiktoken": "0.12.0",
+  "tree-sitter": "0.25.2"
+ }
+}

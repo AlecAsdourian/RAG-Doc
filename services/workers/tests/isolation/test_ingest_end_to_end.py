@@ -250,10 +250,10 @@ def search_engine(app_dsn: str) -> QueryEngine:
     return engine
 
 
-def ingest_once(conn, app_dsn, tmp_path, org, caplog, **deps_overrides):
+def ingest_once(conn, app_dsn, tmp_path, org, caplog, files=None, **deps_overrides):
     """Enqueue, run a worker until the job settles, and return what matters."""
     route = FakeTokenRoute("ok")
-    github = FakeGitHub(make_archive(FIXTURE_FILES))
+    github = FakeGitHub(make_archive(FIXTURE_FILES if files is None else files))
     job_id = enqueue(conn, org)
     with running(ingest_worker(app_dsn, deps_for(tmp_path, route, github, **deps_overrides))):
         row = job_when(conn, job_id, settled, "the ingest to settle")
@@ -289,6 +289,7 @@ def test_a_repository_is_ingested_end_to_end_as_the_app_role(
     assert progress["files_indexable"] == 3
     assert progress["files_parsed"] == 3
     assert progress["chunks_stored"] == progress["chunks"] == progress["chunks_embedded"] > 0
+    assert progress["chunks_truncated"] == 0, "22.2-02: no fixture chunk is over the token limit"
 
     # The projection.
     repo = repo_row(conn, org_a.id, org_a.repo_id)
@@ -349,6 +350,35 @@ def test_a_repository_is_ingested_end_to_end_as_the_app_role(
         engine.vector_retriever.close()
         engine.fts_retriever.close()
 
+    assert_no_secret_logged(caplog)
+
+
+def test_an_oversized_chunk_is_counted_on_the_completed_row(
+    conn, app_dsn, with_two_orgs, tmp_path, caplog
+):
+    """22.2-02 (QA6): a chunk over the generator's token limit is embedded
+    truncated, and the COMPLETED row's progress says how many rows were --
+    beside `skipped`, which the cumulative dict still carries. The generator
+    is the real one (only its API call is replaced), so the count is its rule."""
+    caplog.set_level(logging.DEBUG)
+    org_a, _ = with_two_orgs
+    link_installation(conn, org_a)
+    sentinel = "E2eHug3ContentS3ntinel"
+    oversized = (
+        b"def huge():\n    return [\n"
+        + b"".join(b'        "item%d %s",\n' % (i, sentinel.encode()) for i in range(1500))
+        + b"    ]\n"
+    )
+    files = dict(FIXTURE_FILES, **{"app/huge.py": oversized})
+
+    _, row, _, _ = ingest_once(conn, app_dsn, tmp_path, org_a, caplog, files=files)
+
+    assert row["state"] == "completed", row
+    progress = row["progress"]
+    assert progress["chunks_truncated"] == 1, progress
+    assert progress["skipped"] == {"secret": 1}, progress
+    assert progress["chunks_stored"] == len(chunks_of(conn, org_a))
+    assert all(sentinel not in r.getMessage() for r in caplog.records), "a chunk's content was logged"
     assert_no_secret_logged(caplog)
 
 

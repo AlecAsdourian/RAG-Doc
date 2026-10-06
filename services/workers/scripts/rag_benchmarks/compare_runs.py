@@ -28,13 +28,29 @@ any is, 2 when the inputs are refused.
 USAGE
     compare_runs.py --records DIR [--corpora self miniflux mealie]
                     [--baseline-prefix baseline] [--candidate-prefix pgvector]
+                    [--vector-tolerance 1e-5] [--no-qdrant]
 
 Files may be gzip-compressed (`.gz`), which is how the records are committed.
+
+--vector-tolerance (22.2-01, QD2) is the absolute tolerance on vector
+similarity, in every vector comparison: ties in a leg, and class (b)'s checks
+against the exact list. The default is 22-03's 1e-5, so the committed 22-03
+verdict re-judges byte-identically. Phase 22.2 passes 2e-6.
+
+--no-qdrant (22.2-01) judges two runs recorded after Qdrant was retired: no
+`qdrant_ids-<c>.json` is read, and classes (a) and (b) are BOTH disabled. Both
+are defined against Qdrant -- (a) by its point set, (b) by Qdrant's leg
+differing from exact search -- and on two runs over one pgvector database
+neither has a meaning. An empty point set is not a substitute: it would make
+(b) available for any difference the candidate's leg matches exact search on,
+and (a) for a baseline whose vector leg came back empty. So only (c) can
+explain a difference, and anything else is UNEXPLAINED.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import gzip
 import itertools
 import json
@@ -46,23 +62,46 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tupl
 _HERE = str(Path(__file__).resolve().parent)
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
-from scoring import ranks  # noqa: E402  (the harness's own scoring rule, one module)
+from scoring import aggregate, ranks  # noqa: E402  (the harness's own scoring rule, one module)
 
 RRF_K = 60  # rrf_fusion.py's constant; the recomputation must match it
 DEFAULT_CORPORA = ("self", "miniflux", "mealie")
 CLASSES = ("a", "b", "c", "UNEXPLAINED")
 
-# 22-03-equivalence.md, "Tolerances". kind -> (mode, value)
+# 22-03-equivalence.md, "Tolerances". kind -> (mode, value). These are the
+# defaults; the vector tolerance in force is `_vector_tolerance`, set for one
+# call of main() by --vector-tolerance and restored after it.
 TOLERANCES = {
     "vector": ("abs", 1e-5),
     "fts": ("rel", 1e-6),
     "fused": ("abs", 1e-9),
     "boosted": ("abs", 1e-9),
 }
+DEFAULT_VECTOR_TOLERANCE = TOLERANCES["vector"][1]
+_vector_tolerance = DEFAULT_VECTOR_TOLERANCE
+
+
+@contextlib.contextmanager
+def vector_tolerance(value: float):
+    """The vector tolerance for everything compared inside the block, restored after it,
+    so no call of main() leaves its tolerance behind for the next."""
+    global _vector_tolerance
+    previous = _vector_tolerance
+    _vector_tolerance = float(value)
+    try:
+        yield
+    finally:
+        _vector_tolerance = previous
+
+
+def tolerance_of(kind: str) -> Tuple[str, float]:
+    if kind == "vector":
+        return "abs", _vector_tolerance
+    return TOLERANCES[kind]
 
 
 def tied(a: float, b: float, kind: str) -> bool:
-    mode, tol = TOLERANCES[kind]
+    mode, tol = tolerance_of(kind)
     if mode == "abs":
         return abs(a - b) <= tol
     return abs(a - b) <= tol * max(1.0, abs(a), abs(b))
@@ -272,7 +311,7 @@ class CorpusRuns:
     baseline: Dict[str, dict]
     candidate_header: dict
     candidate: Dict[str, dict]
-    qdrant_ids: Set[str]
+    qdrant_ids: Optional[Set[str]]  # None under --no-qdrant
     qdrant_meta: dict
     exact: dict
     notes: List[str]
@@ -345,6 +384,10 @@ def refusals(runs: CorpusRuns) -> List[str]:
     for side, header in (("baseline", runs.baseline_header), ("candidate", runs.candidate_header)):
         problems.extend(f"{runs.name}: the {side} run {p}" for p in connection_problems(header))
     problems.extend(f"{runs.name}: the exact list {p}" for p in exact_list_problems(runs.exact, runs.baseline_header))
+    problems.extend(f"{runs.name}: {p}" for p in tolerance_problems(runs, _vector_tolerance))
+    if runs.qdrant_ids is None:  # --no-qdrant: (a) and (b) are disabled, not decided on an empty set
+        problems.extend(f"{runs.name}: {p}" for p in same_vectors_problems(runs))
+        return problems
     if not runs.qdrant_ids:
         problems.append(
             f"{runs.name}: the Qdrant point set is empty; class (a) and class (b) cannot be decided"
@@ -352,6 +395,47 @@ def refusals(runs: CorpusRuns) -> List[str]:
     if runs.qdrant_meta.get("repository_id") and runs.baseline_header.get("repository_id"):
         if runs.qdrant_meta["repository_id"] != runs.baseline_header["repository_id"]:
             problems.append(f"{runs.name}: the Qdrant point set is for another repository")
+    return problems
+
+
+def tolerance_problems(runs: CorpusRuns, tolerance: float) -> List[str]:
+    """The comparison's vector tolerance is the one the inputs were recorded at.
+
+    The exact list's tie tail was cut at its `tie_tolerance`, so judging at any
+    other tolerance reads a tail that is wrong for it, and class (c)'s cut pool
+    with it; and a tolerance chosen after seeing the verdict would be a knob
+    turned after the fact, against QD2's lock (22.2-01, review A2). So the
+    tolerance must equal the exact list's, and each run header's where the
+    header records one (22-03's records predate the field)."""
+    problems = []
+    recorded = runs.exact.get("tie_tolerance")
+    if recorded is None:
+        problems.append("the exact list does not state the tie tolerance it was recorded at")
+    elif float(recorded) != tolerance:
+        problems.append(f"the exact list was recorded at tie tolerance {float(recorded):g}, and the comparison "
+                        f"is at {tolerance:g}; judge at the tolerance the evidence was recorded at")
+    for side, header in (("baseline", runs.baseline_header), ("candidate", runs.candidate_header)):
+        if header.get("vector_tolerance") is not None and float(header["vector_tolerance"]) != tolerance:
+            problems.append(f"the {side} run was recorded at vector tolerance {float(header['vector_tolerance']):g}, "
+                            f"and the comparison is at {tolerance:g}")
+    return problems
+
+
+def same_vectors_problems(runs: CorpusRuns) -> List[str]:
+    """--no-qdrant compares two runs over ONE set of stored vectors: QD2's
+    tolerance holds only there, since the embedding API does not repeat itself
+    (22.2-01-records/embedding-repeatability.txt). Two runs from different
+    ingests are refused as the wrong input, not judged (22.2-01, review A5):
+    their chunk sets, rows per model and stored-vector digests must be equal
+    wherever the headers record them, and recorded on both sides or neither."""
+    problems = []
+    b, c = runs.baseline_header, runs.candidate_header
+    for key in ("chunk_set_digest", "chunk_models", "stored_vectors_digest"):
+        if key not in b and key not in c:
+            runs.notes.append(f"{runs.name}: neither run header records {key}, so it is not checked")
+        elif b.get(key) != c.get(key):
+            problems.append(f"the runs differ in {key} ({str(b.get(key))[:16]} vs {str(c.get(key))[:16]}): "
+                            "--no-qdrant compares two runs over one set of stored vectors")
     return problems
 
 
@@ -484,8 +568,14 @@ def positions_tied(lb: Ranking, lc: Ranking, is_tied_pair: Callable[[str, str], 
     return True, ""
 
 
-def classify(b: dict, c: dict, qdrant_ids: Set[str], exact_entry: Optional[dict], top_k: int) -> Tuple[str, str]:
-    """The class of one differing question, per 22-03-equivalence.md, in its order."""
+def classify(
+    b: dict, c: dict, qdrant_ids: Optional[Set[str]], exact_entry: Optional[dict], top_k: int
+) -> Tuple[str, str]:
+    """The class of one differing question, per 22-03-equivalence.md, in its order.
+
+    `qdrant_ids` None is --no-qdrant: classes (a) and (b) are disabled, so a
+    difference only (c) does not explain is UNEXPLAINED.
+    """
     # 0. consistency on both sides
     for side, rec in (("baseline", b), ("candidate", c)):
         problem = consistency(rec, top_k)
@@ -533,19 +623,31 @@ def classify(b: dict, c: dict, qdrant_ids: Set[str], exact_entry: Optional[dict]
             f"({why_f or why_b or why_t})"
         )
 
+    # Both later classes are defined against Qdrant; with no point set
+    # (--no-qdrant) neither applies.
+    class_a = qdrant_ids is not None
+    class_b = qdrant_ids is not None
+    points: Set[str] = qdrant_ids if qdrant_ids is not None else set()
+
     # 3. (a): only chunks with no Qdrant point entered
-    stripped = VC.restrict(qdrant_ids)
-    entered = len(VC) - len(stripped)
-    ok, why, _ = prefix_agrees(stripped, VB, cut_pool=pool)
-    if ok and entered:
-        return "a", f"{entered} chunk(s) with no Qdrant point entered the pgvector top 50; the rest agrees"
+    if class_a:
+        stripped = VC.restrict(points)
+        entered = len(VC) - len(stripped)
+        ok, why, _ = prefix_agrees(stripped, VB, cut_pool=pool)
+        if ok and entered:
+            return "a", f"{entered} chunk(s) with no Qdrant point entered the pgvector top 50; the rest agrees"
 
     # 4. (b): pgvector matches exact search, Qdrant did not
     ok_c, why_c, _ = rankings_agree(VC, E)
-    ok_q, why_q, _ = rankings_agree(VB, E.restrict(qdrant_ids))
-    if ok_c and not ok_q:
-        return "b", f"the Qdrant leg differs from exact search ({why_q}); the pgvector leg matches it"
+    if class_b:
+        ok_q, why_q, _ = rankings_agree(VB, E.restrict(points))
+        if ok_c and not ok_q:
+            return "b", f"the Qdrant leg differs from exact search ({why_q}); the pgvector leg matches it"
 
+    if qdrant_ids is None:
+        return "UNEXPLAINED", (
+            f"vector legs differ ({why}); classes (a) and (b) are disabled with no Qdrant point set (--no-qdrant)"
+        )
     if not ok_c:
         return "UNEXPLAINED", f"the pgvector leg differs from exact search ({why_c}); vector legs: {why}"
     return "UNEXPLAINED", f"vector legs differ ({why}) and neither (a) nor (b) covers it"
@@ -556,17 +658,6 @@ def classify(b: dict, c: dict, qdrant_ids: Set[str], exact_entry: Optional[dict]
 # ---------------------------------------------------------------------------
 
 
-def score(ranks: List[Optional[int]]) -> dict:
-    found = [r for r in ranks if r]
-    total = len(ranks)
-    return {
-        "questions": total,
-        "found": len(found),
-        "rank1": sum(1 for r in found if r == 1),
-        "mrr": (sum(1.0 / r for r in found) / total) if total else 0.0,
-    }
-
-
 def aggregates(records: Dict[str, dict]) -> Dict[str, dict]:
     by_set: Dict[str, List[dict]] = {}
     for rec in records.values():
@@ -574,8 +665,8 @@ def aggregates(records: Dict[str, dict]) -> Dict[str, dict]:
     out = {}
     for set_name, rows in sorted(by_set.items()):
         out[set_name] = {
-            "file": score([r["file_rank"] for r in rows]),
-            "symbol": score([r["symbol_rank"] for r in rows if r.get("symbol")]),
+            "file": aggregate([r["file_rank"] for r in rows]),
+            "symbol": aggregate([r["symbol_rank"] for r in rows if r.get("symbol")]),
         }
     return out
 
@@ -624,15 +715,20 @@ def compare(runs: CorpusRuns) -> Tuple[List[dict], dict]:
         "boosted_rankings_agree": agreeing_boosted,
         "vector_scores_compared": compared,
         "max_similarity_delta": max_delta,
-        "qdrant_points": len(runs.qdrant_ids),
+        "qdrant_points": len(runs.qdrant_ids) if runs.qdrant_ids is not None else None,
         "postgres_chunks": runs.qdrant_meta.get("postgres_chunks"),
     }
     return rows, info
 
 
-def load_corpus(records_dir: Path, name: str, baseline_prefix: str, candidate_prefix: str) -> CorpusRuns:
+def load_corpus(
+    records_dir: Path, name: str, baseline_prefix: str, candidate_prefix: str, no_qdrant: bool = False
+) -> CorpusRuns:
     bh, b = load_run(_find(records_dir, f"{baseline_prefix}-{name}.jsonl"))
     ch, c = load_run(_find(records_dir, f"{candidate_prefix}-{name}.jsonl"))
+    exact = load_json(_find(records_dir, f"exact-{name}.json"))
+    if no_qdrant:
+        return CorpusRuns(name, bh, b, ch, c, None, {}, exact, notes=[])
     qdrant = load_json(_find(records_dir, f"qdrant_ids-{name}.json"))
     ids = qdrant.get("ids")
     if not isinstance(ids, list) or not ids:
@@ -642,7 +738,6 @@ def load_corpus(records_dir: Path, name: str, baseline_prefix: str, candidate_pr
         )
     if "count" in qdrant and qdrant["count"] != len(ids):
         raise ValueError(f"qdrant_ids-{name}.json: count {qdrant['count']} does not match its {len(ids)} ids")
-    exact = load_json(_find(records_dir, f"exact-{name}.json"))
     return CorpusRuns(name, bh, b, ch, c, set(ids), qdrant, exact, notes=[])
 
 
@@ -652,13 +747,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--corpora", nargs="+", default=list(DEFAULT_CORPORA))
     ap.add_argument("--baseline-prefix", default="baseline")
     ap.add_argument("--candidate-prefix", default="pgvector")
+    ap.add_argument("--vector-tolerance", type=float, default=DEFAULT_VECTOR_TOLERANCE,
+                    help="absolute tolerance on vector similarity (default 1e-5, 22-03's; Phase 22.2 passes 2e-6)")
+    ap.add_argument("--no-qdrant", action="store_true",
+                    help="runs recorded after Qdrant's retirement: read no point set, and disable classes (a) and (b)")
     args = ap.parse_args(argv)
+    with vector_tolerance(args.vector_tolerance):
+        return _judge(args)
 
+
+def _judge(args) -> int:
+    if args.no_qdrant:
+        print("mode: --no-qdrant (runs recorded after Qdrant's retirement): no point set is read, classes (a) "
+              "and (b) are disabled, and only (c) can explain a difference")
+    if args.no_qdrant or args.vector_tolerance != DEFAULT_VECTOR_TOLERANCE:
+        print(f"vector tolerance: {args.vector_tolerance:g} (absolute)")
     all_runs: List[CorpusRuns] = []
     problems: List[str] = []
     for name in args.corpora:
         try:
-            runs = load_corpus(args.records, name, args.baseline_prefix, args.candidate_prefix)
+            runs = load_corpus(args.records, name, args.baseline_prefix, args.candidate_prefix, args.no_qdrant)
         except (FileNotFoundError, ValueError) as exc:
             problems.append(f"{name}: {exc}")
             continue
@@ -697,8 +805,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     print("\nAggregates, reported and not judged (recall@k = found/questions, rank-1, MRR):")
     print(f"{'corpus':<9} {'set':<8} {'side':<9} {'file recall':<12} {'file #1':<8} {'file MRR':<9} {'sym recall':<11} {'sym #1':<7} {'sym MRR':<8}")
+    sides = (args.baseline_prefix, args.candidate_prefix) if args.no_qdrant else ("qdrant", "pgvector")
     for runs in all_runs:
-        for side, records in (("qdrant", runs.baseline), ("pgvector", runs.candidate)):
+        for side, records in ((sides[0], runs.baseline), (sides[1], runs.candidate)):
             for set_name, agg in aggregates(records).items():
                 f, s = agg["file"], agg["symbol"]
                 print(
@@ -709,6 +818,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     print("\nFor information only:")
     for name, info in infos.items():
+        if info["qdrant_points"] is None:
+            print(
+                f"  {name}: {info['boosted_rankings_agree']}/{info['questions']} questions with fully agreeing "
+                f"boosted rankings; max |delta similarity| over {info['vector_scores_compared']} chunk scores "
+                f"both legs returned = {info['max_similarity_delta']:.2e}"
+            )
+            continue
         no_point = (
             info["postgres_chunks"] - info["qdrant_points"] if info["postgres_chunks"] is not None else "?"
         )

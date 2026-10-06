@@ -1,0 +1,158 @@
+{
+ "corpus": "miniflux",
+ "commit": "76889f08b12c2577b37e524e645afa5dd46ff050",
+ "files": 335,
+ "files_by_language": {
+  "go": 335
+ },
+ "files_by_extension": {
+  ".go": 335
+ },
+ "source_chars": 1276386,
+ "source_lines": 43943,
+ "chunks": 2134,
+ "chunks_by_type": {
+  "class": 329,
+  "function": 1415,
+  "file_summary": 326,
+  "class_summary": 20,
+  "fixed_size": 44
+ },
+ "chunk_chars_total": 1123991,
+ "index_text_over_source": 0.881,
+ "code_chunk_chars": {
+  "p50": 256,
+  "p90": 1457,
+  "p99": 4839,
+  "max": 15477,
+  "over_2000": 93,
+  "over_5000": 15,
+  "over_8000": 5
+ },
+ "largest_chunks": [
+  {
+   "file": "internal/config/options.go",
+   "breadcrumb": "NewConfigOptions",
+   "type": "function",
+   "chars": 15477,
+   "lines": 558
+  },
+  {
+   "file": "internal/integration/integration.go",
+   "breadcrumb": "SendEntry",
+   "type": "function",
+   "chars": 14011,
+   "lines": 468
+  },
+  {
+   "file": "internal/ui/form/integration.go",
+   "breadcrumb": "NewIntegrationForm",
+   "type": "function",
+   "chars": 8703,
+   "lines": 124
+  },
+  {
+   "file": "internal/ui/integration_show.go",
+   "breadcrumb": "handler.showIntegrationPage",
+   "type": "function",
+   "chars": 8361,
+   "lines": 145
+  },
+  {
+   "file": "internal/ui/ui.go",
+   "breadcrumb": "Serve",
+   "type": "function",
+   "chars": 8321,
+   "lines": 169
+  }
+ ],
+ "tokens": {
+  "embedded_total_if_every_chunk": 318922,
+  "billed_distinct_content": 318453,
+  "cost_full_ingest_usd": {
+   "text-embedding-ada-002": 0.0318,
+   "text-embedding-3-small": 0.0064
+  },
+  "p50": 64,
+  "p90": 365,
+  "max": 4296,
+  "chunks_over_8000_tokens_truncated": 0,
+  "tokens_cut_by_truncation": 0,
+  "truncated": []
+ },
+ "identical_content": {
+  "distinct_hashes": 2122,
+  "chunks_sharing_a_hash": 24,
+  "extra_copies": 12
+ },
+ "duplication": {
+  "class_chunks": 329,
+  "class_chunks_ge80pct_covered": 0,
+  "class_chars": 107613,
+  "class_chars_covered_by_methods": 0,
+  "nested_function_chunks": 0,
+  "nested_function_chars": 0,
+  "go_struct_chunks_in_groups": 0,
+  "go_group_extra_chars": 0
+ },
+ "coverage_nonblank_lines_in_code_chunks": 0.84,
+ "fallback_files_fixed_size_only": 9,
+ "fixed_size_chunks": 44,
+ "fallback_reasons": {
+  "go": {
+   "raised": 0,
+   "no_chunk": 9,
+   "unsupported": 0
+  }
+ },
+ "named_chunks_by_extension": {
+  ".go": {
+   "function": 1415,
+   "class": 329
+  }
+ },
+ "files_with_declarations_but_no_named_chunk": {
+  "count": 0,
+  "by_language": {},
+  "files": []
+ },
+ "parse_errors_as_chunked": {
+  "go": {
+   "files": 335,
+   "files_with_errors": 0,
+   "error_nodes": 0,
+   "missing_nodes": 0
+  }
+ },
+ "go_type_declarations": {
+  "local:struct_type": 11,
+  "local:type_identifier": 2,
+  "package:function_type": 2,
+  "package:interface_type": 3,
+  "package:map_type": 2,
+  "package:slice_type": 26,
+  "package:struct_type": 318,
+  "package:type_identifier": 6
+ },
+ "go_package_types_total": 357,
+ "go_package_types_without_chunk": 39,
+ "go_local_types_total": 13,
+ "go_local_structs_chunked_twice": 11,
+ "declarations": {
+  "go_callables": 1415,
+  "go_callables_with_doc_comment_above_span": 603,
+  "go_package_const_specs": 164,
+  "go_package_var_specs": 42
+ },
+ "chunk_set_digest": "6e27949a7d08d384fd0ae71ec9c758e618223af78de4a89f6881ecb5da58f3a1",
+ "chunk_rows": 2134,
+ "chunker_version": "a1a44e8d682e21bb",
+ "versions": {
+  "tree_sitter_go": "0.25.0",
+  "tree_sitter_javascript": "0.25.0",
+  "tree_sitter_python": "0.25.0",
+  "tree_sitter_typescript": "0.23.2",
+  "tiktoken": "0.12.0",
+  "tree-sitter": "0.25.2"
+ }
+}

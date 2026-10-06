@@ -1,0 +1,155 @@
+{
+ "corpus": "mealie",
+ "commit": "84b2677f76069a6fb2bac6e2c633c9dbe7379ce4",
+ "files": 390,
+ "files_by_language": {
+  "python": 390
+ },
+ "files_by_extension": {
+  ".py": 390
+ },
+ "source_chars": 1286439,
+ "source_lines": 35138,
+ "chunks": 2816,
+ "chunks_by_type": {
+  "fixed_size": 77,
+  "function": 1649,
+  "file_summary": 322,
+  "class": 679,
+  "class_summary": 89
+ },
+ "chunk_chars_total": 1905068,
+ "index_text_over_source": 1.481,
+ "code_chunk_chars": {
+  "p50": 334,
+  "p90": 1612,
+  "p99": 5885,
+  "max": 33368,
+  "over_2000": 176,
+  "over_5000": 32,
+  "over_8000": 19
+ },
+ "largest_chunks": [
+  {
+   "file": "mealie/routes/recipe/recipe_crud_routes.py",
+   "breadcrumb": "RecipeController",
+   "type": "class",
+   "chars": 33368,
+   "lines": 769
+  },
+  {
+   "file": "mealie/services/query_filter/builder.py",
+   "breadcrumb": "QueryFilterBuilder",
+   "type": "class",
+   "chars": 24541,
+   "lines": 552
+  },
+  {
+   "file": "mealie/services/recipe/recipe_service.py",
+   "breadcrumb": "RecipeService",
+   "type": "class",
+   "chars": 22854,
+   "lines": 547
+  },
+  {
+   "file": "mealie/services/household_services/shopping_lists.py",
+   "breadcrumb": "ShoppingListService",
+   "type": "class",
+   "chars": 22305,
+   "lines": 534
+  },
+  {
+   "file": "mealie/repos/repository_generic.py",
+   "breadcrumb": "RepositoryGeneric",
+   "type": "class",
+   "chars": 16882,
+   "lines": 455
+  }
+ ],
+ "tokens": {
+  "embedded_total_if_every_chunk": 437143,
+  "billed_distinct_content": 435050,
+  "cost_full_ingest_usd": {
+   "text-embedding-ada-002": 0.0435,
+   "text-embedding-3-small": 0.0087
+  },
+  "p50": 70,
+  "p90": 331,
+  "max": 6456,
+  "chunks_over_8000_tokens_truncated": 0,
+  "tokens_cut_by_truncation": 0,
+  "truncated": []
+ },
+ "identical_content": {
+  "distinct_hashes": 2759,
+  "chunks_sharing_a_hash": 85,
+  "extra_copies": 57
+ },
+ "duplication": {
+  "class_chunks": 679,
+  "class_chunks_ge80pct_covered": 179,
+  "class_chars": 861618,
+  "class_chars_covered_by_methods": 678322,
+  "nested_function_chunks": 39,
+  "nested_function_chars": 23835,
+  "go_struct_chunks_in_groups": 0,
+  "go_group_extra_chars": 0
+ },
+ "coverage_nonblank_lines_in_code_chunks": 0.866,
+ "fallback_files_fixed_size_only": 68,
+ "fixed_size_chunks": 77,
+ "fallback_reasons": {
+  "python": {
+   "raised": 0,
+   "no_chunk": 68,
+   "unsupported": 0
+  }
+ },
+ "named_chunks_by_extension": {
+  ".py": {
+   "function": 1649,
+   "class": 679
+  }
+ },
+ "files_with_declarations_but_no_named_chunk": {
+  "count": 0,
+  "by_language": {},
+  "files": []
+ },
+ "parse_errors_as_chunked": {
+  "python": {
+   "files": 390,
+   "files_with_errors": 0,
+   "error_nodes": 0,
+   "missing_nodes": 0
+  }
+ },
+ "python": {
+  "breadcrumb_collisions_extra_rows": 5,
+  "decorated_function_definition": 773,
+  "decorators_in_no_chunk": 0,
+  "decorators_only_inside_a_class_chunk": 71,
+  "decorators_in_their_own_chunk": 574,
+  "decorators_only_inside_an_enclosing_class_chunk": 0,
+  "nested_functions": 39,
+  "decorated_class_definition": 71,
+  "route_decorated": 270,
+  "route_decorators_in_no_chunk": 0,
+  "route_decorators_only_inside_a_class_chunk": 0,
+  "route_decorators_in_their_own_chunk": 270,
+  "route_decorators_only_inside_an_enclosing_class_chunk": 0,
+  "overload_stubs": 5
+ },
+ "chunk_set_digest": "71723463aed4c9ed7f4d290c2c92fa1f858869e2488400a5b5ee79fbd59a6cf7",
+ "chunk_rows": 2816,
+ "corpus_tree_digest": "486436999c8bf4c787d89d5f86c2f5737e932a7298b2e619a0f48818d8b2351b",
+ "chunker_version": "b339770e95eaf507",
+ "versions": {
+  "tree_sitter_go": "0.25.0",
+  "tree_sitter_javascript": "0.25.0",
+  "tree_sitter_python": "0.25.0",
+  "tree_sitter_typescript": "0.23.2",
+  "tiktoken": "0.12.0",
+  "tree-sitter": "0.25.2"
+ }
+}

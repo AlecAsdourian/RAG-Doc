@@ -325,7 +325,7 @@ each fetch ends, and a crashed run's are swept when the next worker starts.
 **Give each worker process memory for the repository it may ingest.**
 **Measured** peak RSS: 0.5–0.7 GiB for the benchmark corpora, 4.4 GiB for
 django (48,704 chunks), and **9.1 GiB (9.7 GB) at U6's 100,000-chunk cap**,
-because every vector is held as a Python list until the store (ISS-041). An
+because every vector is held as a Python list until the store (ISS-042). An
 out-of-memory kill is a crash, retried up to five times.
 
 **Under compose the worker is behind a profile, `ingest`, and a plain

@@ -125,7 +125,15 @@ Cursor-paginated list, oldest first.
       "archived": false,
       "sync_state": "pending",
       "last_synced_at": null,
-      "created_at": "2026-09-08T23:24:03.942762-07:00"
+      "created_at": "2026-09-08T23:24:03.942762-07:00",
+      "current_job": {                 // the current ingestion job, or null; see below
+        "id": "…", "repository_id": "…", "job_type": "full_ingest",
+        "state": "queued", "status": "queued", "attempts": 0, "max_attempts": 5,
+        "run_after": "2026-09-08T23:24:03.951Z", "lease_expires_at": null,
+        "stalled": false, "last_stage": null, "progress": null,
+        "needs_rerun": false, "last_error": null, "ingestion_run_id": null,
+        "created_at": "2026-09-08T23:24:03.951Z", "updated_at": "2026-09-08T23:24:03.951Z"
+      }
     }
   ],
   "next_cursor": "MjAyNi0wOS0wOF…"     // null on the last page
@@ -135,6 +143,40 @@ Cursor-paginated list, oldest first.
 **Timestamps are RFC 3339 with an offset, not necessarily `Z`.** They
 carry whatever offset the database session is in. Parse them; do not
 string-compare them or assume a trailing `Z`.
+
+### `current_job`: the repository's current ingestion job
+
+Every repository object, on all three endpoints that return one, carries
+`current_job` (22.1-03; closes ISS-034). **The key is always present**; its
+value is the job object
+[`GET /api/admin/jobs/{id}`](api-ingestion-jobs.md#get-apiadminjobsid)
+returns, field for field, or `null`.
+
+**"Current" is defined once, on the server:**
+
+1. the **live** job (`queued` or `running`) when there is one — at most one
+   exists per repository;
+2. otherwise the **most recent** job, by `created_at` and then `id`, both
+   descending;
+3. otherwise `null`.
+
+The live job wins even when an older-looking timestamp says otherwise:
+`created_at` is when the enqueuing transaction *started*, and commit order
+can disagree with it.
+
+**What to show** is the job's `status`, never `sync_state`: the vocabulary,
+what a UI says for each value and how often to poll are in
+[`api-ingestion-jobs.md`](api-ingestion-jobs.md#status-what-a-job-is-doing).
+Polling this list is how a repository settings page shows every
+repository's indexing status in one request.
+
+**`null` does not mean "never indexed".** Phase 24 prunes terminal jobs
+after 30 days ([pruning](api-ingestion-jobs.md#pruning)), so a repository
+untouched for a month reads `current_job: null` while `sync_state` and
+`last_synced_at` still say when it was last synced.
+
+**This is the current job only.** There is no job history list (ISS-034's
+other shape, not chosen); see [Not in this API yet](#not-in-this-api-yet).
 
 **Paginate by following `next_cursor` until it is null.** Do not construct
 one — it encodes a position in an ordering, not an identifier, and a
@@ -185,7 +227,10 @@ renames and transfers; a URL is not, and would let someone name a
 repository their installation cannot reach.
 
 **201** returns the repository object above. A first connect is
-`sync_state: "pending"`.
+`sync_state: "pending"`, and its **`current_job` is the job this connect
+enqueued** (`status: "queued"`). A connect that joined a job already live
+returns that job, and one that needed no job returns the repository's
+current job as defined [above](#current_job-the-repositorys-current-ingestion-job).
 
 **Connecting an already-connected repository is not an error** — it
 refreshes the stored metadata and returns 201 with the existing row. Safe
@@ -245,7 +290,9 @@ connected accounts".
 
 ## `GET /api/repositories/{id}`
 
-Returns one repository object, or **404** — which again covers "no such
+Returns one repository object, with its
+[`current_job`](#current_job-the-repositorys-current-ingestion-job), or
+**404** — which again covers "no such
 repository", "belongs to another organization", and "that is not a valid
 id", identically. An id in any spelling other than the canonical
 lowercase `8-4-4-4-12` form counts as not valid, so echo ids back exactly
@@ -317,16 +364,15 @@ is what a cross-tenant delete returns — the row is untouched.
 - **Triggering a sync.** Phase 21 built the queue; there is still no
   "sync now" endpoint, and a `dead` job has no user-facing route back in
   (ISS-023). A push or a relink is what re-queues work.
-- **Why a sync failed, on *this* endpoint.** `sync_state` carries no reason.
-  The job does — `last_error`, `last_stage`, `attempts`, `stalled` — through
-  [`GET /api/admin/jobs/{id}`](api-ingestion-jobs.md#get-apiadminjobsid).
-- **A way to find a repository's job id** — **ISS-034**. Nothing in this API
-  returns one: a connect logs the job id server-side and the response carries
-  only the repository. Until a repository-to-job link exists, the job endpoint
-  is usable by anything that already has an id and not by a UI starting from a
-  repository. The issue carries the two candidate shapes — a `job_id` on this
-  response, or `GET /api/repositories/{id}/jobs` — and why choosing between
-  them is its own piece of work.
+- **Why an *earlier* sync failed.** `sync_state` carries no reason; the
+  current job does (`status`, `last_error`, `last_stage`, `attempts`, in
+  [`current_job`](#current_job-the-repositorys-current-ingestion-job)), but
+  once a newer job replaces it, an older job's reason is not reachable from
+  this API.
+- **A job history list** (ISS-034's shape 2, `GET
+  /api/repositories/{id}/jobs`, not chosen; see 22.1-03). The current job is
+  [`current_job`](#current_job-the-repositorys-current-ingestion-job) on
+  every repository response; earlier jobs are not listed anywhere.
 - **Choosing a project.** Repositories connect to the organization's
   default project. Note that a repository connected before this API
   existed may sit in a different project — do not assume every repository

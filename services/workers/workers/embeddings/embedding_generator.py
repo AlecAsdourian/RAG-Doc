@@ -3,12 +3,42 @@
 import hashlib
 import logging
 import os
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from workers.chunker.models import Chunk
 from .openai_client import OpenAIEmbeddingClient
 
 logger = logging.getLogger(__name__)
+
+
+def embedding_text(chunk: Chunk) -> str:
+    """The text a chunk is embedded as, before any truncation.
+
+    The breadcrumb (for context), the docstring, then the content. A Go doc
+    comment or a JSDoc reaches the embedding only here, as the docstring: it
+    sits above the definition, outside the chunk's lines (QD6, QA5).
+
+    The census (`scripts/rag_benchmarks/chunk_census.py`) counts tokens on
+    this same function, so it measures what is embedded.
+    """
+    parts = []
+
+    # Add breadcrumb for context
+    breadcrumb = chunk.metadata.get("breadcrumb", "")
+    if breadcrumb:
+        parts.append(f"# {breadcrumb}")
+        parts.append("")  # Blank line
+
+    # Add docstring if present
+    docstring = chunk.metadata.get("docstring", "")
+    if docstring:
+        parts.append(f'"""{docstring}"""')
+        parts.append("")
+
+    # Add main content
+    parts.append(chunk.content)
+
+    return "\n".join(parts)
 
 
 class EmbeddingGenerator:
@@ -64,11 +94,30 @@ class EmbeddingGenerator:
         """
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
+    def tokens_over_limit(self, chunk: Chunk) -> Optional[int]:
+        """THE truncation rule: is this chunk's embedding text over the limit?
+
+        Returns the token count of `embedding_text(chunk)` when it exceeds
+        `max_tokens_per_chunk` -- the generator then embeds it truncated --
+        and None when it fits. ⚠ THE ONLY COPY OF THE TEST (22.2-02, QA6):
+        `_prepare_text_for_embedding` truncates by it, and the ingest handler
+        counts `chunks_truncated` by it, so the count and the truncation
+        cannot disagree.
+        """
+        return self._over_limit(self.client.count_tokens(embedding_text(chunk)))
+
+    def _over_limit(self, tokens: int) -> Optional[int]:
+        return tokens if tokens > self.max_tokens_per_chunk else None
+
     def _prepare_text_for_embedding(self, chunk: Chunk) -> str:
         """
         Prepare chunk text for embedding.
 
-        Includes breadcrumb for context, content, and docstring.
+        Includes breadcrumb for context, content, and docstring
+        (`embedding_text`), truncated to `max_tokens_per_chunk` when it is
+        over (`tokens_over_limit`). A truncation is never silent: one WARNING
+        per truncated chunk, naming its path and breadcrumb and the tokens
+        before and after -- never its content, which is customer code.
 
         Args:
             chunk: Chunk to prepare
@@ -76,30 +125,19 @@ class EmbeddingGenerator:
         Returns:
             Text ready for embedding
         """
-        parts = []
-
-        # Add breadcrumb for context
-        breadcrumb = chunk.metadata.get("breadcrumb", "")
-        if breadcrumb:
-            parts.append(f"# {breadcrumb}")
-            parts.append("")  # Blank line
-
-        # Add docstring if present
-        docstring = chunk.metadata.get("docstring", "")
-        if docstring:
-            parts.append(f'"""{docstring}"""')
-            parts.append("")
-
-        # Add main content
-        parts.append(chunk.content)
-
-        text = "\n".join(parts)
-
-        # Truncate if too long
-        token_count = self.client.count_tokens(text)
-        if token_count > self.max_tokens_per_chunk:
+        text = embedding_text(chunk)
+        tokens = self._over_limit(self.client.count_tokens(text))
+        if tokens is not None:
             text = self.client.truncate_to_token_limit(text, self.max_tokens_per_chunk)
-
+            logger.warning(
+                "chunk %s (%s) is embedded truncated: its embedding text is %d tokens, "
+                "cut to %d (the limit is %d)",
+                chunk.file_path,
+                chunk.metadata.get("breadcrumb") or chunk.chunk_type,
+                tokens,
+                self.client.count_tokens(text),
+                self.max_tokens_per_chunk,
+            )
         return text
 
     def generate_embeddings_for_chunks(

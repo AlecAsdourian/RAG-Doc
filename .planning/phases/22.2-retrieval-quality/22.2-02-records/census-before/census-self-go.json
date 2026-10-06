@@ -1,0 +1,157 @@
+{
+ "corpus": "self-go",
+ "commit": "5bb86930d4f2bcae575888153fabc7e2f010e4f3",
+ "corpus_dirty": null,
+ "files": 40,
+ "files_by_language": {
+  "go": 40
+ },
+ "files_by_extension": {
+  ".go": 40
+ },
+ "source_chars": 400712,
+ "source_lines": 10271,
+ "chunks": 331,
+ "chunks_by_type": {
+  "class": 62,
+  "function": 224,
+  "file_summary": 38,
+  "class_summary": 4,
+  "fixed_size": 3
+ },
+ "chunk_chars_total": 253972,
+ "index_text_over_source": 0.634,
+ "code_chunk_chars": {
+  "p50": 329,
+  "p90": 2296,
+  "p99": 5381,
+  "max": 15670,
+  "over_2000": 34,
+  "over_5000": 4,
+  "over_8000": 3
+ },
+ "largest_chunks": [
+  {
+   "file": "services/backend/pkg/api/router.go",
+   "breadcrumb": "NewRouterWithValidatorAndAdmin",
+   "type": "function",
+   "chars": 15670,
+   "lines": 339
+  },
+  {
+   "file": "services/backend/pkg/api/handlers/repositories.go",
+   "breadcrumb": "RepositoriesHandler.Connect",
+   "type": "function",
+   "chars": 14110,
+   "lines": 344
+  },
+  {
+   "file": "services/backend/pkg/api/handlers/github_install.go",
+   "breadcrumb": "GitHubInstallHandler.Callback",
+   "type": "function",
+   "chars": 8081,
+   "lines": 189
+  },
+  {
+   "file": "services/backend/pkg/github/client.go",
+   "breadcrumb": "Client.RepositoryToken",
+   "type": "function",
+   "chars": 5381,
+   "lines": 126
+  },
+  {
+   "file": "services/backend/pkg/api/handlers/github_webhook_events.go",
+   "breadcrumb": "GitHubWebhookHandler.recordAddedRepositories",
+   "type": "function",
+   "chars": 4732,
+   "lines": 133
+  }
+ ],
+ "tokens": {
+  "embedded_total_if_every_chunk": 89625,
+  "billed_distinct_content": 89490,
+  "cost_full_ingest_usd": {
+   "text-embedding-ada-002": 0.0089,
+   "text-embedding-3-small": 0.0018
+  },
+  "p50": 131,
+  "p90": 641,
+  "max": 4061,
+  "chunks_over_8000_tokens_truncated": 0,
+  "tokens_cut_by_truncation": 0,
+  "truncated": []
+ },
+ "identical_content": {
+  "distinct_hashes": 330,
+  "chunks_sharing_a_hash": 2,
+  "extra_copies": 1
+ },
+ "duplication": {
+  "class_chunks": 62,
+  "class_chunks_ge80pct_covered": 0,
+  "class_chars": 20044,
+  "class_chars_covered_by_methods": 0,
+  "nested_function_chunks": 0,
+  "nested_function_chars": 0,
+  "go_struct_chunks_in_groups": 0,
+  "go_group_extra_chars": 0
+ },
+ "coverage_nonblank_lines_in_code_chunks": 0.672,
+ "fallback_files_fixed_size_only": 2,
+ "fixed_size_chunks": 3,
+ "fallback_reasons": {
+  "go": {
+   "raised": 0,
+   "no_chunk": 2,
+   "unsupported": 0
+  }
+ },
+ "named_chunks_by_extension": {
+  ".go": {
+   "function": 224,
+   "class": 62
+  }
+ },
+ "files_with_declarations_but_no_named_chunk": {
+  "count": 0,
+  "by_language": {},
+  "files": []
+ },
+ "parse_errors_as_chunked": {
+  "go": {
+   "files": 40,
+   "files_with_errors": 0,
+   "error_nodes": 0,
+   "missing_nodes": 0
+  }
+ },
+ "go_type_declarations": {
+  "local:struct_type": 1,
+  "package:function_type": 1,
+  "package:interface_type": 7,
+  "package:struct_type": 61,
+  "package:type_identifier": 3
+ },
+ "go_package_types_total": 72,
+ "go_package_types_without_chunk": 11,
+ "go_local_types_total": 1,
+ "go_local_structs_chunked_twice": 1,
+ "declarations": {
+  "go_callables": 224,
+  "go_callables_with_doc_comment_above_span": 186,
+  "go_package_const_specs": 72,
+  "go_package_var_specs": 14
+ },
+ "chunk_set_digest": "26f5a84e52ad93ac92f31f5fd731f7302107fcc349285f37ff9e86d3efcd8ce3",
+ "chunk_rows": 331,
+ "corpus_tree_digest": "b285e72acf710d4691215d57c210d1111cad3da6f00dd9845db0aa86ff48f63e",
+ "chunker_version": "a1a44e8d682e21bb",
+ "versions": {
+  "tree_sitter_go": "0.25.0",
+  "tree_sitter_javascript": "0.25.0",
+  "tree_sitter_python": "0.25.0",
+  "tree_sitter_typescript": "0.23.2",
+  "tiktoken": "0.12.0",
+  "tree-sitter": "0.25.2"
+ }
+}

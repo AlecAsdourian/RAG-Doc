@@ -52,6 +52,7 @@ from workers.ingest import (
     deps_from_env,
     make_full_ingest_handler,
 )
+from workers.ingest.handler import MAX_PARSE_ERROR_SHARE
 from workers.jobs.handlers import REGISTRY, run_full_ingest
 from workers.jobs.runtime import (
     InstallationSuspended,
@@ -210,11 +211,15 @@ def test_the_stages_run_in_order_and_every_report_carries_the_cumulative_progres
     assert final["chunks"] > 0
     assert final["chunks_embedded"] == final["chunks"]
     assert final["chunks_stored"] == final["chunks"]
+    assert final["chunks_truncated"] == 0, "no fixture chunk is over the token limit"
     # Which report first carries which keys: the stage's own work lands in
     # the NEXT report, because a stage is reported on entry.
     assert payloads[0] == {}
     assert set(payloads[1]) == {"files_indexable", "skipped"}
-    assert set(payloads[2]) == {"files_indexable", "skipped", "files_parsed", "parse_errors", "chunks"}
+    # 22.2-02 added `chunks_truncated`, reported with the parse's counts.
+    assert set(payloads[2]) == {
+        "files_indexable", "skipped", "files_parsed", "parse_errors", "chunks", "chunks_truncated",
+    }
     assert job_dirs(outcome) == []
 
 
@@ -334,6 +339,183 @@ def test_a_chunker_that_fails_on_every_file_fails_the_job_instead_of_emptying_th
     assert stages(outcome) == ["fetch", "parse"]
     assert len(outcome.github.revocations()) == 1
     assert job_dirs(outcome) == []
+
+
+# ---------------------------------------------------------------------
+# Truncation, counted and reported (22.2-02, QA6)
+# ---------------------------------------------------------------------
+
+#: Customer code that must never reach a log line.
+CONTENT_SENTINEL = "Hug3ContentS3ntinel"
+
+#: One function whose embedding text is far over the generator's 8,000-token
+#: limit (about 12,000 tokens), in a file of its own.
+OVERSIZED = (
+    b"def huge():\n    return [\n"
+    + b"".join(b'        "item%d %s",\n' % (i, CONTENT_SENTINEL.encode()) for i in range(1500))
+    + b"    ]\n"
+)
+
+
+def test_a_shutdown_during_the_truncation_count_stops_before_counting_on(tmp_path):
+    """PR #66's re-check: `_count_truncated` checkpoints every slice. The
+    shutdown arrives after the LAST file is parsed, so `_parse`'s per-file
+    checkpoint never sees it; the count's must stop the job before it
+    tokenizes a single row. Without that checkpoint the count runs over every
+    row and only `_enter("embed")` stops the job -- the same ending, which is
+    why the test counts the rows the rule was asked about."""
+    ctx = FakeContext()
+    real = SemanticChunker()
+    last = sorted(p for p in FIXTURE_FILES if p.endswith(".py"))[-1]
+
+    class ShutdownAfterLastFile:
+        def chunk_file(self, path, content, language):
+            produced = real.chunk_file(path, content, language)
+            if path == last:
+                ctx.stopping = True
+            return produced
+
+    class CountingEmbedder(FakeEmbedder):
+        def __init__(self):
+            super().__init__()
+            self.asked = 0
+
+        def tokens_over_limit(self, chunk):
+            self.asked += 1
+            return super().tokens_over_limit(chunk)
+
+    embedder = CountingEmbedder()
+    outcome = _run(tmp_path, ctx=ctx, chunker=ShutdownAfterLastFile(), embedder=embedder, embed_slice=1)
+
+    assert isinstance(outcome.error, Unfinished), repr(outcome.error)
+    assert embedder.asked == 0, f"the count tokenized {embedder.asked} rows after the shutdown"
+    assert stages(outcome) == ["fetch", "parse"], "no `embed` report"
+    assert outcome.result is None and embedder.calls == [], "nothing embedded, nothing to write"
+    assert job_dirs(outcome) == []
+
+
+def test_an_oversized_chunk_is_counted_and_named_in_a_warning_without_its_content(tmp_path, caplog):
+    """The count is the generator's own rule (`FakeEmbedder.tokens_over_limit`
+    is the real `EmbeddingGenerator`'s), so it cannot disagree with the
+    truncation. It counts ROWS, and is in every later report."""
+    caplog.set_level(logging.DEBUG)
+    files = dict(FIXTURE_FILES, **{"app/huge.py": OVERSIZED})
+    outcome = _run(tmp_path, files=files)
+    assert outcome.error is None, repr(outcome.error)
+
+    embed_report = dict(outcome.ctx.reports)["embed"]
+    final = outcome.ctx.reports[-1][1]
+    assert embed_report["chunks_truncated"] == 1
+    assert final["chunks_truncated"] == 1, "the store report, which the completed row keeps"
+    assert final["skipped"] == {"secret": 1}, "the cumulative dict still holds `skipped`"
+
+    warnings = [
+        r.getMessage() for r in caplog.records
+        if r.name == "workers.ingest.handler" and r.levelno == logging.WARNING
+        and "chunks_truncated" in r.getMessage()
+    ]
+    assert len(warnings) == 1, warnings
+    assert "app/huge.py" in warnings[0] and "(huge)" in warnings[0]
+    assert all(CONTENT_SENTINEL not in r.getMessage() for r in caplog.records), (
+        "a chunk's content reached a log record"
+    )
+
+
+# ---------------------------------------------------------------------
+# The tightened guard (22.2-02): the two edges PR #58's let through
+# ---------------------------------------------------------------------
+
+#: Four indexable files (and the `.env`), so "more than half" and "exactly
+#: half" can both be built.
+FOUR_FILES = dict(FIXTURE_FILES, **{"app/extra.py": b"def extra():\n    return 4\n"})
+
+
+class SelectiveChunker:
+    """Raises on the paths in `raising`, returns NO chunks for those in
+    `empty`, and chunks everything else with the real chunker."""
+
+    def __init__(self, raising=(), empty=()) -> None:
+        self.raising, self.empty = set(raising), set(empty)
+        self.real = SemanticChunker()
+        self.calls: List[str] = []
+
+    def chunk_file(self, path, content, language):
+        self.calls.append(path)
+        if path in self.raising:
+            raise RuntimeError(f"the grammar broke on {path}")
+        if path in self.empty:
+            return []
+        return self.real.chunk_file(path, content, language)
+
+
+def test_some_files_raising_and_the_rest_parsing_to_no_chunks_fails_the_job(tmp_path):
+    """Clause 2: `parsed > 0`, so PR #58's guard let it through, and the store
+    would have replaced the index with nothing."""
+    files = {"app/greeting.py": FIXTURE_FILES["app/greeting.py"], "app/billing.py": FIXTURE_FILES["app/billing.py"]}
+    chunker = SelectiveChunker(raising={"app/billing.py"}, empty={"app/greeting.py"})
+    outcome = _run(tmp_path, files=files, chunker=chunker)
+
+    assert isinstance(outcome.error, ParseFailed), repr(outcome.error)
+    assert str(outcome.error) == (
+        "1 of the 2 indexable files failed to parse (raised in the chunker) and the other 1 "
+        "produced no chunks; refusing to replace the repository's index with nothing"
+    )
+    assert outcome.result is None, "no write_results: the repository's chunks are left untouched"
+    assert outcome.embedder.calls == []
+    assert stages(outcome) == ["fetch", "parse"]
+    assert job_dirs(outcome) == []
+
+
+def test_three_of_four_files_raising_fails_the_job_though_one_parsed(tmp_path):
+    """Clause 3: one trivial file parsing while the real ones raise would
+    shrink the index to that file's chunks."""
+    assert 3 > 4 * MAX_PARSE_ERROR_SHARE, "premise: 3 of 4 is over the threshold"
+    chunker = SelectiveChunker(raising={"app/greeting.py", "app/billing.py", "app/storage.py"})
+    outcome = _run(tmp_path, files=FOUR_FILES, chunker=chunker)
+
+    assert isinstance(outcome.error, ParseFailed), repr(outcome.error)
+    assert str(outcome.error) == (
+        f"3 of the 4 indexable files failed to parse (raised in the chunker), more than the "
+        f"{MAX_PARSE_ERROR_SHARE:.0%} the handler accepts (MAX_PARSE_ERROR_SHARE); refusing to "
+        "replace the repository's index with what the other 1 produced"
+    )
+    assert sorted(chunker.calls) == sorted(p for p in FOUR_FILES if p.endswith(".py"))
+    assert outcome.result is None
+    assert outcome.embedder.calls == []
+    assert stages(outcome) == ["fetch", "parse"]
+
+
+def test_exactly_half_the_files_raising_completes_with_the_errors_counted(tmp_path):
+    """Up to half may raise: one bad file must not dead-letter a repository."""
+    assert not 2 > 4 * MAX_PARSE_ERROR_SHARE, "premise: 2 of 4 is within the threshold"
+    chunker = SelectiveChunker(raising={"app/greeting.py", "app/billing.py"})
+    outcome = _run(tmp_path, files=FOUR_FILES, chunker=chunker)
+
+    assert outcome.error is None, repr(outcome.error)
+    final = outcome.ctx.reports[-1][1]
+    assert final["files_indexable"] == 4
+    assert final["files_parsed"] == 2
+    assert final["parse_errors"] == 2
+    assert final["chunks_stored"] > 0
+
+
+def test_files_that_yield_no_chunks_with_nothing_raised_complete(tmp_path):
+    """Clause 2 needs a raise (PR #66's review, B I2). Indexable files that
+    legitimately produce no chunks -- a tree of empty `__init__.py` files --
+    with nothing raised are the truth about the repository, not a failure;
+    without `errors` in clause 2 every such repository would be failed, and
+    dead-lettered after five attempts."""
+    files = {"pkg/__init__.py": b"", "pkg/sub/__init__.py": b""}
+    chunker = SelectiveChunker(empty=set(files))
+    outcome = _run(tmp_path, files=files, chunker=chunker)
+
+    assert outcome.error is None, repr(outcome.error)
+    final = outcome.ctx.reports[-1][1]
+    assert final["files_indexable"] == 2
+    assert final["files_parsed"] == 2
+    assert final["parse_errors"] == 0
+    assert final["chunks_stored"] == 0
+    assert sorted(chunker.calls) == sorted(files)
 
 
 def test_a_tree_with_nothing_indexable_is_not_a_parse_failure(tmp_path):

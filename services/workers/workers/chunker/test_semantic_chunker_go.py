@@ -218,3 +218,60 @@ def test_grouped_type_without_a_comment_falls_back_to_the_group_comment():
 
 def test_grouped_type_with_no_comment_anywhere_has_no_docstring():
     assert _class_docs()["E"] is None
+
+
+def test_each_struct_in_a_group_is_chunked_as_its_own_spec():
+    """QA6: a grouped `type ( ... )` used to give every struct in it a chunk of
+    the WHOLE group. Each now holds only its own spec; its doc comment is its
+    docstring, not chunk text; its breadcrumb is unchanged."""
+    source = '''package p
+
+type (
+	// Account is a customer's account.
+	Account struct {
+		ID int
+	}
+
+	// Ledger records an account's entries.
+	Ledger struct {
+		Entries []int
+	}
+)
+
+type Single struct {
+	X int
+}
+'''
+    chunks = {
+        c.metadata["class_name"]: c
+        for c in SemanticChunker().chunk_file("p/types.go", source, "go")
+        if c.chunk_type == "class"
+    }
+    assert chunks["Account"].content == "\tAccount struct {\n\t\tID int\n\t}"
+    assert (chunks["Account"].start_line, chunks["Account"].end_line) == (5, 7)
+    assert chunks["Account"].metadata["docstring"] == "Account is a customer's account."
+    assert chunks["Ledger"].content == "\tLedger struct {\n\t\tEntries []int\n\t}"
+    assert chunks["Ledger"].metadata["docstring"] == "Ledger records an account's entries."
+    assert "Ledger" not in chunks["Account"].content and "Account" not in chunks["Ledger"].content
+    assert chunks["Account"].metadata["breadcrumb"] == "Account"
+    assert chunks["Ledger"].metadata["breadcrumb"] == "Ledger"
+    # A single `type X struct` is unchanged: the declaration, `type` included.
+    assert chunks["Single"].content == "type Single struct {\n\tX int\n}"
+
+
+def test_a_parenthesised_group_of_one_is_chunked_as_its_spec():
+    """PR #66's review, A M-1: with the whole `type ( ... )` as the span, the
+    doc comment inside the parentheses was in the chunk text AND the
+    docstring, embedded twice. The spec alone leaves it in the docstring."""
+    source = '''package p
+
+type (
+	// Only is documented.
+	Only struct{ Z int }
+)
+'''
+    [chunk] = [c for c in SemanticChunker().chunk_file("p/only.go", source, "go") if c.chunk_type == "class"]
+    assert chunk.content == "\tOnly struct{ Z int }"
+    assert chunk.metadata["docstring"] == "Only is documented."
+    assert "documented" not in chunk.content
+    assert chunk.metadata["breadcrumb"] == "Only"

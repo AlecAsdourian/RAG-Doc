@@ -354,7 +354,7 @@ HEARTBEAT_STATEMENT_TIMEOUT_ENV = "WORKER_HEARTBEAT_STATEMENT_TIMEOUT_MS"
 #: OpenAI key, not Postgres, is the limit: N = max(1, min(floor(0.7 x 1.05),
 #: floor(0.25 x 100 / 2))) = 1, confirmed by a run with no 429. More workers
 #: need a higher-tier key first. Memory is a host constraint, not part of
-#: N: about 9.7 GB per worker at U6's chunk cap (ISS-041). It is not read by
+#: N: about 9.7 GB per worker at U6's chunk cap (ISS-042). It is not read by
 #: this module -- a process runs one job at a time and scales by running more
 #: of itself -- but it is the number `docker-compose.yml`'s `workers` service
 #: declares (`deploy.replicas`, override `WORKER_REPLICAS`), and it lives

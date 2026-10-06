@@ -7,6 +7,43 @@ from tree_sitter import Node, Tree
 
 logger = logging.getLogger(__name__)
 
+#: The ECMAScript (TypeScript, TSX, JavaScript) nodes that name a scope. QD5:
+#: an abstract class is a class, a generator is a function, and a module-level
+#: `const`/`let` bound to a function is named by its variable -- so its
+#: methods and nested functions read `Owner.name`, as Python's and Go's do.
+#: The variable_declarator counts only when it is such a binding
+#: (`_is_const_bound_function`).
+_ECMASCRIPT_SCOPES = [
+    "class_declaration",
+    "abstract_class_declaration",
+    "function_declaration",
+    "generator_function_declaration",
+    "method_definition",
+    "variable_declarator",
+]
+_FUNCTION_VALUES = ("arrow_function", "function_expression")
+
+
+def method_decorators(method: Node) -> List[Node]:
+    """A TypeScript class method's decorators: its preceding `decorator`
+    siblings in the `class_body`.
+
+    The walk passes over `comment` siblings: NestJS and Angular code puts a
+    JSDoc or a `//` line between a decorator and its method, and stopping at
+    the comment dropped the decorator from every chunk, which QD6 forbids
+    (PR #66's review, A I-1). It stops at anything else -- the previous member
+    -- so a decorator found always belongs to this method. The one rule, used
+    by the chunk span (`SemanticChunker._span_start_line`) and the JSDoc
+    lookup (`MetadataBuilder._js_outermost`).
+    """
+    found: List[Node] = []
+    prev = method.prev_named_sibling
+    while prev is not None and prev.type in ("decorator", "comment"):
+        if prev.type == "decorator":
+            found.append(prev)
+        prev = prev.prev_named_sibling
+    return found
+
 
 class MetadataBuilder:
     """Extracts metadata from AST nodes for context-enriched chunking."""
@@ -179,14 +216,24 @@ class MetadataBuilder:
         named_types = {
             "python": ["class_definition", "function_definition"],
             "go": ["function_declaration", "method_declaration", "type_declaration", "type_spec"],
-            "typescript": ["class_declaration", "function_declaration", "method_definition"],
-            "javascript": ["class_declaration", "function_declaration", "method_definition"],
+            "typescript": _ECMASCRIPT_SCOPES,
+            "javascript": _ECMASCRIPT_SCOPES,
         }
 
         lang_types = named_types.get(self.language, [])
 
         if node.type not in lang_types:
             return None
+
+        # ECMAScript: every scope node names itself in its `name` field (a
+        # method's may be a private `#name` or a computed key, which the child
+        # scan below would miss). A declarator or a method names a scope only
+        # when it is a node the chunker chunks (`_ecmascript_scope`).
+        if self.language in ("typescript", "javascript"):
+            if not self._ecmascript_scope(node):
+                return None
+            name_node = node.child_by_field_name("name")
+            return self._get_node_text(name_node, content) if name_node else None
 
         # A Go method's name is a `field_identifier`, which the child scan below
         # does not look for -- so use the grammar's `name` field directly.
@@ -210,12 +257,45 @@ class MetadataBuilder:
         scope_types = {
             "python": ["class_definition", "function_definition"],
             "go": ["function_declaration", "method_declaration", "type_declaration"],
-            "typescript": ["class_declaration", "function_declaration", "method_definition"],
-            "javascript": ["class_declaration", "function_declaration", "method_definition"],
+            "typescript": _ECMASCRIPT_SCOPES,
+            "javascript": _ECMASCRIPT_SCOPES,
         }
 
         lang_types = scope_types.get(self.language, [])
+        if node.type in lang_types and self.language in ("typescript", "javascript"):
+            return self._ecmascript_scope(node)
         return node.type in lang_types
+
+    @classmethod
+    def _ecmascript_scope(cls, node: Node) -> bool:
+        """Whether an ECMAScript scope-typed node owns the names inside it: only
+        when it is itself a chunk (QD5). A declarator must be a module-level
+        function binding; a method must sit in a `class_body`, so an object
+        literal's method -- not a chunk -- names nothing (PR #66's review, A M-2:
+        `const api = { get() { function h() {} } }` read `get.h`)."""
+        if node.type == "variable_declarator":
+            return cls._is_const_bound_function(node)
+        if node.type == "method_definition":
+            return node.parent is not None and node.parent.type == "class_body"
+        return True
+
+    @staticmethod
+    def _is_const_bound_function(declarator: Node) -> bool:
+        """A module-level `const`/`let` declarator bound to an arrow function or
+        a function expression: the binding the chunker chunks (QD5), and so the
+        one that names a scope."""
+        if declarator.type != "variable_declarator":
+            return False
+        value = declarator.child_by_field_name("value")
+        declaration = declarator.parent
+        return (
+            value is not None
+            and value.type in _FUNCTION_VALUES
+            and declaration is not None
+            and declaration.type == "lexical_declaration"
+            and declaration.parent is not None
+            and declaration.parent.type in ("program", "export_statement")
+        )
 
     def _go_receiver_type(self, node: Node, content: bytes) -> Optional[str]:
         """Return the base type a Go method is declared on.
@@ -312,13 +392,41 @@ class MetadataBuilder:
             return [ln.strip().lstrip("*").strip() for ln in inner.splitlines()]
         return [raw]
 
-    def _extract_js_docstring(self, node: Node, content: bytes) -> Optional[str]:
-        """Extract JSDoc comment before TypeScript/JavaScript function."""
-        # JSDoc comments are previous siblings with type "comment"
-        if not node.prev_sibling:
-            return None
+    @staticmethod
+    def _js_outermost(node: Node) -> Node:
+        """The node a JSDoc sits above: the declaration's `export_statement` when
+        exported, a method's first decorator when decorated, else the node
+        itself (an unexported class's decorators are its own children, so it
+        already starts at the first). 22.2-01's census definition, which QA4
+        compares with (`chunk_census._parity_ts`)."""
+        if node.parent is not None and node.parent.type == "export_statement":
+            return node.parent
+        outer = node
+        if node.type == "method_definition":
+            decorators = method_decorators(node)
+            if decorators:
+                # The first decorator. A JSDoc between it and the method is
+                # then INSIDE the chunk's span, in its text already, and is
+                # not also the docstring: QA5's "embedded once".
+                outer = min(decorators, key=lambda d: d.start_byte)
+        return outer
 
-        prev = node.prev_sibling
+    def _extract_js_docstring(self, node: Node, content: bytes) -> Optional[str]:
+        """Extract the JSDoc directly above a TypeScript/JavaScript declaration.
+
+        "Directly above" is the census's definition: a `/** ... */` comment that
+        is the previous named sibling of the declaration's outermost node
+        (`_js_outermost`) and ends on the line before it. A `//` comment, or a
+        JSDoc separated by a blank line, is not documentation.
+
+        It used to read `node.prev_sibling` alone, which for `export function f`
+        is the `export` keyword, and the chunker never asked for it: no
+        TypeScript chunk carried a docstring.
+        """
+        outer = self._js_outermost(node)
+        prev = outer.prev_named_sibling
+        if prev is None or prev.end_point[0] != outer.start_point[0] - 1:
+            return None
 
         # JSDoc comments look like /** ... */
         if prev.type == "comment":

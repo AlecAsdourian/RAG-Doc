@@ -6,7 +6,7 @@ from typing import List, Optional, Tuple
 from tree_sitter import Node, Tree
 from workers.parser import TreeSitterParser
 from .models import Chunk
-from .metadata_builder import MetadataBuilder
+from .metadata_builder import MetadataBuilder, method_decorators
 from .fixed_size_chunker import FixedSizeChunker
 from .summary_generator import FileSummaryGenerator, ClassSummaryGenerator
 
@@ -40,15 +40,16 @@ class SemanticChunker:
         chunks = []
 
         try:
-            # Parse the file
-            tree = self.parser.parse_file(content, language)
+            # Parse the file. The path chooses TypeScript's grammar (`.tsx` is
+            # TSX), and the extractors choose their queries the same way.
+            tree = self.parser.parse_file(content, language, path=file_path)
             content_bytes = bytes(content, "utf8")
 
             # Create metadata builder
             metadata_builder = MetadataBuilder(language)
 
             # Extract functions with their nodes
-            functions = self.parser.extract_functions(tree, content, language)
+            functions = self.parser.extract_functions(tree, content, language, path=file_path)
             function_nodes = self._find_function_nodes(tree, functions, language)
 
             for func_info, node in zip(functions, function_nodes):
@@ -59,7 +60,7 @@ class SemanticChunker:
                     chunks.append(chunk)
 
             # Extract classes with their nodes
-            classes = self.parser.extract_classes(tree, content, language)
+            classes = self.parser.extract_classes(tree, content, language, path=file_path)
             class_nodes = self._find_class_nodes(tree, classes, language)
 
             for cls_info, node in zip(classes, class_nodes):
@@ -151,9 +152,12 @@ class SemanticChunker:
         Returns:
             Chunk object for the function
         """
-        # Extract the function content by line numbers
+        # Extract the function content by line numbers, from its first
+        # decorator (QD6, `_span_start_line`); the NODE is still the
+        # definition's, so every name below is built as before.
         lines = content.splitlines()
-        start_idx = func_info["start_line"] - 1  # Convert to 0-indexed
+        start_line = self._span_start_line(node, language)
+        start_idx = start_line - 1  # Convert to 0-indexed
         end_idx = func_info["end_line"]  # end_line is inclusive, so this works
         chunk_content = "\n".join(lines[start_idx:end_idx])
 
@@ -184,11 +188,18 @@ class SemanticChunker:
             doc = metadata_builder.extract_docstring(node, content_bytes)
             if doc:
                 metadata["docstring"] = doc
+        elif language in ("typescript", "javascript"):
+            # JSDoc, the same gap as Go's: the `/** ... */` above the
+            # declaration is outside the chunk's lines, so it reaches the
+            # embedding text only as the docstring -- once (QD6, QA5).
+            doc = metadata_builder.extract_docstring(node, content_bytes)
+            if doc:
+                metadata["docstring"] = doc
 
         return Chunk(
             content=chunk_content,
             file_path=file_path,
-            start_line=func_info["start_line"],
+            start_line=start_line,
             end_line=func_info["end_line"],
             language=language,
             chunk_type="function",
@@ -220,17 +231,27 @@ class SemanticChunker:
         Returns:
             Chunk object for the class
         """
-        # Extract the class content by line numbers
+        # Extract the class content by line numbers, from its first decorator
+        # (QD6, `_span_start_line`).
         lines = content.splitlines()
-        start_idx = class_info["start_line"] - 1  # Convert to 0-indexed
+        start_line = self._span_start_line(node, language)
+        start_idx = start_line - 1  # Convert to 0-indexed
         end_idx = class_info["end_line"]  # end_line is inclusive
         chunk_content = "\n".join(lines[start_idx:end_idx])
 
+        # A struct in a grouped Go `type ( ... )` is chunked as its own
+        # `type_spec` (the parser gives its span), but its names are still
+        # built from the declaration, exactly as when the chunk was the whole
+        # group: only the span and the text move.
+        named = node
+        if language == "go" and node.type == "type_spec" and node.parent is not None:
+            named = node.parent
+
         # Build enhanced metadata using MetadataBuilder
         class_name = class_info["name"]
-        ancestor_chain = metadata_builder.build_ancestor_chain(node, content_bytes)
+        ancestor_chain = metadata_builder.build_ancestor_chain(named, content_bytes)
         breadcrumb = metadata_builder.generate_breadcrumb(ancestor_chain, class_name)
-        parent_scope = metadata_builder.extract_parent_scope(node, content_bytes)
+        parent_scope = metadata_builder.extract_parent_scope(named, content_bytes)
 
         metadata = {
             "class_name": class_name,
@@ -249,19 +270,62 @@ class SemanticChunker:
             # Same gap as functions: a type's doc comment sits above `type`. The
             # node is the whole declaration, and a grouped `type ( ... )` holds
             # several types, so the comment is looked up by this type's name.
-            doc = metadata_builder.extract_go_type_docstring(node, class_name, content_bytes)
+            doc = metadata_builder.extract_go_type_docstring(named, class_name, content_bytes)
+            if doc:
+                metadata["docstring"] = doc
+        elif language in ("typescript", "javascript"):
+            # JSDoc above the class, as for functions.
+            doc = metadata_builder.extract_docstring(node, content_bytes)
             if doc:
                 metadata["docstring"] = doc
 
         return Chunk(
             content=chunk_content,
             file_path=file_path,
-            start_line=class_info["start_line"],
+            start_line=start_line,
             end_line=class_info["end_line"],
             language=language,
             chunk_type="class",
             metadata=metadata,
         )
+
+    @staticmethod
+    def _span_start_line(node: Node, language: str) -> int:
+        """The line a definition's chunk starts on: its first decorator's (QD6).
+
+        QD6, LOCKED (22.2-CONTEXT.md): a chunk starts at its definition's first
+        decorator, so `@router.get("/x")` travels with the handler it routes to
+        instead of sitting in no chunk, or only inside an enclosing class chunk.
+        Only the start moves. The chunk's NODE is still the definition, found by
+        its own start (`_find_node_by_position`), so its breadcrumb, ancestor
+        chain and parent scope are unchanged.
+
+        Where the grammars put a decorator (`22.2-02-records/ts-decorator-placement.txt`):
+        - Python: the definition's parent `decorated_definition` starts at the
+          first decorator.
+        - TypeScript: before `export`, a child of the `export_statement`; after
+          `export` or on an unexported class, a child of the class itself; on a
+          method, a preceding sibling in the `class_body`, possibly with a
+          comment between it and the method (`method_decorators` walks past it).
+
+        A doc comment above the first decorator stays outside the span: it
+        reaches the embedding text through `metadata["docstring"]` only.
+        """
+        first = node
+        if language == "python":
+            if node.parent is not None and node.parent.type == "decorated_definition":
+                first = node.parent
+        elif language in ("typescript", "javascript"):
+            decorators = [c for c in node.named_children if c.type == "decorator"]
+            if node.parent is not None and node.parent.type == "export_statement":
+                decorators += [c for c in node.parent.named_children if c.type == "decorator"]
+            if node.type == "method_definition":
+                decorators += method_decorators(node)
+            if decorators:
+                earliest = min(decorators, key=lambda d: d.start_byte)
+                if earliest.start_byte < first.start_byte:
+                    first = earliest
+        return first.start_point[0] + 1
 
     def _find_function_nodes(
         self, tree: Tree, functions: List[dict], language: str

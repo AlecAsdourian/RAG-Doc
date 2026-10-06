@@ -1,0 +1,60 @@
+22.2-01 Task 2, the live proof: run 2026-10-06, 20:42-20:45 UTC.
+
+The tree: a clean export (`git archive`, no .git) of feat/22.2-01-instruments at
+ed5aca454715445d8ac7f61f02371d64e72dccb9, the commit that holds Task 2's code. Every
+command below ran that export's scripts, with a fresh venv built from its
+services/workers/requirements.txt.
+
+The database: a scratch container, removed afterwards (its anonymous data volume too).
+    docker run -d --name rag2201-scratch-pg --env-file <scratch>/pg.env -p 127.0.0.1:55871:5432 \
+        pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+Never compose's Postgres, never port 5434, no compose service started. The password lived
+only in <scratch>/pg.env and the DSN files; no record carries it (scanned: 0 hits over every
+file in 22.2-01-records/, gzipped ones decompressed).
+
+DATABASE_URL was set from a file by a wrapper and never printed: the superuser DSN for
+scratch_db.py and --ingest, and the same DSN with `?options=-c%20role%3Drag_doc_app` for
+--measure and --exact. OPENAI_API_KEY was set the same way (present, 164 characters).
+--ingest ran under a wrapper that writes the embedding client's INFO lines (its token usage
+per batch) to ingest-usage.txt.
+
+1. Migrate, and create rag_doc_app                       -> scratch-db.txt
+       scratch_db.py
+2. Ingest `self` from the export, with --clear           -> ingest-self.txt, ingest-usage.txt
+       rag_quality_harness.py --corpus self --self-root <export> \
+           --self-commit ed5aca454715445d8ac7f61f02371d64e72dccb9 --corpora-dir <scratch corpora> \
+           --clear --ingest
+   The offline digest it printed, before anything was written:
+       chunker version a1a44e8d682e21bb, chunk set
+       fa17b901a7a28880f65caf55e293b34031f1915d330192b01ce757f4c3b5cd49 (637 rows)
+   OpenAI: 7 batches, 637 embeddings, 222,638 tokens (the client's own usage lines),
+   $0.0223 at ada-002's $0.10 per million.
+3. Measure, as rag_doc_app                                -> measure-run1-self.txt, run1-self.jsonl.gz
+       rag_quality_harness.py --corpus self --self-root <export> --self-commit ed5aca4... \
+           --corpora-dir <scratch corpora> --measure --set all \
+           --query-vectors <tmp>/vecs.json --record run1-self.jsonl --vector-tolerance 2e-6
+   <tmp>/vecs.json is 22-03's vecs.json.gz, gunzipped: 130 cached vectors, 40 of them `self`'s.
+   - "40 cached, 0 embedded now": no question was embedded.
+   - The header's chunk_set_digest is fa17b901...b5cd49 over 637 rows: EQUAL to step 2's
+     offline digest.
+   - chunk_models is {"text-embedding-ada-002": 637}: one model.
+   - Both legs' connections: rag_doc_app, rolsuper false, rolbypassrls false.
+4. Exact search, then measure again                      -> exact-self.txt, exact-self.json.gz,
+                                                            measure-run2-self.txt, run2-self.jsonl.gz
+       rag_quality_harness.py ... --set all --query-vectors <tmp>/vecs.json \
+           --exact exact-self.json --vector-tolerance 2e-6
+       rag_quality_harness.py ... --measure --set all --query-vectors <tmp>/vecs.json \
+           --record run2-self.jsonl --vector-tolerance 2e-6
+   Neither embedded anything (their usage logs were empty; "40 cached, 0 embedded now").
+   run2's header digest is the same fa17b901...b5cd49.
+5. Judge                                                  -> compare_runs-no-qdrant.txt
+       compare_runs.py --records <dir> --corpora self --no-qdrant --vector-tolerance 2e-6 \
+           --baseline-prefix run1 --candidate-prefix run2
+   exit 0: 0 differing questions, 40/40 fully agreeing boosted rankings, max |delta
+   similarity| 0.00e+00 over 2,000 chunk scores. VERDICT: PASS (0 UNEXPLAINED).
+6. docker rm -f rag2201-scratch-pg, then `docker volume rm` of its anonymous volume
+   (the one created 2026-10-06T20:42:52Z); `docker ps -a` lists no rag2201 container.
+
+Known in the header: harness_commit is null, because the export has no .git for
+`git rev-parse` to read. corpus_commit (ed5aca4...) names the same tree, since the harness
+and `self` were both read from that one export.

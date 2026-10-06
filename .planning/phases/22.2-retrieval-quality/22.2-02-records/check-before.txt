@@ -1,0 +1,13 @@
+harness: w2202-base/services/workers/scripts/rag_quality_harness.py (the tree at <scratch>/w2202-base)
+self root: <scratch>/w2202-base (commit 5bb86930d4f2bcae575888153fabc7e2f010e4f3); corpora: <scratch>/w2202-corpora
+environment: DATABASE_URL and OPENAI_API_KEY unset
+== --corpus self --check
+[*] check self: 81 files; questions: 25 tuning, 15 holdout, 0 confirm; 0 naming a symbol; 0 failures, 0 warnings
+exit 0
+== --corpus miniflux --check
+[*] check miniflux: 335 files; questions: 15 tuning, 15 holdout, 15 confirm; 45 naming a symbol; 0 failures, 0 warnings
+exit 0
+== --corpus mealie --check
+  WARN ml-22: the question names 'User', which flatters keyword search
+[*] check mealie: 390 files; questions: 15 tuning, 15 holdout, 15 confirm; 45 naming a symbol; 0 failures, 1 warnings
+exit 0

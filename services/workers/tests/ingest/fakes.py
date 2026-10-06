@@ -108,13 +108,31 @@ def text_vector(text: str) -> List[float]:
 
 
 class FakeEmbedder:
-    """The generator's interface, embedding with `text_vector`. Records calls."""
+    """The generator's interface, embedding with `text_vector`. Records calls.
+
+    `tokens_over_limit` is NOT faked: it is the real generator's rule (and
+    tokenizer), so a test of the handler's `chunks_truncated` reads the one
+    copy of the truncation test there is (22.2-02, QA6). A real generator is
+    built for it with a placeholder key; it never calls the API.
+    """
 
     model = TEST_MODEL
 
-    def __init__(self, before_call: Optional[Callable[[int], None]] = None) -> None:
+    def __init__(
+        self,
+        before_call: Optional[Callable[[int], None]] = None,
+        max_tokens_per_chunk: int = 8000,
+    ) -> None:
+        from workers.embeddings.embedding_generator import EmbeddingGenerator
+
         self.calls: List[List[str]] = []
         self._before_call = before_call
+        self._rule = EmbeddingGenerator(
+            api_key="fake-key-never-sent", max_tokens_per_chunk=max_tokens_per_chunk
+        )
+
+    def tokens_over_limit(self, chunk):
+        return self._rule.tokens_over_limit(chunk)
 
     def generate_embeddings_for_chunks(self, chunks, use_cache: bool = True):
         if self._before_call is not None:

@@ -1,0 +1,51 @@
+PASS  before self: header digest fa17b901a7a28880 = offline fa17b901a7a28880 = census-before fa17b901a7a28880 (637 rows)
+PASS  before self: chunker version a1a44e8d682e21bb verified = census-before's a1a44e8d682e21bb
+PASS  before self: corpus tree 57a4b2c39bc17752 = census-before's
+PASS  before self: both legs measured as rag_doc_app, NOSUPERUSER NOBYPASSRLS
+PASS  before self: breadcrumb column mismatches 0, models {'text-embedding-ada-002': 637}
+INFO  before self: commit 5bb86930d4f2, harness_commit 5bb86930d4f2, retrieval_code_version 3d935b960fe3ed7c, stored_vectors_digest 2ad46d7f10056866edafed27edd7d8e6, vector_tolerance 1e-05
+PASS  before miniflux: header digest 6e27949a7d08d384 = offline 6e27949a7d08d384 = census-before 6e27949a7d08d384 (2134 rows)
+PASS  before miniflux: chunker version a1a44e8d682e21bb verified = census-before's a1a44e8d682e21bb
+PASS  before miniflux: corpus tree 15fb188a4bc51bf1 = census-before's
+PASS  before miniflux: both legs measured as rag_doc_app, NOSUPERUSER NOBYPASSRLS
+PASS  before miniflux: breadcrumb column mismatches 0, models {'text-embedding-ada-002': 2134}
+INFO  before miniflux: commit 76889f08b12c, harness_commit 5bb86930d4f2, retrieval_code_version 3d935b960fe3ed7c, stored_vectors_digest 29dc7cef60ee9c40914d67c89c6ffd6c, vector_tolerance 1e-05
+PASS  before mealie: header digest 0afe2fc92966b0c2 = offline 0afe2fc92966b0c2 = census-before 0afe2fc92966b0c2 (2816 rows)
+PASS  before mealie: chunker version a1a44e8d682e21bb verified = census-before's a1a44e8d682e21bb
+PASS  before mealie: corpus tree 486436999c8bf4c7 = census-before's
+PASS  before mealie: both legs measured as rag_doc_app, NOSUPERUSER NOBYPASSRLS
+PASS  before mealie: breadcrumb column mismatches 0, models {'text-embedding-ada-002': 2816}
+INFO  before mealie: commit 84b2677f7606, harness_commit 5bb86930d4f2, retrieval_code_version 3d935b960fe3ed7c, stored_vectors_digest 96fda3134c9505f4747bd864739e68a0, vector_tolerance 1e-05
+PASS  after self: header digest 55ee4e90821eb876 = offline 55ee4e90821eb876 = census-after 55ee4e90821eb876 (637 rows)
+PASS  after self: chunker version b339770e95eaf507 verified = census-after's b339770e95eaf507
+PASS  after self: corpus tree 57a4b2c39bc17752 = census-after's
+PASS  after self: both legs measured as rag_doc_app, NOSUPERUSER NOBYPASSRLS
+PASS  after self: breadcrumb column mismatches 0, models {'text-embedding-ada-002': 637}
+INFO  after self: commit 5bb86930d4f2, harness_commit bf46a8b8e1fc, retrieval_code_version 89cc377f99e29e39, stored_vectors_digest 4521e71732c463a6ca0541947b798ab8, vector_tolerance 1e-05
+PASS  after miniflux: header digest 6e27949a7d08d384 = offline 6e27949a7d08d384 = census-after 6e27949a7d08d384 (2134 rows)
+PASS  after miniflux: chunker version b339770e95eaf507 verified = census-after's b339770e95eaf507
+PASS  after miniflux: corpus tree 15fb188a4bc51bf1 = census-after's
+PASS  after miniflux: both legs measured as rag_doc_app, NOSUPERUSER NOBYPASSRLS
+PASS  after miniflux: breadcrumb column mismatches 0, models {'text-embedding-ada-002': 2134}
+INFO  after miniflux: commit 76889f08b12c, harness_commit bf46a8b8e1fc, retrieval_code_version 89cc377f99e29e39, stored_vectors_digest 2b8a5c5eda8cfb96eeb3d4f99afa25c9, vector_tolerance 1e-05
+PASS  after mealie: header digest 71723463aed4c9ed = offline 71723463aed4c9ed = census-after 71723463aed4c9ed (2816 rows)
+PASS  after mealie: chunker version b339770e95eaf507 verified = census-after's b339770e95eaf507
+PASS  after mealie: corpus tree 486436999c8bf4c7 = census-after's
+PASS  after mealie: both legs measured as rag_doc_app, NOSUPERUSER NOBYPASSRLS
+PASS  after mealie: breadcrumb column mismatches 0, models {'text-embedding-ada-002': 2816}
+INFO  after mealie: commit 84b2677f7606, harness_commit bf46a8b8e1fc, retrieval_code_version 89cc377f99e29e39, stored_vectors_digest f926d2df113ea4a3d02a981665ce1626, vector_tolerance 1e-05
+PASS  miniflux, the control: before and after chunk sets equal (6e27949a7d08d384)
+INFO  miniflux stored vectors: before 29dc7cef60ee9c40914d67c89c6ffd6c, after 2b8a5c5eda8cfb96eeb3d4f99afa25c9 (DIFFERENT: two ingests of the same texts)
+PASS  self: before and after chunk sets differ, as the census says (decorators moved)
+PASS  mealie: before and after chunk sets differ, as the census says (decorators moved)
+
+SPEND (the embedding client's usage lines; ada-002 at $0.10 per million tokens)
+  before self    : 7 calls, 637 embeddings, 222638 tokens, $0.0223
+  before miniflux: 22 calls, 2134 embeddings, 318922 tokens, $0.0319
+  before mealie  : 29 calls, 2816 embeddings, 429769 tokens, $0.0430
+  after  self    : 7 calls, 637 embeddings, 222764 tokens, $0.0223
+  after  miniflux: 22 calls, 2134 embeddings, 318922 tokens, $0.0319
+  after  mealie  : 29 calls, 2816 embeddings, 437143 tokens, $0.0437
+  total: 1950158 tokens, $0.1950 (plan estimate about $0.19, cap $0.30)
+PASS  the spend $0.1950 is within the $0.30 cap
+0 failed

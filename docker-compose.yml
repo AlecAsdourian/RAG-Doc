@@ -131,7 +131,7 @@ services:
     # one would only trade time for 429s. Raise it with a higher-tier key, and
     # re-measure. `workers.jobs.runtime.DEFAULT_POOL_SIZE` is the authority.
     # Each process needs about 0.95 GB of free disk for its job directory and
-    # up to about 9.7 GB of memory at U6's chunk cap (ISS-041; measured).
+    # up to about 9.7 GB of memory at U6's chunk cap (ISS-042; measured).
     deploy:
       replicas: ${WORKER_REPLICAS:-1}
 

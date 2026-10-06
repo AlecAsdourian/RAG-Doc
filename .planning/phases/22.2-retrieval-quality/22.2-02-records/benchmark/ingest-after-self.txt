@@ -1,0 +1,41 @@
+$ rag_quality_harness.py --corpus self --corpora-dir <scratch>/w2202-corpora --self-root <scratch>/w2202-base --self-commit 5bb86930d4f2bcae575888153fabc7e2f010e4f3 --clear --ingest
+[*] cleared self: runs=0 chunks=0
+[*] corpus self: 81 files, 782 KiB, commit 5bb86930d4f2bcae575888153fabc7e2f010e4f3
+[*] offline: chunker version b339770e95eaf507, chunk set 55ee4e90821eb876fe2ccd512abee67a574871229b51eda9696fa57d706444bf (637 rows), corpus tree 57a4b2c39bc17752cdacf3f2c1f053394013887deaeace37925aec3e2584168c
+[*] fixtures ready
+
+status            : success
+files processed   : 81
+chunks created    : 637
+embeddings        : 636
+duration          : 9.6s
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/backend/pkg/jobs/doc.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/backend/pkg/testing/isolation/doc.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/chunker/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/db/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/embeddings/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/fetch/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/generation/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/ingest/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/jobs/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/parser/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/pipeline/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/retrieval/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/storage/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/backend/pkg/jobs/doc.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/backend/pkg/testing/isolation/doc.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/chunker/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/db/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/embeddings/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/fetch/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/generation/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/ingest/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/jobs/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/parser/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/pipeline/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/retrieval/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/storage/__init__.py (python), falling back to fixed-size chunking
+exit 0
+

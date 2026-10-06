@@ -1,0 +1,28 @@
+census-after/ reproduced from the final code, 2026-10-06.
+
+census-after/ was written at a39ed17 (Task 2's commit). Task 3 then changed the census once more:
+`embed_text` became the generator's own `embedding_text` instead of a copy (9b5ecb6). The census
+was re-run from the branch at bf46a8b8e1fc4f9ce24b915732aab1edd51014aa, with the same command,
+into a fresh scratch directory:
+
+    chunk_census.py --corpora <scratch>/w2202-corpora --out <scratch>/w2202-census-final \
+        --self-root <scratch>/w2202-base --self-commit 5bb86930d4f2bcae575888153fabc7e2f010e4f3 \
+        --only self self-go self-py self-ts miniflux mealie linkwarden
+
+and every output compared byte for byte (`cmp`) with the files census-after/ was copied from:
+
+    same census-linkwarden.json   same chunks-linkwarden.jsonl
+    same census-mealie.json       same chunks-mealie.jsonl
+    same census-miniflux.json     same chunks-miniflux.jsonl
+    same census-self.json         same chunks-self.jsonl
+    same census-self-go.json      same chunks-self-go.jsonl
+    same census-self-py.json      same chunks-self-py.jsonl
+    same census-self-ts.json      same chunks-self-ts.jsonl
+
+14 of 14 identical. So census-after/ is the final code's census, and the token counts did not move
+when the copy was replaced.
+
+census-after-ts/ is Task 1's commit's census (ce3aa31) and is not re-run: Task 2 changed the chunker
+after it, by design. census-before-rerun/ is the base chunker (5bb8693) measured by the census of
+a39ed17, whose only change to the numbers is two new decorator fields (census-before-rerun-checks.txt:
+every census-before/ field equal).
