@@ -432,16 +432,16 @@ def test_some_files_raising_and_the_rest_parsing_to_no_chunks_fails_the_job(tmp_
 def test_three_of_four_files_raising_fails_the_job_though_one_parsed(tmp_path):
     """Clause 3: one trivial file parsing while the real ones raise would
     shrink the index to that file's chunks."""
+    assert 3 > 4 * MAX_PARSE_ERROR_SHARE, "premise: 3 of 4 is over the threshold"
     chunker = SelectiveChunker(raising={"app/greeting.py", "app/billing.py", "app/storage.py"})
     outcome = _run(tmp_path, files=FOUR_FILES, chunker=chunker)
 
     assert isinstance(outcome.error, ParseFailed), repr(outcome.error)
     assert str(outcome.error) == (
-        "3 of the 4 indexable files failed to parse (raised in the chunker), more than the 50% "
-        "the handler accepts (MAX_PARSE_ERROR_SHARE); refusing to replace the repository's index "
-        "with what the other 1 produced"
+        f"3 of the 4 indexable files failed to parse (raised in the chunker), more than the "
+        f"{MAX_PARSE_ERROR_SHARE:.0%} the handler accepts (MAX_PARSE_ERROR_SHARE); refusing to "
+        "replace the repository's index with what the other 1 produced"
     )
-    assert MAX_PARSE_ERROR_SHARE == 0.5
     assert sorted(chunker.calls) == sorted(p for p in FOUR_FILES if p.endswith(".py"))
     assert outcome.result is None
     assert outcome.embedder.calls == []
@@ -450,6 +450,7 @@ def test_three_of_four_files_raising_fails_the_job_though_one_parsed(tmp_path):
 
 def test_exactly_half_the_files_raising_completes_with_the_errors_counted(tmp_path):
     """Up to half may raise: one bad file must not dead-letter a repository."""
+    assert not 2 > 4 * MAX_PARSE_ERROR_SHARE, "premise: 2 of 4 is within the threshold"
     chunker = SelectiveChunker(raising={"app/greeting.py", "app/billing.py"})
     outcome = _run(tmp_path, files=FOUR_FILES, chunker=chunker)
 
@@ -459,6 +460,25 @@ def test_exactly_half_the_files_raising_completes_with_the_errors_counted(tmp_pa
     assert final["files_parsed"] == 2
     assert final["parse_errors"] == 2
     assert final["chunks_stored"] > 0
+
+
+def test_files_that_yield_no_chunks_with_nothing_raised_complete(tmp_path):
+    """Clause 2 needs a raise (PR #66's review, B I2). Indexable files that
+    legitimately produce no chunks -- a tree of empty `__init__.py` files --
+    with nothing raised are the truth about the repository, not a failure;
+    without `errors` in clause 2 every such repository would be failed, and
+    dead-lettered after five attempts."""
+    files = {"pkg/__init__.py": b"", "pkg/sub/__init__.py": b""}
+    chunker = SelectiveChunker(empty=set(files))
+    outcome = _run(tmp_path, files=files, chunker=chunker)
+
+    assert outcome.error is None, repr(outcome.error)
+    final = outcome.ctx.reports[-1][1]
+    assert final["files_indexable"] == 2
+    assert final["files_parsed"] == 2
+    assert final["parse_errors"] == 0
+    assert final["chunks_stored"] == 0
+    assert sorted(chunker.calls) == sorted(files)
 
 
 def test_a_tree_with_nothing_indexable_is_not_a_parse_failure(tmp_path):

@@ -31,12 +31,12 @@ restated here. What this handler owns is choosing the exception:
   - `is_shutting_down()` at a checkpoint -> **`Unfinished`**.
   - a U6 cap -> **`Rejected`**: its own 100,000-chunk cap here, the
     fetcher's caps as `FetchRejected`.
-  - the chunker raising on **every** indexable file, or on some while the
-    rest produce no chunks, or on **more than half** of them
-    (`MAX_PARSE_ERROR_SHARE`) -> **`ParseFailed`**, an ordinary failure: the
-    job is retried and never replaces a good index with nothing or with a
-    sliver (PR #58's review, B-M3; tightened by 22.2-02). Up to half raising
-    is counted (`parse_errors`) and the job goes on.
+  - the chunker raising on too much of the repository -> **`ParseFailed`**,
+    an ordinary failure: the job is retried and never replaces a good index
+    with nothing or with a sliver (PR #58's review, B-M3; tightened by
+    22.2-02). The guard's clauses are listed once, in that document's
+    parse-failure paragraph ("A parse that failed too much of the repository
+    never stores"); `_parse` implements them.
   - `InstallationSuspended` / `InstallationUninstalled` from the token route
     -> propagated unchanged.
   - `InternalApiMisrouted` (an UNMARKED answer: `INTERNAL_API_URL` reaches
@@ -115,7 +115,9 @@ EMBED_SLICE = 1_000
 #: them -- one bad file must not dead-letter a repository (22-05). Above it the
 #: chunker is broken, not the repository, and yesterday's index is kept.
 #: ⚠ AN OPERATIONAL DEFAULT, not a measured one (22.2-02): the user may change
-#: it, and a later plan may tune it on evidence.
+#: it, and a later plan may tune it on evidence. The tests derive their
+#: expected message from it; their fixtures (3 of 4 raising fails, 2 of 4
+#: completes) assert, as a premise, that it lies in [0.5, 0.75).
 MAX_PARSE_ERROR_SHARE = 0.5
 
 #: The stage vocabulary, in order. `docs/api-ingestion-jobs.md` is its
@@ -148,9 +150,10 @@ class ParseFailed(Exception):
     """The chunker raised on too much of the repository to store what is left.
     An ORDINARY failure: retried.
 
-    Raised by `_parse` when there were indexable files and, checked in this
-    order: (1) EVERY file raised; (2) some raised and the rest produced no
-    chunks; (3) more than `MAX_PARSE_ERROR_SHARE` (half) of them raised.
+    Raised by `_parse`'s guard. Its clauses, and their order, are listed once,
+    in `docs/api-ingestion-jobs.md` ("A parse that failed too much of the
+    repository never stores"), the authority; the code beside each clause in
+    `_parse` names which one it is.
 
     ⚠ WHY IT EXISTS (PR #58's review, B-M3 and A-L5). One file raising is
     counted and skipped (`parse_errors`), which is right for one bad file.
@@ -163,10 +166,8 @@ class ParseFailed(Exception):
     exactly the kind a chunker change can introduce, and exactly the kind
     that would wipe every repository it touched.
 
-    22.2-02 closed the two edges PR #58's guard let through: some files
-    raising while the rest parse to nothing (clause 2), and a few trivial
-    files parsing while the real ones raise, which would shrink the index to
-    a sliver (clause 3).
+    22.2-02 closed the two edges PR #58's guard let through (clauses 2 and
+    3 of the authority).
 
     Not `Rejected`: nothing about the repository is over a cap, and a fixed
     chunker will parse it. The job fails with this message in `last_error`,
@@ -304,11 +305,8 @@ def _parse(ctx: JobContext, deps: IngestDeps, files: List[FetchedFile]) -> tuple
 
     ⚠ BUT NOT WHEN TOO MANY RAISE: that is `ParseFailed`, because the store
     that follows would replace the repository's index with nothing, or with
-    a sliver. Its three clauses, in order: every file raised; some raised
-    and the rest produced no chunks; more than `MAX_PARSE_ERROR_SHARE` of
-    the files raised. A tree with no indexable files at all, or whose files
-    parse into no chunks with NOTHING raised, is not that case -- an empty
-    index is then the truth about the repository (clause 2 needs a raise).
+    a sliver. The clauses are listed in `docs/api-ingestion-jobs.md` (the
+    authority; see `ParseFailed`), and checked below in that order.
 
     The checkpoint runs before EVERY file, not only between stages, so a
     shutdown or a lost lease lands within one file's parse.
@@ -379,7 +377,13 @@ def _count_truncated(ctx: JobContext, deps: IngestDeps, chunks: List[Chunk]) -> 
     count -- never its content, which is customer code.
     """
     truncated = 0
-    for chunk in chunks:
+    for number, chunk in enumerate(chunks):
+        # Tokenizing every row takes a while at U6's 100,000-chunk cap, so a
+        # shutdown or a lost lease is checked every slice, as `_embed` does,
+        # while the count still reaches the `embed` report the progress
+        # contract names (PR #66's review, A N-5).
+        if number % max(1, deps.embed_slice) == 0:
+            _checkpoint(ctx)
         tokens = deps.embedder.tokens_over_limit(chunk)
         if tokens is None:
             continue
