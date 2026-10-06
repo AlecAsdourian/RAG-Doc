@@ -129,3 +129,21 @@
    restored: sha256 bb7345b2541b306f == pristine True; hash-object == HEAD blob True
    VERDICT T3-M3: KILLED (expected to fail: test_a_chunker_that_fails_on_every_file_fails_the_job_instead_of_emptying_the_index)
 
+== T3-M4: services/workers/workers/ingest/handler.py
+   HEAD 9b5ecb68abcd, blob 92db9c2c65e7; pristine sha256 ac73e6a122834a67; hash-object == HEAD blob: True
+   mutation: '        progress["chunks_truncated"] = _count_truncated(ctx, deps, chunks)' -> '        progress["chunks_truncated"] = 0 and _count_truncated(ctx, deps, chunks)'
+   landed: True (mutated sha256 abaae6ee51baeab6; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/ingest: exit 1; 1 failed, 39 passed in 8.03s
+      FAILED tests/ingest/test_handler.py::test_an_oversized_chunk_is_counted_and_named_in_a_warning_without_its_content
+   restored: sha256 ac73e6a122834a67 == pristine True; hash-object == HEAD blob True
+   VERDICT T3-M4: KILLED (expected to fail: test_an_oversized_chunk_is_counted_and_named_in_a_warning_without_its_content)
+
+== T3-M5: services/workers/workers/embeddings/embedding_generator.py
+   HEAD 9b5ecb68abcd, blob 41943924c645; pristine sha256 c6105d95bdbe28e0; hash-object == HEAD blob: True
+   mutation: '            logger.warning(' -> '            (lambda *a: None)('
+   landed: True (mutated sha256 ab0e32a722cbbfbd; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest workers/embeddings: exit 1; 1 failed, 12 passed in 1.87s
+      FAILED workers/embeddings/test_embeddings.py::TestTruncationIsVisible::test_an_over_limit_chunk_is_truncated_and_logged_without_its_content
+   restored: sha256 c6105d95bdbe28e0 == pristine True; hash-object == HEAD blob True
+   VERDICT T3-M5: KILLED (expected to fail: test_an_over_limit_chunk_is_truncated_and_logged_without_its_content)
+
