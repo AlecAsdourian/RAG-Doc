@@ -268,6 +268,7 @@ removes none:
 | `files_parsed` | `embed` | files chunked |
 | `parse_errors` | `embed` | files whose chunking raised; skipped and counted rather than failing the job — unless every file raised, or the rest produced no chunks, or more than half raised, each of which is `ParseFailed` and never reaches `embed` |
 | `chunks` | `embed` | chunks produced |
+| `chunks_truncated` | `embed` | chunks whose embedding text (breadcrumb, docstring and content) is over the embedder's token limit, so they are embedded truncated. Counts rows, like `chunks`; each is named, by path and breadcrumb, in a worker WARNING. Usually 0 |
 | `chunks_embedded` | `store` | chunks with their vector (duplicates share one) |
 | `chunks_stored` | `store` | chunks the store stage writes; true of a `completed` row |
 
@@ -392,7 +393,7 @@ every other tenant-scoped route.
   "last_stage": "embed",             // fetch|parse|embed|store (see "Stages and progress")
   "progress": {                      // CUMULATIVE: every count so far, or null
     "files_indexable": 3, "skipped": { "secret": 1 },
-    "files_parsed": 3, "parse_errors": 0, "chunks": 9
+    "files_parsed": 3, "parse_errors": 0, "chunks": 9, "chunks_truncated": 0
   },
   "needs_rerun": false,
   "last_error": "FetchFailed: resolving acme/widgets@main: api.github.com answered 502",  // redacted; null if none

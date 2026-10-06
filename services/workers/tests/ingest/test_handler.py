@@ -211,11 +211,15 @@ def test_the_stages_run_in_order_and_every_report_carries_the_cumulative_progres
     assert final["chunks"] > 0
     assert final["chunks_embedded"] == final["chunks"]
     assert final["chunks_stored"] == final["chunks"]
+    assert final["chunks_truncated"] == 0, "no fixture chunk is over the token limit"
     # Which report first carries which keys: the stage's own work lands in
     # the NEXT report, because a stage is reported on entry.
     assert payloads[0] == {}
     assert set(payloads[1]) == {"files_indexable", "skipped"}
-    assert set(payloads[2]) == {"files_indexable", "skipped", "files_parsed", "parse_errors", "chunks"}
+    # 22.2-02 added `chunks_truncated`, reported with the parse's counts.
+    assert set(payloads[2]) == {
+        "files_indexable", "skipped", "files_parsed", "parse_errors", "chunks", "chunks_truncated",
+    }
     assert job_dirs(outcome) == []
 
 
@@ -335,6 +339,49 @@ def test_a_chunker_that_fails_on_every_file_fails_the_job_instead_of_emptying_th
     assert stages(outcome) == ["fetch", "parse"]
     assert len(outcome.github.revocations()) == 1
     assert job_dirs(outcome) == []
+
+
+# ---------------------------------------------------------------------
+# Truncation, counted and reported (22.2-02, QA6)
+# ---------------------------------------------------------------------
+
+#: Customer code that must never reach a log line.
+CONTENT_SENTINEL = "Hug3ContentS3ntinel"
+
+#: One function whose embedding text is far over the generator's 8,000-token
+#: limit (about 12,000 tokens), in a file of its own.
+OVERSIZED = (
+    b"def huge():\n    return [\n"
+    + b"".join(b'        "item%d %s",\n' % (i, CONTENT_SENTINEL.encode()) for i in range(1500))
+    + b"    ]\n"
+)
+
+
+def test_an_oversized_chunk_is_counted_and_named_in_a_warning_without_its_content(tmp_path, caplog):
+    """The count is the generator's own rule (`FakeEmbedder.tokens_over_limit`
+    is the real `EmbeddingGenerator`'s), so it cannot disagree with the
+    truncation. It counts ROWS, and is in every later report."""
+    caplog.set_level(logging.DEBUG)
+    files = dict(FIXTURE_FILES, **{"app/huge.py": OVERSIZED})
+    outcome = _run(tmp_path, files=files)
+    assert outcome.error is None, repr(outcome.error)
+
+    embed_report = dict(outcome.ctx.reports)["embed"]
+    final = outcome.ctx.reports[-1][1]
+    assert embed_report["chunks_truncated"] == 1
+    assert final["chunks_truncated"] == 1, "the store report, which the completed row keeps"
+    assert final["skipped"] == {"secret": 1}, "the cumulative dict still holds `skipped`"
+
+    warnings = [
+        r.getMessage() for r in caplog.records
+        if r.name == "workers.ingest.handler" and r.levelno == logging.WARNING
+        and "chunks_truncated" in r.getMessage()
+    ]
+    assert len(warnings) == 1, warnings
+    assert "app/huge.py" in warnings[0] and "(huge)" in warnings[0]
+    assert all(CONTENT_SENTINEL not in r.getMessage() for r in caplog.records), (
+        "a chunk's content reached a log record"
+    )
 
 
 # ---------------------------------------------------------------------

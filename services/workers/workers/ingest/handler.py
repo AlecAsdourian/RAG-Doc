@@ -182,7 +182,8 @@ class IngestDeps:
     `internal_transport` and `github_transport` are `httpx` transports for
     the token route and for GitHub; production leaves both None. The
     chunker needs `chunk_file(path, content, language)`; the embedder needs
-    `.model` and `generate_embeddings_for_chunks(chunks, use_cache=False)`.
+    `.model`, `generate_embeddings_for_chunks(chunks, use_cache=False)` and
+    `tokens_over_limit(chunk)` (the truncation rule, 22.2-02).
     """
 
     internal_api_url: str
@@ -364,6 +365,36 @@ def _parse(ctx: JobContext, deps: IngestDeps, files: List[FetchedFile]) -> tuple
     return chunks, parsed, errors
 
 
+def _count_truncated(ctx: JobContext, deps: IngestDeps, chunks: List[Chunk]) -> int:
+    """The chunk ROWS whose own embedding text is over the embedder's limit.
+
+    ⚠ ROWS, NOT DISTINCT TEXTS. `_embed` sends one representative per
+    distinct content, but each row's embedding text is its own breadcrumb,
+    docstring and content, and `chunks`, `chunks_embedded` and
+    `chunks_stored` all count rows; so does this. The rule is the
+    generator's own (`EmbeddingGenerator.tokens_over_limit`), never a copy:
+    the count and the truncation cannot disagree (22.2-02, QA6).
+
+    One WARNING per such row, naming its path and breadcrumb and the token
+    count -- never its content, which is customer code.
+    """
+    truncated = 0
+    for chunk in chunks:
+        tokens = deps.embedder.tokens_over_limit(chunk)
+        if tokens is None:
+            continue
+        truncated += 1
+        logger.warning(
+            "job %s: chunk %s (%s) has an embedding text of %d tokens, over the embedder's "
+            "limit; it is embedded truncated (counted in chunks_truncated)",
+            ctx.job.id,
+            chunk.file_path,
+            chunk.metadata.get("breadcrumb") or chunk.chunk_type,
+            tokens,
+        )
+    return truncated
+
+
 def _embed(ctx: JobContext, deps: IngestDeps, chunks: List[Chunk]) -> Dict[str, Any]:
     """One vector per DISTINCT chunk text, keyed by `content_hash`.
 
@@ -514,6 +545,7 @@ def make_full_ingest_handler(deps: IngestDeps) -> Handler:
         progress["files_parsed"] = parsed
         progress["parse_errors"] = errors
         progress["chunks"] = len(chunks)
+        progress["chunks_truncated"] = _count_truncated(ctx, deps, chunks)
 
         # 3. embed --------------------------------------------------------
         _enter(ctx, "embed", progress)

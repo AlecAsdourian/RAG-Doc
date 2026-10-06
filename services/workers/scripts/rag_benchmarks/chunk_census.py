@@ -22,11 +22,12 @@ WHAT IS NOT A COPY ANY MORE.
 - **The digest and the chunker version** are `chunk_digest.py`'s, which the
   harness imports too.
 
-WHAT IS STILL A COPY. `embed_text` is the generator's
-`_prepare_text_for_embedding` before truncation: the generator has no function
-that returns the text before it truncates. A test pins the copy to the
-generator (`tests/test_chunk_census.py`), and 22.2-02 replaces it when it makes
-one function of that rule.
+WHAT IS STILL A COPY. Since 22.2-02, `embed_text` is the generator's own
+`embedding_text`, not a copy. The 8,000-token limit the census counts
+truncation against is still restated here (`MAX_TOKENS_PER_CHUNK`, the
+generator's default): the census measures offline with tiktoken and builds no
+generator. The product's count (`chunks_truncated`) and its truncation share
+one rule, `EmbeddingGenerator.tokens_over_limit`.
 
 THE PINS. The census measures with exactly the parsers and tokenizer
 `requirements.txt` pins, and refuses to run (exit 2) on any other installed
@@ -253,20 +254,14 @@ def pct(values, q):
 
 
 def embed_text(chunk):
-    """EmbeddingGenerator._prepare_text_for_embedding, before truncation.
+    """The generator's own `embedding_text`: what is embedded, before truncation.
 
-    A COPY, pinned to the generator by `test_embed_text_is_the_generators_rule`
-    until 22.2-02 makes one function of the rule.
+    No longer a copy (22.2-02 made one function of the rule); still pinned to
+    the generator by `test_embed_text_is_the_generators_rule`.
     """
-    parts = []
-    breadcrumb = chunk.metadata.get("breadcrumb", "")
-    if breadcrumb:
-        parts += [f"# {breadcrumb}", ""]
-    doc = chunk.metadata.get("docstring", "")
-    if doc:
-        parts += [f'"""{doc}"""', ""]
-    parts.append(chunk.content)
-    return "\n".join(parts)
+    from workers.embeddings.embedding_generator import embedding_text
+
+    return embedding_text(chunk)
 
 
 def line_set(start, end):

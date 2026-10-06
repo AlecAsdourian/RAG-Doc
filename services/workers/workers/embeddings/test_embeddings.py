@@ -1,11 +1,12 @@
 """Tests for embedding generation."""
 
+import logging
 from unittest.mock import Mock, patch
 import pytest
 
 from workers.chunker.models import Chunk
 from workers.embeddings.openai_client import OpenAIEmbeddingClient
-from workers.embeddings.embedding_generator import EmbeddingGenerator
+from workers.embeddings.embedding_generator import EmbeddingGenerator, embedding_text
 
 
 class TestOpenAIEmbeddingClient:
@@ -237,3 +238,63 @@ class TestEmbeddingGenerator:
 
         assert len(embeddings) == 0
         assert mock_client.generate_embeddings_batch.call_count == 0
+
+
+class TestTruncationIsVisible:
+    """QA6 (22.2-02): a chunk over the token limit is truncated by ONE rule
+    (`tokens_over_limit`), and each truncation is logged -- by path and
+    breadcrumb, never by content.
+
+    The tokenizer here is the real one (tiktoken); only the API is mocked.
+    """
+
+    SENTINEL = "TruncS3ntinelCustomerCode"
+
+    def _generator(self, mock_openai, limit):
+        mock_openai.return_value.embeddings.create.side_effect = lambda model, input: Mock(
+            data=[Mock(embedding=[0.1] * 1536) for _ in input], usage=Mock(total_tokens=0)
+        )
+        return EmbeddingGenerator(api_key="test-key", max_tokens_per_chunk=limit)
+
+    def _chunk(self, words):
+        return Chunk(
+            content=" ".join(f"{self.SENTINEL}{i}" for i in range(words)),
+            file_path="pkg/big.py",
+            start_line=1,
+            end_line=1,
+            language="python",
+            chunk_type="function",
+            metadata={"breadcrumb": "Big.method"},
+        )
+
+    @patch("workers.embeddings.openai_client.OpenAI")
+    def test_the_rule_names_an_over_limit_chunk_and_passes_one_that_fits(self, mock_openai):
+        generator = self._generator(mock_openai, limit=50)
+        big, small = self._chunk(200), self._chunk(2)
+        tokens = generator.tokens_over_limit(big)
+        assert tokens is not None and tokens > 50
+        assert tokens == generator.client.count_tokens(embedding_text(big))
+        assert generator.tokens_over_limit(small) is None
+
+    @patch("workers.embeddings.openai_client.OpenAI")
+    def test_an_over_limit_chunk_is_truncated_and_logged_without_its_content(self, mock_openai, caplog):
+        caplog.set_level(logging.DEBUG)
+        generator = self._generator(mock_openai, limit=50)
+        big = self._chunk(200)
+
+        generator.generate_embeddings_for_chunks([big, self._chunk(2)], use_cache=False)
+
+        [sent] = [call.kwargs["input"] for call in mock_openai.return_value.embeddings.create.call_args_list]
+        assert generator.client.count_tokens(sent[0]) <= 50, "the over-limit text was sent truncated"
+        assert sent[1] == embedding_text(self._chunk(2)), "a text that fits is sent whole"
+
+        warnings = [
+            r.getMessage() for r in caplog.records
+            if r.name == "workers.embeddings.embedding_generator" and r.levelno == logging.WARNING
+        ]
+        assert len(warnings) == 1, warnings
+        assert "pkg/big.py" in warnings[0] and "Big.method" in warnings[0]
+        assert f"{generator.tokens_over_limit(big)} tokens, cut to" in warnings[0]
+        assert all(self.SENTINEL not in r.getMessage() for r in caplog.records), (
+            "a chunk's content reached a log record"
+        )
