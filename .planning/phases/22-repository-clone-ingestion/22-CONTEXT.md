@@ -713,6 +713,27 @@ queue → worker → pgvector → search, under tenant isolation on both legs.
 | **22.1-04** | **D3 tier 1** (P9). **Creates `symbol_edges`** (D3's DDL; moved here from 22-02), testing D3's upgrade and no-downgrade SQL rule first. Call-site and import candidates from the parser. The resolver (imports plus scope matching) writes `symbol_edges` with `to_symbol_name` always set. The reconciliation rule. A `CYCLE`-safe traversal helper, tested on a cyclic fixture. Archived symbols excluded. D1's re-export criterion. | 20–30 h |
 | **22.1-05** | **D2's recall test and the operating numbers.**<br>A multi-tenant, multi-repository recall test, seeded with the benchmark corpora's **real** embeddings copied into synthetic tenants. It needs: at least one tenant large enough that the planner uses HNSW (asserted in the test); repositories filtered inside a partition; a partition shared by several tenants; an exact baseline in the same scope; and assertions on recall **and** on short results.<br>Per-stage ingest timings over the three corpora and one large public repository, both full and incremental. The pool size, `max_job_duration` and the OpenAI throughput ceiling are then set from those timings. | 8–12 h |
 
+**Revised 2026-10-06, when 22.1-03 and 22.1-05 were planned** (their plans,
+and `../22.1-symbols-incremental-progress-graph/22.1-ACCEPTANCE.md`, are the
+detail; this note records only what moved).
+- **Order.** 22.1-03 and 22.1-05 depend only on Phase 22 and can run now.
+  22.1-01 still follows 22.2-02 (QD11); 22.1-02 follows 22.1-01; 22.1-04
+  follows both.
+- **22.1-03: 10–14 h** (was 6–10). It chooses ISS-034's shape 1, a
+  `current_job` on the repository response. It adds a SQL-computed `status`
+  to the job object, so a UI can tell stalled, retrying, dead-pending and a
+  suspended installation apart from the job row, and an index migration for
+  "this repository's latest job".
+- **22.1-05: 16–23 h** (was 8–12). It now carries A-L3's fix (`write_results`
+  takes the job row's lock last), which 22-05's hand-off routed here; the
+  store, memory and disk at the chunk cap; and one large public repository, so
+  that a tenant is big enough for the planner to choose HNSW. It sets the
+  lease and compose's `stop_grace_period` as well as P16's three numbers, each
+  by a rule committed before measuring. Incremental timings wait for 22.1-02,
+  since `incremental` is the full ingest until then.
+- **Phase 22.1's estimate is now ~72–103 h** (was ~60–88), plus QU4's 3–5 h
+  for TypeScript symbols in 22.1-01, which the earlier total also excluded.
+
 ### The rejected alternative, kept for its reasoning: foundation first (U1 option B)
 
 Option B put 22-01, 22-02, 22-03 **and 22.1-01** in Phase 22, so every stored

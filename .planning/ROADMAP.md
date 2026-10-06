@@ -199,9 +199,9 @@ Plans:
 ### Phase 22.1: Symbols, Incremental Updates, Progress & the Code Graph
 
 **Goal:** Stable symbol identity, push-driven incremental ingestion, a progress contract a UI can poll, tier-1 graph edges, and D2's multi-tenant recall test. All of it is built on the pipeline Phase 22 proved end to end.
-**Depends on:** Phase 22. **22.1-01 depends on 22.2-02** (the chunker fixes), by the user's answer QU4 of 2026-09-29 (`22.2-CONTEXT.md` QD11). The rest of 22.1 follows 22.1-01.
+**Depends on:** Phase 22. **22.1-01 depends on 22.2-02** (the chunker fixes), by the user's answer QU4 of 2026-09-29 (`22.2-CONTEXT.md` QD11). 22.1-02 follows 22.1-01, and 22.1-04 follows both; **22.1-03 and 22.1-05 depend only on Phase 22** and can run now.
 **Research:** Complete — `22-RESEARCH.md`; decisions locked in `22-CONTEXT.md` (same document as Phase 22; the name keeps every existing "Phase 23" reference correct, U2)
-**Plans:** 5 (not yet written)
+**Plans:** 5. 22.1-03 and 22.1-05 written 2026-10-06 (`22.1-03-PLAN.md`, `22.1-05-PLAN.md`; criteria in `22.1-ACCEPTANCE.md`, with placeholders for the other three); the rest are written when their predecessors land.
 
 Plans:
 - [ ] 22.1-01: D1 symbol identity from the chunker, **after 22.2-02**:
@@ -322,7 +322,7 @@ Plans:
 | 20. Repository Integration Backend | v1.0 | 5/5 | Complete | 2026-09-09 |
 | 21. Ingestion Job Infrastructure | v1.0 | 7/7 | Complete | 2026-09-16 |
 | 22. pgvector Storage & the First Real Repository | v1.0 | 5/5 | Executed: 22-01 to 22-04 merged (PRs #48, #49, #53, #52); 22-05 in review (PR #58); A1–A11 met with evidence (`22-05-SUMMARY.md`) | - |
-| 22.1. Symbols, Incremental Updates, Progress & the Code Graph | v1.0 | 0/5 | Researched, decisions locked; plans not written | - |
+| 22.1. Symbols, Incremental Updates, Progress & the Code Graph | v1.0 | 0/5 | Researched, decisions locked; 22.1-03 and 22.1-05 planned | - |
 | 22.2. Retrieval Quality | v1.0 | 0/6 | Researched, decisions locked 2026-09-29; plans not written | - |
 | 23. Frontend Wiring & Onboarding UX | v1.0 | 0/5 | Not started | - |
 | 24. Production Deployment & Cost Controls | v1.0 | 0/5 | Not started | - |
