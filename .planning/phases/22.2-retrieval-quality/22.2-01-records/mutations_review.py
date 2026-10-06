@@ -92,7 +92,7 @@ def main() -> int:
                                "--expect-fail", *expect, "--out", str(HERE / "mutations.txt")]).returncode
         if code:
             survived.append(label)
-    print(f"\n{len(MUTATIONS)} mutations; survived: {survived or 'none'}")
+    print(f"\n{len(chosen)} mutations; survived: {survived or 'none'}")
     return 1 if survived else 0
 
 

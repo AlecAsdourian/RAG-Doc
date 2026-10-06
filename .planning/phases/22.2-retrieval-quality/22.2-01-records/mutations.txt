@@ -233,3 +233,21 @@
    restored: sha256 5b55b9df399b081a == pristine True; hash-object == HEAD blob True
    VERDICT N9 a dirty self tree reported clean: KILLED (expected to fail: test_a_dirty_tree_is_flagged_and_a_clean_one_is_not)
 
+== N6 tripwire: unforeseen input escapes as exit 1: services/workers/scripts/rag_benchmarks/tripwire.py
+   HEAD e430814fcfe2, blob 2cedbd3502f6; pristine sha256 90fbb36328216a42; hash-object == HEAD blob: True
+   mutation: 'except (KeyError, TypeError, ValueError, AttributeError) as exc:' -> 'except (ZeroDivisionError,) as exc:  # MUTATION'
+   landed: True (mutated sha256 dfab67e51b778e79; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_tripwire.py: exit 1; 1 failed, 30 passed in 1.73s
+      FAILED tests/test_tripwire.py::test_input_the_checks_did_not_foresee_exits_2_not_1
+   restored: sha256 90fbb36328216a42 == pristine True; hash-object == HEAD blob True
+   VERDICT N6 tripwire: unforeseen input escapes as exit 1: KILLED (expected to fail: test_input_the_checks_did_not_foresee_exits_2_not_1)
+
+== N7 the stored-vectors digest without the row ids: services/workers/scripts/rag_benchmarks/chunk_digest.py
+   HEAD e430814fcfe2, blob 31ae0b41c552; pristine sha256 ba1763e574cc9d06; hash-object == HEAD blob: True
+   mutation: "string_agg(id::text || ':' || md5(embedding::text), ',' ORDER BY id)" -> "string_agg(md5(embedding::text), ',' ORDER BY id)"
+   landed: True (mutated sha256 88a2303793a67c74; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/isolation/test_harness_header_reads.py: exit 1; 1 failed, 2 passed, 10 warnings in 19.34s
+      FAILED tests/isolation/test_harness_header_reads.py::test_the_stored_vectors_digest_names_one_ingest
+   restored: sha256 ba1763e574cc9d06 == pristine True; hash-object == HEAD blob True
+   VERDICT N7 the stored-vectors digest without the row ids: KILLED (expected to fail: test_the_stored_vectors_digest_names_one_ingest)
+
