@@ -1,0 +1,42 @@
+22.2-02 preconditions, recorded 2026-10-06 before any edit.
+
+1. PR #58's guard is on main.
+   - `git merge-base --is-ancestor 4000acc HEAD` succeeded:
+     4000acc9532c6c2925958a51ed1641baab139f81 "22-05: the worker switched on, ... (#58)".
+   - services/workers/workers/ingest/handler.py:314-319, verbatim at the base:
+         if files and parsed == 0:
+             raise ParseFailed(
+                 f"every one of the {len(files)} indexable files failed to parse "
+                 f"({errors} raised in the chunker); refusing to replace the repository's "
+                 "index with nothing"
+             )
+   - Its test passes at the base, in a fresh venv built from requirements.txt:
+         pytest -q "tests/ingest/test_handler.py::test_a_chunker_that_fails_on_every_file_fails_the_job_instead_of_emptying_the_index"
+         1 passed in 0.35s
+
+2. 22.2-01 is merged: 5bb86930d4f2bcae575888153fabc7e2f010e4f3 "22.2-01: the instruments, ... (#63)",
+   which is RAG-Doc/main's head. Its instruments (chunk_census.py, chunk_digest.py, tripwire.py,
+   the harness's --self-root/--self-commit/--harness-commit/--vector-tolerance) are at that commit.
+
+3. The base is 5bb86930d4f2bcae575888153fabc7e2f010e4f3 (main when this plan started).
+   It is held as a clean export, `git archive 5bb8693 | tar -x` into <scratch>/w2202-base,
+   rather than a second worktree: this worker's sandbox runs git only inside its own worktree.
+   An export has no .git, so every run from it passes `--self-commit 5bb8693...` (the census,
+   the harness) and `--harness-commit 5bb8693...` (the harness), as 22.2-01's live proof did.
+   Every "before", and `self` on both sides, reads from it.
+
+4. The corpora were fetched fresh at their pins into <scratch>/w2202-corpora, outside the repo:
+   miniflux 76889f08b12c2577b37e524e645afa5dd46ff050 and mealie
+   84b2677f76069a6fb2bac6e2c633c9dbe7379ce4 by `rag_quality_harness.py --fetch`; linkwarden
+   952ac4540657cae3a67c3ca59433899d2fda8374 (census-only, no spec on main) by the same shallow
+   fetch, with core.longpaths on (one migration path is over Windows' 260 characters).
+
+5. The census before reproduces 22.2-01's records for the unchanged corpora: the chunk-set
+   digests of miniflux (6e27949a...), mealie (0afe2fc9...), linkwarden (b77578ef...) and self-ts
+   (b2d467a5...) equal 22.2-01-records/census-reproduction/, and `self` (fa17b901..., 637 rows)
+   equals 22.2-01's live ingest digest. So the corpora and the base chunker are the ones 22.2-01
+   measured.
+
+6. The environment: Python 3.13.7, a fresh venv from services/workers/requirements.txt with
+   tree-sitter 0.25.2, tree-sitter-python/-go/-javascript 0.25.0, tree-sitter-typescript 0.23.2
+   and tiktoken 0.12.0 (the census's pins; it refuses others).
