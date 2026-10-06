@@ -359,8 +359,9 @@ class PublicGitHub(httpx.BaseTransport):
 class MeasuringChunker:
     """The real chunker, recording each file's bytes and chunk count."""
 
-    def __init__(self, real: Any) -> None:
+    def __init__(self, real: Any, tag_copies: bool = False) -> None:
         self.real = real
+        self.tag_copies = tag_copies
         self.files = 0
         self.bytes = 0
         self.chunks = 0
@@ -372,6 +373,15 @@ class MeasuringChunker:
         self.bytes += len(content.encode("utf-8"))
         self.chunks += len(produced)
         self.by_language[language] = self.by_language.get(language, 0) + len(produced)
+        if self.tag_copies:
+            # at_cap.py's synthetic archives only: copies of one repository
+            # under `copyNN/`. One comment line naming the copy, appended
+            # AFTER the real chunker ran, makes each copy's chunk texts
+            # distinct, as a real repository's are (see at_cap.py).
+            m = re.match(r"^(copy\d+)/", path)
+            if m:
+                for chunk in produced:
+                    chunk.content = f"{chunk.content}\n# {m.group(1)}"
         return produced
 
 
@@ -492,21 +502,37 @@ def real_embedder(recorder: OpenAIRecorder):
 
 
 class ReplayEmbedder:
-    """The at-cap runs: exported REAL vectors replayed, cycled. No OpenAI."""
+    """The at-cap runs: exported REAL vectors replayed, cycled. No OpenAI.
+
+    On every pass through the export after the first, each vector is
+    perturbed deterministically (seeded by its position; noise 0.01 per
+    dimension, then re-normalised), so no two rows share a vector: pgvector's
+    HNSW stores identical vectors as ONE element with several heap TIDs,
+    which would make the store cheaper than a real repository's.
+    """
 
     def __init__(self, vectors: Any, model: str = "replay-of-text-embedding-ada-002") -> None:
         self.vectors = vectors
         self.model = model
         self.next = 0
         self.distinct = 0
+        self.perturbed = 0
 
     def generate_embeddings_for_chunks(self, chunks, use_cache: bool = True):
+        import numpy as np
+
         from workers.storage.postgres_writer import content_hash
 
         out = {}
         n = len(self.vectors)
         for chunk in chunks:
-            out[content_hash(chunk.content)] = self.vectors[self.next % n].tolist()
+            base = np.asarray(self.vectors[self.next % n], dtype=np.float64)
+            if self.next >= n:
+                noise = np.random.default_rng(self.next).standard_normal(base.shape[0]) * 0.01
+                base = base + noise
+                base = base / np.linalg.norm(base)
+                self.perturbed += 1
+            out[content_hash(chunk.content)] = base.tolist()
             self.next += 1
         self.distinct += len(chunks)
         return out
@@ -791,6 +817,23 @@ _SECRET_SHAPES = {
 }
 
 
+def _write_results_order() -> List[str]:
+    """The statements `_write_results` makes, in order, read from its source.
+
+    So every record says which code it measured: the attach first (before
+    22.1-05's A-L3 fix) or last (after).
+    """
+    import inspect
+
+    from workers.ingest import handler as handler_module
+
+    source = inspect.getsource(handler_module._write_results)
+    names = ["check_fence", "resolve_ingestion_run", "attach_ingestion_run",
+             "delete_repository_chunks_on", "insert_chunks_on", "complete_ingestion_run_on"]
+    found = [(source.find(f"{n}(cur"), n) for n in names]
+    return [n for pos, n in sorted(found) if pos >= 0]
+
+
 def scrub_check(text: str) -> List[str]:
     return [name for name, shape in _SECRET_SHAPES.items() if shape.search(text)]
 
@@ -818,6 +861,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--deadline-seconds", type=float, default=4 * 3600)
     p.add_argument("--max-chunks", type=int, default=None)
     p.add_argument("--keep-log", action="store_true")
+    p.add_argument("--tag-copies", action="store_true",
+                   help="at_cap.py archives: make each copyNN/ chunk text distinct")
+    p.add_argument("--code-label", default="",
+                   help="which code ran (for example the commit of a git-archive snapshot)")
     args = p.parse_args(argv)
 
     if args.no_embed and os.environ.get(OPENAI_API_KEY_ENV):
@@ -888,7 +935,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     from workers.chunker import SemanticChunker
 
-    chunker = MeasuringChunker(SemanticChunker())
+    chunker = MeasuringChunker(SemanticChunker(), tag_copies=args.tag_copies)
     local_archive = pathlib.Path(args.local_archive).read_bytes() if args.local_archive else None
     github = PublicGitHub(args.full_name, args.branch, args.sha, local_archive)
     route = TokenRoute({s.job: args.full_name for s in seeded}, args.branch)
@@ -942,6 +989,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         "record": args.record_name,
         "written_at": datetime.now(timezone.utc).isoformat(),
         "mode": mode,
+        "code": args.code_label,
+        "write_results_order": _write_results_order(),
         "job_type": args.job_type,
         "job_type_note": ("incremental runs the full ingest until 22.1-02 (handlers.py registers one "
                           "handler for both)") if args.job_type == "incremental" else None,
@@ -972,6 +1021,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if isinstance(embedder, ReplayEmbedder):
         record["replay"] = {"distinct_chunks": embedder.distinct, "model": embedder.model,
                             "vectors_available": int(len(embedder.vectors)),
+                            "perturbed": embedder.perturbed,
                             "note": "vectors memory-mapped from the export; not counted as heap"}
     if recorder is not None:
         record["openai"] = recorder.summary()
