@@ -1,0 +1,7 @@
+PASS  self: 100 fields of census-before equal in the rerun; differing []
+PASS  self: fields only in the rerun {'python.decorators_in_their_own_chunk': 0, 'python.decorators_only_inside_an_enclosing_class_chunk': 7}
+PASS  self-py: 76 fields of census-before equal in the rerun; differing []
+PASS  self-py: fields only in the rerun {'python.decorators_in_their_own_chunk': 0, 'python.decorators_only_inside_an_enclosing_class_chunk': 7}
+PASS  mealie: 79 fields of census-before equal in the rerun; differing []
+PASS  mealie: fields only in the rerun {'python.decorators_in_their_own_chunk': 0, 'python.decorators_only_inside_an_enclosing_class_chunk': 466, 'python.route_decorators_in_their_own_chunk': 0, 'python.route_decorators_only_inside_an_enclosing_class_chunk': 245}
+0 failed

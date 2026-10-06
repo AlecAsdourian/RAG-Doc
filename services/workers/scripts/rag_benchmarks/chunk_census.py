@@ -606,8 +606,17 @@ def census(name, files, meta, chunker, enc, grammars, capture: Optional[Fallback
                     in_any = bool(holders)
                     key = "route_decorators" if is_route else "decorators"
                     py[f"{key}_in_no_chunk"] += 0 if in_any else 1
-                    py[f"{key}_only_inside_a_class_chunk"] += 1 if (in_class and not any(
-                        c.chunk_type != "class" for c in holders)) else 0
+                    only_class = in_class and not any(c.chunk_type != "class" for c in holders)
+                    py[f"{key}_only_inside_a_class_chunk"] += 1 if only_class else 0
+                    # 22.2-02: the definition's OWN chunk starts at its first
+                    # decorator (QD6), and no function or class chunk can start on
+                    # a decorator line otherwise. A decorated CLASS held by its own
+                    # class chunk is counted by the field above too, so the field
+                    # below is the ISS-026 case alone: only an enclosing class holds it.
+                    own = any(c.chunk_type in ("class", "function") and c.start_line == deco_line
+                              for c in holders)
+                    py[f"{key}_in_their_own_chunk"] += 1 if own else 0
+                    py[f"{key}_only_inside_an_enclosing_class_chunk"] += 1 if (only_class and not own) else 0
                 if n.type == "function_definition":
                     if any(a.type == "function_definition" for a in ancestors(n)):
                         py["nested_functions"] += 1

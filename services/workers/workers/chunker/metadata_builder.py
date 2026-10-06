@@ -358,13 +358,39 @@ class MetadataBuilder:
             return [ln.strip().lstrip("*").strip() for ln in inner.splitlines()]
         return [raw]
 
-    def _extract_js_docstring(self, node: Node, content: bytes) -> Optional[str]:
-        """Extract JSDoc comment before TypeScript/JavaScript function."""
-        # JSDoc comments are previous siblings with type "comment"
-        if not node.prev_sibling:
-            return None
+    @staticmethod
+    def _js_outermost(node: Node) -> Node:
+        """The node a JSDoc sits above: the declaration's `export_statement` when
+        exported, a method's first decorator when decorated, else the node
+        itself (an unexported class's decorators are its own children, so it
+        already starts at the first). 22.2-01's census definition, which QA4
+        compares with (`chunk_census._parity_ts`)."""
+        if node.parent is not None and node.parent.type == "export_statement":
+            return node.parent
+        outer = node
+        if node.type == "method_definition":
+            prev = node.prev_named_sibling
+            while prev is not None and prev.type == "decorator":
+                outer = prev
+                prev = prev.prev_named_sibling
+        return outer
 
-        prev = node.prev_sibling
+    def _extract_js_docstring(self, node: Node, content: bytes) -> Optional[str]:
+        """Extract the JSDoc directly above a TypeScript/JavaScript declaration.
+
+        "Directly above" is the census's definition: a `/** ... */` comment that
+        is the previous named sibling of the declaration's outermost node
+        (`_js_outermost`) and ends on the line before it. A `//` comment, or a
+        JSDoc separated by a blank line, is not documentation.
+
+        It used to read `node.prev_sibling` alone, which for `export function f`
+        is the `export` keyword, and the chunker never asked for it: no
+        TypeScript chunk carried a docstring.
+        """
+        outer = self._js_outermost(node)
+        prev = outer.prev_named_sibling
+        if prev is None or prev.end_point[0] != outer.start_point[0] - 1:
+            return None
 
         # JSDoc comments look like /** ... */
         if prev.type == "comment":

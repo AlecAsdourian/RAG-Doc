@@ -338,8 +338,25 @@ def test_python_decorated_method_counts(tools):
     r = _census(tools, [("svc/b.py", PY_DECORATED, "python")])
     py = r["python"]
     assert py["decorated_function_definition"] == 1
-    assert py["decorators_only_inside_a_class_chunk"] == 1
+    # Since 22.2-02 (QD6) the method's own chunk starts at `@property`, so the
+    # decorator is no longer only inside the class chunk.
+    assert py["decorators_only_inside_a_class_chunk"] == 0
+    assert py["decorators_only_inside_an_enclosing_class_chunk"] == 0
+    assert py["decorators_in_their_own_chunk"] == 1
     assert py["decorators_in_no_chunk"] == 0
+
+
+def test_a_decorated_class_in_its_own_chunk_is_not_an_enclosing_class_case():
+    """The research's field counts a decorated class held by its OWN class chunk
+    as "only inside a class chunk"; the enclosing-class field does not."""
+    source = "@dataclass\nclass Point:\n    x: int\n\n\nclass Outer:\n    @staticmethod\n    def make():\n        return 1\n"
+    chunker, enc, grammars = chunk_census.make_tools()
+    r, _ = chunk_census.census("p", [("svc/p.py", source, "python")], {"commit": "x"}, chunker, enc, grammars)
+    py = r["python"]
+    assert py["decorated_class_definition"] == 1 and py["decorated_function_definition"] == 1
+    assert py["decorators_in_their_own_chunk"] == 2
+    assert py["decorators_only_inside_a_class_chunk"] == 1, "Point's decorator, in Point's own chunk"
+    assert py["decorators_only_inside_an_enclosing_class_chunk"] == 0
 
 
 def test_go_grouped_type_counts(tools):

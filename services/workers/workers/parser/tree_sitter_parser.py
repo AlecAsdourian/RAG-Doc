@@ -152,13 +152,16 @@ class TreeSitterParser:
                     ]
                     """
                 ),
+                # `@spec` is the struct's own `type_spec`: in a grouped
+                # `type ( ... )` it, not the whole group, is the chunk's span
+                # (`extract_classes`; QA6).
                 "classes": Query(
                     self.languages["go"],
                     """
                     (type_declaration
                         (type_spec
                             name: (type_identifier) @name
-                            type: (struct_type))) @class
+                            type: (struct_type)) @spec) @class
                     """
                 ),
             },
@@ -334,6 +337,13 @@ class TreeSitterParser:
                 name_node = name_nodes[0]
                 name = self.get_node_text(name_node, content_bytes)
 
+                # A struct in a grouped Go `type ( ... )` spans its own spec,
+                # not the group: the group's other types are not its text
+                # (QA6). A single `type X struct {...}` keeps the declaration.
+                spec_nodes = captures_dict.get("spec", [])
+                if language == "go" and spec_nodes and self._is_grouped(class_node):
+                    class_node = spec_nodes[0]
+
                 class_info = {
                     "name": name,
                     "start_byte": class_node.start_byte,
@@ -351,6 +361,15 @@ class TreeSitterParser:
                 classes.append(class_info)
 
         return classes
+
+    @staticmethod
+    def _is_grouped(type_declaration: Node) -> bool:
+        """Whether a Go `type_declaration` groups several types: more than one
+        `type_spec`/`type_alias`, the census's definition
+        (`chunk_census`, `go_struct_chunks_in_groups`). A parenthesised group
+        of one type has no other type's text to drop, and keeps its span."""
+        specs = [c for c in type_declaration.named_children if c.type in ("type_spec", "type_alias")]
+        return len(specs) > 1
 
     def get_node_text(self, node: Node, content: bytes) -> str:
         """

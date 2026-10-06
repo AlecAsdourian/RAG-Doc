@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """The plan's census checks, read from committed census directories (22.2-02).
 
-    census_checks.py after-ts <records-dir>   # Task 1: census-before/ vs census-after-ts/
-    census_checks.py after    <records-dir>   # Task 2: census-before/ vs census-after/
+    census_checks.py after-ts     <records-dir>   # Task 1: census-before/ vs census-after-ts/
+    census_checks.py before-rerun <records-dir>   # census-before-rerun/ keeps census-before/'s fields
+    census_checks.py after        <records-dir>   # Task 2: census-before(-rerun)/ vs census-after/
 
 Reads only the census JSON and the gzipped per-chunk rows in the records; no
 corpus, database or network. Prints one line per check with PASS or FAIL and
@@ -93,14 +94,54 @@ def after_ts(records: Path) -> None:
     digests(before, after, BENCHMARK, [])
 
 
+def flatten(value, prefix=""):
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            out.update(flatten(v, f"{prefix}{k}."))
+        return out or {prefix.rstrip("."): {}}
+    return {prefix.rstrip("."): value}
+
+
+NEW_DECORATOR_FIELDS = ("decorators_in_their_own_chunk", "decorators_only_inside_an_enclosing_class_chunk",
+                        "route_decorators_in_their_own_chunk",
+                        "route_decorators_only_inside_an_enclosing_class_chunk")
+
+
+def before_rerun(records: Path) -> None:
+    """census-before-rerun/ is the base's chunker measured by this branch's census
+    (its two new decorator fields): every field census-before/ has must be equal."""
+    before, rerun = records / "census-before", records / "census-before-rerun"
+    for c in ("self", "self-py", "mealie"):
+        fb, fr = flatten(census(before, c)), flatten(census(rerun, c))
+        differ = sorted(k for k in fb if fb[k] != fr.get(k))
+        extra = {k: fr[k] for k in fr if k not in fb}
+        check(not differ, f"{c}: {len(fb)} fields of census-before equal in the rerun; differing {differ}")
+        check(all(k.split(".")[-1] in NEW_DECORATOR_FIELDS for k in extra) and extra,
+              f"{c}: fields only in the rerun {extra}")
+
+
 def after_all(records: Path) -> None:
     before, after = records / "census-before", records / "census-after"
+    rerun = records / "census-before-rerun"
     for c in ("mealie", "self-py", "self"):
-        b, a = census(before, c)["python"], census(after, c)["python"]
-        for key in ("decorators_in_no_chunk", "decorators_only_inside_a_class_chunk",
-                    "route_decorators_in_no_chunk", "route_decorators_only_inside_a_class_chunk"):
+        b, a = census(rerun, c)["python"], census(after, c)["python"]
+        for key in ("decorators_in_no_chunk", "decorators_only_inside_an_enclosing_class_chunk",
+                    "route_decorators_in_no_chunk", "route_decorators_only_inside_an_enclosing_class_chunk"):
             if key in b or key in a:
                 check(a.get(key, 0) == 0, f"{c}: {key} {b.get(key, 0)} -> {a.get(key, 0)}")
+        decorated = a.get("decorated_function_definition", 0) + a.get("decorated_class_definition", 0)
+        own = a.get("decorators_in_their_own_chunk", 0) + a.get("route_decorators_in_their_own_chunk", 0)
+        check(own == decorated, f"{c}: decorators in their own definition's chunk {own} = decorated "
+                                f"definitions {decorated} (before {b.get('decorators_in_their_own_chunk', 0) + b.get('route_decorators_in_their_own_chunk', 0)})")
+        # The research's field counts a decorated CLASS held by its own class chunk
+        # as "only inside a class chunk": what remains of it is exactly those.
+        for key in ("decorators_only_inside_a_class_chunk", "route_decorators_only_inside_a_class_chunk"):
+            if key in b or key in a:
+                expected = a.get("decorated_class_definition", 0) if key.startswith("decorators") else 0
+                check(a.get(key, 0) == expected,
+                      f"{c}: {key} {b.get(key, 0)} -> {a.get(key, 0)} = decorated classes in their own "
+                      f"class chunk {expected}")
     for c in TS:
         t = census(after, c)["typescript"]
         check(t["chunked_with_docstring"] == t["sim_chunkable_with_jsdoc_directly_above"],
@@ -123,6 +164,6 @@ def after_all(records: Path) -> None:
 
 if __name__ == "__main__":
     stage, records = sys.argv[1], Path(sys.argv[2])
-    {"after-ts": after_ts, "after": after_all}[stage](records)
+    {"after-ts": after_ts, "before-rerun": before_rerun, "after": after_all}[stage](records)
     print(f"{failures} failed")
     sys.exit(1 if failures else 0)

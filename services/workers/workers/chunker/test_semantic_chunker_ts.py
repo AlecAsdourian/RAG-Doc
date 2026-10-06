@@ -183,3 +183,142 @@ def test_the_same_declarations_in_a_tsx_file():
     `.tsx`, yields the same chunks."""
     source = TS_SOURCE.replace("function* ids(): Generator<number>", "function* ids()")
     assert sorted(_named(source, "web/src/repo.tsx")) == sorted(_named(source, "web/src/repo.ts"))
+
+
+# ---------------------------------------------------------------------------
+# Decorators inside their definition's chunk (QD6), at each place the
+# TypeScript grammar puts one (`22.2-02-records/ts-decorator-placement.txt`)
+# ---------------------------------------------------------------------------
+
+DECORATED = '''@Injectable()
+class Service {
+    run(): void {}
+}
+
+@Component({ selector: "app-widget" })
+export class Widget {
+    @Input()
+    label: string;
+
+    @HostListener("click")
+    @Throttle(100)
+    onClick(): void {}
+}
+
+export @Sealed class Box {
+    open(): void {}
+}
+'''
+
+
+def test_a_decorated_class_starts_at_its_decorator():
+    service = _named(DECORATED, "web/src/service.ts")[("class", "Service")]
+    assert service.start_line == 1
+    assert service.content.startswith("@Injectable()\nclass Service {")
+
+
+def test_an_exported_class_starts_at_the_decorator_before_export():
+    named = _named(DECORATED, "web/src/widget.ts")
+    widget = named[("class", "Widget")]
+    assert widget.start_line == 6
+    assert widget.content.startswith('@Component({ selector: "app-widget" })\nexport class Widget {')
+    box = named[("class", "Box")]
+    assert box.content.startswith("export @Sealed class Box {"), "a decorator after export is on the class line"
+
+
+def test_a_decorated_method_starts_at_its_first_decorator_and_keeps_its_breadcrumb():
+    on_click = _named(DECORATED, "web/src/widget.ts")[("function", "Widget.onClick")]
+    assert on_click.start_line == 11
+    assert on_click.content.startswith('    @HostListener("click")\n    @Throttle(100)\n    onClick(): void {}')
+    assert on_click.metadata["ancestor_chain"] == ["Widget"]
+
+
+def test_a_decorated_property_is_not_a_chunk_and_stays_in_its_class():
+    named = _named(DECORATED, "web/src/widget.ts")
+    assert not any("label" in name for _, name in named)
+    assert "@Input()\n    label: string;" in named[("class", "Widget")].content
+
+
+# ---------------------------------------------------------------------------
+# JSDoc as the docstring, once (QA4, QA5)
+# ---------------------------------------------------------------------------
+
+JSDOC = '''/** Adds one. */
+function plain(a: number): number {
+    return a + 1;
+}
+
+/**
+ * Loads a user by id.
+ * @param id the user's id
+ */
+export function load(id: string): string {
+    return id;
+}
+
+/** Doubles x. */
+export const double = (x: number) => x * 2;
+
+/** Keeps recipes. */
+class Store {
+    /** Saves a recipe. */
+    save(): void {}
+
+    /** Routed. */
+    @Get("/recipes")
+    list(): void {}
+}
+
+// A line comment is not documentation.
+function lined(): void {}
+
+/** Separated by a blank line. */
+
+function separated(): void {}
+
+/** Above the decorator. */
+@Injectable()
+export class Decorated {}
+'''
+
+
+def _docs():
+    return {name: c.metadata.get("docstring") for (_, name), c in _named(JSDOC, "web/src/docs.ts").items()}
+
+
+def test_jsdoc_above_a_function_an_exported_function_and_a_const_is_the_docstring():
+    docs = _docs()
+    assert docs["plain"] == "Adds one."
+    assert docs["load"] == "Loads a user by id. @param id the user's id"
+    assert docs["double"] == "Doubles x."
+
+
+def test_jsdoc_above_a_class_a_method_and_a_decorated_method():
+    docs = _docs()
+    assert docs["Store"] == "Keeps recipes."
+    assert docs["Store.save"] == "Saves a recipe."
+    assert docs["Store.list"] == "Routed.", "the JSDoc sits above the method's first decorator"
+
+
+def test_jsdoc_above_a_decorator_is_the_docstring_and_the_chunk_starts_at_the_decorator():
+    decorated = _named(JSDOC, "web/src/docs.ts")[("class", "Decorated")]
+    assert decorated.metadata["docstring"] == "Above the decorator."
+    assert decorated.content.startswith("@Injectable()\nexport class Decorated {}")
+
+
+def test_a_line_comment_and_a_separated_jsdoc_are_not_docstrings():
+    docs = _docs()
+    assert docs["lined"] is None
+    assert docs["separated"] is None
+
+
+def test_the_jsdoc_is_not_in_the_chunk_text():
+    """Embedded once: through the docstring, never also through the content.
+    (A class chunk holds its methods, and so their JSDoc; its own JSDoc, the
+    one above `class`, is still outside it.)"""
+    for (_, name), chunk in _named(JSDOC, "web/src/docs.ts").items():
+        doc = chunk.metadata.get("docstring")
+        if doc:
+            assert f"/** {doc}" not in chunk.content and doc.split(".")[0] not in chunk.content, (
+                f"{name}'s chunk text carries its own JSDoc"
+            )
