@@ -202,9 +202,10 @@ REFUSALS = {
 
 def test_input_the_checks_did_not_foresee_exits_2_not_1(tmp_path, capsys):
     """Exit 1 means a number fell; nothing else may produce it (review A, finding 7)."""
-    bh = _header()
-    bh["top_k"] = "five"
-    code, out = _run(tmp_path, _baseline(), _baseline(), before_header=bh, capsys=capsys)
+    # Equal on both sides, so no header refusal catches it; only the reader can.
+    bh, ah = _header(), _header("b" * 64)
+    bh["top_k"] = ah["top_k"] = "five"
+    code, out = _run(tmp_path, _baseline(), _baseline(), before_header=bh, after_header=ah, capsys=capsys)
     assert code == 2, out
     assert "REFUSED" in out and "TRIPWIRE" not in out
 

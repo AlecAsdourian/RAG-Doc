@@ -77,3 +77,159 @@
    restored: sha256 7920c1cacfbaab03 == pristine True; hash-object == HEAD blob True
    VERDICT T1-M2 (re-run on the final chunk_census.py, after the log-scope fix) the raised handler detached: KILLED (expected to fail: test_a_parser_that_raises_is_counted_as_raised)
 
+== A-D tripwire QUESTION_KEYS without symbol: services/workers/scripts/rag_benchmarks/tripwire.py
+   HEAD efe7d4cf0a64, blob 2cedbd3502f6; pristine sha256 90fbb36328216a42; hash-object == HEAD blob: True
+   mutation: 'QUESTION_KEYS = ("question", "set", "path", "symbol")' -> 'QUESTION_KEYS = ("question", "set", "path")'
+   landed: True (mutated sha256 0109f81eeb2a74b0; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_tripwire.py: exit 1; 1 failed, 30 passed in 2.38s
+      FAILED tests/test_tripwire.py::test_each_refusal_gives_2_and_compares_nothing[symbol]
+   restored: sha256 90fbb36328216a42 == pristine True; hash-object == HEAD blob True
+   VERDICT A-D tripwire QUESTION_KEYS without symbol: KILLED (expected to fail: refusal_gives_2_and_compares_nothing[symbol])
+
+== A-E chunker_version without the CRLF->LF replace: services/workers/scripts/rag_benchmarks/chunk_digest.py
+   HEAD efe7d4cf0a64, blob 31ae0b41c552; pristine sha256 ba1763e574cc9d06; hash-object == HEAD blob: True
+   mutation: 'data = path.read_bytes().replace(b"\\r\\n", b"\\n")' -> 'data = path.read_bytes()  # MUTATION'
+   landed: True (mutated sha256 0577c82187bc207a; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_chunk_census.py: exit 1; 1 failed, 45 passed in 6.36s
+      FAILED tests/test_chunk_census.py::TestChunkerVersion::test_line_endings_do_not_change_it
+   restored: sha256 ba1763e574cc9d06 == pristine True; hash-object == HEAD blob True
+   VERDICT A-E chunker_version without the CRLF->LF replace: KILLED (expected to fail: test_line_endings_do_not_change_it)
+
+== A-F tripwire QUESTION_KEYS without set: services/workers/scripts/rag_benchmarks/tripwire.py
+   HEAD efe7d4cf0a64, blob 2cedbd3502f6; pristine sha256 90fbb36328216a42; hash-object == HEAD blob: True
+   mutation: 'QUESTION_KEYS = ("question", "set", "path", "symbol")' -> 'QUESTION_KEYS = ("question", "path", "symbol")'
+   landed: True (mutated sha256 0292ff35ada171e3; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_tripwire.py: exit 1; 1 failed, 30 passed in 4.65s
+      FAILED tests/test_tripwire.py::test_each_refusal_gives_2_and_compares_nothing[set]
+   restored: sha256 90fbb36328216a42 == pristine True; hash-object == HEAD blob True
+   VERDICT A-F tripwire QUESTION_KEYS without set: KILLED (expected to fail: refusal_gives_2_and_compares_nothing[set])
+
+== A-G vector_tolerance() keeps the value it set: services/workers/scripts/rag_benchmarks/compare_runs.py
+   HEAD efe7d4cf0a64, blob 39f5f1ee50fe; pristine sha256 8a8c6dc9efd85a95; hash-object == HEAD blob: True
+   mutation: '        _vector_tolerance = previous' -> '        _vector_tolerance = _vector_tolerance  # MUTATION'
+   landed: True (mutated sha256 e98bdb887fbd2291; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_compare_runs.py: exit 1; 1 failed, 52 passed in 3.47s
+      FAILED tests/test_compare_runs.py::test_the_vector_tolerance_changes_the_class
+   restored: sha256 8a8c6dc9efd85a95 == pristine True; hash-object == HEAD blob True
+   VERDICT A-G vector_tolerance() keeps the value it set: KILLED (expected to fail: test_the_vector_tolerance_changes_the_class)
+
+== R-M1 tripwire QUESTION_KEYS = (question,): services/workers/scripts/rag_benchmarks/tripwire.py
+   HEAD efe7d4cf0a64, blob 2cedbd3502f6; pristine sha256 90fbb36328216a42; hash-object == HEAD blob: True
+   mutation: 'QUESTION_KEYS = ("question", "set", "path", "symbol")' -> 'QUESTION_KEYS = ("question",)'
+   landed: True (mutated sha256 d6e8ce4670008510; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_tripwire.py: exit 1; 3 failed, 28 passed in 1.60s
+      FAILED tests/test_tripwire.py::test_each_refusal_gives_2_and_compares_nothing[path]
+      FAILED tests/test_tripwire.py::test_each_refusal_gives_2_and_compares_nothing[set]
+      FAILED tests/test_tripwire.py::test_each_refusal_gives_2_and_compares_nothing[symbol]
+   restored: sha256 90fbb36328216a42 == pristine True; hash-object == HEAD blob True
+   VERDICT R-M1 tripwire QUESTION_KEYS = (question,): KILLED (expected to fail: [set], [path], [symbol])
+
+== R-M2 capturing() restores the level but leaves propagate False: services/workers/scripts/rag_benchmarks/chunk_census.py
+   HEAD efe7d4cf0a64, blob bd7f63a774ac; pristine sha256 48b9ed6fe365252f; hash-object == HEAD blob: True
+   mutation: 'chunker_logger.level, chunker_logger.propagate = saved' -> 'chunker_logger.level = saved[0]  # MUTATION'
+   landed: True (mutated sha256 767f5b89c79a22a1; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_chunk_census.py: exit 1; 1 failed, 45 passed in 4.33s
+      FAILED tests/test_chunk_census.py::test_a_census_leaves_logging_as_it_found_it
+   restored: sha256 48b9ed6fe365252f == pristine True; hash-object == HEAD blob True
+   VERDICT R-M2 capturing() restores the level but leaves propagate False: KILLED (expected to fail: test_a_census_leaves_logging_as_it_found_it)
+
+== R-M3 vector_tolerance(): finally: pass: services/workers/scripts/rag_benchmarks/compare_runs.py
+   HEAD efe7d4cf0a64, blob 39f5f1ee50fe; pristine sha256 8a8c6dc9efd85a95; hash-object == HEAD blob: True
+   mutation: '    finally:\r\n        _vector_tolerance = previous' -> '    finally:\r\n        pass  # MUTATION'
+   landed: True (mutated sha256 11317ac098673c49; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_compare_runs.py: exit 1; 1 failed, 52 passed in 2.02s
+      FAILED tests/test_compare_runs.py::test_the_vector_tolerance_changes_the_class
+   restored: sha256 8a8c6dc9efd85a95 == pristine True; hash-object == HEAD blob True
+   VERDICT R-M3 vector_tolerance(): finally: pass: KILLED (expected to fail: test_the_vector_tolerance_changes_the_class)
+
+== R-M4 --exact ignores --vector-tolerance: services/workers/scripts/rag_quality_harness.py
+   HEAD efe7d4cf0a64, blob 86f401ec73f4; pristine sha256 5b55b9df399b081a; hash-object == HEAD blob: True
+   mutation: 'do_exact(corpus, questions, query_vectors, model, a.exact, a.vector_tolerance)' -> 'do_exact(corpus, questions, query_vectors, model, a.exact)  # MUTATION'
+   landed: True (mutated sha256 a77c3f4506cf2df7; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_rag_quality_harness.py: exit 1; 1 failed, 33 passed in 12.35s
+      FAILED tests/test_rag_quality_harness.py::test_exact_passes_the_vector_tolerance_through
+   restored: sha256 5b55b9df399b081a == pristine True; hash-object == HEAD blob True
+   VERDICT R-M4 --exact ignores --vector-tolerance: KILLED (expected to fail: test_exact_passes_the_vector_tolerance_through)
+
+== N1 the exact list's tie tolerance not checked: services/workers/scripts/rag_benchmarks/compare_runs.py
+   HEAD efe7d4cf0a64, blob 39f5f1ee50fe; pristine sha256 8a8c6dc9efd85a95; hash-object == HEAD blob: True
+   mutation: 'elif float(recorded) != tolerance:' -> 'elif float(recorded) != tolerance and False:  # MUTATION'
+   landed: True (mutated sha256 e5e5c53f558e2cee; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_compare_runs.py: exit 1; 1 failed, 52 passed in 1.76s
+      FAILED tests/test_compare_runs.py::test_a_tolerance_other_than_the_evidences_is_refused[exact-other]
+   restored: sha256 8a8c6dc9efd85a95 == pristine True; hash-object == HEAD blob True
+   VERDICT N1 the exact list's tie tolerance not checked: KILLED (expected to fail: evidences_is_refused[exact-other])
+
+== N2 a run header's tolerance not checked: services/workers/scripts/rag_benchmarks/compare_runs.py
+   HEAD efe7d4cf0a64, blob 39f5f1ee50fe; pristine sha256 8a8c6dc9efd85a95; hash-object == HEAD blob: True
+   mutation: 'if header.get("vector_tolerance") is not None and float(header["vector_tolerance"]) != tolerance:' -> 'if header.get("vector_tolerance") is not None and float(header["vector_tolerance"]) != tolerance and False:'
+   landed: True (mutated sha256 32e6a725847f4aae; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_compare_runs.py: exit 1; 1 failed, 52 passed in 1.93s
+      FAILED tests/test_compare_runs.py::test_a_tolerance_other_than_the_evidences_is_refused[header-other]
+   restored: sha256 8a8c6dc9efd85a95 == pristine True; hash-object == HEAD blob True
+   VERDICT N2 a run header's tolerance not checked: KILLED (expected to fail: evidences_is_refused[header-other])
+
+== N3 --no-qdrant accepts two sets of stored vectors: services/workers/scripts/rag_benchmarks/compare_runs.py
+   HEAD efe7d4cf0a64, blob 39f5f1ee50fe; pristine sha256 8a8c6dc9efd85a95; hash-object == HEAD blob: True
+   mutation: 'elif b.get(key) != c.get(key):' -> 'elif b.get(key) != c.get(key) and False:  # MUTATION'
+   landed: True (mutated sha256 b8b9c641dccbc4e5; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_compare_runs.py: exit 1; 4 failed, 49 passed in 2.55s
+      FAILED tests/test_compare_runs.py::test_no_qdrant_refuses_two_runs_over_different_stored_vectors[chunk_models]
+      FAILED tests/test_compare_runs.py::test_no_qdrant_refuses_two_runs_over_different_stored_vectors[chunk_set_digest]
+      FAILED tests/test_compare_runs.py::test_no_qdrant_refuses_two_runs_over_different_stored_vectors[one-side-only]
+      FAILED tests/test_compare_runs.py::test_no_qdrant_refuses_two_runs_over_different_stored_vectors[stored_vectors_digest]
+   restored: sha256 8a8c6dc9efd85a95 == pristine True; hash-object == HEAD blob True
+   VERDICT N3 --no-qdrant accepts two sets of stored vectors: KILLED (expected to fail: different_stored_vectors[stored_vectors_digest])
+
+== N4 a commit claim the checkout contradicts is accepted: services/workers/scripts/rag_quality_harness.py
+   HEAD efe7d4cf0a64, blob 86f401ec73f4; pristine sha256 5b55b9df399b081a; hash-object == HEAD blob: True
+   mutation: 'if head and claim and not (' -> 'if False and head and claim and not ('
+   landed: True (mutated sha256 fc02f747f5bdfa00; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_rag_quality_harness.py: exit 1; 1 failed, 33 passed in 5.71s
+      FAILED tests/test_rag_quality_harness.py::TestSelfCommitIsChecked::test_a_claim_the_checkout_contradicts_is_refused
+   restored: sha256 5b55b9df399b081a == pristine True; hash-object == HEAD blob True
+   VERDICT N4 a commit claim the checkout contradicts is accepted: KILLED (expected to fail: test_a_claim_the_checkout_contradicts_is_refused)
+
+== N5 chunker_version recorded unverified: services/workers/scripts/rag_quality_harness.py
+   HEAD efe7d4cf0a64, blob 86f401ec73f4; pristine sha256 5b55b9df399b081a; hash-object == HEAD blob: True
+   mutation: '"chunker_version": running_version if verified else None,' -> '"chunker_version": running_version,  # MUTATION'
+   landed: True (mutated sha256 37d08f2ecad6238e; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_rag_quality_harness.py: exit 1; 1 failed, 33 passed in 5.19s
+      FAILED tests/test_rag_quality_harness.py::TestChunkProvenance::test_different_digests_record_no_chunker_version
+   restored: sha256 5b55b9df399b081a == pristine True; hash-object == HEAD blob True
+   VERDICT N5 chunker_version recorded unverified: KILLED (expected to fail: test_different_digests_record_no_chunker_version)
+
+== N6 tripwire: unforeseen input escapes as exit 1: services/workers/scripts/rag_benchmarks/tripwire.py
+   HEAD efe7d4cf0a64, blob 2cedbd3502f6; pristine sha256 90fbb36328216a42; hash-object == HEAD blob: True
+   mutation: 'except (KeyError, TypeError, ValueError, AttributeError) as exc:' -> 'except (ZeroDivisionError,) as exc:  # MUTATION'
+   landed: True (mutated sha256 dfab67e51b778e79; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_tripwire.py: exit 0; 31 passed in 2.10s
+   restored: sha256 90fbb36328216a42 == pristine True; hash-object == HEAD blob True
+   VERDICT N6 tripwire: unforeseen input escapes as exit 1: SURVIVED (expected to fail: test_input_the_checks_did_not_foresee_exits_2_not_1)
+
+== N7 the stored-vectors digest without the row ids: services/workers/scripts/rag_benchmarks/chunk_digest.py
+   HEAD efe7d4cf0a64, blob 31ae0b41c552; pristine sha256 ba1763e574cc9d06; hash-object == HEAD blob: True
+   mutation: "string_agg(id::text || ':' || md5(embedding::text), ',' ORDER BY id)" -> "string_agg(md5(embedding::text), ',' ORDER BY id)"
+   landed: True (mutated sha256 88a2303793a67c74; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/isolation/test_harness_header_reads.py: exit 0; 3 passed, 10 warnings in 12.95s
+   restored: sha256 ba1763e574cc9d06 == pristine True; hash-object == HEAD blob True
+   VERDICT N7 the stored-vectors digest without the row ids: SURVIVED (expected to fail: test_the_stored_vectors_digest_names_one_ingest)
+
+== N8 the breadcrumb consistency count neutered: services/workers/scripts/rag_benchmarks/chunk_digest.py
+   HEAD efe7d4cf0a64, blob 31ae0b41c552; pristine sha256 ba1763e574cc9d06; hash-object == HEAD blob: True
+   mutation: "AND breadcrumb IS DISTINCT FROM NULLIF(metadata->>'breadcrumb', '')" -> 'AND false  -- MUTATION'
+   landed: True (mutated sha256 5d0614e7508784a2; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/isolation/test_harness_header_reads.py: exit 1; 1 failed, 2 passed, 10 warnings in 12.27s
+      FAILED tests/isolation/test_harness_header_reads.py::test_a_breadcrumb_column_that_disagrees_with_metadata_is_counted
+   restored: sha256 ba1763e574cc9d06 == pristine True; hash-object == HEAD blob True
+   VERDICT N8 the breadcrumb consistency count neutered: KILLED (expected to fail: test_a_breadcrumb_column_that_disagrees_with_metadata_is_counted)
+
+== N9 a dirty self tree reported clean: services/workers/scripts/rag_quality_harness.py
+   HEAD efe7d4cf0a64, blob 86f401ec73f4; pristine sha256 5b55b9df399b081a; hash-object == HEAD blob: True
+   mutation: 'return bool(git("status", "--porcelain", "--", *paths, cwd=root))' -> 'return False  # MUTATION'
+   landed: True (mutated sha256 1a4ab58b6690e200; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_rag_quality_harness.py: exit 1; 1 failed, 33 passed in 5.40s
+      FAILED tests/test_rag_quality_harness.py::TestSelfCommitIsChecked::test_a_dirty_tree_is_flagged_and_a_clean_one_is_not
+   restored: sha256 5b55b9df399b081a == pristine True; hash-object == HEAD blob True
+   VERDICT N9 a dirty self tree reported clean: KILLED (expected to fail: test_a_dirty_tree_is_flagged_and_a_clean_one_is_not)
+

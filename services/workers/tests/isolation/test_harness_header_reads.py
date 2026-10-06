@@ -56,11 +56,11 @@ def _chunks():
     return chunks
 
 
-def _vectors(chunks, fill: float) -> Dict[str, List[float]]:
-    return {content_hash(c.content): [fill + i * 1e-3] * 1536 for i, c in enumerate(chunks)}
+def _vectors(chunks, fill: float, step: float = 1e-3) -> Dict[str, List[float]]:
+    return {content_hash(c.content): [fill + i * step] * 1536 for i, c in enumerate(chunks)}
 
 
-def _ingest(container, org, chunks, model: str, fill: float, sha: str) -> None:
+def _ingest(container, org, chunks, model: str, fill: float, sha: str, step: float = 1e-3) -> None:
     writer = PostgresWriter(_dsn(container))
     writer.connect()
     with writer.conn.cursor() as cur:
@@ -70,7 +70,7 @@ def _ingest(container, org, chunks, model: str, fill: float, sha: str) -> None:
         run_id = writer.create_ingestion_run(organization_id=org.id, repository_id=org.repo_id,
                                              commit_sha=sha * 40, branch="main")
         writer.insert_chunks(organization_id=org.id, chunks=list(chunks), ingestion_run_id=run_id,
-                             repository_id=org.repo_id, embeddings=_vectors(chunks, fill), embedding_model=model)
+                             repository_id=org.repo_id, embeddings=_vectors(chunks, fill, step), embedding_model=model)
         writer.complete_ingestion_run(organization_id=org.id, ingestion_run_id=run_id, chunks_count=len(chunks))
     finally:
         writer.close()
@@ -100,7 +100,10 @@ def test_the_database_digest_equals_the_offline_digest_of_the_same_chunks(test_d
 def test_the_stored_vectors_digest_names_one_ingest(test_db_container, app_dsn, with_two_orgs):
     org_a, _ = with_two_orgs
     chunks = _chunks()
-    _ingest(test_db_container, org_a, chunks, MODEL, 0.01, "a")
+    # Every chunk gets the same vector (step 0), so the vectors' order cannot
+    # tell two ingests apart: only the row ids, which the digest must include,
+    # can (mutation N7 dropped them and survived a per-chunk-vector fixture).
+    _ingest(test_db_container, org_a, chunks, MODEL, 0.01, "a", step=0.0)
     first, again = _read(app_dsn, org_a), _read(app_dsn, org_a)
     assert first["stored_vectors_digest"] == again["stored_vectors_digest"]
 
@@ -108,7 +111,7 @@ def test_the_stored_vectors_digest_names_one_ingest(test_db_container, app_dsn, 
     # a different ingest, so a different digest, while the chunk set is equal.
     with require_tenant(_conn(test_db_container), org_a.id) as cur:
         cur.execute("DELETE FROM ingestion_runs WHERE repository_id = %s", (org_a.repo_id,))
-    _ingest(test_db_container, org_a, chunks, MODEL, 0.01, "d")
+    _ingest(test_db_container, org_a, chunks, MODEL, 0.01, "d", step=0.0)
     after = _read(app_dsn, org_a)
     assert after["chunk_set_digest"] == first["chunk_set_digest"]
     assert after["stored_vectors_digest"] != first["stored_vectors_digest"]
