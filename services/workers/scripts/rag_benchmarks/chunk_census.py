@@ -461,8 +461,10 @@ def census(name, files, meta, chunker, enc, grammars, capture: Optional[Fallback
     }
 
     # Duplication: class chunks covered by their own method chunks (ISS-026), nested
-    # functions (a function chunk inside another function chunk), Go structs chunked
-    # with their whole grouped `type ( ... )` declaration.
+    # functions (a function chunk inside another function chunk), Go structs in a
+    # grouped `type ( ... )` declaration. Those two Go fields count the source's
+    # structure, not chunks: until 22.2-02 each such struct was chunked with the
+    # whole group (the extra characters), and since then it is chunked as its own spec.
     dup = {"class_chunks": 0, "class_chunks_ge80pct_covered": 0, "class_chars": 0,
            "class_chars_covered_by_methods": 0, "nested_function_chunks": 0,
            "nested_function_chars": 0, "go_struct_chunks_in_groups": 0, "go_group_extra_chars": 0}
