@@ -4,6 +4,23 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 ## Open Enhancements
 
+### ISS-041: Two of 22.2-01's test files fail on Python 3.11, the version the worker images use
+
+- **Discovered:** 2026-10-06, by the 22.1-03 worker's verification of PR #64 in `python:3.11-slim`. Measured there: 701 passed, **1 failed, 7 errors**, none in PR #64's files. CI runs 3.12 (`workers-ci.yml:72`, `isolation-check.yml:28`), so it passes there.
+- **Type:** Testing / Operations
+- **Priority:** Low, but fix it with the next 22.2 PR that touches these files. Nothing in production runs these scripts today; the risk is that CI and the shipped image disagree.
+- **What:**
+  - The 7 errors are in `services/workers/tests/test_rag_quality_harness.py`, whose tests shell out to `git`, which `python:3.11-slim` does not have.
+  - The 1 failure is `services/workers/tests/test_tripwire.py:270`. It compares a summary recorded under Python 3.12 with a recomputation. Python 3.12 changed `sum()` of floats to use compensated summation, so 3.11 differs in the last digits.
+- **Why it matters:** `services/workers/Dockerfile` and `Dockerfile.api` are `FROM python:3.11-slim`, while CI tests on 3.12. A test that only passes on the CI version hides version-specific behaviour, and the decision tools (`tripwire.py`, `decide.py`) must give the same verdict wherever they run.
+- **Fix:** either align the versions (move the images to 3.12, or add 3.11 to CI's matrix), or make the tests version-independent:
+  - skip the `git`-dependent tests with a clear reason when `git` is missing;
+  - compare floats in the tripwire test with a tolerance, or compute the aggregate with `math.fsum` on both sides.
+
+  If the aggregate itself feeds a decision, `math.fsum` is the better fix, because it gives the same verdict on either version.
+- **Related:** `22.2-01-SUMMARY.md`; `22.1-03-SUMMARY.md` §7.
+- **Owner:** the 22.2 track. 22.2-07 (`decide.py`) is the natural place, because it shares the aggregate.
+
 ### ISS-040: A marked refusal from another deployment's token route reads as a lost lease, so every job dies silently
 
 - **Discovered:** 2026-09-29, by PR #58's review (22-05), reviewer A's L2. Reasoned from the code and from a signature one test already shows; not measured against two real deployments.
