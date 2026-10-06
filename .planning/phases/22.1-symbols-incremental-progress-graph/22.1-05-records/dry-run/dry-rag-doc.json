@@ -1,0 +1,247 @@
+{
+ "record": "dry-rag-doc",
+ "written_at": "2026-10-06T21:09:50.521484+00:00",
+ "mode": "no-embed",
+ "job_type": "full_ingest",
+ "job_type_note": null,
+ "repository": {
+  "full_name": "AlecAsdourian/RAG-Doc",
+  "sha": "ffdd06ee12bb973f6a585053b86974f66d0fa41f",
+  "branch": "main"
+ },
+ "copies": 1,
+ "workers": 1,
+ "worker_settings": {
+  "lease_s": 300.0,
+  "heartbeat_s": 60.0,
+  "heartbeat_statement_timeout_ms": 15000,
+  "max_job_duration_s": 7200.0
+ },
+ "host": {
+  "hostname": "29f148aa87bb",
+  "platform": "Linux-6.6.87.1-microsoft-standard-WSL2-x86_64-with-glibc2.41",
+  "python": "3.11.16",
+  "cpus": 16,
+  "mem_bytes": 33185533952,
+  "postgres": "16.15 (Debian 16.15-1.pgdg12+2)",
+  "pgvector": "0.8.6",
+  "max_connections": 100,
+  "docker_host_note": "Windows 11 Pro 10.0.26200, Docker Desktop 29.1.3 VM (16 CPUs, 31 GiB), host 16 cores 63 GiB"
+ },
+ "wall_seconds": 28.256,
+ "jobs": [
+  {
+   "label": "rag-doc",
+   "job_id": "e460f235-84d0-4033-9125-887a2a22b53b",
+   "repository_id": "079b1a29-2f25-4100-b2e2-1c84c28944ae",
+   "organization_id": "39d5f278-0cb3-48a5-bee0-88120f1c04c2",
+   "partition": 57,
+   "final": {
+    "state": "queued",
+    "attempts": 1,
+    "last_stage": "embed"
+   },
+   "last_error": "DryRunStop: dry run: 3860 distinct chunks, 1658854 tokens counted",
+   "progress": {
+    "chunks": 3872,
+    "skipped": {
+     "secret": 3,
+     "lockfile": 2,
+     "unsupported": 156,
+     "oversize_file": 1
+    },
+    "files_parsed": 478,
+    "parse_errors": 0,
+    "files_indexable": 478
+   },
+   "stages": {
+    "marks": {
+     "claim": 1791320962.242417,
+     "fetch": 1791320962.250092,
+     "parse": 1791320984.740449,
+     "embed": 1791320988.3679247
+    },
+    "seconds": {
+     "claim_to_fetch": 0.0077,
+     "fetch": 22.4904,
+     "parse": 3.6275
+    }
+   },
+   "archive_bytes": 6345784,
+   "chunks_stored": 0,
+   "distinct_stored": 0
+  }
+ ],
+ "fetch_expanded_lines": [
+  "fetched AlecAsdourian/RAG-Doc@ffdd06ee12bb: 478 indexable files, 742 members, 11755520 bytes expanded (11210200 declared), skipped={'lockfile': 2, 'oversize_file': 1, 'secret': 3, 'unsupported': 156}"
+ ],
+ "parse": {
+  "files": 478,
+  "bytes_expanded_files": 5932096,
+  "chunks": 3872,
+  "chunks_by_language": {
+   "markdown": 1587,
+   "python": 1331,
+   "go": 845,
+   "javascript": 2,
+   "typescript": 107
+  }
+ },
+ "github_events": [
+  {
+   "event": "resolve_head",
+   "t": 1791320962.251971
+  },
+  {
+   "event": "tarball_redirect",
+   "t": 1791320962.2523332
+  },
+  {
+   "event": "download_start",
+   "t": 1791320962.252577
+  },
+  {
+   "event": "download_end",
+   "t": 1791320984.4612021,
+   "bytes": 6345784
+  },
+  {
+   "event": "revoke",
+   "t": 1791320984.737226
+  }
+ ],
+ "statements": {
+  "loop": {
+   "other": {
+    "count": 7,
+    "total_seconds": 0.0054,
+    "max_seconds": 0.001438,
+    "first_at": 0.0042,
+    "last_end_at": 27.3417,
+    "errors": {}
+   },
+   "set_tenant": {
+    "count": 6,
+    "total_seconds": 0.0017,
+    "max_seconds": 0.000453,
+    "first_at": 0.0091,
+    "last_end_at": 27.3409,
+    "errors": {}
+   },
+   "progress": {
+    "count": 4,
+    "total_seconds": 0.0025,
+    "max_seconds": 0.000991,
+    "first_at": 0.0143,
+    "last_end_at": 27.338,
+    "errors": {}
+   }
+  },
+  "loop_entries": 17
+ },
+ "loop_statements_detail": [
+  {
+   "label": "other",
+   "at": 0.0042,
+   "seconds": 0.001432
+  },
+  {
+   "label": "set_tenant",
+   "at": 0.0091,
+   "seconds": 0.000257
+  },
+  {
+   "label": "set_tenant",
+   "at": 0.0105,
+   "seconds": 0.000224
+  },
+  {
+   "label": "other",
+   "at": 0.0107,
+   "seconds": 0.001438
+  },
+  {
+   "label": "progress",
+   "at": 0.0143,
+   "seconds": 0.000382
+  },
+  {
+   "label": "progress",
+   "at": 22.5042,
+   "seconds": 0.000991
+  },
+  {
+   "label": "progress",
+   "at": 26.1323,
+   "seconds": 0.000636
+  },
+  {
+   "label": "set_tenant",
+   "at": 27.3237,
+   "seconds": 0.000453
+  },
+  {
+   "label": "other",
+   "at": 27.3242,
+   "seconds": 0.000708
+  },
+  {
+   "label": "other",
+   "at": 27.325,
+   "seconds": 0.000568
+  },
+  {
+   "label": "set_tenant",
+   "at": 27.3335,
+   "seconds": 0.00025
+  },
+  {
+   "label": "set_tenant",
+   "at": 27.3344,
+   "seconds": 0.000258
+  },
+  {
+   "label": "other",
+   "at": 27.3347,
+   "seconds": 0.000499
+  },
+  {
+   "label": "progress",
+   "at": 27.3375,
+   "seconds": 0.000458
+  },
+  {
+   "label": "set_tenant",
+   "at": 27.3407,
+   "seconds": 0.000234
+  },
+  {
+   "label": "other",
+   "at": 27.3409,
+   "seconds": 0.000332
+  },
+  {
+   "label": "other",
+   "at": 27.3413,
+   "seconds": 0.000393
+  }
+ ],
+ "heartbeat": {
+  "beats": [],
+  "beats_total": 0,
+  "beats_57014": 0,
+  "beats_raised": 0,
+  "log_heartbeat_failed_querycanceled": 0,
+  "log_assuming_it_is_lost": 0,
+  "max_beat_seconds": null
+ },
+ "peak_rss_bytes": 137134080,
+ "peak_workdir_bytes": 5658007,
+ "workdir_samples": 56,
+ "dry_run": {
+  "distinct_chunks": 3860,
+  "tokens": 1658854,
+  "max_tokens_one_chunk": 8000,
+  "projected_usd_one_pass": "0.165885"
+ }
+}

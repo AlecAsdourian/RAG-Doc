@@ -1,0 +1,210 @@
+{
+ "record": "dry-miniflux",
+ "written_at": "2026-10-06T21:08:57.748102+00:00",
+ "mode": "no-embed",
+ "job_type": "full_ingest",
+ "job_type_note": null,
+ "repository": {
+  "full_name": "miniflux/v2",
+  "sha": "76889f08b12c2577b37e524e645afa5dd46ff050",
+  "branch": "main"
+ },
+ "copies": 1,
+ "workers": 1,
+ "worker_settings": {
+  "lease_s": 300.0,
+  "heartbeat_s": 60.0,
+  "heartbeat_statement_timeout_ms": 15000,
+  "max_job_duration_s": 7200.0
+ },
+ "host": {
+  "hostname": "29f148aa87bb",
+  "platform": "Linux-6.6.87.1-microsoft-standard-WSL2-x86_64-with-glibc2.41",
+  "python": "3.11.16",
+  "cpus": 16,
+  "mem_bytes": 33185533952,
+  "postgres": "16.15 (Debian 16.15-1.pgdg12+2)",
+  "pgvector": "0.8.6",
+  "max_connections": 100,
+  "docker_host_note": "Windows 11 Pro 10.0.26200, Docker Desktop 29.1.3 VM (16 CPUs, 31 GiB), host 16 cores 63 GiB"
+ },
+ "wall_seconds": 8.269,
+ "jobs": [
+  {
+   "label": "miniflux",
+   "job_id": "5cda1e1e-5fb2-43d2-9bc9-86d90964c202",
+   "repository_id": "01eae048-d980-4ddb-a6d4-a5a25754990a",
+   "organization_id": "e2d5aef2-5e65-4ba2-8f62-bf2ecfe48c91",
+   "partition": 40,
+   "final": {
+    "state": "queued",
+    "attempts": 1,
+    "last_stage": "embed"
+   },
+   "last_error": "DryRunStop: dry run: 3580 distinct chunks, 683547 tokens counted",
+   "progress": {
+    "chunks": 3600,
+    "skipped": {
+     "symlink": 1,
+     "lockfile": 1,
+     "unsupported": 213
+    },
+    "files_parsed": 443,
+    "parse_errors": 0,
+    "files_indexable": 443
+   },
+   "stages": {
+    "marks": {
+     "claim": 1791320929.4598904,
+     "fetch": 1791320929.468059,
+     "parse": 1791320930.453342,
+     "embed": 1791320936.3881745
+    },
+    "seconds": {
+     "claim_to_fetch": 0.0082,
+     "fetch": 0.9853,
+     "parse": 5.9348
+    }
+   },
+   "archive_bytes": 985649,
+   "chunks_stored": 0,
+   "distinct_stored": 0
+  }
+ ],
+ "fetch_expanded_lines": [
+  "fetched miniflux/v2@76889f08b12c: 443 indexable files, 793 members, 5488640 bytes expanded (4906578 declared), skipped={'lockfile': 1, 'symlink': 1, 'unsupported': 213}"
+ ],
+ "parse": {
+  "files": 443,
+  "bytes_expanded_files": 2522785,
+  "chunks": 3600,
+  "chunks_by_language": {
+   "markdown": 41,
+   "go": 3456,
+   "python": 5,
+   "javascript": 98
+  }
+ },
+ "github_events": [
+  {
+   "event": "resolve_head",
+   "t": 1791320929.4701176
+  },
+  {
+   "event": "tarball_redirect",
+   "t": 1791320929.4704182
+  },
+  {
+   "event": "download_start",
+   "t": 1791320929.4705493
+  },
+  {
+   "event": "download_end",
+   "t": 1791320930.210838,
+   "bytes": 985649
+  },
+  {
+   "event": "revoke",
+   "t": 1791320930.4508483
+  }
+ ],
+ "statements": {
+  "loop": {
+   "other": {
+    "count": 4,
+    "total_seconds": 0.0043,
+    "max_seconds": 0.002005,
+    "first_at": 0.0047,
+    "last_end_at": 7.4907,
+    "errors": {}
+   },
+   "set_tenant": {
+    "count": 3,
+    "total_seconds": 0.0009,
+    "max_seconds": 0.000362,
+    "first_at": 0.0097,
+    "last_end_at": 7.4897,
+    "errors": {}
+   },
+   "progress": {
+    "count": 3,
+    "total_seconds": 0.0016,
+    "max_seconds": 0.000605,
+    "first_at": 0.016,
+    "last_end_at": 6.9359,
+    "errors": {}
+   }
+  },
+  "loop_entries": 10
+ },
+ "loop_statements_detail": [
+  {
+   "label": "other",
+   "at": 0.0047,
+   "seconds": 0.002005
+  },
+  {
+   "label": "set_tenant",
+   "at": 0.0097,
+   "seconds": 0.000244
+  },
+  {
+   "label": "set_tenant",
+   "at": 0.0117,
+   "seconds": 0.000362
+  },
+  {
+   "label": "other",
+   "at": 0.0121,
+   "seconds": 0.001406
+  },
+  {
+   "label": "progress",
+   "at": 0.016,
+   "seconds": 0.000413
+  },
+  {
+   "label": "progress",
+   "at": 1.0009,
+   "seconds": 0.000597
+  },
+  {
+   "label": "progress",
+   "at": 6.9353,
+   "seconds": 0.000605
+  },
+  {
+   "label": "set_tenant",
+   "at": 7.4894,
+   "seconds": 0.000327
+  },
+  {
+   "label": "other",
+   "at": 7.4898,
+   "seconds": 0.00052
+  },
+  {
+   "label": "other",
+   "at": 7.4903,
+   "seconds": 0.000405
+  }
+ ],
+ "heartbeat": {
+  "beats": [],
+  "beats_total": 0,
+  "beats_57014": 0,
+  "beats_raised": 0,
+  "log_heartbeat_failed_querycanceled": 0,
+  "log_assuming_it_is_lost": 0,
+  "max_beat_seconds": null
+ },
+ "peak_rss_bytes": 121044992,
+ "peak_workdir_bytes": 0,
+ "workdir_samples": 16,
+ "dry_run": {
+  "distinct_chunks": 3580,
+  "tokens": 683547,
+  "max_tokens_one_chunk": 4296,
+  "projected_usd_one_pass": "0.068355"
+ }
+}
