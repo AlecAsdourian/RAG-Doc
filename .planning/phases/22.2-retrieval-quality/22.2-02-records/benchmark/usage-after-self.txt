@@ -1,0 +1,14 @@
+2026-10-06 15:24:29,961 workers.embeddings.openai_client Generating batch embeddings for 100 texts (29847 total tokens)
+2026-10-06 15:24:31,383 workers.embeddings.openai_client Batch embeddings generated: 100 embeddings, 29847 tokens, ~$0.002985 cost
+2026-10-06 15:24:31,413 workers.embeddings.openai_client Generating batch embeddings for 100 texts (25927 total tokens)
+2026-10-06 15:24:32,499 workers.embeddings.openai_client Batch embeddings generated: 100 embeddings, 25927 tokens, ~$0.002593 cost
+2026-10-06 15:24:32,532 workers.embeddings.openai_client Generating batch embeddings for 100 texts (26903 total tokens)
+2026-10-06 15:24:33,667 workers.embeddings.openai_client Batch embeddings generated: 100 embeddings, 26903 tokens, ~$0.002690 cost
+2026-10-06 15:24:33,712 workers.embeddings.openai_client Generating batch embeddings for 100 texts (34280 total tokens)
+2026-10-06 15:24:34,709 workers.embeddings.openai_client Batch embeddings generated: 100 embeddings, 34280 tokens, ~$0.003428 cost
+2026-10-06 15:24:34,772 workers.embeddings.openai_client Generating batch embeddings for 100 texts (36023 total tokens)
+2026-10-06 15:24:35,274 workers.embeddings.openai_client Batch embeddings generated: 100 embeddings, 36023 tokens, ~$0.003602 cost
+2026-10-06 15:24:35,344 workers.embeddings.openai_client Generating batch embeddings for 100 texts (56589 total tokens)
+2026-10-06 15:24:36,131 workers.embeddings.openai_client Batch embeddings generated: 100 embeddings, 56589 tokens, ~$0.005659 cost
+2026-10-06 15:24:36,146 workers.embeddings.openai_client Generating batch embeddings for 37 texts (13195 total tokens)
+2026-10-06 15:24:36,460 workers.embeddings.openai_client Batch embeddings generated: 37 embeddings, 13195 tokens, ~$0.001320 cost

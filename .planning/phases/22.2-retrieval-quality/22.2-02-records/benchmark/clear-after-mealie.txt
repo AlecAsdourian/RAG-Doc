@@ -1,0 +1,4 @@
+$ rag_quality_harness.py --corpus mealie --corpora-dir <scratch>/w2202-corpora --self-root <scratch>/w2202-base --self-commit 5bb86930d4f2bcae575888153fabc7e2f010e4f3 --clear
+[*] cleared mealie: runs=0 chunks=0
+exit 0
+
