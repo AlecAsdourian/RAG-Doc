@@ -64,6 +64,7 @@ from workers.db import require_tenant
 from workers.jobs import Unfinished, Worker, claim, new_worker_id
 from workers.jobs.runtime import (
     CONNECT_TIMEOUT_SECONDS,
+    DEFAULT_HEARTBEAT_STATEMENT_TIMEOUT,
     HEARTBEAT_APPLICATION_NAME,
     LOOP_APPLICATION_NAME,
     InstallationSuspended,
@@ -2184,6 +2185,11 @@ def test_a_write_results_that_raises_fails_the_job_instead_of_stranding_it(
 # =====================================================================
 
 
+#: `SHOW statement_timeout` renders whole seconds as "5s": the constant, as
+#: Postgres shows it, so the pin follows `DEFAULT_HEARTBEAT_STATEMENT_TIMEOUT`.
+_SHOWN_HEARTBEAT_TIMEOUT = f"{int(DEFAULT_HEARTBEAT_STATEMENT_TIMEOUT.total_seconds())}s"
+
+
 def test_the_heartbeat_keeps_its_callers_identity(conn, app_dsn, with_two_orgs, monkeypatch):
     """The `statement_timeout` is MERGED into the DSN's options, never replacing them.
 
@@ -2240,7 +2246,7 @@ def test_the_heartbeat_keeps_its_callers_identity(conn, app_dsn, with_two_orgs, 
     assert beat_user == loop_user, "both connections must be the same role"
     assert beat_work_mem == "7MB", "the operator's option was dropped from the heartbeat's"
     assert loop_work_mem == "7MB"
-    assert beat_timeout == "15s", "P16: the heartbeat's statement_timeout"
+    assert beat_timeout == _SHOWN_HEARTBEAT_TIMEOUT, "P16: the heartbeat's statement_timeout"
     assert loop_timeout == "0", "the loop's connection carries no statement_timeout"
 
 
@@ -2300,7 +2306,7 @@ def test_the_heartbeat_keeps_an_identity_set_through_pgoptions(
         f"the heartbeat connected as {beat_user!r}: its options made libpq skip PGOPTIONS"
     )
     assert beat_work_mem == "7MB"
-    assert beat_timeout == "15s"
+    assert beat_timeout == _SHOWN_HEARTBEAT_TIMEOUT
 
 
 def test_the_merged_options_follow_libpqs_pgoptions_rule(monkeypatch):
@@ -2550,7 +2556,11 @@ def test_the_entrypoint_refuses_without_the_ingest_configuration(tmp_path, missi
 
 
 def test_the_deployed_worker_has_a_bound_and_never_warns_about_one(monkeypatch, caplog):
-    """P16: `__main__` builds the worker with two hours and fifteen seconds.
+    """P16: `__main__` builds the worker with the measured constants (22.1-05).
+
+    The pins compare against `DEFAULT_MAX_JOB_DURATION` and
+    `DEFAULT_HEARTBEAT_STATEMENT_TIMEOUT` rather than restating them: a pin
+    that restates a number is a second authority.
 
     The unset-bound WARNING a bare `Worker` gives (see
     `test_an_unset_max_job_duration_is_announced_rather_than_silent`) must
@@ -2567,16 +2577,18 @@ def test_the_deployed_worker_has_a_bound_and_never_warns_about_one(monkeypatch, 
     caplog.set_level(logging.INFO, logger="workers.jobs.runtime")
 
     worker = build_deployed_worker("postgresql://nobody:nobody@127.0.0.1:1/nothing", REGISTRY, {})
-    assert worker.max_job_duration == timedelta(hours=2), "P16, provisional until 22.1-05"
-    assert worker.heartbeat_statement_timeout == timedelta(seconds=15)
+    assert worker.max_job_duration == runtime_module.DEFAULT_MAX_JOB_DURATION, "P16, measured by 22.1-05"
+    assert worker.heartbeat_statement_timeout == runtime_module.DEFAULT_HEARTBEAT_STATEMENT_TIMEOUT
     assert sorted(worker._handlers) == ["full_ingest", "incremental"]
 
     with pytest.raises(runtime_module.DatabaseUnavailable):
         worker.run(threading.Event())
 
     startup = [r.getMessage() for r in caplog.records if "starting: job_types=" in r.getMessage()]
-    assert startup and "max_job_duration=7200s" in startup[0], startup
-    assert "heartbeat_statement_timeout=15000ms" in startup[0], startup
+    bound = int(runtime_module.DEFAULT_MAX_JOB_DURATION.total_seconds())
+    timeout_ms = int(runtime_module.DEFAULT_HEARTBEAT_STATEMENT_TIMEOUT.total_seconds() * 1000)
+    assert startup and f"max_job_duration={bound}s" in startup[0], startup
+    assert f"heartbeat_statement_timeout={timeout_ms}ms" in startup[0], startup
     assert not [
         r for r in caplog.records if "no upper bound on handler runtime" in r.getMessage()
     ], "the deployed worker must never run without a bound"
@@ -2625,4 +2637,6 @@ def test_the_entrypoint_sweeps_stale_job_directories_once_before_it_runs(monkeyp
     monkeypatch.setenv("WORKER_WORKDIR", str(tmp_path))
 
     assert entrypoint.main([]) == 1, "an unreachable database is exit 1, after the sweep"
-    assert swept == [(str(tmp_path), timedelta(hours=2) + runtime_module.DEFAULT_LEASE)], swept
+    assert swept == [
+        (str(tmp_path), runtime_module.DEFAULT_MAX_JOB_DURATION + runtime_module.DEFAULT_LEASE)
+    ], swept

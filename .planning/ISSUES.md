@@ -4,6 +4,17 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 ## Open Enhancements
 
+### ISS-041: A worker at U6's chunk cap peaks at about 9.7 GB of memory, because every vector is held as a Python list of floats
+
+- **Discovered:** 2026-10-06, by 22.1-05's at-cap runs (rule N7, `22.1-05-operating-numbers.md`). **Measured**, `ru_maxrss` in `python:3.11-slim` through the real `Worker`: **9,278–9,291 MiB (9.1 GiB, 9.7 GB) at 98,859 chunks** on every one of the six at-cap runs (before and after A-L3's fix), 4,854 MiB at 49,819, 2,487 MiB at 24,807, 1,038 MiB at 9,825; and **4,542 MiB (4.4 GiB) for django's real ingest** (48,704 chunks). Roughly linear: about 96 KiB per chunk at the cap. Records: `22.1-05-records/at-cap/` and `real/real-django.json`.
+- **Type:** Performance / Operations
+- **Priority:** Before Phase 24 sizes a host. N7's rule files this because the peak exceeds 4 GB; the rule does not change U6's caps, which are the user's.
+- **Why:** `_embed` keeps every distinct chunk's vector as a Python `list` of 1,536 `float`s until `write_results` runs (about 49 KB each, so about 4.8 GB of vectors at 99,000 distinct chunks), the chunks and their texts are held through the store, and `insert_chunks_on` builds every row's vector literal before `execute_batch` sends the first page. The whole fetched tree is held from fetch to store as well (up to 500 MB).
+- **Impact:** a host needs `N` × ~9.7 GB plus headroom for `N` workers at the cap. An OOM kill is a crash, retried up to five times and then dead-lettered with `last_error` NULL (`22-05-SUMMARY.md` §16), so an undersized host turns every large repository into five wasted ingests.
+- **Fix (proposed by N7):** hold vectors as one `float32` array (numpy, 6 KB a vector: about 0.6 GB at the cap) keyed by an index rather than a dict of lists; stream the store in pages instead of building every literal first; and stream the tree (parse file by file and drop each file's content) instead of holding all of it. Each is measurable with `scripts/measure/ingest_timings.py` and the at-cap archives (`scripts/measure/at_cap.py`).
+- **Related:** 22.1-05's operating numbers (N4 records memory as a host constraint, not a pool limit); 22.1-02 (per-file incremental store) will change the shape of the store anyway.
+- **Owner:** Phase 24 (host sizing), or earlier if 22.1-02 rewrites the store.
+
 ### ISS-040: A marked refusal from another deployment's token route reads as a lost lease, so every job dies silently
 
 - **Discovered:** 2026-09-29, by PR #58's review (22-05), reviewer A's L2. Reasoned from the code and from a signature one test already shows; not measured against two real deployments.

@@ -1,0 +1,17 @@
+{
+  "archive": "cap-99000.tar.gz",
+  "full_name": "measure/cap-99000",
+  "sha": "ea3b3560cbbf028a341088da19b713d7c9cca8ca",
+  "branch": "main",
+  "expected_chunks": 98859,
+  "files": 6243,
+  "expanded_bytes": 40211038,
+  "archive_bytes": 7261096,
+  "copies_started": 3,
+  "source": {
+    "full_name": "django/django",
+    "sha": "8c34887b1ad8bb3ec61c6e713442dab3c643d557",
+    "chunks_per_full_copy": 48704,
+    "indexable_files": 2984
+  }
+}

@@ -167,17 +167,18 @@ unrepresentable, and `defer` rather than `fail` means an operator's
 restarts cannot walk a healthy repository towards `dead`.
 
 =====================================================================
-WORKER-POOL SIZING (P16: provisional until 22.1-05 measures it)
+WORKER-POOL SIZING (P16, measured by 22.1-05 on 2026-10-06)
 =====================================================================
 
 ONE JOB AT A TIME PER PROCESS. Scale by running more processes; the claim
 is safe across any number of them (`FOR UPDATE SKIP LOCKED`, pinned from
-Python by 21-06's barrier test). 22-05 set the first numbers, PROVISIONAL
-UNTIL 22.1-05 replaces them with per-stage timings: TWO processes (four
-connections, since each holds the loop's and the heartbeat's while a job
-runs), a two-hour `max_job_duration` and a fifteen-second heartbeat
+Python by 21-06's barrier test). 22-05 set provisional numbers; 22.1-05
+replaced them with values its committed rules give from per-stage timings:
+ONE process (two connections, the loop's and the heartbeat's while a job
+runs; the OpenAI key's token limit is what bounds the pool), a
+`max_job_duration` of three hours forty-five and a five-second heartbeat
 `statement_timeout`. Each is a named constant below with an environment
-override, and `docs/api-ingestion-jobs.md` records where each came from.
+override; `22.1-05-operating-numbers.md` has the rules and the arithmetic.
 """
 
 from __future__ import annotations
@@ -307,42 +308,68 @@ HEARTBEAT_JOIN_TIMEOUT = timedelta(seconds=30)
 
 
 # =====================================================================
-# P16: the operating numbers. PROVISIONAL UNTIL 22.1-05.
+# P16: the operating numbers. Measured 2026-10-06 (22.1-05).
 # =====================================================================
 #
-# 22-05 sets these so the worker can run at all; 22.1-05 replaces them with
-# numbers derived from per-stage timings over the three benchmark corpora
-# and one large public repository. Each has an environment override, read
-# by `workers/__main__`, so an operator can move one without a release.
+# Each is the value its rule gives, the rule committed before anything was
+# measured: `.planning/phases/22.1-symbols-incremental-progress-graph/
+# 22.1-05-operating-numbers.md` has the rules, the arithmetic and the
+# records. Re-measure on its triggers (Phase 24's host, a change of
+# embedding model, OpenAI key or tier, or U6's caps, 22.2-02 moving chunk
+# counts by more than 20 %, 22.1-02's incremental ingest). Each has an
+# environment override, read by `workers/__main__`, so an operator can move
+# one without a release. `DEFAULT_LEASE` and `DEFAULT_HEARTBEAT` above were
+# re-checked by the same record (N2) and stay as they are.
 
-#: PROVISIONAL UNTIL 22.1-05. How long a handler may run before the
-#: heartbeat stops extending its lease (see `Worker`'s `max_job_duration`).
-#: Two hours: about three times the extrapolated end-to-end time of a
-#: 50,000-chunk repository, under twice that of U6's 100,000-chunk cap, and
-#: sixty times the largest benchmark repository (22-CONTEXT P16). The first
-#: real data point is 22-05's live proof, recorded in 22-05-SUMMARY.md.
+#: Measured 2026-10-06, `22.1-05-operating-numbers.md` (N1); re-measure on
+#: its triggers. How long a handler may run before the heartbeat stops
+#: extending its lease (see `Worker`'s `max_job_duration`). Three hours
+#: forty-five: three times `T_cap` (4,211 s), the end-to-end time of a job at
+#: U6's caps built from measured pieces -- a 500 MB fetch at the slowest
+#: measured rate (494 s), the parse at the chunk cap (712 s), 100,000 chunks
+#: embedded at the most tokens per chunk and the slowest single-worker rate
+#: measured (2,708 s; the key's token limit throttles one worker) and the
+#: store at the cap after A-L3's fix (297 s) -- rounded up to 15 minutes.
 #: Override: `WORKER_MAX_JOB_DURATION_SECONDS`.
-DEFAULT_MAX_JOB_DURATION = timedelta(hours=2)
+DEFAULT_MAX_JOB_DURATION = timedelta(hours=3, minutes=45)
 MAX_JOB_DURATION_ENV = "WORKER_MAX_JOB_DURATION_SECONDS"
 
-#: PROVISIONAL UNTIL 22.1-05. The heartbeat connection's `statement_timeout`:
-#: fifteen seconds, a quarter of the sixty-second beat, so a beat that
-#: BLOCKS (on the job row's lock, say) raises `57014` and counts as a
-#: failure instead of silencing both give-up rules. Four blocked beats plus
-#: their waits still fit inside the five-minute lease. The loop's connection
+#: Measured 2026-10-06, `22.1-05-operating-numbers.md` (N3); re-measure on
+#: its triggers. The heartbeat connection's `statement_timeout`: five
+#: seconds, the larger of `CONNECT_TIMEOUT_SECONDS` (so a beat's two waits
+#: share one scale) and ten times the longest beat measured after A-L3's fix
+#: (0.17 s). A beat that BLOCKS still raises `57014` and counts as a failure
+#: instead of silencing both give-up rules, and four blocked beats plus their
+#: waits fit inside the lease (4 x 60 + 5 < 300). The loop's connection
 #: carries no timeout: its statements are the claim and the transitions,
 #: and `complete` runs `write_results`, whose size is the repository's.
 #: Override: `WORKER_HEARTBEAT_STATEMENT_TIMEOUT_MS`.
-DEFAULT_HEARTBEAT_STATEMENT_TIMEOUT = timedelta(seconds=15)
+DEFAULT_HEARTBEAT_STATEMENT_TIMEOUT = timedelta(seconds=5)
 HEARTBEAT_STATEMENT_TIMEOUT_ENV = "WORKER_HEARTBEAT_STATEMENT_TIMEOUT_MS"
 
-#: PROVISIONAL UNTIL 22.1-05. How many worker processes to run: two, so four
-#: connections while both are busy. It is not read by this module -- a
-#: process runs one job at a time and scales by running more of itself --
-#: but it is the number `docker-compose.yml`'s `workers` service declares
-#: (`deploy.replicas`, override `WORKER_REPLICAS`), and it lives here so the
-#: three P16 numbers are in one place.
-PROVISIONAL_POOL_SIZE = 2
+#: Measured 2026-10-06, `22.1-05-operating-numbers.md` (N4); re-measure on
+#: its triggers. How many worker processes to run: ONE. A single worker
+#: embedding django ran at 952,000 tokens a minute against the key's
+#: 1,000,000 (and drew 148 HTTP 429s the SDK retried silently), so the
+#: OpenAI key, not Postgres, is the limit: N = max(1, min(floor(0.7 x 1.05),
+#: floor(0.25 x 100 / 2))) = 1, confirmed by a run with no 429. More workers
+#: need a higher-tier key first. Memory is a host constraint, not part of
+#: N: about 9.7 GB per worker at U6's chunk cap (ISS-041). It is not read by
+#: this module -- a process runs one job at a time and scales by running more
+#: of itself -- but it is the number `docker-compose.yml`'s `workers` service
+#: declares (`deploy.replicas`, override `WORKER_REPLICAS`), and it lives
+#: here so the P16 numbers are in one place.
+DEFAULT_POOL_SIZE = 1
+
+#: Measured 2026-10-06, `22.1-05-operating-numbers.md` (N6); re-measure on
+#: its triggers. Compose's `stop_grace_period` for `workers`: six minutes,
+#: the larger of two minutes and the store at the chunk cap (297 s) plus
+#: 30 s, rounded up to the minute. `write_results` has no checkpoint, so a
+#: worker that gets SIGTERM mid-store finishes the store first; a shorter
+#: grace would SIGKILL a store at the cap and roll it back on every
+#: shutdown. Not read by this module; `docker-compose.yml` declares it, and
+#: `tests/test_compose_environment.py` pins the two together.
+DEFAULT_STOP_GRACE_PERIOD = timedelta(minutes=6)
 
 
 # =====================================================================
@@ -834,15 +861,15 @@ class Worker:
             says so at WARN when it starts (PR #42's n2: a hung handler's
             lease is extended forever, nothing can reclaim, the repository
             sits `syncing`, and this worker's sweeper never runs again).
-            `workers/__main__` passes `DEFAULT_MAX_JOB_DURATION` -- two
-            hours, provisional until 22.1-05 (P16) -- so a deployed worker
+            `workers/__main__` passes `DEFAULT_MAX_JOB_DURATION` -- P16,
+            measured by 22.1-05 -- so a deployed worker
             always has one. The default stays None for callers that build a
             `Worker` directly, so the omission stays visible rather than
             being papered over with a number nobody chose for them.
         heartbeat_statement_timeout: the heartbeat connection's
             `statement_timeout`, so a beat that BLOCKS raises `57014` and
-            counts as a failure. `DEFAULT_HEARTBEAT_STATEMENT_TIMEOUT` (15 s,
-            P16, provisional until 22.1-05). It is MERGED into the DSN's own
+            counts as a failure. `DEFAULT_HEARTBEAT_STATEMENT_TIMEOUT` (P16,
+            measured by 22.1-05). It is MERGED into the DSN's own
             `options`; see `_merged_options_dsn`. None means no timeout,
             which is 21-06's behaviour and leaves a blocked beat invisible.
     """

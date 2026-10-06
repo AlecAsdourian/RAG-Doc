@@ -305,19 +305,28 @@ one-repository, read-only, one-hour token per job, and the worker revokes it
 when the fetch ends (`docs/internal-api.md`). The internal listener only
 starts when the backend has the App credentials.
 
-**The operating numbers are provisional until 22.1-05 measures them** (P16),
-and each has an override: `max_job_duration` two hours
+**The operating numbers were measured by 22.1-05 on 2026-10-06** (P16;
+the rules, the arithmetic and the re-measure triggers are in
+`.planning/phases/22.1-symbols-incremental-progress-graph/22.1-05-operating-numbers.md`),
+and each has an override: `max_job_duration` three hours forty-five
 (`WORKER_MAX_JOB_DURATION_SECONDS`), the heartbeat's `statement_timeout`
-fifteen seconds (`WORKER_HEARTBEAT_STATEMENT_TIMEOUT_MS`), and two worker
-processes (`WORKER_REPLICAS`, read by compose).
+five seconds (`WORKER_HEARTBEAT_STATEMENT_TIMEOUT_MS`), and **one** worker
+process (`WORKER_REPLICAS`, read by compose): one worker already runs at
+95 % of the OpenAI key's token limit, so a second needs a higher-tier key.
 
 **Give each worker process about 1 GB of free disk** in `WORKER_WORKDIR`
-(default: the system temporary directory's `rag-doc-worker`). The archive
-(up to U6's 500 MB) is kept until extraction ends, and the extracted tree can
-reach 500 MB plus one file (1 MB) before the expansion counters stop it: a
-dense decompression bomb is stopped *at* the cap, not before it (22-04).
-Job directories are removed when each fetch ends, and a crashed run's are
-swept when the next worker starts.
+(default: the system temporary directory's `rag-doc-worker`). **Measured:**
+an archive at U6's 500 MB cap of incompressible files peaked at 902 MiB
+(0.95 GB) in the job directory — the archive (472 MiB) is kept until
+extraction ends, beside the extracted tree. A dense decompression bomb is
+stopped *at* the cap, not before it (22-04). Job directories are removed when
+each fetch ends, and a crashed run's are swept when the next worker starts.
+
+**Give each worker process memory for the repository it may ingest.**
+**Measured** peak RSS: 0.5–0.7 GiB for the benchmark corpora, 4.4 GiB for
+django (48,704 chunks), and **9.1 GiB (9.7 GB) at U6's 100,000-chunk cap**,
+because every vector is held as a Python list until the store (ISS-041). An
+out-of-memory kill is a crash, retried up to five times.
 
 **Under compose the worker is behind a profile, `ingest`, and a plain
 `docker compose up` never starts it.** With the backend not starting under
@@ -329,9 +338,11 @@ the backend's internal listener is up on the compose network:
 docker compose --profile ingest up workers
 ```
 
-**Stopping it takes up to two minutes, on purpose.** `stop_grace_period: 2m`
+**Stopping it takes up to six minutes, on purpose.** `stop_grace_period: 6m`
 gives a worker time to finish the stretch it is in and hand its job back with
-the attempt; Docker's default ten seconds would SIGKILL it mid-stage. A
+the attempt — including a store, which has no checkpoint and took up to
+297 s at U6's chunk cap (22.1-05, N6); Docker's default ten seconds would
+SIGKILL it mid-stage. A
 killed worker runs no `finally`: its job stays `running` until the lease
 lapses (five minutes) and is then reclaimed at the cost of an attempt, and its
 token is not revoked — it dies with the process, and GitHub ends it within the

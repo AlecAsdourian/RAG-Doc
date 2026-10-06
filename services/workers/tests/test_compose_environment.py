@@ -135,29 +135,43 @@ def test_the_workers_service_never_carries_the_app_key():
     assert leaked == [], f"the worker's environment carries App credentials by name: {leaked}"
 
 
-def test_the_workers_service_has_what_it_needs_and_the_provisional_pool():
+def test_the_workers_service_has_what_it_needs_and_the_measured_pool():
+    """P16's pool size, measured by 22.1-05 (N4): compared with the constant,
+    never restated, so the number has one authority."""
+    from workers.jobs.runtime import DEFAULT_POOL_SIZE
+
     shape = _shape("ingest")
     names = shape["workers_env_names"]
     for needed in ("DATABASE_URL", "OPENAI_API_KEY", "INTERNAL_API_URL"):
         assert needed in names, f"{needed} is missing from the worker's environment (names: {names})"
     assert shape["workers_profiles"] == ["ingest"]
     assert shape["workers_depends_on"] == ["postgres"]
-    assert shape["workers_replicas"] == 2, "P16: two worker processes, provisional until 22.1-05"
+    assert shape["workers_replicas"] == DEFAULT_POOL_SIZE, (
+        f"compose declares {shape['workers_replicas']} workers; P16's measured pool is {DEFAULT_POOL_SIZE}"
+    )
     assert shape["workers_ports"] == 0, "the worker serves nothing"
 
 
 def test_the_workers_service_stops_gracefully_and_restarts_a_bounded_number_of_times():
-    """PR #58's review, A-L4: two minutes to stop, and a bounded restart.
+    """PR #58's review, A-L4, and 22.1-05's N6: a grace long enough for a
+    store at the chunk cap, and a bounded restart.
 
     Docker's default ten seconds would SIGKILL a worker mid-stage on every
-    `docker compose stop`, skipping each `finally`; and with no restart
-    policy, the exit 1 `workers/__main__` gives for an unreachable database
-    restarts nothing. The bound keeps an exit-2 refusal from looping. The
-    reasons for both values are beside them in `docker-compose.yml`.
+    `docker compose stop`, skipping each `finally`; and `write_results` has
+    no checkpoint, so a grace shorter than a store at the cap kills and rolls
+    it back on every shutdown. With no restart policy, the exit 1
+    `workers/__main__` gives for an unreachable database restarts nothing;
+    the bound keeps an exit-2 refusal from looping. The reasons for both
+    values are beside them in `docker-compose.yml`; the grace is compared
+    with `DEFAULT_STOP_GRACE_PERIOD`, its one authority.
     """
+    from workers.jobs.runtime import DEFAULT_STOP_GRACE_PERIOD
+
     shape = _shape("ingest")
     grace = shape["workers_stop_grace_period"]
-    assert _duration_seconds(grace) == 120.0, f"stop_grace_period resolved to {grace!r}, not two minutes"
+    assert _duration_seconds(grace) == DEFAULT_STOP_GRACE_PERIOD.total_seconds(), (
+        f"stop_grace_period resolved to {grace!r}, not {DEFAULT_STOP_GRACE_PERIOD}"
+    )
     assert shape["workers_restart"] == "on-failure:5", shape["workers_restart"]
 
 
