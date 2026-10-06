@@ -42,3 +42,9 @@ RESULT: 8 files compared, 0 differ or miss a field
 
 The eight census files the tool wrote are committed beside this file, in census-reproduction/, so the extra
 fields' values can be read without re-running it.
+
+RE-RUN on the final code. chunk_census.py changed once after this run (2c39224: the log capture scoped to each
+census() call, so a test session's other log readers are not silenced; no counted field changed). The same command
+was run again from a clean export of 2c392244c146, with the same --self-root, --corpora and venv: exit 0, and its
+output was identical, line for line, to the output above (`diff` printed nothing); each of its eight census files
+was equal, as parsed JSON, to the one committed in census-reproduction/.

@@ -68,3 +68,12 @@
    restored: sha256 f6ea03957c3a33f9 == pristine True; hash-object == HEAD blob True
    VERDICT T3-M2 the hash refusal neutered: KILLED (expected to fail: test_each_refusal_gives_2_and_compares_nothing[hash])
 
+== T1-M2 (re-run on the final chunk_census.py, after the log-scope fix) the raised handler detached: services/workers/scripts/rag_benchmarks/chunk_census.py
+   HEAD 2c392244c146, blob 286841042f3a; pristine sha256 7920c1cacfbaab03; hash-object == HEAD blob: True
+   mutation: '("raised", "Semantic parsing failed for "),' -> '("raised", "<detached by mutation>"),'
+   landed: True (mutated sha256 3cfcb84f43e78ae9; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_chunk_census.py: exit 1; 1 failed, 39 passed in 2.93s
+      FAILED tests/test_chunk_census.py::test_a_parser_that_raises_is_counted_as_raised
+   restored: sha256 7920c1cacfbaab03 == pristine True; hash-object == HEAD blob True
+   VERDICT T1-M2 (re-run on the final chunk_census.py, after the log-scope fix) the raised handler detached: KILLED (expected to fail: test_a_parser_that_raises_is_counted_as_raised)
+
