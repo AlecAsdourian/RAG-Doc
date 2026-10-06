@@ -146,7 +146,6 @@ Ingestion costs OpenAI credits; measurement is cheap and re-runnable.
 """
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -745,11 +744,9 @@ def refuse_compose(action: str, pg_dsn: str, allow_compose: bool,
         )
 
 
-def vector_sha256(vector: Sequence[float]) -> str:
-    """SHA-256 of the vector's JSON float list. Recorded per question; compare_runs.py
-    refuses two runs whose hashes differ, since different vectors make every
-    comparison meaningless."""
-    return hashlib.sha256(json.dumps(list(vector), separators=(",", ":")).encode("ascii")).hexdigest()
+# SHA-256 of a query vector's JSON float list, recorded per question. Defined
+# once, in chunk_digest.py, which decide.py checks cached vectors with (22.2-07).
+vector_sha256 = chunk_digest.vector_sha256
 
 
 class QueryVectors:
