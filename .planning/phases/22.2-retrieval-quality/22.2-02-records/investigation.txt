@@ -1,0 +1,82 @@
+=== self: 19 of 637 chunk keys changed between census-before and census-after
+=== miniflux: 0 of 2134 chunk keys changed between census-before and census-after
+
+--- miniflux mf-34 (confirm): symbol #4 -> #5
+    question: How does the web server pick a compression method from the client's Accept-Encoding header, and what happens if the client explicitly refuses uncompressed responses?
+    expected: internal/http/response/encoding.go  symbol acceptEncodingParser.Parse
+    before top 5:
+      #1 same    internal/http/response/builder.go function Builder.compress  rrf 0.016393; sim 0.728122, other side 0.728106 (delta +0.000016)
+      #2 same    internal/reader/fetcher/response_handler.go class_summary ResponseHandler  rrf 0.016129; sim 0.708003, other side 0.707905 (delta +0.000098)
+      #3 same    internal/http/response/encoding.go file_summary encoding.go  rrf 0.015873; sim 0.705229, other side 0.705229 (delta +0.000000) <file
+      #4 same    internal/http/response/encoding.go function acceptEncodingParser.Parse  rrf 0.015625; sim 0.703572, other side 0.703572 (delta +0.000000) <file <symbol
+      #5 same    client/request.go class_summary request  rrf 0.015385; sim 0.703572, other side 0.703580 (delta -0.000007)
+    after top 5:
+      #1 same    internal/http/response/builder.go function Builder.compress  rrf 0.016393; sim 0.728106, other side 0.728122 (delta -0.000016)
+      #2 same    internal/reader/fetcher/response_handler.go class_summary ResponseHandler  rrf 0.016129; sim 0.707905, other side 0.708003 (delta -0.000098)
+      #3 same    internal/http/response/encoding.go file_summary encoding.go  rrf 0.015873; sim 0.705229, other side 0.705229 (delta +0.000000) <file
+      #4 same    client/request.go class_summary request  rrf 0.015625; sim 0.703580, other side 0.703572 (delta +0.000007)
+      #5 same    internal/http/response/encoding.go function acceptEncodingParser.Parse  rrf 0.015385; sim 0.703572, other side 0.703572 (delta +0.000000) <file <symbol
+    chunks of either top 5 that the chunker changed: 0
+    verdict input: NOISE (no top-5 chunk changed)
+=== mealie: 869 of 2811 chunk keys changed between census-before and census-after
+
+--- mealie ml-03 (tuning): symbol #4 -> #5
+    question: How does the server work out how long to wait before kicking off its once-a-day housekeeping jobs?
+    expected: mealie/services/scheduler/scheduler_service.py  symbol schedule_daily
+    before top 5:
+      #1 same    mealie/routes/auth/auth_cache.py function AuthCache._prune  rrf 0.016393; sim 0.730846, other side 0.730922 (delta -0.000076)
+      #2 CHANGED mealie/services/scheduler/scheduler_service.py function SchedulerService.start  rrf 0.016129; sim 0.728920, other side 0.732616 (delta -0.003696) <file
+      #3 same    mealie/app.py function start_scheduler  rrf 0.015873; sim 0.725767, other side 0.725829 (delta -0.000062)
+      #4 same    mealie/services/scheduler/scheduler_service.py function schedule_daily  rrf 0.015625; sim 0.723413, other side 0.723413 (delta +0.000000) <file <symbol
+      #5 same    mealie/services/scheduler/scheduler_service.py class SchedulerService  rrf 0.015385; sim 0.723389, other side 0.723510 (delta -0.000121) <file
+    after top 5:
+      #1 CHANGED mealie/services/scheduler/scheduler_service.py function SchedulerService.start  rrf 0.016393; sim 0.732616, other side 0.728920 (delta +0.003696) <file
+      #2 same    mealie/routes/auth/auth_cache.py function AuthCache._prune  rrf 0.016129; sim 0.730922, other side 0.730846 (delta +0.000076)
+      #3 same    mealie/app.py function start_scheduler  rrf 0.015873; sim 0.725829, other side 0.725767 (delta +0.000062)
+      #4 same    mealie/services/scheduler/scheduler_service.py class SchedulerService  rrf 0.015625; sim 0.723510, other side 0.723389 (delta +0.000121) <file
+      #5 same    mealie/services/scheduler/scheduler_service.py function schedule_daily  rrf 0.015385; sim 0.723413, other side 0.723413 (delta +0.000000) <file <symbol
+    chunks of either top 5 that the chunker changed: 1
+      ('mealie/services/scheduler/scheduler_service.py', 'function', 'SchedulerService.start')
+    verdict input: a top-5 chunk changed
+
+--- mealie ml-32 (confirm): symbol #5 -> #MISS
+    question: How does the app tack details like the event type, the event's ID and a timestamp onto an outgoing Apprise notification address?
+    expected: mealie/services/event_bus_service/event_bus_listeners.py  symbol AppriseEventListener.update_urls_with_event_data
+    before top 5:
+      #1 same    mealie/services/event_bus_service/event_bus_listeners.py class AppriseEventListener  rrf 0.016393; sim 0.759805, other side 0.759818 (delta -0.000013) <file
+      #2 same    mealie/services/event_bus_service/event_bus_listeners.py class_summary AppriseEventListener  rrf 0.016129; sim 0.754059, other side 0.754004 (delta +0.000055) <file
+      #3 same    mealie/services/event_bus_service/publisher.py class ApprisePublisher  rrf 0.015873; sim 0.746275, other side 0.746268 (delta +0.000007)
+      #4 same    mealie/schema/household/group_events.py class GroupEventNotifierPrivate  rrf 0.015625; sim 0.745544, other side 0.745555 (delta -0.000012)
+      #5 CHANGED mealie/services/event_bus_service/event_bus_listeners.py function AppriseEventListener.update_urls_with_event_data  rrf 0.015385; sim 0.737325, other side 0.735275 (delta +0.002049) <file <symbol
+    after top 5:
+      #1 same    mealie/services/event_bus_service/event_bus_listeners.py class AppriseEventListener  rrf 0.016393; sim 0.759818, other side 0.759805 (delta +0.000013) <file
+      #2 same    mealie/services/event_bus_service/event_bus_listeners.py class_summary AppriseEventListener  rrf 0.016129; sim 0.754004, other side 0.754059 (delta -0.000055) <file
+      #3 same    mealie/services/event_bus_service/publisher.py class ApprisePublisher  rrf 0.015873; sim 0.746268, other side 0.746275 (delta -0.000007)
+      #4 same    mealie/schema/household/group_events.py class GroupEventNotifierPrivate  rrf 0.015625; sim 0.745555, other side 0.745544 (delta +0.000012)
+      #5 same    mealie/services/event_bus_service/publisher.py function ApprisePublisher.publish  rrf 0.015385; sim 0.735545, other side 0.735653 (delta -0.000108)
+    chunks of either top 5 that the chunker changed: 1
+      ('mealie/services/event_bus_service/event_bus_listeners.py', 'function', 'AppriseEventListener.update_urls_with_event_data')
+    verdict input: a top-5 chunk changed
+
+--- mealie ml-34 (confirm): file #1 -> #2; symbol #1 -> #2
+    question: When someone pastes a link to one of our recipes into a chat app or social network, where does the server put together the preview card's title, description and picture?
+    expected: mealie/routes/spa/__init__.py  symbol content_with_meta
+    before top 5:
+      #1 same    mealie/routes/spa/__init__.py function content_with_meta  rrf 0.016393; sim 0.745400, other side 0.745400 (delta +0.000000) <file <symbol
+      #2 CHANGED mealie/routes/recipe/recipe_crud_routes.py class_summary RecipeController  rrf 0.016129; sim 0.745319, other side 0.745230 (delta +0.000090)
+      #3 CHANGED mealie/routes/recipe/recipe_crud_routes.py function RecipeController.test_parse_recipe_url  rrf 0.015873; sim 0.744078, other side 0.745921 (delta -0.001843)
+      #4 CHANGED mealie/routes/recipe/recipe_crud_routes.py function RecipeController.scrape_image_url  rrf 0.015625; sim 0.740381, other side 0.732768 (delta +0.007614)
+      #5 same    mealie/schema/static/recipe_keys.py fixed_size mealie/schema/static/recipe_keys.py:1-50  rrf 0.015385; sim 0.739664, other side 0.739590 (delta +0.000074)
+    after top 5:
+      #1 CHANGED mealie/routes/recipe/recipe_crud_routes.py function RecipeController.test_parse_recipe_url  rrf 0.016393; sim 0.745921, other side 0.744078 (delta +0.001843)
+      #2 same    mealie/routes/spa/__init__.py function content_with_meta  rrf 0.016129; sim 0.745400, other side 0.745400 (delta +0.000000) <file <symbol
+      #3 CHANGED mealie/routes/recipe/recipe_crud_routes.py class_summary RecipeController  rrf 0.015873; sim 0.745230, other side 0.745319 (delta -0.000090)
+      #4 CHANGED mealie/db/models/recipe/recipe.py function receive_description  rrf 0.015625; sim 0.740739, other side 0.722748 (delta +0.017992)
+      #5 CHANGED mealie/routes/recipe/recipe_crud_routes.py class RecipeController  rrf 0.015385; sim 0.740581, other side 0.737296 (delta +0.003284)
+    chunks of either top 5 that the chunker changed: 5
+      ('mealie/db/models/recipe/recipe.py', 'function', 'receive_description')
+      ('mealie/routes/recipe/recipe_crud_routes.py', 'class', 'RecipeController')
+      ('mealie/routes/recipe/recipe_crud_routes.py', 'class_summary', 'RecipeController')
+      ('mealie/routes/recipe/recipe_crud_routes.py', 'function', 'RecipeController.scrape_image_url')
+      ('mealie/routes/recipe/recipe_crud_routes.py', 'function', 'RecipeController.test_parse_recipe_url')
+    verdict input: a top-5 chunk changed

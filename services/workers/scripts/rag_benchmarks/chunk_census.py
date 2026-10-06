@@ -22,11 +22,12 @@ WHAT IS NOT A COPY ANY MORE.
 - **The digest and the chunker version** are `chunk_digest.py`'s, which the
   harness imports too.
 
-WHAT IS STILL A COPY. `embed_text` is the generator's
-`_prepare_text_for_embedding` before truncation: the generator has no function
-that returns the text before it truncates. A test pins the copy to the
-generator (`tests/test_chunk_census.py`), and 22.2-02 replaces it when it makes
-one function of that rule.
+WHAT IS STILL A COPY. Since 22.2-02, `embed_text` is the generator's own
+`embedding_text`, not a copy. The 8,000-token limit the census counts
+truncation against is still restated here (`MAX_TOKENS_PER_CHUNK`, the
+generator's default): the census measures offline with tiktoken and builds no
+generator. The product's count (`chunks_truncated`) and its truncation share
+one rule, `EmbeddingGenerator.tokens_over_limit`.
 
 THE PINS. The census measures with exactly the parsers and tokenizer
 `requirements.txt` pins, and refuses to run (exit 2) on any other installed
@@ -253,20 +254,14 @@ def pct(values, q):
 
 
 def embed_text(chunk):
-    """EmbeddingGenerator._prepare_text_for_embedding, before truncation.
+    """The generator's own `embedding_text`: what is embedded, before truncation.
 
-    A COPY, pinned to the generator by `test_embed_text_is_the_generators_rule`
-    until 22.2-02 makes one function of the rule.
+    No longer a copy (22.2-02 made one function of the rule); still pinned to
+    the generator by `test_embed_text_is_the_generators_rule`.
     """
-    parts = []
-    breadcrumb = chunk.metadata.get("breadcrumb", "")
-    if breadcrumb:
-        parts += [f"# {breadcrumb}", ""]
-    doc = chunk.metadata.get("docstring", "")
-    if doc:
-        parts += [f'"""{doc}"""', ""]
-    parts.append(chunk.content)
-    return "\n".join(parts)
+    from workers.embeddings.embedding_generator import embedding_text
+
+    return embedding_text(chunk)
 
 
 def line_set(start, end):
@@ -358,9 +353,14 @@ def _parity_ts(rtree, data):
         elif n.type == "method_definition" and n.parent is not None and n.parent.type == "class_body":
             hits = 1
             outer = n
+            # A decorated method's outermost node is its first decorator, looking
+            # past comments between decorators and the method (22.2-02, PR #66's
+            # review A I-1: the chunker's `method_decorators` rule). A JSDoc
+            # between them is then inside the span, not "directly above".
             prev = n.prev_named_sibling
-            while prev is not None and prev.type == "decorator":
-                outer = prev  # a decorated method's outermost node is its first decorator
+            while prev is not None and prev.type in ("decorator", "comment"):
+                if prev.type == "decorator":
+                    outer = prev
                 prev = prev.prev_named_sibling
         elif n.type == "lexical_declaration" and n.parent is not None and n.parent.type in (
                 "program", "export_statement"):
@@ -466,8 +466,10 @@ def census(name, files, meta, chunker, enc, grammars, capture: Optional[Fallback
     }
 
     # Duplication: class chunks covered by their own method chunks (ISS-026), nested
-    # functions (a function chunk inside another function chunk), Go structs chunked
-    # with their whole grouped `type ( ... )` declaration.
+    # functions (a function chunk inside another function chunk), Go structs in a
+    # grouped `type ( ... )` declaration. Those two Go fields count the source's
+    # structure, not chunks: until 22.2-02 each such struct was chunked with the
+    # whole group (the extra characters), and since then it is chunked as its own spec.
     dup = {"class_chunks": 0, "class_chunks_ge80pct_covered": 0, "class_chars": 0,
            "class_chars_covered_by_methods": 0, "nested_function_chunks": 0,
            "nested_function_chars": 0, "go_struct_chunks_in_groups": 0, "go_group_extra_chars": 0}
@@ -544,7 +546,7 @@ def census(name, files, meta, chunker, enc, grammars, capture: Optional[Fallback
     ts = Counter()
     for path, (content, lang, cs) in per_file.items():
         data = content.encode("utf-8")
-        tree = chunker.parser.parse_file(content, lang) if lang in chunker.parser.parsers else None
+        tree = chunker.parser.parse_file(content, lang, path=path) if lang in chunker.parser.parsers else None
         if tree is not None:
             e, m = error_counts(tree)
             bucket = perr[f"{lang}{Path(path).suffix if lang == 'typescript' else ''}"]
@@ -606,8 +608,17 @@ def census(name, files, meta, chunker, enc, grammars, capture: Optional[Fallback
                     in_any = bool(holders)
                     key = "route_decorators" if is_route else "decorators"
                     py[f"{key}_in_no_chunk"] += 0 if in_any else 1
-                    py[f"{key}_only_inside_a_class_chunk"] += 1 if (in_class and not any(
-                        c.chunk_type != "class" for c in holders)) else 0
+                    only_class = in_class and not any(c.chunk_type != "class" for c in holders)
+                    py[f"{key}_only_inside_a_class_chunk"] += 1 if only_class else 0
+                    # 22.2-02: the definition's OWN chunk starts at its first
+                    # decorator (QD6), and no function or class chunk can start on
+                    # a decorator line otherwise. A decorated CLASS held by its own
+                    # class chunk is counted by the field above too, so the field
+                    # below is the ISS-026 case alone: only an enclosing class holds it.
+                    own = any(c.chunk_type in ("class", "function") and c.start_line == deco_line
+                              for c in holders)
+                    py[f"{key}_in_their_own_chunk"] += 1 if own else 0
+                    py[f"{key}_only_inside_an_enclosing_class_chunk"] += 1 if (only_class and not own) else 0
                 if n.type == "function_definition":
                     if any(a.type == "function_definition" for a in ancestors(n)):
                         py["nested_functions"] += 1

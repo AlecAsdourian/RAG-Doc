@@ -1,0 +1,71 @@
+$ rag_quality_harness.py --corpus self --corpora-dir <scratch>/w2202-corpora --self-root <scratch>/w2202-base --self-commit 5bb86930d4f2bcae575888153fabc7e2f010e4f3 --harness-commit 5bb86930d4f2bcae575888153fabc7e2f010e4f3 --measure --set all --query-vectors <scratch>/w2202-bench/vecs.json --record <scratch>\w2202-bench\before-self.jsonl
+[*] query vectors: 40 cached, 0 embedded now (text-embedding-ada-002) -> <scratch>\w2202-bench\vecs.json
+[*] recording to <scratch>\w2202-bench\before-self.jsonl as rag_doc_app (rolsuper=False, rolbypassrls=False); vector backend: pgvector
+[*] header: chunker a1a44e8d682e21bb (verified: True), chunk set fa17b901a7a28880f65caf55e293b34031f1915d330192b01ce757f4c3b5cd49 (637 rows with text-embedding-ada-002; rows per model {'text-embedding-ada-002': 637}), stored vectors 2ad46d7f10056866edafed27edd7d8e6, corpus commit 5bb86930d4f2bcae575888153fabc7e2f010e4f3, tree 57a4b2c39bc17752, vector tolerance 1e-05
+wrote <scratch>\w2202-bench\before-self.jsonl
+
+[self / all]  40 questions, top_k=5
+
+file   symbol question                                                         top hit
+----------------------------------------------------------------------------------------------------------------------------------------
+MISS          how do we stop one tenant reading another tenant's rows in a r   services/workers/workers/jobs/runtime.py
+#1            where is the GitHub App JWT signed                               services/backend/pkg/github/client.go
+#1            how does the webhook confirm a delivery really came from GitHu   services/backend/pkg/api/handlers/github_webhook.go
+#1            what stops the same webhook delivery being processed twice       services/backend/pkg/api/handlers/github_webhook.go
+MISS          how do we work out which customer an incoming webhook belongs    services/backend/pkg/api/handlers/github_webhook.go
+#1            where do we check a user actually controls the installation th   services/backend/pkg/github/client.go
+#1            how is a repository connected to an organisation                 services/backend/pkg/api/handlers/repositories.go
+#2            what happens when someone connects a repository that already e   services/workers/workers/jobs/runtime.py
+#1            how are routes and middleware wired together                     services/backend/pkg/api/router.go
+#2            where are secrets stripped before logging                        services/backend/pkg/auth/supabase_admin.go
+MISS          how is a one-time token for the install flow generated and con   services/backend/pkg/api/handlers/github_install.go
+#2            how do we split source code into pieces for indexing             services/workers/workers/fetch/filters.py
+MISS          where do we turn text into vectors                               services/workers/workers/generation/answer_generator.py
+#4            how are keyword results and vector results combined into one r   services/workers/workers/retrieval/vector_retriever.py
+#1            how does search boost results that look more relevant            services/workers/workers/retrieval/metadata_booster.py
+#2            where does full text search run against the database             services/workers/workers/retrieval/query_engine.py
+MISS          how do we avoid paying for the same question twice               services/workers/workers/generation/answer_generator.py
+#1            where is the prompt for answering a question assembled           services/workers/workers/generation/answer_generator.py
+#2            how is a parsed file turned into functions and classes           services/workers/workers/fetch/client.py
+#1            where is the breadcrumb for a symbol built                       services/workers/workers/chunker/metadata_builder.py
+#1            how are chunks written to the database                           services/workers/workers/storage/postgres_writer.py
+MISS          how are vectors stored for similarity search                     services/workers/workers/retrieval/vector_retriever.py
+#1            what orchestrates the whole ingestion flow                       services/workers/workers/pipeline/ingestion_pipeline.py
+#3            how does a worker scope its database writes to one tenant        services/backend/pkg/jobs/doc.go
+#2            where is a natural language query broken into terms              services/workers/workers/parser/tree_sitter_parser.py
+#2            what blocks throwaway email addresses from signing up            services/backend/pkg/auth/webhook.go
+#1            how is a user record created the first time someone logs in wi   services/backend/pkg/auth/provisioning.go
+#2            how do we check that a login token is genuine                    services/backend/pkg/auth/handlers.go
+MISS          how does organization information get into a user's login toke   services/backend/pkg/auth/jwt.go
+MISS          how does the backend talk to the python search service           services/workers/workers/fetch/client.py
+#1            how does a user who belongs to several organizations switch be   services/backend/pkg/api/handlers/user_orgs.go
+#1            how are streaming answers sent back to the browser               services/backend/pkg/api/handlers/chat.go
+#1            how are http error responses formatted                           services/backend/pkg/api/handlers/errors.go
+#2            how do tests get a throwaway database to run against             services/backend/pkg/testing/isolation/scratch.go
+MISS          what happens when a file cannot be parsed into functions         services/workers/workers/ingest/handler.py
+#1            how do we describe what a whole file is for                      services/workers/workers/chunker/summary_generator.py
+#2            how do we keep text under the embedding model's token limit      services/workers/workers/generation/answer_generator.py
+#2            how do we avoid embedding the same text twice                    services/workers/workers/ingest/handler.py
+#2            where do keyword search and vector search run side by side       services/workers/workers/retrieval/vector_retriever.py
+#1            how does the backend receive account events from supabase        services/backend/pkg/auth/webhook.go
+----------------------------------------------------------------------------------------------------------------------------------------
+
+recall@5 : 31/40 = 78%
+rank-1    : 17/40 = 42%
+MRR       : 0.590
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/backend/pkg/jobs/doc.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/backend/pkg/testing/isolation/doc.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/chunker/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/db/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/embeddings/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/fetch/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/generation/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/ingest/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/jobs/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/parser/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/pipeline/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/retrieval/__init__.py (python), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for services/workers/workers/storage/__init__.py (python), falling back to fixed-size chunking
+exit 0
+

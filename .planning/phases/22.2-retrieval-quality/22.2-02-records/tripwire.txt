@@ -1,0 +1,73 @@
+corpus     set      level   metric      before    after     delta  
+------------------------------------------------------------------------
+self       tuning   file    recall@5     19/25    19/25   +0.0000  
+self       tuning   file    rank-1       11/25    11/25   +0.0000  
+self       tuning   file    MRR@5       0.5833   0.5833   +0.0000  
+self       holdout  file    recall@5     12/15    12/15   +0.0000  
+self       holdout  file    rank-1        6/15     6/15   +0.0000  
+self       holdout  file    MRR@5       0.6000   0.6000   +0.0000  
+miniflux   tuning   file    recall@5      9/15     9/15   +0.0000  
+miniflux   tuning   file    rank-1        6/15     6/15   +0.0000  
+miniflux   tuning   file    MRR@5       0.4833   0.4833   +0.0000  
+miniflux   tuning   symbol  recall@5      6/15     6/15   +0.0000  
+miniflux   tuning   symbol  rank-1        3/15     3/15   +0.0000  
+miniflux   tuning   symbol  MRR@5       0.2633   0.2633   +0.0000  
+miniflux   holdout  file    recall@5     11/15    11/15   +0.0000  
+miniflux   holdout  file    rank-1        5/15     5/15   +0.0000  
+miniflux   holdout  file    MRR@5       0.4889   0.4889   +0.0000  
+miniflux   holdout  symbol  recall@5     11/15    11/15   +0.0000  
+miniflux   holdout  symbol  rank-1        5/15     5/15   +0.0000  
+miniflux   holdout  symbol  MRR@5       0.4778   0.4778   +0.0000  
+miniflux   confirm  file    recall@5     10/15    10/15   +0.0000  
+miniflux   confirm  file    rank-1        6/15     6/15   +0.0000  
+miniflux   confirm  file    MRR@5       0.4944   0.4944   +0.0000  
+miniflux   confirm  symbol  recall@5      8/15     8/15   +0.0000  
+miniflux   confirm  symbol  rank-1        3/15     3/15   +0.0000  
+miniflux   confirm  symbol  MRR@5       0.3222   0.3189   -0.0033  FELL
+mealie     tuning   file    recall@5      7/15     8/15   +0.0667  rose
+mealie     tuning   file    rank-1        3/15     4/15   +0.0667  rose
+mealie     tuning   file    MRR@5       0.2933   0.3600   +0.0667  rose
+mealie     tuning   symbol  recall@5      7/15     8/15   +0.0667  rose
+mealie     tuning   symbol  rank-1        3/15     3/15   +0.0000  
+mealie     tuning   symbol  MRR@5       0.2767   0.3067   +0.0300  rose
+mealie     holdout  file    recall@5     11/15    11/15   +0.0000  
+mealie     holdout  file    rank-1        5/15     5/15   +0.0000  
+mealie     holdout  file    MRR@5       0.4889   0.4889   +0.0000  
+mealie     holdout  symbol  recall@5      6/15     7/15   +0.0667  rose
+mealie     holdout  symbol  rank-1        2/15     2/15   +0.0000  
+mealie     holdout  symbol  MRR@5       0.2389   0.2556   +0.0167  rose
+mealie     confirm  file    recall@5     14/15    14/15   +0.0000  
+mealie     confirm  file    rank-1        7/15     7/15   +0.0000  
+mealie     confirm  file    MRR@5       0.6289   0.6489   +0.0200  rose
+mealie     confirm  symbol  recall@5     10/15     9/15   -0.0667  FELL
+mealie     confirm  symbol  rank-1        4/15     4/15   +0.0000  
+mealie     confirm  symbol  MRR@5       0.3756   0.3822   +0.0067  rose
+------------------------------------------------------------------------
+
+self: 0 rank(s) worsened, 0 improved
+
+miniflux: 1 rank(s) worsened, 0 improved
+  worsened  mf-34      confirm  symbol #4->#5
+
+mealie: 4 rank(s) worsened, 8 improved
+  worsened  ml-03      tuning   symbol #4->#5
+  worsened  ml-32      confirm  symbol #5->MISS
+  worsened  ml-34      confirm  file   #1->#2
+  worsened  ml-34      confirm  symbol #1->#2
+  improved  ml-03      tuning   file   #2->#1
+  improved  ml-16      holdout  symbol MISS->#4
+  improved  ml-19      tuning   file   MISS->#5
+  improved  ml-19      tuning   symbol MISS->#5
+  improved  ml-23      tuning   file   #5->#2
+  improved  ml-23      tuning   symbol #5->#2
+  improved  ml-37      confirm  file   #5->#1
+  improved  ml-37      confirm  symbol #5->#1
+
+Chunk sets (the rows each run measured, with its model):
+  self: before fa17b901a7a28880 (637 rows, chunker a1a44e8d682e21bb); after 55ee4e90821eb876 (637 rows, chunker b339770e95eaf507)
+  miniflux: before 6e27949a7d08d384 (2134 rows, chunker a1a44e8d682e21bb); after 6e27949a7d08d384 (2134 rows, chunker b339770e95eaf507)  identical chunk set: a control, so any change here is not the chunker's
+  mealie: before 0afe2fc92966b0c2 (2816 rows, chunker a1a44e8d682e21bb); after 71723463aed4c9ed (2816 rows, chunker b339770e95eaf507)
+
+TRIPWIRE: FIRED (2 number(s) fell)
+  fell: miniflux confirm symbol MRR@5
+  fell: mealie confirm symbol recall@5

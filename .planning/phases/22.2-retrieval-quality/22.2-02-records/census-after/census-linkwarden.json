@@ -1,0 +1,182 @@
+{
+ "corpus": "linkwarden",
+ "commit": "952ac4540657cae3a67c3ca59433899d2fda8374",
+ "repository": "https://github.com/linkwarden/linkwarden",
+ "files": 379,
+ "files_by_language": {
+  "typescript": 379
+ },
+ "files_by_extension": {
+  ".tsx": 164,
+  ".ts": 215
+ },
+ "source_chars": 1197322,
+ "source_lines": 40557,
+ "chunks": 991,
+ "chunks_by_type": {
+  "function": 600,
+  "file_summary": 357,
+  "fixed_size": 33,
+  "class": 1
+ },
+ "chunk_chars_total": 1071582,
+ "index_text_over_source": 0.895,
+ "code_chunk_chars": {
+  "p50": 849,
+  "p90": 3491,
+  "p99": 11085,
+  "max": 24165,
+  "over_2000": 146,
+  "over_5000": 43,
+  "over_8000": 13
+ },
+ "largest_chunks": [
+  {
+   "file": "apps/web/pages/settings/preference.tsx",
+   "breadcrumb": "Page",
+   "type": "function",
+   "chars": 24165,
+   "lines": 686
+  },
+  {
+   "file": "apps/web/components/LinkDetails.tsx",
+   "breadcrumb": "LinkDetails",
+   "type": "function",
+   "chars": 20527,
+   "lines": 594
+  },
+  {
+   "file": "apps/web/components/Preservation/ReadableView.tsx",
+   "breadcrumb": "ReadableView",
+   "type": "function",
+   "chars": 19709,
+   "lines": 582
+  },
+  {
+   "file": "apps/web/components/ModalContent/EditCollectionSharingModal.tsx",
+   "breadcrumb": "EditCollectionSharingModal",
+   "type": "function",
+   "chars": 13444,
+   "lines": 373
+  },
+  {
+   "file": "apps/web/components/Sidebar.tsx",
+   "breadcrumb": "Sidebar",
+   "type": "function",
+   "chars": 12621,
+   "lines": 348
+  }
+ ],
+ "tokens": {
+  "embedded_total_if_every_chunk": 248157,
+  "billed_distinct_content": 247081,
+  "cost_full_ingest_usd": {
+   "text-embedding-ada-002": 0.0247,
+   "text-embedding-3-small": 0.0049
+  },
+  "p50": 99,
+  "p90": 623,
+  "max": 4880,
+  "chunks_over_8000_tokens_truncated": 0,
+  "tokens_cut_by_truncation": 0,
+  "truncated": []
+ },
+ "identical_content": {
+  "distinct_hashes": 980,
+  "chunks_sharing_a_hash": 22,
+  "extra_copies": 11
+ },
+ "duplication": {
+  "class_chunks": 1,
+  "class_chunks_ge80pct_covered": 0,
+  "class_chars": 164,
+  "class_chars_covered_by_methods": 91,
+  "nested_function_chunks": 27,
+  "nested_function_chars": 21495,
+  "go_struct_chunks_in_groups": 0,
+  "go_group_extra_chars": 0
+ },
+ "coverage_nonblank_lines_in_code_chunks": 0.847,
+ "fallback_files_fixed_size_only": 22,
+ "fixed_size_chunks": 33,
+ "fallback_reasons": {
+  "typescript": {
+   "raised": 0,
+   "no_chunk": 22,
+   "unsupported": 0
+  }
+ },
+ "named_chunks_by_extension": {
+  ".ts": {
+   "function": 328,
+   "class": 1
+  },
+  ".tsx": {
+   "function": 272,
+   "class": 0
+  }
+ },
+ "files_with_declarations_but_no_named_chunk": {
+  "count": 0,
+  "by_language": {},
+  "files": []
+ },
+ "parse_errors_as_chunked": {
+  "typescript.tsx": {
+   "files": 164,
+   "files_with_errors": 0,
+   "error_nodes": 0,
+   "missing_nodes": 0
+  },
+  "typescript.ts": {
+   "files": 215,
+   "files_with_errors": 0,
+   "error_nodes": 0,
+   "missing_nodes": 0
+  }
+ },
+ "parse_errors_with_typescript_grammar": {
+  "typescript.tsx": {
+   "files": 164,
+   "files_with_errors": 0,
+   "error_nodes": 0,
+   "missing_nodes": 0
+  },
+  "typescript.ts": {
+   "files": 215,
+   "files_with_errors": 0,
+   "error_nodes": 0,
+   "missing_nodes": 0
+  }
+ },
+ "typescript": {
+  "real_function_declaration": 386,
+  "sim_chunkable_declarations": 601,
+  "sim_files_with_no_chunkable_declaration": 22,
+  "sim_chunkable_with_jsdoc_directly_above": 12,
+  "chunked_function_chunks": 600,
+  "chunked_class_chunks": 1,
+  "chunked_fixed_size_chunks": 33,
+  "chunked_with_docstring": 12,
+  "real_type_alias_declaration": 150,
+  "real_interface_declaration": 40,
+  "real_top_level_const_function": 213,
+  "real_top_level_const_function_capitalised": 50,
+  "real_declarations_with_jsdoc_above": 17,
+  "real_method_definition": 12,
+  "real_class_declaration": 1,
+  "real_enum_declaration": 8
+ },
+ "chunk_set_digest": "b1c7c1082197ed7473d579763192396e2a34c218bff0f87cdee7ca979590bc77",
+ "chunk_rows": 991,
+ "corpus_tree_digest": "5c21c4b493e5e2b7ebbb662f6b7388df90d90119a23260308a7e43ef5ec0cf14",
+ "chunker_version": "b339770e95eaf507",
+ "versions": {
+  "tree_sitter_go": "0.25.0",
+  "tree_sitter_javascript": "0.25.0",
+  "tree_sitter_python": "0.25.0",
+  "tree_sitter_typescript": "0.23.2",
+  "tiktoken": "0.12.0",
+  "tree-sitter": "0.25.2"
+ }
+}

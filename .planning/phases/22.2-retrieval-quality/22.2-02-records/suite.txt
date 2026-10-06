@@ -1,0 +1,17 @@
+The workers suite, run as CI runs it, on the reviewed code (PR #66's review, B M1).
+
+tree: 97321b3b40c893a101a9acb200818f3cd1ad70b8
+venv: fresh, from services/workers/requirements.txt (Python 3.13.7; CI uses 3.12)
+REDIS_URL: a scratch redis:7-alpine container on 127.0.0.1:56380, started for this run and removed
+    (w2202-scratch-redis); DATABASE_TEST_URL unset: the isolation tests start their own pinned
+    pgvector container through testcontainers and stop it
+command (from services/workers): python -m pytest tests/ workers/ -q -p no:cacheprovider -rs
+
+SKIPPED [1] tests\fetch\test_archive_hostile.py:680: RAG_DOC_TINY_FS names no tiny filesystem; run in the container with --tmpfs
+SKIPPED [1] tests\fetch\test_archive_hostile.py:910: os.symlink needs a privilege this host lacks
+SKIPPED [1] tests\fetch\test_archive_hostile.py:928: os.symlink needs a privilege this host lacks
+774 passed, 3 skipped, 55 warnings in 114.36s (0:01:54)
+
+Before the review round: 759 passed, 11 skipped without REDIS_URL. 8 of those 11 skips were
+tests/isolation/test_semantic_cache_isolation.py, which skips every test when REDIS_URL is unset;
+the 3 left are host-gated (a tiny filesystem, symlink privilege), as above.

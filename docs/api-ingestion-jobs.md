@@ -183,7 +183,7 @@ would have at the claim.
 | raises **`InstallationSuspended`** — the token route's `409 installation_suspended` | `defer` **60 minutes** | `queued`, attempt handed back, `run_after` an hour out, a reason | **unchanged** (reads `syncing`; see below) | the claim-time policy: a suspension heals on its own and must never dead-letter a healthy repository |
 | raises **`InstallationUninstalled`** — the route's `409 installation_uninstalled` | `abandon` | `superseded` | `never_synced` | the claim-time policy: nothing to do, nothing failed |
 | raises **`LeaseLost`** — `should_abort()`, or a refused token (the route's **marked** 404) | **nothing** | untouched: `running` under the old lease until someone reclaims it | untouched | the job is someone else's; any write would clobber theirs |
-| raises anything else — including `InternalApiMisrouted` (an **unmarked** answer from the token route) and **`ParseFailed`** (every indexable file raised in the chunker) | `fail` | attempt consumed, backoff, `dead` at 5 | `failed` | an ordinary, retried failure, with `last_error` saying why |
+| raises anything else — including `InternalApiMisrouted` (an **unmarked** answer from the token route) and **`ParseFailed`** (the chunker raised on too much of the repository: the clauses are below) | `fail` | attempt consumed, backoff, `dead` at 5 | `failed` | an ordinary, retried failure, with `last_error` saying why |
 
 Three rules sit behind that table, each learned the hard way:
 
@@ -211,13 +211,23 @@ completion together, and the runtime then writes the ending that exception
 calls for — normally `fail` — rather than leaving the job `running` until its
 lease expires.
 
-**A parse that produced nothing from files that exist never stores.** One
-file whose chunking raises is skipped and counted (`parse_errors`). When
-**every** indexable file raises, the handler raises `ParseFailed` instead of
-reaching `store`, because `write_results` *replaces* the repository's chunks:
-carrying on would delete a good index, insert nothing and read `synced`
-(PR #58's review). A tree with nothing indexable is not that case — nothing
-raised, and an empty index is then the truth about the repository.
+**A parse that failed too much of the repository never stores.** One file whose
+chunking raises is skipped and counted (`parse_errors`). The handler raises
+`ParseFailed` instead of reaching `store` when there were indexable files
+and, checked in this order (this list is the authority; `handler.py` points
+here):
+
+1. **every** file raised (PR #58's review);
+2. some raised and the rest produced **no chunks**;
+3. **more than half** of them raised (`MAX_PARSE_ERROR_SHARE` in
+   `workers/ingest/handler.py`, an operational default the user may change).
+
+`write_results` *replaces* the repository's chunks, so carrying on would
+delete a good index and insert nothing, or a sliver, and read `synced`. Up
+to half raising, the job completes and `parse_errors` says how many. A tree
+with nothing indexable, or whose files parse into no chunks with nothing
+raised, is not a failure: an empty index is then the truth about the
+repository. (22.2-02 added clauses 2 and 3.)
 
 ### Stages and progress
 
@@ -287,8 +297,9 @@ tables below and fails when the code and this document disagree.
 | `files_indexable` | non-negative integer | `parse` | files the fetch kept |
 | `skipped` | object: reason → non-negative integer | `parse` | skip reason → count, e.g. `{"secret": 1, "unsupported": 12}`; the reasons are the next table |
 | `files_parsed` | non-negative integer | `embed` | files chunked |
-| `parse_errors` | non-negative integer | `embed` | files whose chunking raised; skipped and counted rather than failing the job — unless **every** file raised, which is `ParseFailed` and never reaches `embed` |
+| `parse_errors` | non-negative integer | `embed` | files whose chunking raised; skipped and counted rather than failing the job — unless the parse guard fires (`ParseFailed`, its clauses under "How a job ends"), which never reaches `embed` |
 | `chunks` | non-negative integer | `embed` | chunks produced |
+| `chunks_truncated` | non-negative integer | `embed` | chunks whose embedding text (breadcrumb, docstring and content) is over the embedder's token limit, so they are embedded truncated. Counts rows, like `chunks`; each is named, by path and breadcrumb, in a worker WARNING. Usually 0 |
 | `chunks_embedded` | non-negative integer | `store` | chunks with their vector (duplicates share one) |
 | `chunks_stored` | non-negative integer | `store` | chunks the store stage writes; **true of a `completed` row only** (item 7) |
 <!-- /progress-keys -->
@@ -513,7 +524,7 @@ every other tenant-scoped route.
   "last_stage": "embed",             // fetch|parse|embed|store (see "Stages and progress")
   "progress": {                      // CUMULATIVE: every count so far, or null
     "files_indexable": 3, "skipped": { "secret": 1 },
-    "files_parsed": 3, "parse_errors": 0, "chunks": 9
+    "files_parsed": 3, "parse_errors": 0, "chunks": 9, "chunks_truncated": 0
   },
   "needs_rerun": false,
   "last_error": "FetchFailed: resolving acme/widgets@main: api.github.com answered 502",  // redacted; null if none

@@ -1,0 +1,31 @@
+$ rag_quality_harness.py --corpus miniflux --corpora-dir <scratch>/w2202-corpora --self-root <scratch>/w2202-base --self-commit 5bb86930d4f2bcae575888153fabc7e2f010e4f3 --clear --ingest
+[*] cleared miniflux: runs=0 chunks=0
+[*] corpus miniflux: 335 files, 1246 KiB, commit 76889f08b12c2577b37e524e645afa5dd46ff050
+[*] offline: chunker version b339770e95eaf507, chunk set 6e27949a7d08d384fd0ae71ec9c758e618223af78de4a89f6881ecb5da58f3a1 (2134 rows), corpus tree 15fb188a4bc51bf1aa4728a9733a2a5b33a7678cbafc9700b089ade6d56d3274
+[*] fixtures ready
+
+status            : success
+files processed   : 335
+chunks created    : 2134
+embeddings        : 2122
+duration          : 24.7s
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for client/doc.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for internal/config/config.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for internal/database/migrations.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for internal/googlereader/parameters.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for internal/googlereader/prefix_suffix.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for internal/locale/locale.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for internal/oauth2/provider.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for internal/reader/rewrite/content_rewrite_rules.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for internal/reader/scraper/rules.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for client/doc.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for internal/config/config.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for internal/database/migrations.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for internal/googlereader/parameters.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for internal/googlereader/prefix_suffix.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for internal/locale/locale.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for internal/oauth2/provider.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for internal/reader/rewrite/content_rewrite_rules.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for internal/reader/scraper/rules.go (go), falling back to fixed-size chunking
+exit 0
+
