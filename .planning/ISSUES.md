@@ -95,6 +95,7 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **One thing whichever shape wins must carry:** `sync_state = 'syncing'` is not evidence of a live worker, and `stalled` is not evidence of a retry. See `docs/api-ingestion-jobs.md`.
 - **Owner:** Phase 23 (23-03), or Phase 22 if the repository API is open for another reason first.
 - **Owner, as of 2026-09-17: 22.1-03**, together with the progress contract (`22-CONTEXT.md` P12, U8). 23-03 consumes it.
+- **Planned 2026-10-06 in `22.1-03-PLAN.md`: shape 1.** A `current_job` (the same object `GET /api/admin/jobs/{id}` returns, or `null`) on `GET /api/repositories`, `GET /api/repositories/{id}` and the connect `201`, so the repository list polls one endpoint rather than one per repository. "Current" is the live job, else the newest by `(created_at, id)`. Shape 2 (a history list) is recorded as not chosen and additive later. The isolation test plants a drifted job row so the organization filter's mutation is observable. Stays open until 22.1-03 merges on that evidence.
 
 ### ISS-033: The webhook producers do not check `uninstalled_at`, so a push racing an uninstall queues a job under a dead installation
 
