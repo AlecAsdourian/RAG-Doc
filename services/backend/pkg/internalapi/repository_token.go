@@ -12,23 +12,27 @@
 // reachability, which Phase 24's deployment can enforce and audit.
 //
 // WHAT AUTHENTICATES A CALLER. The job's `lease_owner`: a UUID4 the
-// worker generated when it claimed the job, that no API returns (21-07
-// deliberately left it out of the job response), and that every terminal
-// write is already fenced on. A caller presenting a job id and the lease
-// owner of that job, while the job is `running` under a live lease, is the
-// worker running that job — or holds the worker's database access, which
-// is the residual risk P10 states rather than hides: such a process could
-// ask for a token for any CURRENTLY RUNNING job's repository, and the
-// token it gets is still one repository, read-only, and gone in an hour.
-// That is far narrower than the App private key, which never leaves this
-// process.
+// worker generated ONCE, when its process started, and uses for every job
+// that process claims; no API returns it (21-07 deliberately left it out
+// of the job response), and every terminal write is already fenced on it.
+// A caller presenting a job id and the lease owner of that job, while the
+// job is `running` under a live lease, is the worker running that job — or
+// holds the worker's database access, which is the residual risk P10
+// states rather than hides: such a process could ask for a token for any
+// CURRENTLY RUNNING job's repository, and the token it gets is still one
+// repository, read-only, and gone in an hour. That is far narrower than
+// the App private key, which never leaves this process. The worker's logs
+// also carry the lease owner today; ISS-039 tracks that for Phase 24.
 //
 // THE LEASE GATES ISSUANCE, NOT VALIDITY (PR #52's review, L1, measured).
 // Once the lease expires this route refuses, but a token it already issued
-// stays valid for GitHub's full hour; nothing here can shorten it. 22-05
-// revokes the token itself — `DELETE /installation/token`, authenticated
-// by the token being revoked, no App key needed — when the fetch ends and
-// on `LeaseLost`, so the credential's life is the fetch, not the hour.
+// stays valid for GitHub's full hour; nothing here can shorten it. The
+// worker revokes ITS OWN token — `DELETE /installation/token`,
+// authenticated by the token being revoked, no App key needed — when its
+// fetch ends, on every path, so the life of the token the worker holds is
+// the fetch, not the hour. That covers only the worker's token: a token
+// this route mints for anyone else presenting a live lease is not the
+// worker's to revoke, and lives GitHub's hour (PR #58's review, A-M1).
 //
 // WHAT THE NETWORK POSITION IS WORTH. On a private compose network the
 // lease owner plus reachability is the whole authentication, and the
@@ -317,14 +321,20 @@ func (h *Handler) Mint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. One line per mint. Never the token.
+	// 4. One line per mint. Never the token. Since 22-05 it carries the
+	// scope GitHub REPORTED in the mint reply -- repository ids and
+	// permission name:level pairs, as the client's fail-closed checks
+	// accepted them -- so what GitHub granted is on record, not only what
+	// was asked for.
 	h.logger.Info("repository token minted",
 		slog.String("job", id), slog.String("organization", orgID),
 		slog.String("repository", repoID),
 		slog.Int64("github_repo_id", *githubRepoID),
 		slog.Int64("installation", *installationID),
 		slog.String("full_name", scoped.FullName),
-		slog.Time("expires_at", scoped.ExpiresAt))
+		slog.Time("expires_at", scoped.ExpiresAt),
+		slog.String("reported_repository_ids", scoped.ReportedRepositoryIDList()),
+		slog.String("reported_permissions", scoped.ReportedPermissionList()))
 
 	out, err := json.Marshal(tokenResponse{
 		Token:         scoped.Token,
