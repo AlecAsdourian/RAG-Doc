@@ -78,8 +78,13 @@ from workers.chunker import SemanticChunker
 from workers.db import require_tenant
 from workers.embeddings import EmbeddingGenerator
 from workers.fetch import Limits
+from tests.isolation.test_job_transitions import supersede
 from workers.ingest import IngestDeps, make_full_ingest_handler
+from workers.ingest.handler import _write_results
+from workers.jobs import new_worker_id
+from workers.jobs.transitions import LeaseLost, claim, complete
 from workers.retrieval.query_engine import QueryEngine
+from workers.storage.postgres_writer import PostgresWriter, content_hash
 
 IDENTITY_SQL = (
     "SELECT current_user, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user"
@@ -714,4 +719,163 @@ def test_a_shutdown_during_embedding_defers_with_the_attempt_handed_back(
     assert repo_row(conn, org.id, org.repo_id)["sync_state"] == "syncing", (
         "DEFER_SQL projects nothing, so mark_started's `syncing` stands until the job runs again"
     )
+    assert_no_secret_logged(caplog)
+
+
+# =====================================================================
+# A-L3: the store takes the job row's lock LAST (22.1-05)
+# =====================================================================
+
+
+def test_a_long_store_never_blocks_its_own_heartbeat(
+    conn, app_dsn, with_two_orgs, tmp_path, caplog, monkeypatch
+):
+    """A-L3 (22.1-05): heartbeats land THROUGHOUT a store longer than the lease.
+
+    The store runs inside `complete()`'s transaction. Before 22.1-05,
+    `write_results` ran `attach_ingestion_run` FIRST -- an `UPDATE` of the
+    job row -- so the row stayed locked for the whole delete and insert, the
+    heartbeat's `UPDATE` of the same row waited on it, was cancelled by its
+    `statement_timeout` (`57014`), and once a lease had passed the beat gave
+    up with a false "assuming it is lost". Now a lock-free fence check runs
+    first and the attach runs last, so the row is locked only for the final
+    statements.
+
+    The insert is made to take longer than the lease (it sleeps AFTER
+    inserting, still inside the transaction), with a 0.3 s heartbeat
+    `statement_timeout`. A third connection reads `lease_expires_at` twice
+    during that sleep: it must have ADVANCED, which only a landed beat does.
+    """
+    caplog.set_level(logging.DEBUG)
+    org, _ = with_two_orgs
+    link_installation(conn, org)
+
+    lease, beat, hold = timedelta(seconds=2), timedelta(seconds=0.25), 3.5
+    sleeping = threading.Event()
+    real_insert = PostgresWriter.insert_chunks_on.__func__
+
+    def slow_insert(cls, cur, *args, **kwargs):
+        result = real_insert(cls, cur, *args, **kwargs)
+        sleeping.set()
+        time.sleep(hold)  # longer than the lease, inside the store's transaction
+        return result
+
+    monkeypatch.setattr(PostgresWriter, "insert_chunks_on", classmethod(slow_insert))
+
+    job_id = enqueue(conn, org)
+    worker = ingest_worker(
+        app_dsn,
+        deps_for(tmp_path, FakeTokenRoute("ok"), FakeGitHub(make_archive(FIXTURE_FILES))),
+        lease=lease,
+        heartbeat=beat,
+        heartbeat_statement_timeout=timedelta(seconds=0.3),
+    )
+    with running(worker):
+        assert sleeping.wait(timeout=SETTLE), "the store never reached the insert"
+        time.sleep(0.5)
+        first = job_row(conn, job_id)["lease_expires_at"]
+        time.sleep(1.5)
+        second = job_row(conn, job_id)["lease_expires_at"]
+        row = job_when(conn, job_id, settled, "the ingest to settle")
+
+    assert second > first, (
+        "the lease did not advance during the store: the heartbeat was blocked on the "
+        f"job row's lock (A-L3); read {first} then {second}"
+    )
+    cancelled = [
+        r.getMessage()
+        for r in caplog.records
+        if "heartbeat failed" in r.getMessage() and "QueryCanceled" in r.getMessage()
+    ]
+    assert cancelled == [], f"a beat was cancelled by statement_timeout during the store: {cancelled[:2]}"
+    lost = [r.getMessage() for r in caplog.records if "assuming it is lost" in r.getMessage()]
+    assert lost == [], f"the heartbeat falsely gave the lease up during the store: {lost[:1]}"
+    assert row["state"] == "completed", row
+    assert row["attempts"] == 1
+    assert_no_secret_logged(caplog)
+
+
+class _WriterSpy:
+    """Records every call to the store's two chunk writes, then runs the real one."""
+
+    def __init__(self, monkeypatch) -> None:
+        self.calls: List[str] = []
+        real_delete = PostgresWriter.delete_repository_chunks_on
+        real_insert = PostgresWriter.insert_chunks_on.__func__
+
+        def delete(cur, repository_id):
+            self.calls.append("delete_repository_chunks_on")
+            return real_delete(cur, repository_id)
+
+        def insert(cls, cur, *args, **kwargs):
+            self.calls.append("insert_chunks_on")
+            return real_insert(cls, cur, *args, **kwargs)
+
+        monkeypatch.setattr(PostgresWriter, "delete_repository_chunks_on", staticmethod(delete))
+        monkeypatch.setattr(PostgresWriter, "insert_chunks_on", classmethod(insert))
+
+
+@pytest.mark.parametrize("taken_by", ["reclaimed", "superseded"])
+def test_a_reclaimed_or_superseded_worker_never_starts_the_store(
+    conn, app_dsn, with_two_orgs, tmp_path, caplog, monkeypatch, taken_by
+):
+    """A-L3's fence (22.1-05): a worker that lost its job never STARTS the store.
+
+    The real `write_results` inside the real `complete()`, on `app_dsn`. A
+    first ingest leaves the repository with chunks; a second job is claimed,
+    and then taken away -- (a) `reclaimed`: its `lease_owner` reassigned to
+    another worker; (b) `superseded`: `supersedeLiveSQL` (the existing test
+    helper `supersede`, imported, not copied), which LEAVES THE LEASE
+    ATTACHED (21-05), so only `state = 'running'` tells the fence.
+
+    ⚠ WHY THE SPY, NOT ONLY THE CHUNKS. The attach that ends the store is
+    fenced too, so with the fence check neutered the store would still be
+    rolled back and the chunks would survive. The spy sees the delete START,
+    which is what the fence check exists to prevent.
+    """
+    caplog.set_level(logging.DEBUG)
+    org, _ = with_two_orgs
+    link_installation(conn, org)
+
+    _, first_row, _, _ = ingest_once(conn, app_dsn, tmp_path, org, caplog)
+    assert first_row["state"] == "completed", first_row
+    before = chunks_of(conn, org)
+    assert before, "premise: the first ingest stored an index for the fence to protect"
+
+    job_id = enqueue(conn, org)
+    worker_id = new_worker_id()
+    claimer = psycopg2.connect(app_dsn)
+    try:
+        job = claim(claimer, worker_id, timedelta(minutes=5))
+        assert job is not None and str(job.id) == job_id, "premise: our job was the one claimed"
+        if taken_by == "reclaimed":
+            sql(conn, "UPDATE ingestion_jobs SET lease_owner = %s WHERE id = %s",
+                (new_worker_id(), job_id))
+        else:
+            supersede(conn, org.repo_id)
+            taken = job_row(conn, job_id)
+            assert taken["state"] == "superseded" and taken["lease_owner"] == worker_id, (
+                "premise: a supersede leaves the lease attached"
+            )
+
+        chunker = SemanticChunker()
+        chunks = []
+        for path, data in FIXTURE_FILES.items():
+            if path.endswith(".py"):
+                chunks.extend(chunker.chunk_file(path, data.decode("utf-8"), "python"))
+        assert chunks, "premise: there is something to store"
+        embeddings = {content_hash(c.content): text_vector(c.content) for c in chunks}
+        spy = _WriterSpy(monkeypatch)
+        write_results = _write_results(
+            job, worker_id, "acme/widgets", SHA, "main", chunks, embeddings, TEST_MODEL
+        )
+        with pytest.raises(LeaseLost):
+            complete(claimer, job, worker_id, write_results)
+    finally:
+        claimer.close()
+
+    assert spy.calls == [], f"the store started for a job that is not ours: {spy.calls}"
+    assert chunks_of(conn, org) == before, "the first ingest's chunks and ids must be untouched"
+    if taken_by == "reclaimed":
+        take_out_of_the_live_set(conn, job_id)
     assert_no_secret_logged(caplog)

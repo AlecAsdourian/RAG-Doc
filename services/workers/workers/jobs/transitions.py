@@ -314,6 +314,21 @@ ATTACH_RUN_SQL = """
 UPDATE ingestion_jobs SET ingestion_run_id = %s, updated_at = NOW()
 WHERE id = %s AND lease_owner = %s AND state = 'running'"""
 
+# FENCE_CHECK_SQL is the store's FIRST statement (22.1-05, A-L3): is this
+# job still ours? A plain SELECT, so it takes NO lock on the job row --
+# which is the point. The store used to start with ATTACH_RUN_SQL, an
+# UPDATE that held the row's lock for the whole delete and insert, so the
+# heartbeat's UPDATE of the same row blocked behind it, was cancelled by its
+# `statement_timeout`, and a store longer than the lease logged a false
+# "assuming it is lost". The fence is the SAME predicate as every terminal
+# write here (id + owner + state; `state = 'running'` because a supersede
+# leaves the lease attached). The lease's expiry is deliberately NOT
+# checked, matching COMPLETE_SQL and `docs/api-ingestion-jobs.md`, "How a
+# job ends", rule 2. %s id, %s lease_owner.
+FENCE_CHECK_SQL = """
+SELECT 1 FROM ingestion_jobs
+WHERE id = %s AND lease_owner = %s AND state = 'running'"""
+
 # DEFER_SQL puts a job back WITHOUT using up an attempt: the claim
 # incremented `attempts`, and this gives it back. %s delay interval,
 # %s reason, %s id, %s lease_owner.
@@ -1152,6 +1167,27 @@ def resolve_ingestion_run(
     """
     cur.execute(RESOLVE_RUN_SQL, (str(repository_id), commit_sha, branch))
     return UUID(str(cur.fetchone()[0]))
+
+
+def check_fence(cur: Any, job: Job, worker_id: str) -> None:
+    """Is the job still ours? `FENCE_CHECK_SQL`, on the caller's cursor. NO LOCK.
+
+    The store's first statement (22.1-05, A-L3), so a worker that was
+    reclaimed or superseded never STARTS deleting a repository's chunks.
+    It is advisory, not the guarantee: the attach and `COMPLETE_SQL` that
+    end the store are fenced too, and one of them raising rolls the whole
+    transaction back. What this adds is that a stale worker's store never
+    begins, instead of running to the end and being rolled back.
+
+    Raises:
+        LeaseLost: no row matched -- reclaimed, superseded or finished.
+    """
+    cur.execute(FENCE_CHECK_SQL, (str(job.id), worker_id))
+    if cur.fetchone() is None:
+        raise LeaseLost(
+            f"job {job.id}: the store's fence check matched no row -- the lease "
+            f"is not ours (reclaimed or superseded); worker={worker_id}"
+        )
 
 
 def attach_ingestion_run(cur: Any, job: Job, worker_id: str, run_id: UUID) -> None:

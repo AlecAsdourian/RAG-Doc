@@ -504,6 +504,77 @@ def test_a_lease_lost_after_the_store_report_is_left_to_the_runtime(tmp_path):
     assert job_dirs(outcome) == []
 
 
+class _StoreCursor:
+    """A cursor for `write_results` with no database: records every statement.
+
+    `fence_row` decides whether `FENCE_CHECK_SQL` finds the job. The store's
+    two chunk writes are replaced by the test, so only the statements
+    `write_results` runs itself reach `execute`.
+    """
+
+    def __init__(self, calls: List[str], fence_row: bool) -> None:
+        from workers.jobs.transitions import FENCE_CHECK_SQL
+
+        self._fence_sql = FENCE_CHECK_SQL
+        self.calls = calls
+        self.fence_row = fence_row
+        self._last: Optional[str] = None
+        self.rowcount = 1
+
+    def execute(self, sql: str, params: Any = None) -> None:
+        from workers.jobs.transitions import ATTACH_RUN_SQL, RESOLVE_RUN_SQL
+        from workers.storage.postgres_writer import COMPLETE_RUN_SQL
+
+        names = {self._fence_sql: "fence_check", RESOLVE_RUN_SQL: "resolve_run",
+                 ATTACH_RUN_SQL: "attach_run", COMPLETE_RUN_SQL: "complete_run"}
+        self.calls.append(names.get(sql, "other"))
+        self._last = sql
+
+    def fetchone(self):
+        if self._last is self._fence_sql:
+            return (1,) if self.fence_row else None
+        return (uuid.uuid4(),)
+
+
+def _spy_on_the_chunk_writes(monkeypatch, calls: List[str]) -> None:
+    from workers.storage.postgres_writer import PostgresWriter
+
+    monkeypatch.setattr(PostgresWriter, "delete_repository_chunks_on",
+                        staticmethod(lambda cur, repository_id: calls.append("delete") or 0))
+    monkeypatch.setattr(PostgresWriter, "insert_chunks_on",
+                        classmethod(lambda cls, cur, *a, **k: calls.append("insert") or {}))
+
+
+def test_a_fence_that_finds_no_row_starts_no_store(tmp_path, monkeypatch):
+    """A-L3's fence, the control flow (22.1-05): zero rows -> `LeaseLost`, and
+    neither chunk write is called. The fence's PREDICATES are tested on a real
+    database (`test_ingest_end_to_end.py::
+    test_a_reclaimed_or_superseded_worker_never_starts_the_store`); fakes
+    cannot kill a SQL mutation."""
+    outcome = _run(tmp_path)
+    assert outcome.error is None and callable(outcome.result)
+    calls: List[str] = []
+    _spy_on_the_chunk_writes(monkeypatch, calls)
+
+    with pytest.raises(LeaseLost, match="fence check"):
+        outcome.result(_StoreCursor(calls, fence_row=False))
+    assert calls == ["fence_check"], f"the store started for a job that is not ours: {calls}"
+
+
+def test_the_store_takes_the_job_row_lock_last(tmp_path, monkeypatch):
+    """A-L3's order (22.1-05): the fence first, the attach -- the first
+    statement that locks the job row -- last. The heartbeat that this order
+    frees is measured against a real database by `test_ingest_end_to_end.py::
+    test_a_long_store_never_blocks_its_own_heartbeat`."""
+    outcome = _run(tmp_path)
+    assert outcome.error is None and callable(outcome.result)
+    calls: List[str] = []
+    _spy_on_the_chunk_writes(monkeypatch, calls)
+
+    outcome.result(_StoreCursor(calls, fence_row=True))
+    assert calls == ["fence_check", "resolve_run", "delete", "insert", "complete_run", "attach_run"], calls
+
+
 def test_a_progress_report_that_matches_no_row_raises_lease_lost(tmp_path):
     outcome = _run(tmp_path, ctx=FakeContext(land=lambda stage: stage != "parse"))
 

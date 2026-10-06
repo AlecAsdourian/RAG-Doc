@@ -1175,9 +1175,12 @@ class Worker:
         try:
             write_results = handler(context)
         except LeaseLost as exc:
-            # The handler itself hit a fenced write that matched no row --
-            # `attach_ingestion_run`, say. Not a job failure: some other
-            # worker owns this job now, and `fail` would clobber it.
+            # The handler itself found the job is not ours any more -- a
+            # progress report that matched no row, or a refused token. Not a
+            # job failure: some other worker owns this job now, and `fail`
+            # would clobber it. (The store's fenced statements -- the fence
+            # check and the attach -- raise inside `complete()` instead,
+            # where `_guarded` consumes the `LeaseLost`.)
             #
             # Redacted like every other exception rendering in this file.
             # `LeaseLost` is built from ids by `transitions.py` today, but
