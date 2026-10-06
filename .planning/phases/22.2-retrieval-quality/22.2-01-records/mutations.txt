@@ -17,3 +17,31 @@
    restored: sha256 0fdfaaea8b71ec0a == pristine True; hash-object == HEAD blob True
    VERDICT T1-M2 the raised handler detached: KILLED (expected to fail: test_a_parser_that_raises_is_counted_as_raised)
 
+== T2-M1 --vector-tolerance ignored, 1e-5 hardcoded: services/workers/scripts/rag_benchmarks/compare_runs.py
+   HEAD ebd88543a394, blob d391c6e00f98; pristine sha256 6de928fe1c690f50; hash-object == HEAD blob: True
+   mutation: '        return "abs", _vector_tolerance' -> '        return "abs", 1e-5  # MUTATION: the flag ignored'
+   landed: True (mutated sha256 f3137d2ef243a1b3; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_compare_runs.py: exit 1; 1 failed, 44 passed in 1.43s
+      FAILED tests/test_compare_runs.py::test_the_vector_tolerance_changes_the_class
+   restored: sha256 6de928fe1c690f50 == pristine True; hash-object == HEAD blob True
+   VERDICT T2-M1 --vector-tolerance ignored, 1e-5 hardcoded: KILLED (expected to fail: test_the_vector_tolerance_changes_the_class)
+
+== T2-M2 --no-qdrant passes an empty point set through to class (b): services/workers/scripts/rag_benchmarks/compare_runs.py
+   HEAD ebd88543a394, blob d391c6e00f98; pristine sha256 6de928fe1c690f50; hash-object == HEAD blob: True
+   mutation: '    class_b = qdrant_ids is not None' -> '    class_b = True  # MUTATION: (b) on an empty point set'
+   landed: True (mutated sha256 f7af98cac8c4e82d; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_compare_runs.py: exit 1; 2 failed, 43 passed in 1.41s
+      FAILED tests/test_compare_runs.py::test_no_qdrant_disables_class_a
+      FAILED tests/test_compare_runs.py::test_no_qdrant_disables_class_b
+   restored: sha256 6de928fe1c690f50 == pristine True; hash-object == HEAD blob True
+   VERDICT T2-M2 --no-qdrant passes an empty point set through to class (b): KILLED (expected to fail: test_no_qdrant_disables_class_b)
+
+== T2-M3 --no-qdrant leaves class (a) enabled, every chunk without a point: services/workers/scripts/rag_benchmarks/compare_runs.py
+   HEAD ebd88543a394, blob d391c6e00f98; pristine sha256 6de928fe1c690f50; hash-object == HEAD blob: True
+   mutation: '    class_a = qdrant_ids is not None' -> '    class_a = True  # MUTATION: (a) on an empty point set'
+   landed: True (mutated sha256 5946f2d7bfc84ab8; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_compare_runs.py: exit 1; 1 failed, 44 passed in 1.45s
+      FAILED tests/test_compare_runs.py::test_no_qdrant_disables_class_a
+   restored: sha256 6de928fe1c690f50 == pristine True; hash-object == HEAD blob True
+   VERDICT T2-M3 --no-qdrant leaves class (a) enabled, every chunk without a point: KILLED (expected to fail: test_no_qdrant_disables_class_a)
+
