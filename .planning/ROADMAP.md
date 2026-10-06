@@ -212,7 +212,7 @@ Plans:
   - ids minted only at definitions, never for aliases;
   - **the display breadcrumb unchanged**, since benchmark scoring reads it.
 - [ ] 22.1-02: incremental ingestion by content-addressed file manifest. Symbols are archived, never deleted. `incremental` becomes distinct from `full_ingest`. Closes ISS-027.
-- [x] 22.1-03: the progress contract, by polling the job row (U8), and ISS-034. Includes a deliberately written, mutation-checked isolation test. **Executed 2026-10-06, in review** (`22.1-03-SUMMARY.md`): the progress contract documented and pinned by a test; `status` on the job object; `current_job` on every repository response (ISS-034 closed, shape 1); migration 000018; 13 of 13 mutations killed.
+- [x] 22.1-03: the progress contract, by polling the job row (U8), and ISS-034. Includes a deliberately written, mutation-checked isolation test. **Executed 2026-10-06, in review (PR #64)** (`22.1-03-SUMMARY.md`): the progress contract documented and pinned by a test; `status` on the job object; `current_job` on every repository response (ISS-034 closed, shape 1); migration 000018; 13 of 13 planned mutations killed, and M11 and M12 from PR #64's review.
 - [ ] 22.1-04: D3 tier 1:
   - creates `symbol_edges` (moved here from 22-02), testing D3's upgrade and no-downgrade rule first;
   - call-site and import candidates, and the resolver;
@@ -323,7 +323,7 @@ Plans:
 | 20. Repository Integration Backend | v1.0 | 5/5 | Complete | 2026-09-09 |
 | 21. Ingestion Job Infrastructure | v1.0 | 7/7 | Complete | 2026-09-16 |
 | 22. pgvector Storage & the First Real Repository | v1.0 | 5/5 | Executed: 22-01 to 22-04 merged (PRs #48, #49, #53, #52); 22-05 in review (PR #58); A1–A11 met with evidence (`22-05-SUMMARY.md`) | - |
-| 22.1. Symbols, Incremental Updates, Progress & the Code Graph | v1.0 | 1/5 | Researched, decisions locked; 22.1-03 executed (in review), 22.1-05 planned | - |
+| 22.1. Symbols, Incremental Updates, Progress & the Code Graph | v1.0 | 1/5 | Researched, decisions locked; 22.1-03 executed (in review, PR #64), 22.1-05 planned | - |
 | 22.2. Retrieval Quality | v1.0 | 0/7 | Researched, decisions locked 2026-09-29; 22.2-01, -02, -03 and -07 planned and revised after fact-check, QD3 and QD12 locked 2026-10-06 (PR #59) | - |
 | 23. Frontend Wiring & Onboarding UX | v1.0 | 0/5 | Not started | - |
 | 24. Production Deployment & Cost Controls | v1.0 | 0/5 | Not started | - |
