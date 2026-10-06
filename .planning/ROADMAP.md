@@ -237,16 +237,17 @@ This is U10's retrieval-quality track, named Phase 22.2 by the user's answer QU1
 - The embedding-model rule (M2) is committed in `embedding-model-protocol.md`, dated 2026-09-29, the user its author.
 - The user confirmed its numbers the same day, before any of its questions existed (`afa50b2`): T = 0.11 on file MRR per app, and clause 1's +0.03. The rule is complete.
 
-**Estimate:** ~63–97 h, against the sketch's 36–58 h. The reasons are in `22.2-CONTEXT.md`.
-**Plans:** 6 (not yet written)
+**Estimate:** ~68–106 h, against the sketch's 36–58 h. The reasons are in `22.2-CONTEXT.md`. The first estimate, 63–97 h, rose when 22.2-01 was split into two plans, written as tasks, and again after the plans' fact-check (PR #59).
+**Plans:** 7. 22.2-01, 22.2-02, 22.2-03 and 22.2-07 were written 2026-09-29 (PR #59) and revised 2026-10-06 after the fact-check. The user decided QD3 (`decide.py`) and QD12 (merge commits for protocol PRs) on 2026-10-06; the revised plans await a re-check before merge. 22.2-04 to 22.2-06 are not yet written. 22.2-07 was split from 22.2-01 at the 2–3 task limit and numbered next, so nothing is renumbered.
 
 Plans:
-- [ ] 22.2-01: instruments. The chunk census as a tool, `decide.py` for four arms, the harness's new sets and record headers, and the model as an argument. Also the tolerance flag (2e-6) and the embedding API's repeatability, measured.
-- [ ] 22.2-02: chunker bug fixes, adopted on offline proof with a tripwire. The TypeScript grammars and queries, named arrow functions, JSDoc, decorators inside their chunk, grouped Go structs, and visible truncation.
-- [ ] 22.2-03: the TypeScript corpus, linkwarden at `952ac454`, with 30 blind questions and a baseline. It runs alongside 22.2-02.
+- [ ] 22.2-01: the evidence instruments. The chunk census as a tool, a chunk-set digest and the chunker version in every record header, `--self-root`, QD2's tolerance flag (with `compare_runs.py` usable without a Qdrant point set), the tripwire comparer, and the embedding API's repeatability, measured. It can start now.
+- [ ] 22.2-02: chunker bug fixes, adopted on offline proof with a tripwire. The TypeScript grammars and queries, named arrow functions, JSDoc, decorators inside their chunk, grouped Go structs, and visible truncation. It follows 22.2-01 and 22-05 (PR #58), and precedes 22.1-01.
+- [ ] 22.2-03: the TypeScript corpus, linkwarden at `952ac454`, with 30 blind questions and a baseline. The questions can be written now, on their own PR; the baseline follows 22.2-02.
 - [ ] 22.2-04: the chunk-shape candidate (ISS-026 and the other duplicates, one bundle) and its rule, committed by the user. **After 22.1-01.**
 - [ ] 22.2-05: the shared protocol run. One fresh set of 45 questions and four arms: the chunk-shape verdict, then the embedding-model verdict (M2) on the adopted chunks.
 - [ ] 22.2-06: the keyword leg (ISS-029, ISS-028, ISS-038) on its own fresh set. Also ISS-024's dead boosts deleted, ISS-025's defect 3, and the phase's closing record.
+- [ ] 22.2-07: the judge and the decision inputs, split from 22.2-01. `decide.py` for four arms (QD3), the rules as JSON (M2's first), the decision set names with an independence check, and the model as an argument. It follows 22.2-01, and merges before 22.2-04 commits its rule.
 
 ### Phase 23: Frontend Wiring & Onboarding UX
 
@@ -323,7 +324,7 @@ Plans:
 | 21. Ingestion Job Infrastructure | v1.0 | 7/7 | Complete | 2026-09-16 |
 | 22. pgvector Storage & the First Real Repository | v1.0 | 5/5 | Executed: 22-01 to 22-04 merged (PRs #48, #49, #53, #52); 22-05 in review (PR #58); A1–A11 met with evidence (`22-05-SUMMARY.md`) | - |
 | 22.1. Symbols, Incremental Updates, Progress & the Code Graph | v1.0 | 0/5 | Researched, decisions locked; 22.1-03 and 22.1-05 planned | - |
-| 22.2. Retrieval Quality | v1.0 | 0/6 | Researched, decisions locked 2026-09-29; plans not written | - |
+| 22.2. Retrieval Quality | v1.0 | 0/7 | Researched, decisions locked 2026-09-29; 22.2-01, -02, -03 and -07 planned and revised after fact-check, QD3 and QD12 locked 2026-10-06 (PR #59) | - |
 | 23. Frontend Wiring & Onboarding UX | v1.0 | 0/5 | Not started | - |
 | 24. Production Deployment & Cost Controls | v1.0 | 0/5 | Not started | - |
 | 25. Launch Readiness & Ops | v1.0 | 0/4 | Not started | - |
