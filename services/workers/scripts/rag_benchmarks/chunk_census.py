@@ -54,7 +54,7 @@ import sys
 from collections import Counter, defaultdict
 from importlib import metadata
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from uuid import UUID, uuid5
 
 HERE = Path(__file__).resolve().parent              # scripts/rag_benchmarks

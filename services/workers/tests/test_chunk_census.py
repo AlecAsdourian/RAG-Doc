@@ -392,10 +392,9 @@ def test_self_go_plus_self_py_is_exactly_self():
 
 
 def test_self_is_read_from_the_self_root(tmp_path):
-    h = chunk_census.harness()
     (tmp_path / "services" / "workers" / "workers").mkdir(parents=True)
-    (tmp_path / "services" / "workers" / "workers" / "only.py").write_text("def only():\n    return 1\n",
-                                                                          encoding="utf-8")
+    only = tmp_path / "services" / "workers" / "workers" / "only.py"
+    only.write_text("def only():\n    return 1\n", encoding="utf-8")
     files, meta = chunk_census.corpus_files("self", WORKERS, tmp_path, "abc123")
     assert [f[0] for f in files] == ["services/workers/workers/only.py"]
     assert meta == {"commit": "abc123"}

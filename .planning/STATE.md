@@ -94,6 +94,7 @@ measures retrieval on this repository's own code. It asks 25 tuning questions an
   causes.
 - **2026-09-29: this track is now Phase 22.2, Retrieval Quality.** It has six plans, decisions locked by the user's answers QU1–QU10 in `.planning/phases/22.2-retrieval-quality/22.2-CONTEXT.md` (the authority), and the embedding-model rule committed and complete, with both its numbers confirmed by the user.
 - **2026-10-06: plans for 22.2-01, 22.2-02 and 22.2-03 (and 22.2-07, split from 22.2-01) are revised after their fact-check (PR #59).** The user locked QD3 (`decide.py`) and QD12 (protocol PRs merged with a merge commit, all others squashed), and read QA5 as Go comments and JSDoc only. The PR awaits a re-check before merge.
+- **2026-10-06: 22.2-01 executed, in review.** The census is a tool that reproduces `22.2-records/` with 0 fields differing; every record header names its chunker version and chunk-set digest; `compare_runs.py` takes QD2's tolerance and judges Qdrant-less runs; `tripwire.py` exists. Measured: the embedding API is not bit-repeatable (0 of 130 ada-002 vectors identical after a week, max |delta| 8.6e-3), so no cross-ingest comparison uses 2e-6 and miniflux is 22.2-02's control. Spend $0.0231. Evidence: `22.2-01-SUMMARY.md`.
 
 **v2 substrate work, 2026-09-10.** `.planning/v2-substrate/` holds `DESIGN.md`
 (the RAG redesign and 21 fleet proposals), `RESEARCH.md` (R-A…R-G), `DECISIONS.md`
