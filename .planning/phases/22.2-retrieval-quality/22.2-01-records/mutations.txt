@@ -45,3 +45,26 @@
    restored: sha256 6de928fe1c690f50 == pristine True; hash-object == HEAD blob True
    VERDICT T2-M3 --no-qdrant leaves class (a) enabled, every chunk without a point: KILLED (expected to fail: test_no_qdrant_disables_class_a)
 
+== T3-M1 falls computed as after <= before: services/workers/scripts/rag_benchmarks/tripwire.py
+   HEAD d34b46431106, blob f15004088bdd; pristine sha256 f6ea03957c3a33f9; hash-object == HEAD blob: True
+   mutation: '            falls = va < vb - FALL_EPSILON' -> '            falls = va <= vb  # MUTATION: an equal number counts as fallen'
+   landed: True (mutated sha256 1eb55ee2fac818b8; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_tripwire.py: exit 1; 5 failed, 21 passed in 1.34s
+      FAILED tests/test_tripwire.py::test_a_rise_only_gives_0
+      FAILED tests/test_tripwire.py::test_equal_digests_are_flagged_as_a_control
+      FAILED tests/test_tripwire.py::test_gzipped_records_are_read
+      FAILED tests/test_tripwire.py::test_nothing_fell_gives_0
+      FAILED tests/test_tripwire.py::test_one_mrr_fall_of_0_0011_gives_1
+   restored: sha256 f6ea03957c3a33f9 == pristine True; hash-object == HEAD blob True
+   VERDICT T3-M1 falls computed as after <= before: KILLED (expected to fail: test_nothing_fell_gives_0)
+
+== T3-M2 the hash refusal neutered: services/workers/scripts/rag_benchmarks/tripwire.py
+   HEAD d34b46431106, blob f15004088bdd; pristine sha256 f6ea03957c3a33f9; hash-object == HEAD blob: True
+   mutation: '        if not hb or not ha or hb != ha:' -> '        if (not hb or not ha or hb != ha) and False:  # MUTATION'
+   landed: True (mutated sha256 e91e733e5c8c9589; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_tripwire.py: exit 1; 2 failed, 24 passed in 1.18s
+      FAILED tests/test_tripwire.py::test_each_refusal_gives_2_and_compares_nothing[hash]
+      FAILED tests/test_tripwire.py::test_the_hash_refusal_names_the_question
+   restored: sha256 f6ea03957c3a33f9 == pristine True; hash-object == HEAD blob True
+   VERDICT T3-M2 the hash refusal neutered: KILLED (expected to fail: test_each_refusal_gives_2_and_compares_nothing[hash])
+
