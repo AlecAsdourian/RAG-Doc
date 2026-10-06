@@ -731,8 +731,24 @@ detail; this note records only what moved).
   lease and compose's `stop_grace_period` as well as P16's three numbers, each
   by a rule committed before measuring. Incremental timings wait for 22.1-02,
   since `incremental` is the full ingest until then.
-- **Phase 22.1's estimate is now ~72–103 h** (was ~60–88), plus QU4's 3–5 h
+- **Phase 22.1's estimate is now ~74–105 h** (was ~60–88), plus QU4's 3–5 h
   for TypeScript symbols in 22.1-01, which the earlier total also excluded.
+  The two plans grew by 1 h each after PR #61's fact-check (22.1-03 11–15 h,
+  22.1-05 17–24 h).
+
+**The user's decisions at plan approval, 2026-10-06** (recorded in both plans
+and in `22.1-ACCEPTANCE.md`):
+1. 22.1-05's OpenAI spend is approved up to a **hard cap of $3.00** on
+   ada-002, cumulative across the plan.
+2. **All four large-repository candidates are pre-approved** (`django/django`,
+   `hashicorp/terraform`, `prometheus/prometheus`, `go-gitea/gitea`); the
+   choice rule's pick needs no approval by name. 22.1-05's checkpoint still
+   stops if the projected spend would pass $3.00.
+3. **22.1-05's recall thresholds are LOCKED** as proposed: mean recall@10 ≥
+   0.95, every query's recall@10 ≥ 0.70, mean recall@50 ≥ 0.90, zero short
+   results.
+4. **ISS-034 shape 1** (`current_job` on the repository responses) **and the
+   `status` vocabulary** are accepted as 22.1-03 plans them.
 
 ### The rejected alternative, kept for its reasoning: foundation first (U1 option B)
 
