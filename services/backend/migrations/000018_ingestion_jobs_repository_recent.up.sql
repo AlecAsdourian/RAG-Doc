@@ -23,8 +23,15 @@
 -- runs in (SQLSTATE 25001), so it would hold only while this file stayed a
 -- single statement. A failed concurrent build would also leave an INVALID
 -- index behind a dirty version. Before launch the table is small and a
--- plain build's lock on it is brief. A deployment with a large queue would
--- build the same index CONCURRENTLY by hand first (this `IF NOT EXISTS` then
--- skips it); Phase 24's pruning of terminal jobs keeps the table bounded.
-CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_repository_recent
+-- plain build's lock on it is brief; Phase 24's pruning of terminal jobs
+-- keeps the table bounded.
+--
+-- NO `IF NOT EXISTS`, deliberately (PR #64's review). A deployment with a
+-- large queue may build this index CONCURRENTLY by hand instead, and then
+-- records version 18 by hand (`migrate force 18`) after checking
+-- `pg_index.indisvalid` is true for it: a failed concurrent build leaves an
+-- INVALID index under this exact name, which `IF NOT EXISTS` would skip with
+-- a NOTICE and record clean, leaving the newest-job lookup to read and sort.
+-- Without it, a name clash fails this migration loudly instead.
+CREATE INDEX idx_ingestion_jobs_repository_recent
   ON ingestion_jobs (repository_id, created_at DESC, id DESC);

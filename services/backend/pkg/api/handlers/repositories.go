@@ -920,10 +920,16 @@ func (h *RepositoriesHandler) Connect(w http.ResponseWriter, r *http.Request) {
 		// committed. orgID is $1: read from github_installations under
 		// row-level security above, in a transaction scoped to the caller's
 		// claim, so it is the claim's organization; no second claim read.
+		//
+		// ⚠ %v, NOT %w. The repository row was written in this transaction,
+		// so this read cannot miss; if it ever did (a row-level security or
+		// trigger change), that is a server bug and must be a 500. Wrapped,
+		// its pgx.ErrNoRows would reach the switch below and read as "the
+		// installation vanished", a client-facing 404.
 		var current jobScan
 		if jerr := tx.QueryRow(ctx, currentJobOfRepositorySQL, orgID, created.ID).
 			Scan(current.scanTargets()...); jerr != nil {
-			return fmt.Errorf("read current ingestion job: %w", jerr)
+			return fmt.Errorf("read current ingestion job: %v", jerr)
 		}
 		created.CurrentJob = current.job()
 		return nil
