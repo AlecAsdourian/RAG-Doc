@@ -460,7 +460,7 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 ### ISS-041: Two of 22.2-01's test files fail on Python 3.11, the version the worker images use ✅
 
-- **✅ CLOSED 2026-10-06 by 22.2-07's PR (branch `feat/22.2-07-judge`), on the version-independent fix.** Evidence in `22.2-07-SUMMARY.md` §6 and `22.2-07-records/python-versions.txt`:
+- **✅ CLOSED 2026-10-06 by PR #67 (22.2-07, branch `feat/22.2-07-judge`), on the version-independent fix.** Evidence in `22.2-07-SUMMARY.md` §6 and `22.2-07-records/python-versions.txt`:
   - **`scoring.aggregate` adds reciprocal ranks with `math.fsum`** (correctly rounded, the same double on every Python), and so does `decide.py`'s MRR@20. The tolerances stay explicit; no locked rule number changed.
   - **`test_tripwire.py`** compares the 22-03 summaries and its two `sum`-based reference copies by exact counts and MRR within a named `SUM_ROUNDING = 1e-12`, and a new test pins the MRR to `fsum`'s exactly.
   - **The git-dependent tests skip with a reason when `git` is missing:** the harness test's `self_tree` fixture (the 7 errors) and `test_decide.py`'s repository builder.
