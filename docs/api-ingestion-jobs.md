@@ -183,7 +183,7 @@ would have at the claim.
 | raises **`InstallationSuspended`** — the token route's `409 installation_suspended` | `defer` **60 minutes** | `queued`, attempt handed back, `run_after` an hour out, a reason | **unchanged** (reads `syncing`; see below) | the claim-time policy: a suspension heals on its own and must never dead-letter a healthy repository |
 | raises **`InstallationUninstalled`** — the route's `409 installation_uninstalled` | `abandon` | `superseded` | `never_synced` | the claim-time policy: nothing to do, nothing failed |
 | raises **`LeaseLost`** — `should_abort()`, or a refused token (the route's **marked** 404) | **nothing** | untouched: `running` under the old lease until someone reclaims it | untouched | the job is someone else's; any write would clobber theirs |
-| raises anything else — including `InternalApiMisrouted` (an **unmarked** answer from the token route) and **`ParseFailed`** (every indexable file raised in the chunker) | `fail` | attempt consumed, backoff, `dead` at 5 | `failed` | an ordinary, retried failure, with `last_error` saying why |
+| raises anything else — including `InternalApiMisrouted` (an **unmarked** answer from the token route) and **`ParseFailed`** (the chunker raised on too much of the repository: the clauses are below) | `fail` | attempt consumed, backoff, `dead` at 5 | `failed` | an ordinary, retried failure, with `last_error` saying why |
 
 Three rules sit behind that table, each learned the hard way:
 
@@ -211,13 +211,23 @@ completion together, and the runtime then writes the ending that exception
 calls for — normally `fail` — rather than leaving the job `running` until its
 lease expires.
 
-**A parse that produced nothing from files that exist never stores.** One
-file whose chunking raises is skipped and counted (`parse_errors`). When
-**every** indexable file raises, the handler raises `ParseFailed` instead of
-reaching `store`, because `write_results` *replaces* the repository's chunks:
-carrying on would delete a good index, insert nothing and read `synced`
-(PR #58's review). A tree with nothing indexable is not that case — nothing
-raised, and an empty index is then the truth about the repository.
+**A parse that failed too much of the repository never stores.** One file whose
+chunking raises is skipped and counted (`parse_errors`). The handler raises
+`ParseFailed` instead of reaching `store` when there were indexable files
+and, checked in this order (this list is the authority; `handler.py` points
+here):
+
+1. **every** file raised (PR #58's review);
+2. some raised and the rest produced **no chunks**;
+3. **more than half** of them raised (`MAX_PARSE_ERROR_SHARE` in
+   `workers/ingest/handler.py`, an operational default the user may change).
+
+`write_results` *replaces* the repository's chunks, so carrying on would
+delete a good index and insert nothing, or a sliver, and read `synced`. Up
+to half raising, the job completes and `parse_errors` says how many. A tree
+with nothing indexable, or whose files parse into no chunks with nothing
+raised, is not a failure: an empty index is then the truth about the
+repository. (22.2-02 added clauses 2 and 3.)
 
 ### Stages and progress
 
@@ -245,26 +255,102 @@ inside `write_results` — it uses the same connection, and psycopg2's
 re-entrancy guard refuses it — and `COMPLETE_SQL` does not touch
 `last_stage`. **A completed job therefore reads `last_stage = 'store'`.**
 
-**⚠ `progress` is replaced whole on every report, so every report carries
-every count so far.** `PROGRESS_SQL` overwrites the column, and a report
-with no payload writes NULL, so a `store` report of `{"chunks_stored": n}`
-alone would erase what `fetch` found. The handler keeps one running
-dictionary and sends the whole of it each time; each stage adds its keys and
-removes none:
+#### The progress contract
 
-| Key | First reported at | Meaning |
+This section is the authority for what `progress` can hold (22.1-03, P12).
+`workers/ingest/handler.py` and the job endpoint point here and keep no copy,
+and `services/workers/tests/ingest/test_progress_contract.py` reads the two
+tables below and fails when the code and this document disagree.
+
+1. **What the column holds: a JSON object, or `null`.**
+   - **`null`**: no attempt of this job has reported yet. That is every
+     `queued` job never claimed, and a job whose **only** claims ended in an
+     abandon or a claim-time deferral, which run before the handler. A job
+     that ran before and is then deferred or abandoned at a later claim keeps
+     that earlier attempt's report (item 4).
+   - **`{}`**: the `fetch` stage has begun on the current attempt. The first
+     report of every attempt is `fetch` with `{}`.
+2. **Per attempt.** Each report replaces the column whole (`PROGRESS_SQL`
+   sets it). A retry's first report (`fetch`, `{}`) therefore erases the
+   previous attempt's counts.
+3. **Cumulative within an attempt.** Each report is a superset of the one
+   before, value for value: the handler keeps one running dictionary and
+   sends the whole of it each time, each stage adding its keys and removing
+   none. A `store` report of `{"chunks_stored": n}` alone would have erased
+   what `fetch` found. 22-05's
+   `test_the_stages_run_in_order_and_every_report_carries_the_cumulative_progress`
+   pins this.
+4. **No ending writes it.** `complete`, `fail`, `reject`, `defer` and
+   `abandon` leave the last report in place: neither `progress` nor
+   `last_stage` appears in any statement in `workers/jobs/transitions.py`
+   (grep, 2026-10-06), and the only statement that writes them is
+   `PROGRESS_SQL` in `workers/jobs/runtime.py`. So a `dead`, `retrying` or
+   `deferred_suspended` job (see [`status`](#status-what-a-job-is-doing))
+   shows how far its last attempt got, together with `last_stage`.
+5. **The keys.** Every key is a non-negative integer, except `skipped`,
+   which is an object of reason → non-negative integer. **Counts, never
+   paths.**
+
+<!-- progress-keys -->
+| Key | Type | First reported at | Meaning |
+|---|---|---|---|
+| `files_indexable` | non-negative integer | `parse` | files the fetch kept |
+| `skipped` | object: reason → non-negative integer | `parse` | skip reason → count, e.g. `{"secret": 1, "unsupported": 12}`; the reasons are the next table |
+| `files_parsed` | non-negative integer | `embed` | files chunked |
+| `parse_errors` | non-negative integer | `embed` | files whose chunking raised; skipped and counted rather than failing the job — unless the parse guard fires (`ParseFailed`, its clauses under "How a job ends"), which never reaches `embed` |
+| `chunks` | non-negative integer | `embed` | chunks produced |
+| `chunks_truncated` | non-negative integer | `embed` | chunks whose embedding text (breadcrumb, docstring and content) is over the embedder's token limit, so they are embedded truncated. Counts rows, like `chunks`; each is named, by path and breadcrumb, in a worker WARNING. Usually 0 |
+| `chunks_embedded` | non-negative integer | `store` | chunks with their vector (duplicates share one) |
+| `chunks_stored` | non-negative integer | `store` | chunks the store stage writes; **true of a `completed` row only** (item 7) |
+<!-- /progress-keys -->
+
+6. **The skip reasons.** Each is counted by the fetcher, in one of two
+   passes: **extraction** (reading the archive, `extract_archive`) or the
+   **walk** (reading the extracted tree, `collect_tree`). A name-based reason
+   (`classify_path`) is counted at extraction, where a refused file is never
+   written; the walk applies the same check again as a second guard. **A
+   reason missing from this table is a bug.** A consumer should show an
+   unknown reason by its raw name rather than drop it.
+
+<!-- skip-reasons -->
+| Reason | Counted in | Meaning |
 |---|---|---|
-| `files_indexable` | `parse` | files the fetch kept |
-| `skipped` | `parse` | skip reason → count, e.g. `{"secret": 1, "unsupported": 12}`. **Counts, never paths** |
-| `files_parsed` | `embed` | files chunked |
-| `parse_errors` | `embed` | files whose chunking raised; skipped and counted rather than failing the job — unless **every** file raised, which is `ParseFailed` and never reaches `embed` |
-| `chunks` | `embed` | chunks produced |
-| `chunks_embedded` | `store` | chunks with their vector (duplicates share one) |
-| `chunks_stored` | `store` | chunks the store stage writes; true of a `completed` row |
+| `unsafe_path` | extraction | a member name that must not be joined to a directory: absolute or a drive path, a backslash, a NUL or any control character, not encodable as UTF-8, or an empty, `.` or `..` component (also the name check's verdict for an empty path) |
+| `secret` | extraction (walk) | a name that looks like a credential (`.env`, private keys and the like: `filters.py`'s `SECRET_PATTERNS` and `SECRET_PATHS`); never written, never embedded |
+| `vendored` | extraction (walk) | under a vendored or build directory (`filters.py`'s `VENDORED_DIRS`: `vendor`, `node_modules`, `dist`, `build`, `.git`, `third_party`) |
+| `generated` | extraction (walk) | a generated-file name (`*.min.js`, `*_pb2.py`, `*.pb.go`); in the walk also a Go file whose first 20 lines carry Go's generated-code header |
+| `lockfile` | extraction (walk) | a dependency lock file (`filters.py`'s `LOCKFILES`) |
+| `unsupported` | extraction (walk) | an extension not in `filters.py`'s `LANGUAGES` |
+| `symlink` | extraction | a symbolic-link member; never followed or created |
+| `hardlink` | extraction | a hard-link member |
+| `special` | extraction | a character device, block device or FIFO member |
+| `other` | extraction | any other member type that is neither a file nor a directory |
+| `sparse` | extraction | a sparse-file member, which would expand on disk far beyond its stream size |
+| `unexpected_top_level` | extraction | a member outside the archive's single top-level directory |
+| `oversize_file` | extraction, walk | larger than the per-file cap (U6: 1 MB) |
+| `refused_by_filter` | extraction | refused by `tarfile`'s `data` filter, the second guard behind the name checks |
+| `unwritable` | extraction | the disk refused the write with a skippable error; the half-written file is removed |
+| `link` | walk | anything on disk that is not a regular file |
+| `binary` | walk | the file contains a NUL byte |
+| `non_utf8` | walk | the file is not valid UTF-8 |
+<!-- /skip-reasons -->
+
+7. **What `progress` is not.**
+   - **It is not a percentage.** Nothing is reported *during* `embed`, so a UI
+     can show "parsed N files into M chunks" and "embedding", but no share of
+     the embedding done. Making `embed` report per slice would be a behaviour
+     change (one fenced `UPDATE` per 1,000 chunks, `EMBED_SLICE`). It is
+     **recorded as an option for 23-03, not built**.
+   - **`chunks_stored` is true of a `completed` row only.** It is reported
+     before the store runs (`store` is the last report, and the write
+     happens inside `complete()`), so a job that fails or loses its lease in
+     the store reads a `chunks_stored` that was never stored.
+8. **Stability.** Adding a key or a reason is not breaking. Renaming or
+   removing one is breaking, and it changes these tables and the pin test in
+   the same commit.
 
 A `completed` row's `progress` therefore still holds `skipped` — the count
-of secret-looking files that were never sent to OpenAI. 22.1-03 turns this
-into the documented progress contract (P12).
+of secret-looking files that were never sent to OpenAI.
 
 ---
 
@@ -356,7 +442,61 @@ repository.
 
 The endpoint below computes that predicate for you, in SQL, against the
 database clock, and returns it as `stalled`. Use it rather than re-deriving
-it, and never infer liveness from `sync_state`.
+it, and never infer liveness from `sync_state`. **Better still, use
+`status`** (next section), which folds `stalled`, the attempt cap, the
+backoff and a suspended installation into one word.
+
+### `status`: what a job is doing
+
+Every job object (this endpoint, and `current_job` on the
+[repository API](api-repositories.md)) carries a `status`, added by 22.1-03.
+**This table is its one authority**: `jobs.go` and `repositories.go` point
+here and keep no copy. It is computed in SQL, against the database clock,
+from the job row and the repository's installation row, **never from
+`sync_state`**, so a UI can say "stalled", "retrying", "about to be marked
+dead" or "paused because the App is suspended" without deriving anything.
+
+The rows are evaluated **in this order, and the first match wins**:
+
+| `status` | The row | What a UI says |
+|---|---|---|
+| `dead_pending` | `attempts >= max_attempts`, and either `queued` (a row the claim refuses) or `running` with a NULL or expired lease. **Not** a `running` row with a live lease: the claim increments `attempts`, so a healthy final attempt also reads `attempts = max_attempts` | "failed; about to be marked dead" (the sweeper writes `dead`) |
+| `stalled` | `running`, and the lease is NULL or expired | "the worker stopped responding; it will be retried" |
+| `running` | `running`, lease live | progress, from `last_stage` and `progress` |
+| `deferred_suspended` | `queued`, and the repository's installation has `suspended_at` set and `uninstalled_at` NULL | "paused: the GitHub App is suspended; checked hourly" |
+| `retrying` | `queued`, `attempts > 0` | "failed; retrying at `run_after`" (or "now", once it has passed), with `last_error`. The rule of [the five states](#the-five-states), `state = 'queued' AND attempts > 0` |
+| `scheduled` | `queued`, `attempts = 0`, `run_after` in the future | "waiting to start" (for example the rest of an hour after an unsuspend) |
+| `queued` | `queued`, `attempts = 0`, `run_after` now or past | "waiting for a worker" |
+| `completed` | `completed` | done |
+| `dead` | `dead` | failed for good; `last_error` says why |
+| `superseded` | `superseded` | stood down: a relink replaced it, nothing failed |
+
+- **`deferred_suspended` reads the installation row**, not `last_error`'s
+  wording: the same join the worker's claim-time check makes
+  (`INSTALLATION_SQL`, `workers/jobs/runtime.py`), inside the caller's tenant
+  transaction, where both tables' row-level security applies.
+- **A `running` job whose installation was just suspended reads
+  `running`**: the token route defers it mid-run (22-05), and it then reads
+  `deferred_suspended`.
+- **Not covered:** a job queued under an **uninstalled** installation
+  (ISS-033's race) reads `queued`, `scheduled` or `retrying` until a worker
+  claims and abandons it.
+- **A consumer still needs a default branch.** The computation ends in the
+  bare `state`, so a state added later reads as itself rather than as
+  nothing.
+- **The alternative not chosen:** documenting a client-side derivation and
+  adding no field. That would put the precedence (the cap, the clock, the
+  installation join) in every client.
+
+**Polling guidance (for 23-03).** Progress is read by polling, never pushed
+(P12, U8).
+
+- Poll **every few seconds** while `status` is `queued`, `running` or
+  `stalled`.
+- Poll **about once a minute** while it is `scheduled`, `retrying`,
+  `deferred_suspended` or `dead_pending`.
+- **Stop** at `completed`, `dead` or `superseded`.
+- **Never read `sync_state` for any of this.**
 
 ---
 
@@ -380,10 +520,11 @@ every other tenant-scoped route.
   "run_after": "2026-09-16T18:04:11.201Z",   // the backoff target
   "lease_expires_at": "2026-09-16T18:09:11.201Z",  // null unless leased
   "stalled": false,                  // see the rule above
+  "status": "running",               // see "status: what a job is doing"
   "last_stage": "embed",             // fetch|parse|embed|store (see "Stages and progress")
   "progress": {                      // CUMULATIVE: every count so far, or null
     "files_indexable": 3, "skipped": { "secret": 1 },
-    "files_parsed": 3, "parse_errors": 0, "chunks": 9
+    "files_parsed": 3, "parse_errors": 0, "chunks": 9, "chunks_truncated": 0
   },
   "needs_rerun": false,
   "last_error": "FetchFailed: resolving acme/widgets@main: api.github.com answered 502",  // redacted; null if none
@@ -396,15 +537,15 @@ every other tenant-scoped route.
 **Timestamps are RFC 3339 with an offset, not necessarily `Z`.** Parse them;
 do not string-compare them.
 
-**⚠ There is no way to discover a job id from a repository yet.** Nothing in
-the repositories API returns one — a connect logs the job id server-side and
-its response carries only the repository. So this endpoint is usable by
-anything that already holds an id, and not by a UI starting from a repository.
-Phase 23 needs either a `job_id` on the repository response or a
-list-by-repository endpoint; neither is built. **Filed as ISS-034**, because
-choosing between the two is an API-contract decision with its own doc, test
-and isolation surface — not something to settle in the plan that shipped the
-reader.
+**From a repository to its job: `current_job`.** Every repository response
+— `GET /api/repositories`, `GET /api/repositories/{id}` and the `201` of
+`POST /api/repositories` — carries `current_job`: this same object, or
+`null` ([`api-repositories.md`](api-repositories.md#current_job-the-repositorys-current-ingestion-job)).
+"Current" is the live job (`queued` or `running`) when there is one,
+otherwise the newest job by `(created_at, id)`, otherwise `null`. A UI starts
+from the repository list and polls it, or polls this endpoint with
+`current_job.id`. This closed **ISS-034** (22.1-03, shape 1). There is still
+no job **history** list (ISS-034's shape 2, not chosen).
 
 ### What it never returns, and why
 
@@ -456,16 +597,21 @@ The isolation test for this endpoint asserts all three responses are
 Two safety nets that exist elsewhere in this codebase are **absent here**, and
 both absences are deliberate:
 
-1. **No row-level security.** `WHERE id = $1 AND organization_id = $2` is the
-   only tenant guard. Deleting the predicate returns any tenant's job with no
-   error and nothing in the database to stop it.
+1. **No row-level security.** `WHERE j.id = $1 AND j.organization_id = $2`
+   is the only tenant guard. Deleting the predicate returns any tenant's job
+   with no error and nothing in the database to stop it.
 2. **No CI gate.** `scripts/ci/check-isolation-tests.py` matches
    POST/PUT/PATCH/DELETE only, so a `GET` over this table passes the ratchet
    with no isolation test at all.
 
 So `pkg/api/handlers/jobs_isolation_test.go` is written deliberately rather
 than by ratchet, and its cross-tenant case is mutation-checked: neutering the
-organization filter must fail it.
+organization filter must fail it. The same holds for the other tenant-facing
+reader of this table, `currentJobJoinSQL` behind `current_job`, whose test is
+`repositories_current_job_isolation_test.go`; both are listed in
+[`isolation.md`](isolation.md#readers-of-ingestion_jobs). The column list the
+two share (`jobColumnsSQL`) is the one place to add a field, and a field
+added there appears in both responses.
 
 **`claimSQL` and `sweepSQL` must never appear in a request handler.** Both are
 queue-wide and cross-tenant *by construction* — no organization filter, and no

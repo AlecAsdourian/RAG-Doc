@@ -1,0 +1,51 @@
+PASS  mealie: decorators_in_no_chunk 105 -> 0
+PASS  mealie: decorators_only_inside_an_enclosing_class_chunk 466 -> 0
+PASS  mealie: route_decorators_in_no_chunk 25 -> 0
+PASS  mealie: route_decorators_only_inside_an_enclosing_class_chunk 245 -> 0
+PASS  mealie: decorators in their own definition's chunk 844 = decorated definitions 844 (before 0)
+PASS  mealie: decorators_only_inside_a_class_chunk 466 -> 71 = decorated classes in their own class chunk 71
+PASS  mealie: route_decorators_only_inside_a_class_chunk 245 -> 0 = decorated classes in their own class chunk 0
+PASS  self-py: decorators_in_no_chunk 12 -> 0
+PASS  self-py: decorators_only_inside_an_enclosing_class_chunk 7 -> 0
+PASS  self-py: decorators in their own definition's chunk 19 = decorated definitions 19 (before 0)
+PASS  self-py: decorators_only_inside_a_class_chunk 7 -> 9 = decorated classes in their own class chunk 9
+PASS  self: decorators_in_no_chunk 12 -> 0
+PASS  self: decorators_only_inside_an_enclosing_class_chunk 7 -> 0
+PASS  self: decorators in their own definition's chunk 19 = decorated definitions 19 (before 0)
+PASS  self: decorators_only_inside_a_class_chunk 7 -> 9 = decorated classes in their own class chunk 9
+PASS  linkwarden: chunked_with_docstring 12 = sim_chunkable_with_jsdoc_directly_above 12 (before 0)
+PASS  self-ts: chunked_with_docstring 5 = sim_chunkable_with_jsdoc_directly_above 5 (before 0)
+PASS  self: (file_path, chunk_type, breadcrumb) multiset identical (637 rows; only before 0, only after 0)
+PASS  self-go: (file_path, chunk_type, breadcrumb) multiset identical (331 rows; only before 0, only after 0)
+PASS  self-py: (file_path, chunk_type, breadcrumb) multiset identical (306 rows; only before 0, only after 0)
+PASS  miniflux: (file_path, chunk_type, breadcrumb) multiset identical (2134 rows; only before 0, only after 0)
+PASS  mealie: (file_path, chunk_type, breadcrumb) multiset identical (2816 rows; only before 0, only after 0)
+PASS  linkwarden: files with parse errors as chunked {'typescript.tsx': 0, 'typescript.ts': 0} (before {'typescript.tsx': '151/164', 'typescript.ts': '200/215'})
+PASS  linkwarden: named chunks 601 (by extension {'.ts': {'function': 328, 'class': 1}, '.tsx': {'function': 272, 'class': 0}}; before 344) = parity 601 = census sim 601
+PASS  linkwarden: files_with_declarations_but_no_named_chunk 0 (before 109)
+PASS  linkwarden: fallback files 22 (before 131) = files with no chunkable declaration 22
+PASS  self-ts: files with parse errors as chunked {'typescript.tsx': 0, 'typescript.ts': 0} (before {'typescript.tsx': '30/33', 'typescript.ts': '9/10'})
+PASS  self-ts: named chunks 51 (by extension {'.ts': {'function': 16, 'class': 1}, '.tsx': {'function': 34, 'class': 0}}; before 47) = parity 51 = census sim 51
+PASS  self-ts: files_with_declarations_but_no_named_chunk 0 (before 2)
+PASS  self-ts: fallback files 12 (before 14) = files with no chunkable declaration 12
+PASS  linkwarden: module-level const functions in no chunk 0 (before 67) of 213
+PASS  self: fallback_reasons.raised {'go': 0, 'python': 0}
+PASS  self-go: fallback_reasons.raised {'go': 0}
+PASS  self-py: fallback_reasons.raised {'python': 0}
+PASS  miniflux: fallback_reasons.raised {'go': 0}
+PASS  mealie: fallback_reasons.raised {'python': 0}
+PASS  linkwarden: fallback_reasons.raised {'typescript': 0}
+PASS  self-ts: fallback_reasons.raised {'typescript': 0}
+PASS  self-go: chunk-set digest unchanged 26f5a84e52ad93ac (before 26f5a84e52ad93ac)
+PASS  miniflux: chunk-set digest unchanged 6e27949a7d08d384 (before 6e27949a7d08d384)
+PASS  self: chunk-set digest changed fa17b901a7a28880 -> 55ee4e90821eb876
+PASS  self-py: chunk-set digest changed d143883b5ea7a966 -> 371cbe0b452182e4
+PASS  mealie: chunk-set digest changed 0afe2fc92966b0c2 -> 71723463aed4c9ed
+INFO  self: chunks over 8000 tokens 0, max 7883, billed tokens 222629
+INFO  self-go: chunks over 8000 tokens 0, max 4061, billed tokens 89490
+INFO  self-py: chunks over 8000 tokens 0, max 7883, billed tokens 133139
+INFO  miniflux: chunks over 8000 tokens 0, max 4296, billed tokens 318453
+INFO  mealie: chunks over 8000 tokens 0, max 6456, billed tokens 435050
+INFO  linkwarden: chunks over 8000 tokens 0, max 4880, billed tokens 247081
+INFO  self-ts: chunks over 8000 tokens 0, max 3715, billed tokens 40088
+0 failed

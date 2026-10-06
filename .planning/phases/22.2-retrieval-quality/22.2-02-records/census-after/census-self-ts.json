@@ -1,0 +1,179 @@
+{
+ "corpus": "self-ts",
+ "commit": "5bb86930d4f2bcae575888153fabc7e2f010e4f3",
+ "corpus_dirty": null,
+ "files": 43,
+ "files_by_language": {
+  "typescript": 43
+ },
+ "files_by_extension": {
+  ".tsx": 33,
+  ".ts": 10
+ },
+ "source_chars": 180637,
+ "source_lines": 4929,
+ "chunks": 101,
+ "chunks_by_type": {
+  "function": 50,
+  "file_summary": 31,
+  "fixed_size": 19,
+  "class": 1
+ },
+ "chunk_chars_total": 162969,
+ "index_text_over_source": 0.902,
+ "code_chunk_chars": {
+  "p50": 1322,
+  "p90": 4821,
+  "p99": 13311,
+  "max": 15152,
+  "over_2000": 21,
+  "over_5000": 7,
+  "over_8000": 6
+ },
+ "largest_chunks": [
+  {
+   "file": "services/frontend/src/pages/KnowledgeGraphPage.tsx",
+   "breadcrumb": "GraphInner",
+   "type": "function",
+   "chars": 15152,
+   "lines": 331
+  },
+  {
+   "file": "services/frontend/src/pages/RepoSettingsPage.tsx",
+   "breadcrumb": "RepoSettingsPage",
+   "type": "function",
+   "chars": 13311,
+   "lines": 269
+  },
+  {
+   "file": "services/frontend/src/pages/LivingDocsPage.tsx",
+   "breadcrumb": "LivingDocsPage",
+   "type": "function",
+   "chars": 12468,
+   "lines": 266
+  },
+  {
+   "file": "services/frontend/src/pages/ChatPage.tsx",
+   "breadcrumb": "ChatPage",
+   "type": "function",
+   "chars": 9225,
+   "lines": 204
+  },
+  {
+   "file": "services/frontend/src/pages/OrgSelectPage.tsx",
+   "breadcrumb": "OrgSelectPage",
+   "type": "function",
+   "chars": 8429,
+   "lines": 206
+  }
+ ],
+ "tokens": {
+  "embedded_total_if_every_chunk": 40088,
+  "billed_distinct_content": 40088,
+  "cost_full_ingest_usd": {
+   "text-embedding-ada-002": 0.004,
+   "text-embedding-3-small": 0.0008
+  },
+  "p50": 113,
+  "p90": 958,
+  "max": 3715,
+  "chunks_over_8000_tokens_truncated": 0,
+  "tokens_cut_by_truncation": 0,
+  "truncated": []
+ },
+ "identical_content": {
+  "distinct_hashes": 101,
+  "chunks_sharing_a_hash": 0,
+  "extra_copies": 0
+ },
+ "duplication": {
+  "class_chunks": 1,
+  "class_chunks_ge80pct_covered": 1,
+  "class_chars": 1959,
+  "class_chars_covered_by_methods": 1889,
+  "nested_function_chunks": 0,
+  "nested_function_chars": 0,
+  "go_struct_chunks_in_groups": 0,
+  "go_group_extra_chars": 0
+ },
+ "coverage_nonblank_lines_in_code_chunks": 0.864,
+ "fallback_files_fixed_size_only": 12,
+ "fixed_size_chunks": 19,
+ "fallback_reasons": {
+  "typescript": {
+   "raised": 0,
+   "no_chunk": 12,
+   "unsupported": 0
+  }
+ },
+ "named_chunks_by_extension": {
+  ".ts": {
+   "function": 16,
+   "class": 1
+  },
+  ".tsx": {
+   "function": 34,
+   "class": 0
+  }
+ },
+ "files_with_declarations_but_no_named_chunk": {
+  "count": 0,
+  "by_language": {},
+  "files": []
+ },
+ "parse_errors_as_chunked": {
+  "typescript.tsx": {
+   "files": 33,
+   "files_with_errors": 0,
+   "error_nodes": 0,
+   "missing_nodes": 0
+  },
+  "typescript.ts": {
+   "files": 10,
+   "files_with_errors": 0,
+   "error_nodes": 0,
+   "missing_nodes": 0
+  }
+ },
+ "parse_errors_with_typescript_grammar": {
+  "typescript.tsx": {
+   "files": 33,
+   "files_with_errors": 0,
+   "error_nodes": 0,
+   "missing_nodes": 0
+  },
+  "typescript.ts": {
+   "files": 10,
+   "files_with_errors": 0,
+   "error_nodes": 0,
+   "missing_nodes": 0
+  }
+ },
+ "typescript": {
+  "real_function_declaration": 45,
+  "sim_chunkable_declarations": 51,
+  "sim_files_with_no_chunkable_declaration": 12,
+  "sim_chunkable_with_jsdoc_directly_above": 5,
+  "chunked_function_chunks": 50,
+  "chunked_class_chunks": 1,
+  "chunked_fixed_size_chunks": 19,
+  "chunked_with_docstring": 5,
+  "real_interface_declaration": 42,
+  "real_declarations_with_jsdoc_above": 5,
+  "real_class_declaration": 1,
+  "real_method_definition": 5,
+  "real_type_alias_declaration": 1
+ },
+ "chunk_set_digest": "deb0c4654bf8c89ad86fff768bcf08fb065aca5368fc959a724d687acbfe64f4",
+ "chunk_rows": 101,
+ "corpus_tree_digest": "9f167d59e8e60c53a941844460e428a853ddd3733bfb0481dc4cb57ee732e4dc",
+ "chunker_version": "b339770e95eaf507",
+ "versions": {
+  "tree_sitter_go": "0.25.0",
+  "tree_sitter_javascript": "0.25.0",
+  "tree_sitter_python": "0.25.0",
+  "tree_sitter_typescript": "0.23.2",
+  "tiktoken": "0.12.0",
+  "tree-sitter": "0.25.2"
+ }
+}

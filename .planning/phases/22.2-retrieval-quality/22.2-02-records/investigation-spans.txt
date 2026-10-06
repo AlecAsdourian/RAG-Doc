@@ -1,0 +1,21 @@
+== mealie/services/scheduler/scheduler_service.py function SchedulerService.start
+   before lines 22-27 (224 chars, 50 tokens); after lines 21-27 (242 chars, 54 tokens)
+   +   21 |     @staticmethod
+== mealie/services/event_bus_service/event_bus_listeners.py function AppriseEventListener.update_urls_with_event_data
+   before lines 92-110 (918 chars, 192 tokens); after lines 91-110 (936 chars, 196 tokens)
+   +   91 |     @staticmethod
+== mealie/routes/recipe/recipe_crud_routes.py function RecipeController.test_parse_recipe_url
+   before lines 143-166 (1129 chars, 226 tokens); after lines 142-166 (1166 chars, 236 tokens)
+   +  142 |     @router.post("/test-scrape-url")
+== mealie/routes/recipe/recipe_crud_routes.py function RecipeController.scrape_image_url
+   before lines 767-794 (1143 chars, 230 tokens); after lines 766-794 (1249 chars, 254 tokens)
+   +  766 |     @router.post("/{slug}/image", response_model=UpdateImageResponse, tags=["Recipe: Images and Assets"])
+== mealie/routes/recipe/recipe_crud_routes.py class RecipeController
+   before lines 93-860 (33348 chars, 6452 tokens); after lines 92-860 (33368 chars, 6456 tokens)
+   +   92 | @controller(router)
+== mealie/routes/recipe/recipe_crud_routes.py class_summary RecipeController
+   before lines 93-860 (448 chars, 110 tokens); after lines 92-860 (448 chars, 110 tokens)
+   +   92 | @controller(router)
+== mealie/db/models/recipe/recipe.py function receive_description
+   before lines 281-285 (228 chars, 47 tokens); after lines 280-285 (279 chars, 60 tokens)
+   +  280 | @event.listens_for(RecipeModel.description, "set")

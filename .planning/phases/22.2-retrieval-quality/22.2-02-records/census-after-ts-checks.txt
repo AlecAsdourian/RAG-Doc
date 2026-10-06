@@ -1,0 +1,22 @@
+PASS  linkwarden: files with parse errors as chunked {'typescript.tsx': 0, 'typescript.ts': 0} (before {'typescript.tsx': '151/164', 'typescript.ts': '200/215'})
+PASS  linkwarden: named chunks 601 (by extension {'.ts': {'function': 328, 'class': 1}, '.tsx': {'function': 272, 'class': 0}}; before 344) = parity 601 = census sim 601
+PASS  linkwarden: files_with_declarations_but_no_named_chunk 0 (before 109)
+PASS  linkwarden: fallback files 22 (before 131) = files with no chunkable declaration 22
+PASS  self-ts: files with parse errors as chunked {'typescript.tsx': 0, 'typescript.ts': 0} (before {'typescript.tsx': '30/33', 'typescript.ts': '9/10'})
+PASS  self-ts: named chunks 51 (by extension {'.ts': {'function': 16, 'class': 1}, '.tsx': {'function': 34, 'class': 0}}; before 47) = parity 51 = census sim 51
+PASS  self-ts: files_with_declarations_but_no_named_chunk 0 (before 2)
+PASS  self-ts: fallback files 12 (before 14) = files with no chunkable declaration 12
+PASS  linkwarden: module-level const functions in no chunk 0 (before 67) of 213
+PASS  self: fallback_reasons.raised {'go': 0, 'python': 0}
+PASS  self-go: fallback_reasons.raised {'go': 0}
+PASS  self-py: fallback_reasons.raised {'python': 0}
+PASS  miniflux: fallback_reasons.raised {'go': 0}
+PASS  mealie: fallback_reasons.raised {'python': 0}
+PASS  linkwarden: fallback_reasons.raised {'typescript': 0}
+PASS  self-ts: fallback_reasons.raised {'typescript': 0}
+PASS  self: chunk-set digest unchanged fa17b901a7a28880 (before fa17b901a7a28880)
+PASS  self-go: chunk-set digest unchanged 26f5a84e52ad93ac (before 26f5a84e52ad93ac)
+PASS  self-py: chunk-set digest unchanged d143883b5ea7a966 (before d143883b5ea7a966)
+PASS  miniflux: chunk-set digest unchanged 6e27949a7d08d384 (before 6e27949a7d08d384)
+PASS  mealie: chunk-set digest unchanged 0afe2fc92966b0c2 (before 0afe2fc92966b0c2)
+0 failed

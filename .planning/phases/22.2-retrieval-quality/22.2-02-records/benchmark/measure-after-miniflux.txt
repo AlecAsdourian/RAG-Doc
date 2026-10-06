@@ -1,0 +1,72 @@
+$ rag_quality_harness.py --corpus miniflux --corpora-dir <scratch>/w2202-corpora --self-root <scratch>/w2202-base --self-commit 5bb86930d4f2bcae575888153fabc7e2f010e4f3 --measure --set all --query-vectors <scratch>/w2202-bench/vecs.json --record <scratch>\w2202-bench\after-miniflux.jsonl
+[*] query vectors: 45 cached, 0 embedded now (text-embedding-ada-002) -> <scratch>\w2202-bench\vecs.json
+[*] recording to <scratch>\w2202-bench\after-miniflux.jsonl as rag_doc_app (rolsuper=False, rolbypassrls=False); vector backend: pgvector
+[*] header: chunker b339770e95eaf507 (verified: True), chunk set 6e27949a7d08d384fd0ae71ec9c758e618223af78de4a89f6881ecb5da58f3a1 (2134 rows with text-embedding-ada-002; rows per model {'text-embedding-ada-002': 2134}), stored vectors 2b8a5c5eda8cfb96eeb3d4f99afa25c9, corpus commit 76889f08b12c2577b37e524e645afa5dd46ff050, tree 15fb188a4bc51bf1, vector tolerance 1e-05
+wrote <scratch>\w2202-bench\after-miniflux.jsonl
+
+[miniflux / all]  45 questions, top_k=5
+
+file   symbol question                                                         top hit
+----------------------------------------------------------------------------------------------------------------------------------------
+#4     #4     Some websites put a 'checking your browser' wall in front of t   internal/http/response/html.go
+#1     #1     How does the app work out whether a downloaded document is RSS   internal/reader/parser/format.go
+#2     #2     During a feed refresh, if fetching the full article from the o   internal/reader/filter/filter.go
+MISS   MISS   Where do article links get stripped of the marketing and click   internal/reader/rewrite/content_rewrite_functions.go
+#1     #5     How does feed discovery guess feed addresses for a website who   internal/reader/subscription/finder.go
+#2     #2     When the scheduler adapts to how often each RSS source publish   internal/cli/scheduler.go
+MISS   MISS   What limits how many feeds hosted on the same website get put    internal/cli/scheduler.go
+MISS   MISS   When old articles get purged automatically, which ones are spa   internal/reader/readability/readability.go
+MISS   MISS   Where is it worked out how often a feed tends to publish, usin   internal/model/feed.go
+MISS   MISS   What happens when a client calls the REST API with a username    internal/integration/instapaper/instapaper.go
+MISS   MISS   Where does the REST API let an external tool add a single arti   internal/fever/handler.go
+#4     #4     What happens when someone requests a picture through the built   internal/mediaproxy/rewriter.go
+MISS   MISS   How does signing in through a reverse proxy that passes the us   internal/ui/webauthn.go
+#1     #1     What happens when a form is submitted to the web interface wit   internal/ui/csrf_middleware.go
+MISS   MISS   Where are newly found articles sent out to chat and notificati   internal/cli/refresh_feeds.go
+#2     #3     How can the server receiving outgoing webhook calls verify tha   internal/googlereader/handler.go
+#1     #1     When the app is deployed behind nginx or another proxy, where    internal/http/request/client_ip.go
+#1     #1     Who is allowed to read the Prometheus monitoring stats, and ho   internal/http/server/metrics.go
+#1     #1     Which characters are allowed in a username when a new account    internal/validator/user.go
+#2     #2     Which offset and limit values cause the REST API's entry listi   internal/api/entry_handlers.go
+MISS   MISS   Which conflicting or half-configured settings stop the app fro   internal/config/options.go
+#4     #4     Which spellings are accepted for on/off configuration options,   internal/config/options.go
+#2     MISS   What happens to refresh jobs that are still waiting to be hand   internal/cli/refresh_feeds.go
+#1     #1     Where is the periodic housekeeping that removes stale login se   internal/cli/cleanup_tasks.go
+#1     #1     How does the Google Reader-compatible API cope with client app   internal/googlereader/item.go
+MISS   MISS   How does the Fever-compatible API check who is calling it?       internal/fever/handler.go
+#1     MISS   When someone signs in through a generic OpenID Connect provide   internal/oauth2/oidc.go
+#1     #1     Where does the translation code choose between the singular an   internal/locale/plural.go
+#1     MISS   How are database schema upgrades applied, and what happens if    internal/database/database.go
+#3     #3     Where are human-friendly relative dates like 'yesterday' or '3   internal/reader/date/parser.go
+#1     #2     What happens to a website's favicon after it is downloaded if    internal/reader/icon/finder.go
+#1     #1     Which kinds of IP addresses count as internal and off-limits f   internal/urllib/url.go
+#3     MISS   Say a feed has its own proxy, the application also has a globa   internal/reader/subscription/finder.go
+#3     #5     How does the web server pick a compression method from the cli   internal/http/response/builder.go
+#1     #2     Before estimating how long an article takes to read, how does    internal/reader/readingtime/readingtime.go
+#1     #1     How are date-based entry filter rules evaluated, such as dropp   internal/reader/filter/filter.go
+MISS   MISS   How does the article HTML cleanup spot the invisible web beaco   internal/reader/rewrite/content_rewrite_functions.go
+MISS   MISS   When a user starts signing in through Google or an OpenID Conn   internal/model/web_session.go
+#2     MISS   What happens when a Google Reader-compatible app sends one req   internal/ui/unread_mark_all_read.go
+#1     #1     When several listen addresses are configured, how does the ser   internal/http/server/server.go
+#1     #3     When a very long article is saved, how is its text shortened f   internal/storage/entry.go
+MISS   MISS   Some image hosts block pictures that are hotlinked from other    internal/mediaproxy/rewriter.go
+MISS   MISS   I turned on marking articles as read when I open them, but pod   internal/ui/feed_mark_as_read.go
+MISS   MISS   Which pages of the web interface can be opened without being l   internal/ui/login_show.go
+#4     #4     When I save an article to Pinboard and that link is already bo   internal/integration/linkding/linkding.go
+----------------------------------------------------------------------------------------------------------------------------------------
+
+recall@5 : 30/45 = 67%
+rank-1    : 17/45 = 38%
+MRR       : 0.489
+symbol level (45 questions): recall@5 25/45, rank-1 11/45, MRR 0.353
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for client/doc.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for internal/config/config.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for internal/database/migrations.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for internal/googlereader/parameters.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for internal/googlereader/prefix_suffix.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for internal/locale/locale.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for internal/oauth2/provider.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for internal/reader/rewrite/content_rewrite_rules.go (go), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for internal/reader/scraper/rules.go (go), falling back to fixed-size chunking
+exit 0
+

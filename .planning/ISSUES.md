@@ -4,6 +4,23 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 ## Open Enhancements
 
+### ISS-041: Two of 22.2-01's test files fail on Python 3.11, the version the worker images use
+
+- **Discovered:** 2026-10-06, by the 22.1-03 worker's verification of PR #64 in `python:3.11-slim`. Measured there: 701 passed, **1 failed, 7 errors**, none in PR #64's files. CI runs 3.12 (`workers-ci.yml:72`, `isolation-check.yml:28`), so it passes there.
+- **Type:** Testing / Operations
+- **Priority:** Low, but fix it with the next 22.2 PR that touches these files. Nothing in production runs these scripts today; the risk is that CI and the shipped image disagree.
+- **What:**
+  - The 7 errors are in `services/workers/tests/test_rag_quality_harness.py`, whose tests shell out to `git`, which `python:3.11-slim` does not have.
+  - The 1 failure is `services/workers/tests/test_tripwire.py:270`. It compares a summary recorded under Python 3.12 with a recomputation. Python 3.12 changed `sum()` of floats to use compensated summation, so 3.11 differs in the last digits.
+- **Why it matters:** `services/workers/Dockerfile` and `Dockerfile.api` are `FROM python:3.11-slim`, while CI tests on 3.12. A test that only passes on the CI version hides version-specific behaviour, and the decision tools (`tripwire.py`, `decide.py`) must give the same verdict wherever they run.
+- **Fix:** either align the versions (move the images to 3.12, or add 3.11 to CI's matrix), or make the tests version-independent:
+  - skip the `git`-dependent tests with a clear reason when `git` is missing;
+  - compare floats in the tripwire test with a tolerance, or compute the aggregate with `math.fsum` on both sides.
+
+  If the aggregate itself feeds a decision, `math.fsum` is the better fix, because it gives the same verdict on either version.
+- **Related:** `22.2-01-SUMMARY.md`; `22.1-03-SUMMARY.md` §7.
+- **Owner:** the 22.2 track. 22.2-07 (`decide.py`) is the natural place, because it shares the aggregate.
+
 ### ISS-040: A marked refusal from another deployment's token route reads as a lost lease, so every job dies silently
 
 - **Discovered:** 2026-09-29, by PR #58's review (22-05), reviewer A's L2. Reasoned from the code and from a signature one test already shows; not measured against two real deployments.
@@ -80,22 +97,6 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **The fix, when someone needs seed data:** set each organization's tenant with `set_config('app.current_tenant', …, true)` inside a transaction per organization, as 000015 does, and add the new chunk columns. Otherwise delete the three scripts and their Make targets.
 - **A working example exists since 22-01:** `services/backend/pkg/testing/isolation/testdata/seed_at_000010.sql` seeds four organizations at schema version 10 in exactly that shape, as the unprivileged `rag_doc_app`. It is written for version 10, so it is a pattern to copy, not a drop-in replacement.
 - **Why not in Phase 22:** 22-02 is already the largest plan, and this is unrelated tooling that no plan depends on.
-
-### ISS-034: Nothing hands a UI a job id, so the job-status endpoint is unreachable from a repository
-
-- **Discovered:** 2026-09-17, by the reviewer session on PR #43 (21-07), which ruled that deferring it is correct and that it needs a **number** rather than living only in doc prose.
-- **Type:** API surface / Frontend blocker
-- **Priority:** LOW today, **BLOCKING for 23-03.** Nothing claims a job before Phase 22, so the endpoint is inert; the moment Phase 23 wants a progress UI it is the first wall.
-- **What is missing:** `GET /api/admin/jobs/{id}` (21-07) reads one job by id, and **no API response anywhere returns a job id.** `POST /api/repositories` logs `job_id` server-side (`repositories.go:819`) and its response body carries only the repository; `GET /api/repositories` and `GET /api/repositories/{id}` return the `Repository` object, which has no job field. So the endpoint is usable by anything that already holds an id — a log line, a support query — and not by a UI starting from a repository, which is every UI.
-- **Where the prose already says this, and why that was not enough:** `docs/api-ingestion-jobs.md` (under the response shape), `docs/api-repositories.md`'s "Not in this API yet", and `21-07-SUMMARY.md`. Every other deferred item this phase produced got a number (ISS-023, ISS-027, ISS-033); this one lived only in prose, which is the one place `consider-issues` will never look.
-- **Two candidate shapes, and choosing between them is the work:**
-  1. **A `job_id` (or a small `current_job` object) on the repository response.** Cheapest for the obvious UI, and it forces a definition of *current*: the live job, or the last terminal one when there is none? A repository with a `dead` job and no live one is exactly the case a user needs to see.
-  2. **`GET /api/repositories/{id}/jobs`**, a short list. Answers history as well as status, which `RepoSettingsPage` ("real sync history", 23-03) wants anyway, and keeps the repository response stable.
-- **Why it was NOT settled in 21-07:** it is an API-contract decision with its own documentation, tests and isolation surface — and `ingestion_jobs` has no row-level security, so *any* new reader of it needs a deliberately written isolation test for the same reason 21-07's did, and the CI gate will not ask for one if it is a `GET`. 21-07's five deviations were kept small on purpose; this would have been a sixth and the largest.
-- **One thing whichever shape wins must carry:** `sync_state = 'syncing'` is not evidence of a live worker, and `stalled` is not evidence of a retry. See `docs/api-ingestion-jobs.md`.
-- **Owner:** Phase 23 (23-03), or Phase 22 if the repository API is open for another reason first.
-- **Owner, as of 2026-09-17: 22.1-03**, together with the progress contract (`22-CONTEXT.md` P12, U8). 23-03 consumes it.
-- **Planned 2026-10-06 in `22.1-03-PLAN.md`: shape 1.** A `current_job` (the same object `GET /api/admin/jobs/{id}` returns, or `null`) on `GET /api/repositories`, `GET /api/repositories/{id}` and the connect `201`, so the repository list polls one endpoint rather than one per repository. "Current" is the live job, else the newest by `(created_at, id)`. Shape 2 (a history list) is recorded as not chosen and additive later. The isolation test plants a drifted job row so the organization filter's mutation is observable. Stays open until 22.1-03 merges on that evidence.
 
 ### ISS-033: The webhook producers do not check `uninstalled_at`, so a push racing an uninstall queues a job under a dead installation
 
@@ -473,6 +474,29 @@ Enhancements discovered during execution. Not critical - address in future phase
 - **Recommendation:** the `AfterConnect` sentinel, giving deterministically **loud**. With `TenantScoper` in place an unscoped query is by definition a bug, and a bug that always throws is cheaper than one that sometimes returns `[]`. Still an operational-risk judgement — a 500 is worse than an empty list for a user who trips it — so it belongs to whoever owns that call, but it is now a pool-constructor line rather than a schema change.
 
 ## Closed Enhancements
+
+### ISS-034: Nothing hands a UI a job id, so the job-status endpoint is unreachable from a repository ✅
+
+- **✅ CLOSED 2026-10-06 by PR #64 (22.1-03, branch `feat/22.1-03-job-status`), on shape 1, as the user accepted it that day.** Evidence in `22.1-03-SUMMARY.md`:
+  - **`current_job`** (the same object `GET /api/admin/jobs/{id}` returns, or `null`, the key always present) on `GET /api/repositories`, `GET /api/repositories/{id}` and the `201` of `POST /api/repositories`, which now returns the job the connect enqueued (or the live job it joined, or the latest). "Current" is the live job, else the newest by `(created_at, id)`, else `null`, defined once in `currentJobJoinSQL` as two index-served lookups (the live one first), with `jobColumnsSQL` shared with the job endpoint. Contract: `docs/api-repositories.md`.
+  - **`status`** on the job object, computed in SQL against the database clock from the job row and its installation, never `sync_state`: `queued`, `scheduled`, `retrying`, `deferred_suspended`, `running`, `stalled`, `dead_pending`, `completed`, `dead`, `superseded`. Its one authority is `docs/api-ingestion-jobs.md`'s status table.
+  - **Migration 000018**, `idx_ingestion_jobs_repository_recent`; `EXPLAIN (ANALYZE, BUFFERS)` over 9,950 jobs on 100 repositories (19,900 in the table), as `rag_doc_app` under a tenant, measured each lookup on its index under a `Limit` with no `Sort`.
+  - **The isolation test, written on purpose:** `repositories_current_job_isolation_test.go`. The organization filters are masked by `repositories`' row-level security, so Scenario4 plants another organization's job on the caller's repository (beside a terminal job of the caller's) under replica mode in a superuser transaction that is never committed, and runs the exported production statements in it as the app role. **The plan's thirteen mutations, M1a to M10, all killed, and M11 and M12 added by PR #64's review (the row's cap; suspended over retrying), killed**, each proven present and its original absent by bytes before it ran and restored byte-identical after; plus the progress contract's five (P1, P1b, P2, P3, P4).
+- **Not chosen: shape 2**, `GET /api/repositories/{id}/jobs`. It would answer history as well as status, but the repository list would make one call per repository per poll, and each client would derive "current" itself. It stays additive later (~3–4 h, the same isolation pattern); `docs/api-repositories.md` lists it under "Not in this API yet".
+- *The entry as filed, kept for its reasoning (present tense and line numbers as of 2026-09-17):*
+- **Discovered:** 2026-09-17, by the reviewer session on PR #43 (21-07), which ruled that deferring it is correct and that it needs a **number** rather than living only in doc prose.
+- **Type:** API surface / Frontend blocker
+- **Priority:** LOW today, **BLOCKING for 23-03.** Nothing claims a job before Phase 22, so the endpoint is inert; the moment Phase 23 wants a progress UI it is the first wall.
+- **What was missing (as filed):** `GET /api/admin/jobs/{id}` (21-07) reads one job by id, and **no API response anywhere returns a job id.** `POST /api/repositories` logs `job_id` server-side (`repositories.go` (then line 819)) and its response body carries only the repository; `GET /api/repositories` and `GET /api/repositories/{id}` return the `Repository` object, which has no job field. So the endpoint is usable by anything that already holds an id — a log line, a support query — and not by a UI starting from a repository, which is every UI.
+- **Where the prose already says this, and why that was not enough:** `docs/api-ingestion-jobs.md` (under the response shape), `docs/api-repositories.md`'s "Not in this API yet", and `21-07-SUMMARY.md`. Every other deferred item this phase produced got a number (ISS-023, ISS-027, ISS-033); this one lived only in prose, which is the one place `consider-issues` will never look.
+- **Two candidate shapes, and choosing between them is the work:**
+  1. **A `job_id` (or a small `current_job` object) on the repository response.** Cheapest for the obvious UI, and it forces a definition of *current*: the live job, or the last terminal one when there is none? A repository with a `dead` job and no live one is exactly the case a user needs to see.
+  2. **`GET /api/repositories/{id}/jobs`**, a short list. Answers history as well as status, which `RepoSettingsPage` ("real sync history", 23-03) wants anyway, and keeps the repository response stable.
+- **Why it was NOT settled in 21-07:** it is an API-contract decision with its own documentation, tests and isolation surface — and `ingestion_jobs` has no row-level security, so *any* new reader of it needs a deliberately written isolation test for the same reason 21-07's did, and the CI gate will not ask for one if it is a `GET`. 21-07's five deviations were kept small on purpose; this would have been a sixth and the largest.
+- **One thing whichever shape wins must carry:** `sync_state = 'syncing'` is not evidence of a live worker, and `stalled` is not evidence of a retry. See `docs/api-ingestion-jobs.md`.
+- **Owner:** Phase 23 (23-03), or Phase 22 if the repository API is open for another reason first.
+- **Owner, as of 2026-09-17: 22.1-03**, together with the progress contract (`22-CONTEXT.md` P12, U8). 23-03 consumes it.
+- **Planned 2026-10-06 in `22.1-03-PLAN.md`: shape 1.** A `current_job` (the same object `GET /api/admin/jobs/{id}` returns, or `null`) on `GET /api/repositories`, `GET /api/repositories/{id}` and the connect `201`, so the repository list polls one endpoint rather than one per repository. "Current" is the live job, else the newest by `(created_at, id)`. Shape 2 (a history list) is recorded as not chosen and additive later. The isolation test plants a drifted job row so the organization filter's mutation is observable. Closed by PR #64 on that evidence.
 
 ### ISS-037: The Go isolation harness's single reuse-by-name container collides across parallel worktrees at different migration versions ✅
 

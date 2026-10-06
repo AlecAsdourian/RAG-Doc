@@ -1,0 +1,148 @@
+{
+ "corpus": "self-py",
+ "commit": "5bb86930d4f2bcae575888153fabc7e2f010e4f3",
+ "corpus_dirty": null,
+ "files": 41,
+ "files_by_language": {
+  "python": 41
+ },
+ "files_by_extension": {
+  ".py": 41
+ },
+ "source_chars": 399726,
+ "source_lines": 9926,
+ "chunks": 306,
+ "chunks_by_type": {
+  "fixed_size": 15,
+  "function": 198,
+  "file_summary": 29,
+  "class": 47,
+  "class_summary": 17
+ },
+ "chunk_chars_total": 524848,
+ "index_text_over_source": 1.313,
+ "code_chunk_chars": {
+  "p50": 927,
+  "p90": 4093,
+  "p99": 13471,
+  "max": 35770,
+  "over_2000": 71,
+  "over_5000": 22,
+  "over_8000": 11
+ },
+ "largest_chunks": [
+  {
+   "file": "services/workers/workers/jobs/runtime.py",
+   "breadcrumb": "Worker",
+   "type": "class",
+   "chars": 35770,
+   "lines": 757
+  },
+  {
+   "file": "services/workers/workers/retrieval/query_engine.py",
+   "breadcrumb": "QueryEngine",
+   "type": "class",
+   "chars": 17303,
+   "lines": 435
+  },
+  {
+   "file": "services/workers/workers/generation/answer_generator.py",
+   "breadcrumb": "AnswerGenerator",
+   "type": "class",
+   "chars": 14626,
+   "lines": 403
+  },
+  {
+   "file": "services/workers/workers/chunker/metadata_builder.py",
+   "breadcrumb": "MetadataBuilder",
+   "type": "class",
+   "chars": 13471,
+   "lines": 327
+  },
+  {
+   "file": "services/workers/workers/generation/semantic_cache.py",
+   "breadcrumb": "SemanticCache",
+   "type": "class",
+   "chars": 12491,
+   "lines": 339
+  }
+ ],
+ "tokens": {
+  "embedded_total_if_every_chunk": 133013,
+  "billed_distinct_content": 133013,
+  "cost_full_ingest_usd": {
+   "text-embedding-ada-002": 0.0133,
+   "text-embedding-3-small": 0.0027
+  },
+  "p50": 247,
+  "p90": 900,
+  "max": 7883,
+  "chunks_over_8000_tokens_truncated": 0,
+  "tokens_cut_by_truncation": 0,
+  "truncated": []
+ },
+ "identical_content": {
+  "distinct_hashes": 306,
+  "chunks_sharing_a_hash": 0,
+  "extra_copies": 0
+ },
+ "duplication": {
+  "class_chunks": 47,
+  "class_chunks_ge80pct_covered": 18,
+  "class_chars": 210736,
+  "class_chars_covered_by_methods": 186315,
+  "nested_function_chunks": 6,
+  "nested_function_chars": 5286,
+  "go_struct_chunks_in_groups": 0,
+  "go_group_extra_chars": 0
+ },
+ "coverage_nonblank_lines_in_code_chunks": 0.794,
+ "fallback_files_fixed_size_only": 12,
+ "fixed_size_chunks": 15,
+ "fallback_reasons": {
+  "python": {
+   "raised": 0,
+   "no_chunk": 12,
+   "unsupported": 0
+  }
+ },
+ "named_chunks_by_extension": {
+  ".py": {
+   "function": 198,
+   "class": 47
+  }
+ },
+ "files_with_declarations_but_no_named_chunk": {
+  "count": 0,
+  "by_language": {},
+  "files": []
+ },
+ "parse_errors_as_chunked": {
+  "python": {
+   "files": 41,
+   "files_with_errors": 0,
+   "error_nodes": 0,
+   "missing_nodes": 0
+  }
+ },
+ "python": {
+  "breadcrumb_collisions_extra_rows": 0,
+  "nested_functions": 6,
+  "decorated_function_definition": 10,
+  "decorators_in_no_chunk": 12,
+  "decorators_only_inside_a_class_chunk": 7,
+  "decorated_class_definition": 9
+ },
+ "chunk_set_digest": "d143883b5ea7a96608677fa3cba7a4f45f8694e5f28329c3b9bc1d84cc7ae1ef",
+ "chunk_rows": 306,
+ "corpus_tree_digest": "31fda482e81af348c4bc58c1fa38be5a62afc1ae704f1393b333ff0373e0fab5",
+ "chunker_version": "a1a44e8d682e21bb",
+ "versions": {
+  "tree_sitter_go": "0.25.0",
+  "tree_sitter_javascript": "0.25.0",
+  "tree_sitter_python": "0.25.0",
+  "tree_sitter_typescript": "0.23.2",
+  "tiktoken": "0.12.0",
+  "tree-sitter": "0.25.2"
+ }
+}

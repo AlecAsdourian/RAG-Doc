@@ -1,0 +1,17 @@
+scripts/ci/check-isolation-tests.py, CI's check-isolation, run locally (PR #66's review, B I1).
+
+== at the reviewed commit b561a65: python scripts/ci/check-isolation-tests.py --base-ref RAG-Doc/main --head-ref b561a65
+Isolation test coverage check: FAIL
+
+Mutation endpoints added without a matching isolation test:
+  - POST /recipes  (services/workers/workers/chunker/test_semantic_chunker_python.py:27)
+  - POST /recipes  (services/workers/workers/chunker/test_semantic_chunker_python.py:83)
+
+Add a test in `*_isolation_test.go` (Go) or `test_*_isolation.py` (Python) that drives the endpoint. It counts when one line holds every static piece of the path in order � so for `/api/things/{id}/resync`, a line containing `"/api/things/" + id + "/resync"`. Building the path some other way (path.Join, a helper that splits it up) will not be recognised; write the literal path in the test, or use the skip marker below.
+To intentionally skip (rare): add `// @skip-isolation-test: <reason>` (Go) or `# @skip-isolation-test: <reason>` (Python) on the route line.
+See docs/isolation.md for the pattern.
+exit 1
+
+== after the fixture's verb changed (97321b3b40c893a101a9acb200818f3cd1ad70b8): --head-ref HEAD
+Isolation test coverage check: PASS
+exit 0

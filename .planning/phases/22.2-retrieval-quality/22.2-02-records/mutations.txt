@@ -1,0 +1,149 @@
+== T1-M1: services/workers/workers/parser/tree_sitter_parser.py
+   HEAD c4adf7709168, blob 26298a2e382f; pristine sha256 017b5a932b58d6b9; hash-object == HEAD blob: True
+   mutation: 'return "tsx" if path.lower().endswith(".tsx") else "typescript"' -> 'return "typescript" if path.lower().endswith(".tsx") else "typescript"'
+   landed: True (mutated sha256 4827f96ab9647b41; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest workers/parser workers/chunker: exit 1; 6 failed, 55 passed in 2.99s
+      FAILED workers/parser/test_parser.py::TestGrammarChoice::test_a_tree_is_never_queried_with_another_grammars_set
+      FAILED workers/parser/test_parser.py::TestGrammarChoice::test_each_fixture_parses_clean_in_the_grammar_the_parser_chooses[tsx]
+      FAILED workers/parser/test_parser.py::TestGrammarChoice::test_jsx_does_not_parse_in_the_typescript_grammar
+      FAILED workers/parser/test_parser.py::TestGrammarChoice::test_the_grammar_is_chosen_by_language_and_extension[web/A.TSX-typescript-tsx]
+      FAILED workers/parser/test_parser.py::TestGrammarChoice::test_the_grammar_is_chosen_by_language_and_extension[web/b.tsx-typescript-tsx]
+      FAILED workers/parser/test_parser.py::TestGrammarChoice::test_the_tsx_queries_name_functions_consts_methods_and_classes
+   restored: sha256 017b5a932b58d6b9 == pristine True; hash-object == HEAD blob True
+   VERDICT T1-M1: KILLED (expected to fail: test_each_fixture_parses_clean_in_the_grammar_the_parser_chooses[tsx])
+
+== T1-M2: services/workers/workers/parser/tree_sitter_parser.py
+   HEAD c4adf7709168, blob 26298a2e382f; pristine sha256 017b5a932b58d6b9; hash-object == HEAD blob: True
+   mutation: '        return self.queries[grammar]' -> '        return self.queries["typescript" if grammar == "tsx" else grammar]'
+   landed: True (mutated sha256 6591df5821eb311a; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest workers/parser workers/chunker: exit 1; 3 failed, 58 passed in 2.72s
+      FAILED workers/chunker/test_semantic_chunker_ts.py::test_the_same_declarations_in_a_tsx_file
+      FAILED workers/parser/test_parser.py::TestChunkFileByGrammar::test_a_tsx_file_yields_its_named_chunks
+      FAILED workers/parser/test_parser.py::TestGrammarChoice::test_the_tsx_queries_name_functions_consts_methods_and_classes
+   restored: sha256 017b5a932b58d6b9 == pristine True; hash-object == HEAD blob True
+   VERDICT T1-M2: KILLED (expected to fail: test_a_tsx_file_yields_its_named_chunks)
+
+== T1-M3: services/workers/workers/parser/tree_sitter_parser.py
+   HEAD c4adf7709168, blob 26298a2e382f; pristine sha256 017b5a932b58d6b9; hash-object == HEAD blob: True
+   mutation: '"functions": Query(self.languages[grammar], _ECMASCRIPT_FUNCTIONS),' -> '"functions": Query(self.languages["typescript" if grammar == "javascript" else grammar], _ECMASCRIPT_FUNCTIONS),'
+   landed: True (mutated sha256 a7b166eeb1721fe0; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest workers/parser workers/chunker: exit 1; 3 failed, 58 passed in 2.76s
+      FAILED workers/parser/test_parser.py::TestChunkFileByGrammar::test_a_js_file_yields_its_named_chunks
+      FAILED workers/parser/test_parser.py::TestGrammarChoice::test_the_javascript_queries_match_javascript
+      FAILED workers/parser/test_parser.py::TestTypeScriptParsing::test_extract_javascript_function
+   restored: sha256 017b5a932b58d6b9 == pristine True; hash-object == HEAD blob True
+   VERDICT T1-M3: KILLED (expected to fail: test_the_javascript_queries_match_javascript, test_a_js_file_yields_its_named_chunks)
+
+== T1-M4: services/workers/workers/parser/tree_sitter_parser.py
+   HEAD c4adf7709168, blob 26298a2e382f; pristine sha256 017b5a932b58d6b9; hash-object == HEAD blob: True
+   mutation: 'value: [(arrow_function) (function_expression)]' -> 'value: [(regex) (regex)]'
+   landed: True (mutated sha256 4d450e97796f76df; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest workers/parser workers/chunker: exit 1; 8 failed, 53 passed in 3.02s
+      FAILED workers/chunker/test_semantic_chunker_ts.py::test_a_const_bound_function_is_named_by_its_variable_and_spans_the_declaration
+      FAILED workers/chunker/test_semantic_chunker_ts.py::test_every_chunkable_declaration_is_a_chunk_named_as_scored
+      FAILED workers/parser/test_parser.py::TestChunkFileByGrammar::test_a_js_file_yields_its_named_chunks
+      FAILED workers/parser/test_parser.py::TestChunkFileByGrammar::test_a_ts_file_yields_its_named_chunks
+      FAILED workers/parser/test_parser.py::TestChunkFileByGrammar::test_a_tsx_file_yields_its_named_chunks
+      FAILED workers/parser/test_parser.py::TestGrammarChoice::test_the_javascript_queries_match_javascript
+      FAILED workers/parser/test_parser.py::TestGrammarChoice::test_the_tsx_queries_name_functions_consts_methods_and_classes
+      FAILED workers/parser/test_parser.py::TestGrammarChoice::test_the_typescript_queries_name_functions_consts_methods_and_classes
+   restored: sha256 017b5a932b58d6b9 == pristine True; hash-object == HEAD blob True
+   VERDICT T1-M4: KILLED (expected to fail: test_a_const_bound_function_is_named_by_its_variable_and_spans_the_declaration)
+
+== T1-M5: services/workers/workers/parser/tree_sitter_parser.py
+   HEAD c4adf7709168, blob 26298a2e382f; pristine sha256 017b5a932b58d6b9; hash-object == HEAD blob: True
+   mutation: 'if tree.language != self.languages[grammar]:' -> 'if False and tree.language != self.languages[grammar]:'
+   landed: True (mutated sha256 5ccdf34c51292458; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest workers/parser workers/chunker: exit 1; 1 failed, 60 passed in 3.73s
+      FAILED workers/parser/test_parser.py::TestGrammarChoice::test_a_tree_is_never_queried_with_another_grammars_set
+   restored: sha256 017b5a932b58d6b9 == pristine True; hash-object == HEAD blob True
+   VERDICT T1-M5: KILLED (expected to fail: test_a_tree_is_never_queried_with_another_grammars_set)
+
+== T2-M1: services/workers/workers/chunker/semantic_chunker.py
+   HEAD a39ed170ed68, blob 60b3d56683c0; pristine sha256 b36aec3f5312aa4c; hash-object == HEAD blob: True
+   mutation: 'if node.parent is not None and node.parent.type == "decorated_definition":' -> 'if False and node.parent is not None and node.parent.type == "decorated_definition":'
+   landed: True (mutated sha256 fb023e575ae1d4ba; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest workers/parser workers/chunker: exit 1; 4 failed, 74 passed in 6.96s
+      FAILED workers/chunker/test_semantic_chunker_python.py::test_a_decorated_class_starts_at_its_decorator
+      FAILED workers/chunker/test_semantic_chunker_python.py::test_a_decorated_method_starts_at_its_decorator_and_keeps_its_breadcrumb
+      FAILED workers/chunker/test_semantic_chunker_python.py::test_a_decorated_top_level_function_starts_at_its_decorator
+      FAILED workers/chunker/test_semantic_chunker_python.py::test_stacked_decorators_start_at_the_first
+   restored: sha256 b36aec3f5312aa4c == pristine True; hash-object == HEAD blob True
+   VERDICT T2-M1: KILLED (expected to fail: test_a_decorated_top_level_function_starts_at_its_decorator, test_a_decorated_method_starts_at_its_decorator_and_keeps_its_breadcrumb)
+
+== T2-M2: services/workers/workers/chunker/metadata_builder.py
+   HEAD a39ed170ed68, blob 1f4750db5e23; pristine sha256 654f59403eeaa0ba; hash-object == HEAD blob: True
+   mutation: '        prev = outer.prev_named_sibling' -> '        prev = node.prev_sibling'
+   landed: True (mutated sha256 38bd936db10da789; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest workers/parser workers/chunker: exit 1; 3 failed, 75 passed in 4.65s
+      FAILED workers/chunker/test_semantic_chunker_ts.py::test_jsdoc_above_a_class_a_method_and_a_decorated_method
+      FAILED workers/chunker/test_semantic_chunker_ts.py::test_jsdoc_above_a_decorator_is_the_docstring_and_the_chunk_starts_at_the_decorator
+      FAILED workers/chunker/test_semantic_chunker_ts.py::test_jsdoc_above_a_function_an_exported_function_and_a_const_is_the_docstring
+   restored: sha256 654f59403eeaa0ba == pristine True; hash-object == HEAD blob True
+   VERDICT T2-M2: KILLED (expected to fail: test_jsdoc_above_a_function_an_exported_function_and_a_const_is_the_docstring)
+
+== T2-M3: services/workers/workers/parser/tree_sitter_parser.py
+   HEAD a39ed170ed68, blob 01788222710f; pristine sha256 fa18d7868873594a; hash-object == HEAD blob: True
+   mutation: 'if language == "go" and spec_nodes and self._is_grouped(class_node):' -> 'if False and language == "go" and spec_nodes and self._is_grouped(class_node):'
+   landed: True (mutated sha256 fb14497bdb447cf0; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest workers/parser workers/chunker: exit 1; 1 failed, 77 passed in 4.05s
+      FAILED workers/chunker/test_semantic_chunker_go.py::test_each_struct_in_a_group_is_chunked_as_its_own_spec
+   restored: sha256 fa18d7868873594a == pristine True; hash-object == HEAD blob True
+   VERDICT T2-M3: KILLED (expected to fail: test_each_struct_in_a_group_is_chunked_as_its_own_spec)
+
+== T2-M4: services/workers/workers/chunker/semantic_chunker.py
+   HEAD a39ed170ed68, blob 60b3d56683c0; pristine sha256 b36aec3f5312aa4c; hash-object == HEAD blob: True
+   mutation: '            if decorators:' -> '            if False and decorators:'
+   landed: True (mutated sha256 3e2a01c840411215; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest workers/parser workers/chunker: exit 1; 3 failed, 75 passed in 4.26s
+      FAILED workers/chunker/test_semantic_chunker_ts.py::test_a_decorated_method_starts_at_its_first_decorator_and_keeps_its_breadcrumb
+      FAILED workers/chunker/test_semantic_chunker_ts.py::test_an_exported_class_starts_at_the_decorator_before_export
+      FAILED workers/chunker/test_semantic_chunker_ts.py::test_jsdoc_above_a_decorator_is_the_docstring_and_the_chunk_starts_at_the_decorator
+   restored: sha256 b36aec3f5312aa4c == pristine True; hash-object == HEAD blob True
+   VERDICT T2-M4: KILLED (expected to fail: test_a_decorated_method_starts_at_its_first_decorator_and_keeps_its_breadcrumb, test_an_exported_class_starts_at_the_decorator_before_export)
+
+== T3-M1: services/workers/workers/ingest/handler.py
+   HEAD 49cc44443a36, blob 6462384cb23e; pristine sha256 bb7345b2541b306f; hash-object == HEAD blob: True
+   mutation: '    if files and errors and not chunks:' -> '    if False and files and errors and not chunks:'
+   landed: True (mutated sha256 4f4f6a503867fc5b; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/ingest: exit 1; 1 failed, 38 passed in 7.02s
+      FAILED tests/ingest/test_handler.py::test_some_files_raising_and_the_rest_parsing_to_no_chunks_fails_the_job
+   restored: sha256 bb7345b2541b306f == pristine True; hash-object == HEAD blob True
+   VERDICT T3-M1: KILLED (expected to fail: test_some_files_raising_and_the_rest_parsing_to_no_chunks_fails_the_job)
+
+== T3-M2: services/workers/workers/ingest/handler.py
+   HEAD 49cc44443a36, blob 6462384cb23e; pristine sha256 bb7345b2541b306f; hash-object == HEAD blob: True
+   mutation: '    if errors > len(files) * MAX_PARSE_ERROR_SHARE:' -> '    if False and errors > len(files) * MAX_PARSE_ERROR_SHARE:'
+   landed: True (mutated sha256 e1ee263d68f987f7; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/ingest: exit 1; 1 failed, 38 passed in 4.35s
+      FAILED tests/ingest/test_handler.py::test_three_of_four_files_raising_fails_the_job_though_one_parsed
+   restored: sha256 bb7345b2541b306f == pristine True; hash-object == HEAD blob True
+   VERDICT T3-M2: KILLED (expected to fail: test_three_of_four_files_raising_fails_the_job_though_one_parsed)
+
+== T3-M3: services/workers/workers/ingest/handler.py
+   HEAD 49cc44443a36, blob 6462384cb23e; pristine sha256 bb7345b2541b306f; hash-object == HEAD blob: True
+   mutation: '    if files and parsed == 0:' -> '    if False and files and parsed == 0:'
+   landed: True (mutated sha256 0ba000313445ddde; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/ingest: exit 1; 1 failed, 38 passed in 9.75s
+      FAILED tests/ingest/test_handler.py::test_a_chunker_that_fails_on_every_file_fails_the_job_instead_of_emptying_the_index
+   restored: sha256 bb7345b2541b306f == pristine True; hash-object == HEAD blob True
+   VERDICT T3-M3: KILLED (expected to fail: test_a_chunker_that_fails_on_every_file_fails_the_job_instead_of_emptying_the_index)
+
+== T3-M4: services/workers/workers/ingest/handler.py
+   HEAD 9b5ecb68abcd, blob 92db9c2c65e7; pristine sha256 ac73e6a122834a67; hash-object == HEAD blob: True
+   mutation: '        progress["chunks_truncated"] = _count_truncated(ctx, deps, chunks)' -> '        progress["chunks_truncated"] = 0 and _count_truncated(ctx, deps, chunks)'
+   landed: True (mutated sha256 abaae6ee51baeab6; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/ingest: exit 1; 1 failed, 39 passed in 8.03s
+      FAILED tests/ingest/test_handler.py::test_an_oversized_chunk_is_counted_and_named_in_a_warning_without_its_content
+   restored: sha256 ac73e6a122834a67 == pristine True; hash-object == HEAD blob True
+   VERDICT T3-M4: KILLED (expected to fail: test_an_oversized_chunk_is_counted_and_named_in_a_warning_without_its_content)
+
+== T3-M5: services/workers/workers/embeddings/embedding_generator.py
+   HEAD 9b5ecb68abcd, blob 41943924c645; pristine sha256 c6105d95bdbe28e0; hash-object == HEAD blob: True
+   mutation: '            logger.warning(' -> '            (lambda *a: None)('
+   landed: True (mutated sha256 ab0e32a722cbbfbd; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest workers/embeddings: exit 1; 1 failed, 12 passed in 1.87s
+      FAILED workers/embeddings/test_embeddings.py::TestTruncationIsVisible::test_an_over_limit_chunk_is_truncated_and_logged_without_its_content
+   restored: sha256 c6105d95bdbe28e0 == pristine True; hash-object == HEAD blob True
+   VERDICT T3-M5: KILLED (expected to fail: test_an_over_limit_chunk_is_truncated_and_logged_without_its_content)
+
