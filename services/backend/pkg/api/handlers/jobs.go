@@ -17,11 +17,13 @@ import (
 
 // JobsHandler serves the ingestion queue's read surface: one job by id.
 //
-// ⚠ THIS IS THE ONLY HTTP HANDLER OVER `ingestion_jobs`, AND THAT TABLE HAS
-// NO ROW-LEVEL SECURITY (21-CONTEXT L5). Every other tenant handler in this
-// package is wrong-by-default-safe: a cross-tenant read of `repositories` or
+// ⚠ `ingestion_jobs` HAS NO ROW-LEVEL SECURITY (21-CONTEXT L5), and this is
+// one of its two tenant-facing readers; the other is currentJobJoinSQL in
+// repositories.go, which shares this handler's column list (jobColumnsSQL).
+// docs/isolation.md lists both. Every other tenant read in this package is
+// wrong-by-default-safe: a cross-tenant read of `repositories` or
 // `github_installations` returns zero rows because a policy refuses it. Here
-// nothing refuses it. `AND organization_id = $2` in jobByIDSQL below is the
+// nothing refuses it. `AND j.organization_id = $2` in jobByIDSQL below is the
 // whole of the tenant boundary, and removing it silently turns this endpoint
 // into a queue-wide reader.
 //
@@ -57,8 +59,10 @@ type JobsHandler struct {
 // It takes a *db.TenantScoper and NOT a *pgxpool.Pool, like every other
 // Phase 20+ handler (20-01-DESIGN.md). `ingestion_jobs` carries no RLS, so
 // the scoper is not what makes this handler safe — the explicit filter is —
-// but the read joins nothing and needs no pool, and holding one would make an
-// unscoped query expressible for no benefit.
+// but the read needs no pool, and holding one would make an unscoped query
+// expressible for no benefit. (Since 22.1-03 the read joins `repositories`
+// and `github_installations` for `status`, and the scoper is what applies
+// their row-level security.)
 func NewJobsHandler(scoper *db.TenantScoper) *JobsHandler {
 	if scoper == nil {
 		panic("handlers.NewJobsHandler: scoper is nil")
@@ -134,14 +138,25 @@ type IngestionJob struct {
 	LeaseExpiresAt *time.Time `json:"lease_expires_at"`
 	Stalled        bool       `json:"stalled"`
 
+	// Status is what the job is doing, in one word a UI can switch on:
+	// queued, scheduled, retrying, deferred_suspended, running, stalled,
+	// dead_pending, completed, dead or superseded (22.1-03). It is computed
+	// in SQL against the database clock, by the CASE in jobColumnsSQL, and
+	// read from the job row and its installation, never from sync_state.
+	//
+	// The vocabulary, its precedence and what a UI shows for each value are
+	// docs/api-ingestion-jobs.md's status table, the one authority; this
+	// struct keeps no copy. A consumer still needs a default branch: the
+	// CASE ends in the bare state, so a state added later reads as itself.
+	Status string `json:"status"`
+
 	// LastStage is coarse resumability, not a progress bar.
 	//
-	// Conventionally one of clone|parse|embed|store, and ADVISORY rather
-	// than an enum: migration 000014 declares it `TEXT` with those four
-	// values in a comment and no `CHECK`, and the worker writes whatever
-	// sanitised string a handler reports. A consumer switching on it needs
-	// a default branch. Constraining it is a migration, which this plan
-	// deliberately does not ship.
+	// ADVISORY rather than an enum: migration 000014 declares it `TEXT` with
+	// no `CHECK`, and the worker writes whatever sanitised string a handler
+	// reports, so a consumer switching on it needs a default branch. The
+	// stage vocabulary and the progress contract are
+	// docs/api-ingestion-jobs.md's; this struct keeps no copy.
 	//
 	// Progress is whatever the handler reported, redacted.
 	LastStage *string         `json:"last_stage"`
@@ -162,7 +177,7 @@ func (j *IngestionJob) Render(http.ResponseWriter, *http.Request) error { return
 
 // jobByIDSQL reads one job for one organization.
 //
-// ⚠ `AND organization_id = $2` IS THE ONLY TENANT GUARD THERE IS.
+// ⚠ `AND j.organization_id = $2` IS THE ONLY TENANT GUARD THERE IS.
 // `ingestion_jobs` has no row-level security, by decision (21-CONTEXT L5): a
 // worker claims a job BEFORE it knows the tenant — `organization_id` is on the
 // row it is trying to claim — so scoping the claim by the answer would be
@@ -171,21 +186,152 @@ func (j *IngestionJob) Render(http.ResponseWriter, *http.Request) error { return
 // nothing in the database to stop it. PR #38's review measured the same shape
 // from the other side: an unscoped session claiming another organization's job.
 //
-// `stalled` is evaluated here rather than in Go so it uses the database clock
-// — the same clock `claimSQL` and `_SWEEP_SQL` compare against. A Go-side
-// comparison would answer a slightly different question on any machine whose
-// clock differs from the server's, which is every machine.
+// The two LEFT JOINs exist for `status` alone: `deferred_suspended` reads the
+// repository's installation, the way the worker's claim-time check does
+// (INSTALLATION_SQL in workers/jobs/runtime.py). Both joined tables carry
+// row-level security and this runs inside the caller's tenant transaction,
+// so they can only ever reach the caller's own rows; and they are LEFT joins
+// so that a job whose repository has no installation is still returned.
+// They add no tenant guard and remove none: the job's own organization
+// filter below stays the whole boundary.
 const jobByIDSQL = `
-SELECT id::text, repository_id::text, job_type, state,
-       attempts, max_attempts, run_after,
-       lease_expires_at,
-       (state = 'running'
-        AND (lease_expires_at IS NULL OR lease_expires_at < NOW())) AS stalled,
-       last_stage, progress, needs_rerun, last_error,
-       ingestion_run_id::text,
-       created_at, updated_at
-FROM ingestion_jobs
-WHERE id = $1 AND organization_id = $2`
+SELECT ` + jobColumnsSQL + `
+FROM ingestion_jobs j
+LEFT JOIN repositories r ON r.id = j.repository_id
+LEFT JOIN github_installations gi ON gi.id = r.installation_id
+WHERE j.id = $1 AND j.organization_id = $2`
+
+// jobColumnsSQL is the job object's SELECT list, shared by the two readers
+// of ingestion_jobs that answer a tenant: jobByIDSQL above and
+// currentJobJoinSQL (repositories.go). One list, so GET /api/admin/jobs/{id}
+// and a repository's current_job are the same object by construction.
+//
+// It is written against two aliases the caller must provide: j for
+// ingestion_jobs and gi for the repository's github_installations row (LEFT
+// joined; NULL when there is none). Under a LEFT JOIN that found no job,
+// every column is NULL, which is why jobScan scans into nullable targets.
+//
+// `stalled` and `status` are evaluated here rather than in Go so they use
+// the database clock: the same clock `claimSQL` and `_SWEEP_SQL` compare
+// against. A Go-side comparison would answer a slightly different question
+// on any machine whose clock differs from the server's, which is every
+// machine.
+//
+// `status` is docs/api-ingestion-jobs.md's status table, in its order, and
+// the first match wins. Three branches are worth reading twice:
+//
+//   - dead_pending comes first and reads attempts against max_attempts, the
+//     condition `stalled` alone does not (see IngestionJob.LeaseExpiresAt).
+//     Its running arm keeps the lease condition: the claim increments
+//     attempts, so a HEALTHY final attempt also has attempts equal to
+//     max_attempts and must read running, not dead_pending.
+//   - deferred_suspended reads the installation row, never the wording of
+//     last_error. An uninstalled installation is not suspended, whatever
+//     suspended_at says.
+//   - the CASE ends in the bare state, so a state no branch names still
+//     yields a value rather than NULL.
+const jobColumnsSQL = `
+       j.id::text, j.repository_id::text, j.job_type, j.state,
+       j.attempts, j.max_attempts, j.run_after,
+       j.lease_expires_at,
+       (j.state = 'running'
+        AND (j.lease_expires_at IS NULL OR j.lease_expires_at < NOW())) AS stalled,
+       CASE
+         WHEN j.attempts >= j.max_attempts
+              AND (j.state = 'queued'
+                   OR (j.state = 'running'
+                       AND (j.lease_expires_at IS NULL OR j.lease_expires_at < NOW())))
+           THEN 'dead_pending'
+         WHEN j.state = 'running'
+              AND (j.lease_expires_at IS NULL OR j.lease_expires_at < NOW())
+           THEN 'stalled'
+         WHEN j.state = 'running' THEN 'running'
+         WHEN j.state = 'queued'
+              AND gi.suspended_at IS NOT NULL AND gi.uninstalled_at IS NULL
+           THEN 'deferred_suspended'
+         WHEN j.state = 'queued' AND j.attempts > 0 THEN 'retrying'
+         WHEN j.state = 'queued' AND j.run_after > NOW() THEN 'scheduled'
+         WHEN j.state = 'queued' THEN 'queued'
+         ELSE j.state
+       END AS status,
+       j.last_stage, j.progress, j.needs_rerun, j.last_error,
+       j.ingestion_run_id::text,
+       j.created_at, j.updated_at`
+
+// jobScan receives jobColumnsSQL's columns.
+//
+// Every target is nullable because a repository with no job yields a row of
+// NULLs from the LEFT JOINs, and pgx refuses to scan NULL into a string, an
+// int32, a time.Time or a bool. job() turns it back into an *IngestionJob,
+// nil when there was no job. jobByIDSQL, which never has a NULL job, uses
+// the same struct, so the column-to-field mapping exists once.
+type jobScan struct {
+	id, repositoryID, jobType, state *string
+	attempts, maxAttempts            *int32
+	runAfter, leaseExpiresAt         *time.Time
+	stalled                          *bool
+	status                           *string
+	lastStage                        *string
+	progress                         []byte
+	needsRerun                       *bool
+	lastError, ingestionRunID        *string
+	createdAt, updatedAt             *time.Time
+}
+
+// scanTargets returns the addresses Scan writes jobColumnsSQL into, in its
+// order. A caller selecting more columns first appends these to its own.
+func (s *jobScan) scanTargets() []any {
+	return []any{
+		&s.id, &s.repositoryID, &s.jobType, &s.state,
+		&s.attempts, &s.maxAttempts, &s.runAfter,
+		&s.leaseExpiresAt, &s.stalled, &s.status,
+		&s.lastStage, &s.progress, &s.needsRerun, &s.lastError,
+		&s.ingestionRunID,
+		&s.createdAt, &s.updatedAt,
+	}
+}
+
+// job returns the scanned job, or nil when the row carried none.
+//
+// The non-id columns of an existing job are NOT NULL in the schema
+// (000014), so once the id is present they are too; deref still tolerates a
+// nil rather than panicking on a schema change.
+func (s *jobScan) job() *IngestionJob {
+	if s.id == nil {
+		return nil
+	}
+	job := &IngestionJob{
+		ID:             *s.id,
+		RepositoryID:   deref(s.repositoryID),
+		JobType:        deref(s.jobType),
+		State:          deref(s.state),
+		Attempts:       deref(s.attempts),
+		MaxAttempts:    deref(s.maxAttempts),
+		RunAfter:       deref(s.runAfter),
+		LeaseExpiresAt: s.leaseExpiresAt,
+		Stalled:        deref(s.stalled),
+		Status:         deref(s.status),
+		LastStage:      s.lastStage,
+		NeedsRerun:     deref(s.needsRerun),
+		LastError:      s.lastError,
+		IngestionRunID: s.ingestionRunID,
+		CreatedAt:      deref(s.createdAt),
+		UpdatedAt:      deref(s.updatedAt),
+	}
+	// A NULL jsonb scans as a nil []byte, and a nil json.RawMessage marshals
+	// as `null`, which is the right answer for "this job has reported no
+	// progress", and not the same as `{}`.
+	job.Progress = json.RawMessage(s.progress)
+	return job
+}
+
+func deref[T any](p *T) T {
+	var zero T
+	if p == nil {
+		return zero
+	}
+	return *p
+}
 
 // Get handles GET /api/admin/jobs/{id}.
 //
@@ -219,17 +365,9 @@ func (h *JobsHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var job IngestionJob
-	var progress []byte
+	var scanned jobScan
 	err := h.scoper.InTenantTx(ctx, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, jobByIDSQL, id, orgID).Scan(
-			&job.ID, &job.RepositoryID, &job.JobType, &job.State,
-			&job.Attempts, &job.MaxAttempts, &job.RunAfter,
-			&job.LeaseExpiresAt, &job.Stalled,
-			&job.LastStage, &progress, &job.NeedsRerun, &job.LastError,
-			&job.IngestionRunID,
-			&job.CreatedAt, &job.UpdatedAt,
-		)
+		return tx.QueryRow(ctx, jobByIDSQL, id, orgID).Scan(scanned.scanTargets()...)
 	})
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -244,10 +382,5 @@ func (h *JobsHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A NULL jsonb scans as a nil []byte, and a nil json.RawMessage marshals
-	// as `null` — which is the right answer for "this job has reported no
-	// progress", and not the same as `{}`.
-	job.Progress = json.RawMessage(progress)
-
-	render.Render(w, r, &job)
+	render.Render(w, r, scanned.job())
 }
