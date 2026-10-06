@@ -1,0 +1,96 @@
+PR #63's review round, re-verified offline on 2026-10-06 from a CLEAN EXPORT (`git archive`) of
+feat/22.2-01-instruments at 5a02f896fd89116d4d9d17db1c20558a131bc491 (every review fix and its tests), with the
+fresh venv from services/workers/requirements.txt. No OpenAI call and no database: nothing here needed a live re-run.
+The header fields the round added that read the database (stored_vectors_digest, breadcrumb_column_mismatches)
+and the digest read itself are pinned instead by tests/isolation/test_harness_header_reads.py, on the suite's own
+testcontainers Postgres as rag_doc_app.
+
+1. The census reproduction, the same command as census-reproduction.txt (--self-root an export of 0f2e4df), with
+   flatten now keeping empty {} and [] as fields (review A, nit 11), which is why the committed counts rose by 7
+   (805 -> 812). New extra fields: corpus_tree_digest (all eight), corpus_dirty (the self family; null for an
+   export). Every chunk-set digest and the chunker version are unchanged. Exit 0. Output, verbatim:
+
+1. the tool
+   self-go: 40 files, 323 chunks, digest 21528e46034ac80d, chunker a1a44e8d682e21bb, index/source 0.638, truncated 0, billed tokens 87529
+   self-py: 39 files, 272 chunks, digest 541cc7b4ba180823, chunker a1a44e8d682e21bb, index/source 1.378, truncated 0, billed tokens 116245
+   self-ts: 43 files, 105 chunks, digest b2d467a506f1f24e, chunker a1a44e8d682e21bb, index/source 0.898, truncated 0, billed tokens 40219
+   miniflux: 335 files, 2134 chunks, digest 6e27949a7d08d384, chunker a1a44e8d682e21bb, index/source 0.881, truncated 0, billed tokens 318453
+   mealie: 390 files, 2816 chunks, digest 0afe2fc92966b0c2, chunker a1a44e8d682e21bb, index/source 1.457, truncated 0, billed tokens 427258
+   linkwarden: 379 files, 959 chunks, digest b77578ef80047545, chunker a1a44e8d682e21bb, index/source 0.841, truncated 0, billed tokens 235774
+   ghostfolio-api: 323 files, 1147 chunks, digest a55c039a79092619, chunker a1a44e8d682e21bb, index/source 0.747, truncated 0, billed tokens 191982
+   seerr: 501 files, 1924 chunks, digest e2411334d97a4d2e, chunker a1a44e8d682e21bb, index/source 0.904, truncated 2, billed tokens 571946
+2. compare with 22.2-records/, field by field
+   census-self-go.json: 94 committed fields; differing 0; missing 0; extra 13 (chunk_rows, chunk_set_digest, chunker_version, corpus_dirty, corpus_tree_digest, fallback_reasons, files_with_declarations_but_no_named_chunk, named_chunks_by_extension)
+   census-self-py.json: 87 committed fields; differing 0; missing 0; extra 13 (chunk_rows, chunk_set_digest, chunker_version, corpus_dirty, corpus_tree_digest, fallback_reasons, files_with_declarations_but_no_named_chunk, named_chunks_by_extension)
+   census-self-ts.json: 105 committed fields; differing 0; missing 0; extra 17 (chunk_rows, chunk_set_digest, chunker_version, corpus_dirty, corpus_tree_digest, fallback_reasons, files_with_declarations_but_no_named_chunk, named_chunks_by_extension, typescript.sim_chunkable_with_jsdoc_directly_above)
+   census-miniflux.json: 97 committed fields; differing 0; missing 0; extra 12 (chunk_rows, chunk_set_digest, chunker_version, corpus_tree_digest, fallback_reasons, files_with_declarations_but_no_named_chunk, named_chunks_by_extension)
+   census-mealie.json: 91 committed fields; differing 0; missing 0; extra 12 (chunk_rows, chunk_set_digest, chunker_version, corpus_tree_digest, fallback_reasons, files_with_declarations_but_no_named_chunk, named_chunks_by_extension)
+   census-linkwarden.json: 111 committed fields; differing 0; missing 0; extra 123 (chunk_rows, chunk_set_digest, chunker_version, corpus_tree_digest, fallback_reasons, files_with_declarations_but_no_named_chunk, named_chunks_by_extension, typescript.sim_chunkable_with_jsdoc_directly_above)
+   census-ghostfolio-api.json: 103 committed fields; differing 0; missing 0; extra 36 (chunk_rows, chunk_set_digest, chunker_version, corpus_tree_digest, fallback_reasons, files_with_declarations_but_no_named_chunk, named_chunks_by_extension, typescript.sim_chunkable_with_jsdoc_directly_above)
+   census-seerr.json: 124 committed fields; differing 0; missing 0; extra 366 (chunk_rows, chunk_set_digest, chunker_version, corpus_tree_digest, fallback_reasons, files_with_declarations_but_no_named_chunk, named_chunks_by_extension, typescript.sim_chunkable_with_jsdoc_directly_above)
+   extra fields, by name, over all files: chunk_rows, chunk_set_digest, chunker_version, corpus_dirty, corpus_tree_digest, fallback_reasons, files_with_declarations_but_no_named_chunk, named_chunks_by_extension, typescript.sim_chunkable_with_jsdoc_directly_above
+RESULT: 8 files compared, 0 differ or miss a field
+
+2. The 22-03 re-judge at the default, with the tolerance now bound to the evidence (review A, finding 2):
+       compare_runs.py --records .planning/phases/22-repository-clone-ingestion/22-03-records
+   exit 0, and its output is byte-identical to 22-03-records/compare_runs-rejudged-after-review.txt after line
+   endings are normalised (3,556 bytes each; Python's bytes comparison printed True). 22-03's exact lists record
+   tie_tolerance 1e-05, the default, so the new refusal does not fire.
+
+3. The live records (live/run1-self, live/run2-self, live/exact-self, gunzipped), judged by the new code:
+       compare_runs.py --records <dir> --corpora self --no-qdrant --vector-tolerance 2e-6 \
+           --baseline-prefix run1 --candidate-prefix run2
+   exit 0. Its output, verbatim:
+
+mode: --no-qdrant (runs recorded after Qdrant's retirement): no point set is read, classes (a) and (b) are disabled, and only (c) can explain a difference
+vector tolerance: 2e-06 (absolute)
+note: self: neither run header records stored_vectors_digest, so it is not checked
+corpus   id         set      file         symbol       class       note
+---------------------------------------------------------------------------------------------------------------
+(no question differs in file rank or symbol rank)
+---------------------------------------------------------------------------------------------------------------
+differing questions: 0   (a)=0   (b)=0   (c)=0   UNEXPLAINED=0
+
+Aggregates, reported and not judged (recall@k = found/questions, rank-1, MRR):
+corpus    set      side      file recall  file #1  file MRR  sym recall  sym #1  sym MRR 
+self      holdout  run1      12/15        6        0.600     0/0        0       0.000   
+self      tuning   run1      19/25        11       0.583     0/0        0       0.000   
+self      holdout  run2      12/15        6        0.600     0/0        0       0.000   
+self      tuning   run2      19/25        11       0.583     0/0        0       0.000   
+
+For information only:
+  self: 40/40 questions with fully agreeing boosted rankings; max |delta similarity| over 2000 chunk scores both legs returned = 0.00e+00
+
+VERDICT: PASS (0 UNEXPLAINED)
+
+   The note is expected: those headers predate stored_vectors_digest. The chunk_set_digest and chunk_models,
+   which they do record, are equal, and checked.
+
+   The same records at the default tolerance (1e-5) are refused, as review A asked: the exact list's tail was
+   cut at 2e-6. Exit 2, its first lines verbatim:
+
+mode: --no-qdrant (runs recorded after Qdrant's retirement): no point set is read, classes (a) and (b) are disabled, and only (c) can explain a difference
+vector tolerance: 1e-05 (absolute)
+REFUSED: nothing was compared.
+  - self: the exact list was recorded at tie tolerance 2e-06, and the comparison is at 1e-05; judge at the tolerance the evidence was recorded at
+
+4. The tripwire on the same pair (run1 as before, run2 as after), to show it runs on records made today:
+       tripwire.py --before <dir> --after <dir> --corpora self --before-prefix run1 --after-prefix run2
+   exit 0. Its output, verbatim:
+
+corpus     set      level   metric      before    after     delta  
+------------------------------------------------------------------------
+self       tuning   file    recall@5     19/25    19/25   +0.0000  
+self       tuning   file    rank-1       11/25    11/25   +0.0000  
+self       tuning   file    MRR@5       0.5833   0.5833   +0.0000  
+self       holdout  file    recall@5     12/15    12/15   +0.0000  
+self       holdout  file    rank-1        6/15     6/15   +0.0000  
+self       holdout  file    MRR@5       0.6000   0.6000   +0.0000  
+------------------------------------------------------------------------
+
+self: 0 rank(s) worsened, 0 improved
+
+Chunk sets (the rows each run measured, with its model):
+  self: before fa17b901a7a28880 (637 rows, chunker a1a44e8d682e21bb); after fa17b901a7a28880 (637 rows, chunker a1a44e8d682e21bb)  identical chunk set: a control, so any change here is not the chunker's
+
+TRIPWIRE: quiet (0 number(s) fell)
