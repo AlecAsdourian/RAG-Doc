@@ -51,6 +51,16 @@ Should the default embedding model change from `text-embedding-ada-002` to
   committed before any retrieval result for it is seen.
 - **Independence:** no question targets a symbol that an earlier question
   targets.
+- *Clarified 2026-10-06, before any question of the shared set exists; no
+  rule, number or set changes:* "blind" and "no retrieval access" mean the
+  writers can reach **no retrieval results, rankings, records, specs or
+  questions of other sets, or decision data**, and nothing outside the pinned
+  checkouts. Incidental project context does reach them: every subagent
+  starts with the user's `MEMORY.md` and the session's git status, including
+  commit subjects, so a writer can know the product is a hybrid-RAG code
+  search. That context carries no information about the corpora's code or any
+  retrieval outcome. (`22.2-CONTEXT.md` QD10 and `22.2-ACCEPTANCE.md` QA8
+  carry the same note.)
 
 ## Arms, and the ones this rule is judged on
 

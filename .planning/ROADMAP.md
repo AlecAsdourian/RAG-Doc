@@ -237,8 +237,8 @@ This is U10's retrieval-quality track, named Phase 22.2 by the user's answer QU1
 - The embedding-model rule (M2) is committed in `embedding-model-protocol.md`, dated 2026-09-29, the user its author.
 - The user confirmed its numbers the same day, before any of its questions existed (`afa50b2`): T = 0.11 on file MRR per app, and clause 1's +0.03. The rule is complete.
 
-**Estimate:** ~66–103 h, against the sketch's 36–58 h. The reasons are in `22.2-CONTEXT.md`. The first estimate, 63–97 h, rose when 22.2-01 was split into two plans, written as tasks (PR #59).
-**Plans:** 7. 22.2-01, 22.2-02, 22.2-03 and 22.2-07 were written 2026-09-29 (PR #59) and await fact-check and the user's approval, at which QD3 and QD12 are decided. 22.2-04 to 22.2-06 are not yet written. 22.2-07 was split from 22.2-01 at the 2–3 task limit and numbered next, so nothing is renumbered.
+**Estimate:** ~68–106 h, against the sketch's 36–58 h. The reasons are in `22.2-CONTEXT.md`. The first estimate, 63–97 h, rose when 22.2-01 was split into two plans, written as tasks, and again after the plans' fact-check (PR #59).
+**Plans:** 7. 22.2-01, 22.2-02, 22.2-03 and 22.2-07 were written 2026-09-29 (PR #59) and revised 2026-10-06 after the fact-check. The user decided QD3 (`decide.py`) and QD12 (merge commits for protocol PRs) on 2026-10-06; the revised plans await a re-check before merge. 22.2-04 to 22.2-06 are not yet written. 22.2-07 was split from 22.2-01 at the 2–3 task limit and numbered next, so nothing is renumbered.
 
 Plans:
 - [ ] 22.2-01: the evidence instruments. The chunk census as a tool, a chunk-set digest and the chunker version in every record header, `--self-root`, QD2's tolerance flag (with `compare_runs.py` usable without a Qdrant point set), the tripwire comparer, and the embedding API's repeatability, measured. It can start now.
@@ -324,7 +324,7 @@ Plans:
 | 21. Ingestion Job Infrastructure | v1.0 | 7/7 | Complete | 2026-09-16 |
 | 22. pgvector Storage & the First Real Repository | v1.0 | 5/5 | Executed: 22-01 to 22-04 merged (PRs #48, #49, #53, #52); 22-05 in review (PR #58); A1–A11 met with evidence (`22-05-SUMMARY.md`) | - |
 | 22.1. Symbols, Incremental Updates, Progress & the Code Graph | v1.0 | 0/5 | Researched, decisions locked; plans not written | - |
-| 22.2. Retrieval Quality | v1.0 | 0/7 | Researched, decisions locked 2026-09-29; 22.2-01, -02, -03 and -07 planned, awaiting fact-check and approval (PR #59) | - |
+| 22.2. Retrieval Quality | v1.0 | 0/7 | Researched, decisions locked 2026-09-29; 22.2-01, -02, -03 and -07 planned and revised after fact-check, QD3 and QD12 locked 2026-10-06 (PR #59) | - |
 | 23. Frontend Wiring & Onboarding UX | v1.0 | 0/5 | Not started | - |
 | 24. Production Deployment & Cost Controls | v1.0 | 0/5 | Not started | - |
 | 25. Launch Readiness & Ops | v1.0 | 0/4 | Not started | - |

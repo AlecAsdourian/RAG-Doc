@@ -93,7 +93,7 @@ measures retrieval on this repository's own code. It asks 25 tuning questions an
   deciding questions exist. ISS-025, ISS-026 and ISS-028 remain the known root
   causes.
 - **2026-09-29: this track is now Phase 22.2, Retrieval Quality.** It has six plans, decisions locked by the user's answers QU1–QU10 in `.planning/phases/22.2-retrieval-quality/22.2-CONTEXT.md` (the authority), and the embedding-model rule committed and complete, with both its numbers confirmed by the user.
-- **2026-09-29: plans for 22.2-01, 22.2-02 and 22.2-03 are written (PR #59), and await fact-check and the user's approval.** 22.2-01 was split at the task limit, and its judge half is 22.2-07, written in the same PR. **QD3 (the judge) and QD12 (measurement discipline) are still open**; the user decides both at that approval.
+- **2026-10-06: plans for 22.2-01, 22.2-02 and 22.2-03 (and 22.2-07, split from 22.2-01) are revised after their fact-check (PR #59).** The user locked QD3 (`decide.py`) and QD12 (protocol PRs merged with a merge commit, all others squashed), and read QA5 as Go comments and JSDoc only. The PR awaits a re-check before merge.
 
 **v2 substrate work, 2026-09-10.** `.planning/v2-substrate/` holds `DESIGN.md`
 (the RAG redesign and 21 fleet proposals), `RESEARCH.md` (R-A…R-G), `DECISIONS.md`
