@@ -247,7 +247,7 @@ Plans:
 - [ ] 22.2-04: the chunk-shape candidate (ISS-026 and the other duplicates, one bundle) and its rule, committed by the user. **After 22.1-01.**
 - [ ] 22.2-05: the shared protocol run. One fresh set of 45 questions and four arms: the chunk-shape verdict, then the embedding-model verdict (M2) on the adopted chunks.
 - [ ] 22.2-06: the keyword leg (ISS-029, ISS-028, ISS-038) on its own fresh set. Also ISS-024's dead boosts deleted, ISS-025's defect 3, and the phase's closing record.
-- [ ] 22.2-07: the judge and the decision inputs, split from 22.2-01. `decide.py` for four arms (QD3), the rules as JSON (M2's first), the decision set names with an independence check, and the model as an argument. It follows 22.2-01, and merges before 22.2-04 commits its rule.
+- [ ] 22.2-07: the judge and the decision inputs, split from 22.2-01. `decide.py` for four arms (QD3), the rules as JSON (M2's first), the decision set names with an independence check, and the model as an argument. It follows 22.2-01, and merges before 22.2-04 commits its rule. Executed 2026-10-06, in review (`22.2-07-SUMMARY.md`).
 
 ### Phase 23: Frontend Wiring & Onboarding UX
 

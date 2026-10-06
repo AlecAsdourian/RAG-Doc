@@ -1,0 +1,103 @@
+$ python scripts/rag_quality_harness.py --corpus miniflux --list-targets
+targets of miniflux at 76889f08b12c2577b37e524e645afa5dd46ff050: (path, symbol) per question, by set; no question text
+[tuning] 15
+  internal/reader/fetcher/response_handler.go :: ResponseHandler.isCloudflareChallenge
+  internal/reader/processor/processor.go :: ProcessFeedEntries
+  internal/reader/subscription/finder.go :: subscriptionFinder.findSubscriptionsFromWellKnownURLs
+  internal/storage/batch.go :: batchBuilder.FetchJobs
+  internal/storage/feed.go :: Storage.WeeklyFeedEntryCount
+  internal/api/entry_handlers.go :: handler.importFeedEntryHandler
+  internal/ui/auth_proxy_middleware.go :: authProxyMiddleware.handle
+  internal/integration/integration.go :: PushEntries
+  internal/http/request/client_ip.go :: FindClientIP
+  internal/validator/user.go :: validateUsername
+  internal/config/parser.go :: configOptions.Validate
+  internal/worker/pool.go :: Pool.Push
+  internal/googlereader/item.go :: parseItemID
+  internal/oauth2/oidc.go :: oidcProvider.Profile
+  internal/database/database.go :: Migrate
+[holdout] 15
+  internal/reader/parser/format.go :: DetectFeedFormat
+  internal/reader/urlcleaner/urlcleaner.go :: RemoveTrackingParameters
+  internal/model/feed.go :: Feed.ScheduleNextCheck
+  internal/storage/entry.go :: Storage.ArchiveEntries
+  internal/api/middleware.go :: middleware.validateBasicAuth
+  internal/ui/proxy.go :: handler.mediaProxy
+  internal/ui/csrf_middleware.go :: csrfMiddleware.validate
+  internal/integration/webhook/webhook.go :: Client.makeRequest
+  internal/http/server/metrics.go :: isAllowedToAccessMetricsEndpoint
+  internal/validator/validator.go :: ValidateRange
+  internal/config/parser.go :: parseBoolValue
+  internal/cli/cleanup_tasks.go :: runCleanupTasks
+  internal/fever/middleware.go :: Middleware
+  internal/locale/plural.go :: getPluralForm
+  internal/template/functions.go :: elapsedTime
+[confirm] 15
+  internal/reader/icon/finder.go :: resizeIcon
+  internal/urllib/url.go :: IsNonPublicIP
+  internal/reader/fetcher/request_builder.go :: RequestBuilder.ExecuteRequest
+  internal/http/response/encoding.go :: acceptEncodingParser.Parse
+  internal/reader/readingtime/readingtime.go :: isCJK
+  internal/reader/filter/filter.go :: isDateMatchingPattern
+  internal/reader/sanitizer/sanitizer.go :: isPixelTracker
+  internal/oauth2/authorization.go :: GenerateAuthorization
+  internal/googlereader/handler.go :: checkAndSimplifyTags
+  internal/http/server/server.go :: determineListenTargets
+  internal/storage/entry.go :: truncateStringForTSVectorField
+  internal/reader/rewrite/referer_override.go :: GetRefererForURL
+  internal/model/entry.go :: Entry.ShouldMarkAsReadOnView
+  internal/ui/routes.go :: isPublicRoute
+  internal/integration/pinboard/pinboard.go :: Client.CreateBookmark
+(exit 0)
+
+$ python scripts/rag_quality_harness.py --corpus mealie --list-targets
+targets of mealie at 84b2677f76069a6fb2bac6e2c633c9dbe7379ce4: (path, symbol) per question, by set; no question text
+[tuning] 15
+  mealie/services/scraper/recipe_scraper.py :: RecipeScraper.scrape
+  mealie/services/scheduler/scheduler_service.py :: schedule_daily
+  mealie/services/migrations/paprika.py :: PaprikaMigrator._migrate
+  mealie/core/settings/settings.py :: AppSettings.validate_token_time
+  mealie/core/dependencies/dependencies.py :: get_current_user
+  mealie/routes/admin/admin_backups.py :: AdminBackupController._backup_path
+  mealie/routes/households/controller_household_self_service.py :: HouseholdSelfServiceController.set_member_permissions
+  mealie/schema/recipe/recipe.py :: create_recipe_slug
+  mealie/schema/recipe/recipe_ingredient.py :: RecipeIngredientBase._format_quantity_for_display
+  mealie/repos/repository_generic.py :: RepositoryGeneric.add_order_by_to_query
+  mealie/repos/repository_recipes.py :: RepositoryRecipes._get_rating_col_alias
+  mealie/db/models/recipe/recipe.py :: calculate_rating
+  mealie/db/models/_model_base.py :: SqlAlchemyBase.normalize
+  mealie/pkgs/safehttp/fetch.py :: resilient_fetch
+  mealie/app.py :: start_scheduler
+[holdout] 15
+  mealie/services/household_services/shopping_lists.py :: ShoppingListService.can_merge
+  mealie/services/backups_v2/alchemy_exporter.py :: AlchemyExporter.clean_rows
+  mealie/core/security/providers/credentials_provider.py :: CredentialsProvider.authenticate
+  mealie/core/security/providers/ldap_provider.py :: LDAPProvider.get_user
+  mealie/routes/auth/auth.py :: refresh_token
+  mealie/routes/households/controller_mealplan.py :: GroupMealplanController._get_random_recipes_from_mealplan
+  mealie/schema/meal_plan/new_meal.py :: CreatePlanEntry.id_or_title
+  mealie/schema/household/webhook.py :: CreateWebhook.validate_scheduled_time
+  mealie/repos/repository_recipes.py :: RepositoryRecipes.create
+  mealie/repos/repository_meal_plan_rules.py :: RepositoryMealPlanRules.get_rules
+  mealie/db/models/users/users.py :: User._set_permissions
+  mealie/db/models/recipe/ingredient.py :: resolve_substitutions
+  mealie/pkgs/safehttp/transport.py :: is_blocked_ip
+  mealie/pkgs/img/minify.py :: PillowMinifier.minify
+  mealie/lang/providers.py :: get_locale_config
+[confirm] 15
+  mealie/services/query_filter/keywords.py :: PlaceholderKeyword._parse_now
+  mealie/services/event_bus_service/event_bus_listeners.py :: AppriseEventListener.update_urls_with_event_data
+  mealie/services/scheduler/tasks/delete_old_checked_shopping_list_items.py :: _trim_list_items
+  mealie/routes/spa/__init__.py :: content_with_meta
+  mealie/routes/media/media_recipe.py :: get_recipe_asset
+  mealie/routes/households/controller_invitations.py :: GroupInvitationsController.create_invite_token
+  mealie/schema/openai/_base.py :: OpenAIBase._preprocess_response
+  mealie/schema/_mealie/mealie_model.py :: MealieModel.fix_hour_only_tz
+  mealie/db/models/_model_utils/guid.py :: GUID.convert_value_to_guid
+  mealie/db/fixes/fix_migration_data.py :: fix_dangling_refs
+  mealie/repos/repository_units.py :: RepositoryUnit._add_standardized_unit
+  mealie/repos/repository_ai_provider.py :: GroupRepositoryAIProvider.update
+  mealie/core/settings/db_providers.py :: PostgresProvider._parse_override_url
+  mealie/pkgs/i18n/json_provider.py :: JsonProvider._parse_plurals
+  mealie/scripts/reprocess_images.py :: check_needs_reprocess
+(exit 0)
