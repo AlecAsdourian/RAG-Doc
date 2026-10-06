@@ -1,0 +1,37 @@
+Semantic parsing produced no chunks for services/backend/pkg/jobs/doc.go (go), falling back to fixed-size chunking
+Semantic parsing produced no chunks for services/backend/pkg/testing/isolation/doc.go (go), falling back to fixed-size chunking
+Semantic parsing produced no chunks for services/workers/workers/__init__.py (python), falling back to fixed-size chunking
+Semantic parsing produced no chunks for services/workers/workers/chunker/__init__.py (python), falling back to fixed-size chunking
+Semantic parsing produced no chunks for services/workers/workers/db/__init__.py (python), falling back to fixed-size chunking
+Semantic parsing produced no chunks for services/workers/workers/embeddings/__init__.py (python), falling back to fixed-size chunking
+Semantic parsing produced no chunks for services/workers/workers/fetch/__init__.py (python), falling back to fixed-size chunking
+Semantic parsing produced no chunks for services/workers/workers/generation/__init__.py (python), falling back to fixed-size chunking
+Semantic parsing produced no chunks for services/workers/workers/ingest/__init__.py (python), falling back to fixed-size chunking
+Semantic parsing produced no chunks for services/workers/workers/jobs/__init__.py (python), falling back to fixed-size chunking
+Semantic parsing produced no chunks for services/workers/workers/parser/__init__.py (python), falling back to fixed-size chunking
+Semantic parsing produced no chunks for services/workers/workers/pipeline/__init__.py (python), falling back to fixed-size chunking
+Semantic parsing produced no chunks for services/workers/workers/retrieval/__init__.py (python), falling back to fixed-size chunking
+Semantic parsing produced no chunks for services/workers/workers/storage/__init__.py (python), falling back to fixed-size chunking
+Semantic parsing produced no chunks for services/backend/pkg/jobs/doc.go (go), falling back to fixed-size chunking
+Semantic parsing produced no chunks for services/backend/pkg/testing/isolation/doc.go (go), falling back to fixed-size chunking
+Semantic parsing produced no chunks for services/workers/workers/__init__.py (python), falling back to fixed-size chunking
+Semantic parsing produced no chunks for services/workers/workers/chunker/__init__.py (python), falling back to fixed-size chunking
+Semantic parsing produced no chunks for services/workers/workers/db/__init__.py (python), falling back to fixed-size chunking
+Semantic parsing produced no chunks for services/workers/workers/embeddings/__init__.py (python), falling back to fixed-size chunking
+Semantic parsing produced no chunks for services/workers/workers/fetch/__init__.py (python), falling back to fixed-size chunking
+Semantic parsing produced no chunks for services/workers/workers/generation/__init__.py (python), falling back to fixed-size chunking
+Semantic parsing produced no chunks for services/workers/workers/ingest/__init__.py (python), falling back to fixed-size chunking
+Semantic parsing produced no chunks for services/workers/workers/jobs/__init__.py (python), falling back to fixed-size chunking
+Semantic parsing produced no chunks for services/workers/workers/parser/__init__.py (python), falling back to fixed-size chunking
+Semantic parsing produced no chunks for services/workers/workers/pipeline/__init__.py (python), falling back to fixed-size chunking
+Semantic parsing produced no chunks for services/workers/workers/retrieval/__init__.py (python), falling back to fixed-size chunking
+Semantic parsing produced no chunks for services/workers/workers/storage/__init__.py (python), falling back to fixed-size chunking
+[*] cleared self: runs=0 chunks=0
+[*] corpus self: 81 files, 782 KiB, commit ed5aca454715445d8ac7f61f02371d64e72dccb9
+[*] offline: chunker version a1a44e8d682e21bb, chunk set fa17b901a7a28880f65caf55e293b34031f1915d330192b01ce757f4c3b5cd49 (637 rows)
+[*] fixtures ready
+status            : success
+files processed   : 81
+chunks created    : 637
+embeddings        : 636
+duration          : 13.2s
