@@ -1,0 +1,1 @@
+scratch database at 127.0.0.1:55871 (server 16.15 (Debian 16.15-1.pgdg12+2)): 17 migrations applied (000001_create_core_schema.up.sql .. 000017_partitioned_chunks.up.sql); rag_doc_app rolsuper=False rolbypassrls=False

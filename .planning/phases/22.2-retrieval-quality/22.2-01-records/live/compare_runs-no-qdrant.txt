@@ -1,0 +1,20 @@
+mode: --no-qdrant (runs recorded after Qdrant's retirement): no point set is read, classes (a) and (b) are disabled, and only (c) can explain a difference
+vector tolerance: 2e-06 (absolute)
+corpus   id         set      file         symbol       class       note
+---------------------------------------------------------------------------------------------------------------
+(no question differs in file rank or symbol rank)
+---------------------------------------------------------------------------------------------------------------
+differing questions: 0   (a)=0   (b)=0   (c)=0   UNEXPLAINED=0
+
+Aggregates, reported and not judged (recall@k = found/questions, rank-1, MRR):
+corpus    set      side      file recall  file #1  file MRR  sym recall  sym #1  sym MRR 
+self      holdout  run1      12/15        6        0.600     0/0        0       0.000   
+self      tuning   run1      19/25        11       0.583     0/0        0       0.000   
+self      holdout  run2      12/15        6        0.600     0/0        0       0.000   
+self      tuning   run2      19/25        11       0.583     0/0        0       0.000   
+
+For information only:
+  self: 40/40 questions with fully agreeing boosted rankings; max |delta similarity| over 2000 chunk scores both legs returned = 0.00e+00
+
+VERDICT: PASS (0 UNEXPLAINED)
+exit 0

@@ -14,15 +14,22 @@ fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
 pydantic>=2.5.0
 
-# Tree-sitter for AST parsing
-tree-sitter>=0.20.0
-tree-sitter-python>=0.20.0
-tree-sitter-go>=0.20.0
-tree-sitter-javascript>=0.20.0
+# Tree-sitter for AST parsing. Pinned exactly (22.2-01): the chunker's queries
+# name node types, and a grammar release can change them, so a census or a
+# benchmark record is only comparable with another made by the same parsers.
+# `rag_benchmarks/chunk_census.py` refuses to run on other versions, and
+# `rag_benchmarks/chunk_digest.chunker_version()` hashes them, so a bump is its
+# own change with its own census. tree-sitter-typescript is the grammar the
+# census measures TypeScript with; the chunker uses it from 22.2-02.
+tree-sitter==0.25.2
+tree-sitter-python==0.25.0
+tree-sitter-go==0.25.0
+tree-sitter-javascript==0.25.0
+tree-sitter-typescript==0.23.2
 
 # OpenAI embeddings
 openai>=1.0.0
-tiktoken>=0.5.0
+tiktoken==0.12.0  # pinned with the parsers: the census's token counts use it
 tenacity>=8.2.0
 
 # HTTP client for the repository fetcher (workers.fetch, 22-04). Explicit,
