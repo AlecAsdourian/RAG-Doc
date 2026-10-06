@@ -240,10 +240,15 @@ def test_every_skip_reason_the_fetcher_can_count_is_documented_and_no_other():
     # ⚠ THE PREMISE FIRST. A collector that finds nothing would make the
     # equality below a comparison of the doc with an empty set, and a
     # collector that finds a subset would let an undocumented reason through.
+    # A reason RENAMED or REMOVED in the code lands here too, before the
+    # equality: that is a breaking change to the contract, and it changes
+    # this list, the doc's table and the code in one commit.
     missing = REASONS_READ_FROM_THE_CODE - collected
     assert not missing, (
         f"the static collector did not find reasons the code is known to produce: "
-        f"{sorted(missing)}; it is broken, so nothing below would mean anything"
+        f"{sorted(missing)}; either the collector is broken (and nothing below would "
+        "mean anything), or a reason was renamed or removed in the code, which is a "
+        "breaking change to docs/api-ingestion-jobs.md's skip-reasons table"
     )
 
     doc = documented_reasons()
