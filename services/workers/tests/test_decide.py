@@ -346,6 +346,22 @@ class TestTheCleanRun:
         assert re.search(r"me-02\s+candidate-3small\s+file #6 is tied with the cut \(positions 5-6\)", ties), ties
         assert "symbol #6 is tied with the cut" in ties
 
+    def test_a_boosted_chunk_found_by_keyword_search_only_is_joined_to_that_leg(self, world, capsys):
+        """The answer's chunk came from the keyword leg alone: MRR@20 still scores it."""
+        world.put("candidate-3small", "linkwarden", 0, 9, None)
+
+        def keyword_only(h, r):
+            trace = r["lw-01"]["trace"]
+            entry = next(e for e in trace["vector"] if e["file_path"] == r["lw-01"]["path"])
+            trace["vector"].remove(entry)
+            trace["fts"].append(entry)
+        world.edit("candidate-3small", "linkwarden", keyword_only)
+        code, out = world.run(capsys)
+        assert code == 1, out
+        at20 = out.split("=== RULE M2", 1)[1].split("MRR@20", 1)[1].split("Per question", 1)[0]
+        line = next(ln for ln in at20.splitlines() if ln.strip().startswith("linkwarden") and " file " in ln)
+        assert f"1.0000 -> {(14 + 1 / 9) / 15:.4f}" in line, line
+
     def test_mrr_at_20_is_unavailable_when_a_trace_holds_fewer_than_20(self, world, capsys):
         world.depth = 12
         code, out = world.run(capsys)
