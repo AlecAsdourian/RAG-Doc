@@ -357,6 +357,43 @@ OVERSIZED = (
 )
 
 
+def test_a_shutdown_during_the_truncation_count_stops_before_counting_on(tmp_path):
+    """PR #66's re-check: `_count_truncated` checkpoints every slice. The
+    shutdown arrives after the LAST file is parsed, so `_parse`'s per-file
+    checkpoint never sees it; the count's must stop the job before it
+    tokenizes a single row. Without that checkpoint the count runs over every
+    row and only `_enter("embed")` stops the job -- the same ending, which is
+    why the test counts the rows the rule was asked about."""
+    ctx = FakeContext()
+    real = SemanticChunker()
+    last = sorted(p for p in FIXTURE_FILES if p.endswith(".py"))[-1]
+
+    class ShutdownAfterLastFile:
+        def chunk_file(self, path, content, language):
+            produced = real.chunk_file(path, content, language)
+            if path == last:
+                ctx.stopping = True
+            return produced
+
+    class CountingEmbedder(FakeEmbedder):
+        def __init__(self):
+            super().__init__()
+            self.asked = 0
+
+        def tokens_over_limit(self, chunk):
+            self.asked += 1
+            return super().tokens_over_limit(chunk)
+
+    embedder = CountingEmbedder()
+    outcome = _run(tmp_path, ctx=ctx, chunker=ShutdownAfterLastFile(), embedder=embedder, embed_slice=1)
+
+    assert isinstance(outcome.error, Unfinished), repr(outcome.error)
+    assert embedder.asked == 0, f"the count tokenized {embedder.asked} rows after the shutdown"
+    assert stages(outcome) == ["fetch", "parse"], "no `embed` report"
+    assert outcome.result is None and embedder.calls == [], "nothing embedded, nothing to write"
+    assert job_dirs(outcome) == []
+
+
 def test_an_oversized_chunk_is_counted_and_named_in_a_warning_without_its_content(tmp_path, caplog):
     """The count is the generator's own rule (`FakeEmbedder.tokens_over_limit`
     is the real `EmbeddingGenerator`'s), so it cannot disagree with the

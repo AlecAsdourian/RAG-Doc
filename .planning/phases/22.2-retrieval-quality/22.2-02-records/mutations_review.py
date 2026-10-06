@@ -5,7 +5,8 @@
 
 The 14 of `mutations.txt`, unchanged in what they neuter, then four new ones:
 R-X1 is review B's probe on clause 2's "needs a raise"; R-I1, R-M1 and R-M2
-neuter the fixes for review A's I-1, M-1 and M-2. Exits 1 if any survives.
+neuter the fixes for review A's I-1, M-1 and M-2; R-N5, added at review A's
+re-check, removes the truncation count's checkpoint (A N-5). Exits 1 if any survives.
 """
 import subprocess
 import sys
@@ -70,6 +71,8 @@ MUTATIONS = [
     ("R-M2", META, 'return node.parent is not None and node.parent.type == "class_body"',
      'return True or (node.parent is not None and node.parent.type == "class_body")', 1, PC,
      ["test_an_object_literals_method_names_nothing_but_a_class_method_does"]),
+    ("R-N5", HANDLER, "            _checkpoint(ctx)", "            pass", 1, ["tests/ingest"],
+     ["test_a_shutdown_during_the_truncation_count_stops_before_counting_on"]),
 ]
 
 
