@@ -24,7 +24,7 @@ async def list_recipes():
 
 
 @cache
-@router.post("/recipes")
+@router.get("/recipes/{recipe_id}")
 def create_recipe(data):
     return data
 
@@ -80,7 +80,7 @@ def test_a_decorated_method_starts_at_its_decorator_and_keeps_its_breadcrumb():
 def test_stacked_decorators_start_at_the_first():
     chunk = _named()["create_recipe"]
     assert chunk.start_line == _line(PY_SOURCE, "@cache")
-    assert chunk.content.startswith('@cache\n@router.post("/recipes")\ndef create_recipe(data):')
+    assert chunk.content.startswith('@cache\n@router.get("/recipes/{recipe_id}")\ndef create_recipe(data):')
 
 
 def test_a_decorated_class_starts_at_its_decorator():

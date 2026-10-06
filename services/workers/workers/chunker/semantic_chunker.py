@@ -6,7 +6,7 @@ from typing import List, Optional, Tuple
 from tree_sitter import Node, Tree
 from workers.parser import TreeSitterParser
 from .models import Chunk
-from .metadata_builder import MetadataBuilder
+from .metadata_builder import MetadataBuilder, method_decorators
 from .fixed_size_chunker import FixedSizeChunker
 from .summary_generator import FileSummaryGenerator, ClassSummaryGenerator
 
@@ -305,7 +305,8 @@ class SemanticChunker:
           first decorator.
         - TypeScript: before `export`, a child of the `export_statement`; after
           `export` or on an unexported class, a child of the class itself; on a
-          method, a preceding sibling in the `class_body`.
+          method, a preceding sibling in the `class_body`, possibly with a
+          comment between it and the method (`method_decorators` walks past it).
 
         A doc comment above the first decorator stays outside the span: it
         reaches the embedding text through `metadata["docstring"]` only.
@@ -319,10 +320,7 @@ class SemanticChunker:
             if node.parent is not None and node.parent.type == "export_statement":
                 decorators += [c for c in node.parent.named_children if c.type == "decorator"]
             if node.type == "method_definition":
-                prev = node.prev_named_sibling
-                while prev is not None and prev.type == "decorator":
-                    decorators.append(prev)
-                    prev = prev.prev_named_sibling
+                decorators += method_decorators(node)
             if decorators:
                 earliest = min(decorators, key=lambda d: d.start_byte)
                 if earliest.start_byte < first.start_byte:

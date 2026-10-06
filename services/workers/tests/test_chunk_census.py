@@ -334,6 +334,18 @@ def test_typescript_fixture_counts(tools):
     assert r["parse_errors_with_typescript_grammar"]["typescript.ts"]["files_with_errors"] == 0
 
 
+def test_a_jsdoc_between_a_decorator_and_its_method_is_inside_the_span_on_both_sides(tools):
+    """PR #66's review, A I-1: the census's definition and the chunker's agree.
+    The JSDoc between `@Get()` and `list` is inside the chunk's span, so it is
+    neither "directly above" nor a docstring; the one above `@Log()` is both."""
+    source = ("class Api {\n  /** Saves it. */\n  @Log()\n  save(): void {}\n\n"
+              "  @Get()\n  /** Lists them. */\n  list(): void {}\n}\n")
+    r = _census(tools, [("web/api.ts", source, "typescript")])
+    ts = r["typescript"]
+    assert ts["sim_chunkable_with_jsdoc_directly_above"] == 1
+    assert ts["chunked_with_docstring"] == 1
+
+
 def test_python_decorated_method_counts(tools):
     r = _census(tools, [("svc/b.py", PY_DECORATED, "python")])
     py = r["python"]

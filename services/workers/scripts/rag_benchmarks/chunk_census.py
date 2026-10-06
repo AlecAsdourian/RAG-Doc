@@ -353,9 +353,14 @@ def _parity_ts(rtree, data):
         elif n.type == "method_definition" and n.parent is not None and n.parent.type == "class_body":
             hits = 1
             outer = n
+            # A decorated method's outermost node is its first decorator, looking
+            # past comments between decorators and the method (22.2-02, PR #66's
+            # review A I-1: the chunker's `method_decorators` rule). A JSDoc
+            # between them is then inside the span, not "directly above".
             prev = n.prev_named_sibling
-            while prev is not None and prev.type == "decorator":
-                outer = prev  # a decorated method's outermost node is its first decorator
+            while prev is not None and prev.type in ("decorator", "comment"):
+                if prev.type == "decorator":
+                    outer = prev
                 prev = prev.prev_named_sibling
         elif n.type == "lexical_declaration" and n.parent is not None and n.parent.type in (
                 "program", "export_statement"):

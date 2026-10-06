@@ -20,6 +20,15 @@ class GrammarMismatch(RuntimeError):
     """
 
 
+# ⚠ THESE LITERALS ARE SHARED, AND A FAILED COMPILE CORRUPTS THEM. tree-sitter
+# 0.25.2 locates a compile error by running strtok over the query string's own
+# UTF-8 buffer, writing NULs into it in place (22.2-02-PLAN.md, measured): after
+# one failed compile, every later `TreeSitterParser()` fails with a misleading
+# "Invalid syntax at row 1, column 0". It stays loud -- never a silent different
+# match -- but never compile one of these under a grammar it was not written
+# for in place: copy it first (`"".join(list(source))`), as
+# `test_a_query_that_fails_to_compile_raises_from_the_constructor` does.
+#
 # Functions, methods and module-level const-bound functions, the same shape in
 # the three ECMAScript grammars. QD5 (22.2-CONTEXT.md, LOCKED): named functions
 # and generators; methods ONLY inside a `class_body` (an object literal's
@@ -364,12 +373,15 @@ class TreeSitterParser:
 
     @staticmethod
     def _is_grouped(type_declaration: Node) -> bool:
-        """Whether a Go `type_declaration` groups several types: more than one
-        `type_spec`/`type_alias`, the census's definition
-        (`chunk_census`, `go_struct_chunks_in_groups`). A parenthesised group
-        of one type has no other type's text to drop, and keeps its span."""
-        specs = [c for c in type_declaration.named_children if c.type in ("type_spec", "type_alias")]
-        return len(specs) > 1
+        """Whether a Go `type_declaration` is a parenthesised `type ( ... )`.
+
+        Any parenthesised group, even of one type, is chunked by the spec:
+        a doc comment written INSIDE the parentheses sits above the spec, and
+        with the whole group as the span it was in the chunk text and in the
+        docstring both, embedded twice against QA5 (PR #66's review, A M-1).
+        The census's `go_struct_chunks_in_groups` still counts groups of more
+        than one: it counts the source's structure, not spans."""
+        return any(child.type == "(" for child in type_declaration.children)
 
     def get_node_text(self, node: Node, content: bytes) -> str:
         """

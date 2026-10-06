@@ -212,6 +212,10 @@ export @Sealed class Box {
 
 
 def test_a_decorated_class_starts_at_its_decorator():
+    """Pins the GRAMMAR, not the fix: tree-sitter-typescript makes an
+    unexported class's decorator its own child, so the class node already
+    starts there, with or without `_span_start_line` (PR #66's review, B N3).
+    The fix is pinned by the exported-class and method tests below."""
     service = _named(DECORATED, "web/src/service.ts")[("class", "Service")]
     assert service.start_line == 1
     assert service.content.startswith("@Injectable()\nclass Service {")
@@ -316,9 +320,87 @@ def test_the_jsdoc_is_not_in_the_chunk_text():
     """Embedded once: through the docstring, never also through the content.
     (A class chunk holds its methods, and so their JSDoc; its own JSDoc, the
     one above `class`, is still outside it.)"""
-    for (_, name), chunk in _named(JSDOC, "web/src/docs.ts").items():
+    named = _named(JSDOC, "web/src/docs.ts")
+    assert sum(1 for c in named.values() if c.metadata.get("docstring")) >= 6, (
+        "premise: the fixture's JSDoc reached the docstrings, or the loop below checks nothing"
+    )
+    for (_, name), chunk in named.items():
         doc = chunk.metadata.get("docstring")
         if doc:
             assert f"/** {doc}" not in chunk.content and doc.split(".")[0] not in chunk.content, (
                 f"{name}'s chunk text carries its own JSDoc"
             )
+
+
+# ---------------------------------------------------------------------------
+# PR #66's review: a comment between a decorator and its method (A I-1), and
+# an object literal's method naming nothing (A M-2)
+# ---------------------------------------------------------------------------
+
+COMMENT_BETWEEN = '''class Api {
+    other(): void {}
+
+    @Get("/items")
+    /** Lists the items. */
+    list(): string[] {
+        return [];
+    }
+
+    @First()
+    // a line comment between two decorators
+    @Second()
+    both(): void {}
+}
+'''
+
+
+def test_a_jsdoc_between_a_decorator_and_its_method_stays_inside_the_span():
+    """The decorator is the chunk's first line, and the JSDoc between it and
+    the method is in the chunk text, so it is NOT also the docstring (QA5)."""
+    chunk = _named(COMMENT_BETWEEN, "web/src/api.ts")[("function", "Api.list")]
+    assert chunk.start_line == 4
+    assert chunk.content.startswith('    @Get("/items")\n    /** Lists the items. */\n    list(): string[] {')
+    assert chunk.metadata["ancestor_chain"] == ["Api"]
+    assert "docstring" not in chunk.metadata
+
+
+def test_a_comment_between_two_decorators_does_not_drop_the_first():
+    chunk = _named(COMMENT_BETWEEN, "web/src/api.ts")[("function", "Api.both")]
+    assert chunk.start_line == 10
+    assert chunk.content.startswith("    @First()\n    // a line comment between two decorators\n    @Second()")
+    assert chunk.metadata["ancestor_chain"] == ["Api"]
+
+
+def test_the_walk_stops_at_the_previous_member():
+    """`other` has no decorator: the walk from `list` passes the comment and
+    the decorator above `list`, and stops at `other` without taking anything
+    of it."""
+    chunk = _named(COMMENT_BETWEEN, "web/src/api.ts")[("function", "Api.other")]
+    assert (chunk.start_line, chunk.content) == (2, "    other(): void {}")
+
+
+OBJECT_LITERAL = '''export const api = {
+    get() {
+        function helper(): number {
+            return 1;
+        }
+        return helper();
+    },
+};
+
+class Box {
+    open() {
+        function inner(): number {
+            return 2;
+        }
+        return inner();
+    }
+}
+'''
+
+
+def test_an_object_literals_method_names_nothing_but_a_class_method_does():
+    named = _named(OBJECT_LITERAL, "web/src/api.ts")
+    assert ("function", "helper") in named, sorted(named)
+    assert named[("function", "helper")].metadata["ancestor_chain"] == []
+    assert named[("function", "Box.open.inner")].metadata["ancestor_chain"] == ["Box", "open"]

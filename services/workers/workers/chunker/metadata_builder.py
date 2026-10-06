@@ -24,6 +24,27 @@ _ECMASCRIPT_SCOPES = [
 _FUNCTION_VALUES = ("arrow_function", "function_expression")
 
 
+def method_decorators(method: Node) -> List[Node]:
+    """A TypeScript class method's decorators: its preceding `decorator`
+    siblings in the `class_body`.
+
+    The walk passes over `comment` siblings: NestJS and Angular code puts a
+    JSDoc or a `//` line between a decorator and its method, and stopping at
+    the comment dropped the decorator from every chunk, which QD6 forbids
+    (PR #66's review, A I-1). It stops at anything else -- the previous member
+    -- so a decorator found always belongs to this method. The one rule, used
+    by the chunk span (`SemanticChunker._span_start_line`) and the JSDoc
+    lookup (`MetadataBuilder._js_outermost`).
+    """
+    found: List[Node] = []
+    prev = method.prev_named_sibling
+    while prev is not None and prev.type in ("decorator", "comment"):
+        if prev.type == "decorator":
+            found.append(prev)
+        prev = prev.prev_named_sibling
+    return found
+
+
 class MetadataBuilder:
     """Extracts metadata from AST nodes for context-enriched chunking."""
 
@@ -206,10 +227,10 @@ class MetadataBuilder:
 
         # ECMAScript: every scope node names itself in its `name` field (a
         # method's may be a private `#name` or a computed key, which the child
-        # scan below would miss). A declarator names a scope only when it binds
-        # a module-level function (QD5).
+        # scan below would miss). A declarator or a method names a scope only
+        # when it is a node the chunker chunks (`_ecmascript_scope`).
         if self.language in ("typescript", "javascript"):
-            if node.type == "variable_declarator" and not self._is_const_bound_function(node):
+            if not self._ecmascript_scope(node):
                 return None
             name_node = node.child_by_field_name("name")
             return self._get_node_text(name_node, content) if name_node else None
@@ -241,9 +262,22 @@ class MetadataBuilder:
         }
 
         lang_types = scope_types.get(self.language, [])
-        if node.type == "variable_declarator" and self.language in ("typescript", "javascript"):
-            return self._is_const_bound_function(node)
+        if node.type in lang_types and self.language in ("typescript", "javascript"):
+            return self._ecmascript_scope(node)
         return node.type in lang_types
+
+    @classmethod
+    def _ecmascript_scope(cls, node: Node) -> bool:
+        """Whether an ECMAScript scope-typed node owns the names inside it: only
+        when it is itself a chunk (QD5). A declarator must be a module-level
+        function binding; a method must sit in a `class_body`, so an object
+        literal's method -- not a chunk -- names nothing (PR #66's review, A M-2:
+        `const api = { get() { function h() {} } }` read `get.h`)."""
+        if node.type == "variable_declarator":
+            return cls._is_const_bound_function(node)
+        if node.type == "method_definition":
+            return node.parent is not None and node.parent.type == "class_body"
+        return True
 
     @staticmethod
     def _is_const_bound_function(declarator: Node) -> bool:
@@ -369,10 +403,12 @@ class MetadataBuilder:
             return node.parent
         outer = node
         if node.type == "method_definition":
-            prev = node.prev_named_sibling
-            while prev is not None and prev.type == "decorator":
-                outer = prev
-                prev = prev.prev_named_sibling
+            decorators = method_decorators(node)
+            if decorators:
+                # The first decorator. A JSDoc between it and the method is
+                # then INSIDE the chunk's span, in its text already, and is
+                # not also the docstring: QA5's "embedded once".
+                outer = min(decorators, key=lambda d: d.start_byte)
         return outer
 
     def _extract_js_docstring(self, node: Node, content: bytes) -> Optional[str]:

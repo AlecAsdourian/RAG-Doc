@@ -257,3 +257,21 @@ type Single struct {
     assert chunks["Ledger"].metadata["breadcrumb"] == "Ledger"
     # A single `type X struct` is unchanged: the declaration, `type` included.
     assert chunks["Single"].content == "type Single struct {\n\tX int\n}"
+
+
+def test_a_parenthesised_group_of_one_is_chunked_as_its_spec():
+    """PR #66's review, A M-1: with the whole `type ( ... )` as the span, the
+    doc comment inside the parentheses was in the chunk text AND the
+    docstring, embedded twice. The spec alone leaves it in the docstring."""
+    source = '''package p
+
+type (
+	// Only is documented.
+	Only struct{ Z int }
+)
+'''
+    [chunk] = [c for c in SemanticChunker().chunk_file("p/only.go", source, "go") if c.chunk_type == "class"]
+    assert chunk.content == "\tOnly struct{ Z int }"
+    assert chunk.metadata["docstring"] == "Only is documented."
+    assert "documented" not in chunk.content
+    assert chunk.metadata["breadcrumb"] == "Only"
