@@ -4,6 +4,7 @@
     census_checks.py after-ts     <records-dir>   # Task 1: census-before/ vs census-after-ts/
     census_checks.py before-rerun <records-dir>   # census-before-rerun/ keeps census-before/'s fields
     census_checks.py after        <records-dir>   # Task 2: census-before(-rerun)/ vs census-after/
+    census_checks.py after-review <records-dir>   # PR #66: census-after/ vs census-after-review/
 
 Reads only the census JSON and the gzipped per-chunk rows in the records; no
 corpus, database or network. Prints one line per check with PASS or FAIL and
@@ -162,8 +163,29 @@ def after_all(records: Path) -> None:
               f"max {t['max']}, billed tokens {t['billed_distinct_content']}")
 
 
+def after_review(records: Path) -> None:
+    """PR #66's review changed spans and names (A I-1, M-1, M-2) after the
+    benchmark was run. The tripwire rule's step 6: if no benchmark corpus's
+    chunk set moved, the after-proof stands. census-after-review/ is the
+    reviewed code's census; every corpus is compared with census-after/."""
+    before, after = records / "census-after", records / "census-after-review"
+    for c in BENCHMARK + TS:
+        b, a = census(before, c), census(after, c)
+        same = b["chunk_set_digest"] == a["chunk_set_digest"] and b["chunk_rows"] == a["chunk_rows"]
+        label = "benchmark" if c in BENCHMARK else "census-only"
+        check(same if c in BENCHMARK else True,
+              f"{c} ({label}): chunk-set digest {b['chunk_set_digest'][:16]} -> {a['chunk_set_digest'][:16]} "
+              f"({'unchanged' if same else 'MOVED'})")
+        fb, fa = flatten(b), flatten(a)
+        differ = sorted(k for k in set(fb) | set(fa) if fb.get(k) != fa.get(k))
+        print(f"INFO  {c}: fields that differ: {differ}")
+        nb, na = names(before, c), names(after, c)
+        print(f"INFO  {c}: (file_path, chunk_type, breadcrumb) multiset "
+              f"{'identical' if nb == na else 'DIFFERS'}")
+
+
 if __name__ == "__main__":
     stage, records = sys.argv[1], Path(sys.argv[2])
-    {"after-ts": after_ts, "before-rerun": before_rerun, "after": after_all}[stage](records)
+    {"after-ts": after_ts, "before-rerun": before_rerun, "after": after_all, "after-review": after_review}[stage](records)
     print(f"{failures} failed")
     sys.exit(1 if failures else 0)

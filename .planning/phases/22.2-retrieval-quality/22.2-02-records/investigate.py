@@ -13,6 +13,13 @@ chunk_type, breadcrumb) and marked:
              chunker made a different chunk;
   same       the chunker made the identical chunk on both sides.
 
+⚠ A PROXY, NOT A CONTENT HASH (PR #66's review, A N-4): CHANGED and same are
+judged by (start line, end line, characters, embedded tokens), which the
+census rows carry, not by a hash of the text. It is sound here because every
+chunk it marks CHANGED in a worsened question is confirmed line by line by
+investigate_spans.py; a same-sized edit inside an unmoved span would read
+"same".
+
 and carries its vector-leg similarity on each side, so an unchanged chunk's
 score moving measures the embedding API's own drift (22.2-01: not
 bit-repeatable). A question none of whose before or after top-5 chunks

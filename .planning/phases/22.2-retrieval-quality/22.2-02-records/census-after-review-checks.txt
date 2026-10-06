@@ -1,0 +1,22 @@
+PASS  self (benchmark): chunk-set digest 55ee4e90821eb876 -> 55ee4e90821eb876 (unchanged)
+INFO  self: fields that differ: ['chunker_version']
+INFO  self: (file_path, chunk_type, breadcrumb) multiset identical
+PASS  self-go (benchmark): chunk-set digest 26f5a84e52ad93ac -> 26f5a84e52ad93ac (unchanged)
+INFO  self-go: fields that differ: ['chunker_version']
+INFO  self-go: (file_path, chunk_type, breadcrumb) multiset identical
+PASS  self-py (benchmark): chunk-set digest 371cbe0b452182e4 -> 371cbe0b452182e4 (unchanged)
+INFO  self-py: fields that differ: ['chunker_version']
+INFO  self-py: (file_path, chunk_type, breadcrumb) multiset identical
+PASS  miniflux (benchmark): chunk-set digest 6e27949a7d08d384 -> 6e27949a7d08d384 (unchanged)
+INFO  miniflux: fields that differ: ['chunker_version']
+INFO  miniflux: (file_path, chunk_type, breadcrumb) multiset identical
+PASS  mealie (benchmark): chunk-set digest 71723463aed4c9ed -> 71723463aed4c9ed (unchanged)
+INFO  mealie: fields that differ: ['chunker_version']
+INFO  mealie: (file_path, chunk_type, breadcrumb) multiset identical
+PASS  linkwarden (census-only): chunk-set digest b1c7c1082197ed74 -> b1c7c1082197ed74 (unchanged)
+INFO  linkwarden: fields that differ: ['chunker_version']
+INFO  linkwarden: (file_path, chunk_type, breadcrumb) multiset identical
+PASS  self-ts (census-only): chunk-set digest deb0c4654bf8c89a -> deb0c4654bf8c89a (unchanged)
+INFO  self-ts: fields that differ: ['chunker_version']
+INFO  self-ts: (file_path, chunk_type, breadcrumb) multiset identical
+0 failed
