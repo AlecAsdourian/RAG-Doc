@@ -1,0 +1,61 @@
+== T1-M1: services/workers/workers/parser/tree_sitter_parser.py
+   HEAD c4adf7709168, blob 26298a2e382f; pristine sha256 017b5a932b58d6b9; hash-object == HEAD blob: True
+   mutation: 'return "tsx" if path.lower().endswith(".tsx") else "typescript"' -> 'return "typescript" if path.lower().endswith(".tsx") else "typescript"'
+   landed: True (mutated sha256 4827f96ab9647b41; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest workers/parser workers/chunker: exit 1; 6 failed, 55 passed in 2.99s
+      FAILED workers/parser/test_parser.py::TestGrammarChoice::test_a_tree_is_never_queried_with_another_grammars_set
+      FAILED workers/parser/test_parser.py::TestGrammarChoice::test_each_fixture_parses_clean_in_the_grammar_the_parser_chooses[tsx]
+      FAILED workers/parser/test_parser.py::TestGrammarChoice::test_jsx_does_not_parse_in_the_typescript_grammar
+      FAILED workers/parser/test_parser.py::TestGrammarChoice::test_the_grammar_is_chosen_by_language_and_extension[web/A.TSX-typescript-tsx]
+      FAILED workers/parser/test_parser.py::TestGrammarChoice::test_the_grammar_is_chosen_by_language_and_extension[web/b.tsx-typescript-tsx]
+      FAILED workers/parser/test_parser.py::TestGrammarChoice::test_the_tsx_queries_name_functions_consts_methods_and_classes
+   restored: sha256 017b5a932b58d6b9 == pristine True; hash-object == HEAD blob True
+   VERDICT T1-M1: KILLED (expected to fail: test_each_fixture_parses_clean_in_the_grammar_the_parser_chooses[tsx])
+
+== T1-M2: services/workers/workers/parser/tree_sitter_parser.py
+   HEAD c4adf7709168, blob 26298a2e382f; pristine sha256 017b5a932b58d6b9; hash-object == HEAD blob: True
+   mutation: '        return self.queries[grammar]' -> '        return self.queries["typescript" if grammar == "tsx" else grammar]'
+   landed: True (mutated sha256 6591df5821eb311a; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest workers/parser workers/chunker: exit 1; 3 failed, 58 passed in 2.72s
+      FAILED workers/chunker/test_semantic_chunker_ts.py::test_the_same_declarations_in_a_tsx_file
+      FAILED workers/parser/test_parser.py::TestChunkFileByGrammar::test_a_tsx_file_yields_its_named_chunks
+      FAILED workers/parser/test_parser.py::TestGrammarChoice::test_the_tsx_queries_name_functions_consts_methods_and_classes
+   restored: sha256 017b5a932b58d6b9 == pristine True; hash-object == HEAD blob True
+   VERDICT T1-M2: KILLED (expected to fail: test_a_tsx_file_yields_its_named_chunks)
+
+== T1-M3: services/workers/workers/parser/tree_sitter_parser.py
+   HEAD c4adf7709168, blob 26298a2e382f; pristine sha256 017b5a932b58d6b9; hash-object == HEAD blob: True
+   mutation: '"functions": Query(self.languages[grammar], _ECMASCRIPT_FUNCTIONS),' -> '"functions": Query(self.languages["typescript" if grammar == "javascript" else grammar], _ECMASCRIPT_FUNCTIONS),'
+   landed: True (mutated sha256 a7b166eeb1721fe0; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest workers/parser workers/chunker: exit 1; 3 failed, 58 passed in 2.76s
+      FAILED workers/parser/test_parser.py::TestChunkFileByGrammar::test_a_js_file_yields_its_named_chunks
+      FAILED workers/parser/test_parser.py::TestGrammarChoice::test_the_javascript_queries_match_javascript
+      FAILED workers/parser/test_parser.py::TestTypeScriptParsing::test_extract_javascript_function
+   restored: sha256 017b5a932b58d6b9 == pristine True; hash-object == HEAD blob True
+   VERDICT T1-M3: KILLED (expected to fail: test_the_javascript_queries_match_javascript, test_a_js_file_yields_its_named_chunks)
+
+== T1-M4: services/workers/workers/parser/tree_sitter_parser.py
+   HEAD c4adf7709168, blob 26298a2e382f; pristine sha256 017b5a932b58d6b9; hash-object == HEAD blob: True
+   mutation: 'value: [(arrow_function) (function_expression)]' -> 'value: [(regex) (regex)]'
+   landed: True (mutated sha256 4d450e97796f76df; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest workers/parser workers/chunker: exit 1; 8 failed, 53 passed in 3.02s
+      FAILED workers/chunker/test_semantic_chunker_ts.py::test_a_const_bound_function_is_named_by_its_variable_and_spans_the_declaration
+      FAILED workers/chunker/test_semantic_chunker_ts.py::test_every_chunkable_declaration_is_a_chunk_named_as_scored
+      FAILED workers/parser/test_parser.py::TestChunkFileByGrammar::test_a_js_file_yields_its_named_chunks
+      FAILED workers/parser/test_parser.py::TestChunkFileByGrammar::test_a_ts_file_yields_its_named_chunks
+      FAILED workers/parser/test_parser.py::TestChunkFileByGrammar::test_a_tsx_file_yields_its_named_chunks
+      FAILED workers/parser/test_parser.py::TestGrammarChoice::test_the_javascript_queries_match_javascript
+      FAILED workers/parser/test_parser.py::TestGrammarChoice::test_the_tsx_queries_name_functions_consts_methods_and_classes
+      FAILED workers/parser/test_parser.py::TestGrammarChoice::test_the_typescript_queries_name_functions_consts_methods_and_classes
+   restored: sha256 017b5a932b58d6b9 == pristine True; hash-object == HEAD blob True
+   VERDICT T1-M4: KILLED (expected to fail: test_a_const_bound_function_is_named_by_its_variable_and_spans_the_declaration)
+
+== T1-M5: services/workers/workers/parser/tree_sitter_parser.py
+   HEAD c4adf7709168, blob 26298a2e382f; pristine sha256 017b5a932b58d6b9; hash-object == HEAD blob: True
+   mutation: 'if tree.language != self.languages[grammar]:' -> 'if False and tree.language != self.languages[grammar]:'
+   landed: True (mutated sha256 5ccdf34c51292458; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest workers/parser workers/chunker: exit 1; 1 failed, 60 passed in 3.73s
+      FAILED workers/parser/test_parser.py::TestGrammarChoice::test_a_tree_is_never_queried_with_another_grammars_set
+   restored: sha256 017b5a932b58d6b9 == pristine True; hash-object == HEAD blob True
+   VERDICT T1-M5: KILLED (expected to fail: test_a_tree_is_never_queried_with_another_grammars_set)
+
