@@ -281,6 +281,77 @@ class TestTrace:
         assert result["results"][0]["score"] > 0
 
 
+class _RecordingCursor:
+    def __init__(self, executed):
+        self.executed = executed
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        self.executed.append((sql, params))
+
+    def fetchall(self):
+        return []
+
+
+class _RecordingConnection:
+    """An idle psycopg2-shaped connection that records every statement and its parameters."""
+
+    def __init__(self):
+        from psycopg2.extensions import TRANSACTION_STATUS_IDLE
+
+        self.executed = []
+        self.closed = False
+        self.autocommit = True
+        self.info = MagicMock(transaction_status=TRANSACTION_STATUS_IDLE)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def cursor(self, cursor_factory=None):
+        return _RecordingCursor(self.executed)
+
+
+class TestTheEmbeddingModel:
+    """22.2-07: the model is an argument of QueryEngine, with ada-002 as its
+    default, and it is the vector leg's filter. No Postgres, no OpenAI: the
+    OpenAI client is patched and the vector leg runs on a recording connection."""
+
+    def _engine(self, **kwargs):
+        with patch("workers.embeddings.embedding_generator.OpenAIEmbeddingClient") as client_class:
+            client_class.return_value.generate_embeddings_batch.return_value = [[0.1, 0.2, 0.3]]
+            engine = QueryEngine(postgres_conn="postgresql://unused.invalid/unused",
+                                 openai_api_key="unused", boost_config={}, **kwargs)
+        return engine, client_class
+
+    def test_the_default_is_ada_002(self):
+        from workers.embeddings import DEFAULT_EMBEDDING_MODEL
+
+        engine, client_class = self._engine()
+        assert DEFAULT_EMBEDDING_MODEL == "text-embedding-ada-002"
+        assert engine.embedding_generator.model == "text-embedding-ada-002"
+        assert client_class.call_args.kwargs["model"] == "text-embedding-ada-002"
+
+    def test_a_given_model_reaches_the_generator_and_the_vector_legs_filter(self):
+        engine, client_class = self._engine(embedding_model="text-embedding-3-small")
+        assert engine.embedding_generator.model == "text-embedding-3-small"
+        assert client_class.call_args.kwargs["model"] == "text-embedding-3-small"
+        assert engine.vector_retriever.embedding_generator is engine.embedding_generator
+
+        conn = _RecordingConnection()
+        engine.vector_retriever.conn = conn
+        engine.vector_retriever.search("where is the parser", uuid4(), uuid4(), limit=5)
+        filters = [params["model"] for _, params in conn.executed if isinstance(params, dict) and "model" in params]
+        assert filters == ["text-embedding-3-small"], conn.executed
+
+
 class TestRetrievalError:
     def test_requires_at_least_one_failure(self):
         with pytest.raises(ValueError):

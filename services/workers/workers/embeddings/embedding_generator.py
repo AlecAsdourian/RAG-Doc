@@ -6,6 +6,7 @@ import os
 from typing import Dict, List
 
 from workers.chunker.models import Chunk
+from .defaults import DEFAULT_EMBEDDING_MODEL
 from .openai_client import OpenAIEmbeddingClient
 
 logger = logging.getLogger(__name__)
@@ -17,7 +18,7 @@ class EmbeddingGenerator:
     def __init__(
         self,
         api_key: str = None,
-        model: str = "text-embedding-ada-002",
+        model: str = DEFAULT_EMBEDDING_MODEL,
         batch_size: int = 100,
         max_tokens_per_chunk: int = 8000,
     ):
