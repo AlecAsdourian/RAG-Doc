@@ -305,7 +305,32 @@ class Corpus:
     questions: List[dict] = field(default_factory=list)
 
 
-def load_corpus(name: str, corpora_dir: Path) -> Corpus:
+def tree_commit(root: Path) -> Optional[str]:
+    """The HEAD of the git checkout whose top level is `root`, or None.
+
+    None for an export without `.git`, and for a directory that is only inside
+    some other checkout: that checkout's HEAD would name the wrong tree.
+    """
+    try:
+        top = git("rev-parse", "--show-toplevel", cwd=root)
+        if Path(top).resolve() != Path(root).resolve():
+            return None
+        return git("rev-parse", "HEAD", cwd=root)
+    except (subprocess.CalledProcessError, OSError):
+        return None
+
+
+def load_corpus(name: str, corpora_dir: Path, self_root: Path = REPO_ROOT,
+                self_commit: Optional[str] = None) -> Corpus:
+    """The corpus to index and its questions.
+
+    `self` is read from `self_root` (default: this checkout). The `self` corpus
+    holds `workers/chunker/` and `workers/parser/`, so a chunker change alters
+    the source `self` is built from as well as how it is chunked; before and
+    after are measured on one tree by pointing both at it (22.2-01). Its
+    commit is `self_commit` when given (an export has no `.git`), else the
+    tree's HEAD, else None.
+    """
     if name == "self":
         questions = [
             {"id": f"self-t{i:02d}", "set": "tuning", "question": q, "path": p}
@@ -314,8 +339,10 @@ def load_corpus(name: str, corpora_dir: Path) -> Corpus:
             {"id": f"self-h{i:02d}", "set": "holdout", "question": q, "path": p}
             for i, (q, p) in enumerate(HOLDOUT, 1)
         ]
-        return Corpus("self", REPO_ROOT, CORPUS_ROOTS, SELF_EXCLUDE, REPO,
-                      "https://github.com/AlecAsdourian/RAG-Doc", "harness", False, questions)
+        root = Path(self_root)
+        commit = self_commit or tree_commit(root)
+        return Corpus("self", root, CORPUS_ROOTS, SELF_EXCLUDE, REPO,
+                      "https://github.com/AlecAsdourian/RAG-Doc", commit, False, questions)
 
     spec_path = BENCHMARKS_DIR / f"{name}.json"
     if not spec_path.exists():
@@ -534,9 +561,11 @@ def do_ingest(corpus: Corpus) -> None:
     print("[*] fixtures ready")
 
     pipeline = IngestionPipeline(postgres_conn=PG, openai_api_key=OPENAI)
+    # ingestion_runs.commit_sha is NOT NULL; a `self` tree whose commit is
+    # unknown (an export, no --self-commit) is ingested as "harness", as before.
     stats = pipeline.process_files(
         files=files, organization_id=ORG, repository_id=corpus.repository_id,
-        commit_sha=corpus.commit, branch="main")
+        commit_sha=corpus.commit or "harness", branch="main")
 
     print(f"\nstatus            : {stats['status']}")
     print(f"files processed   : {stats.get('files_processed')}")
