@@ -11,14 +11,16 @@ codebase's source and nothing else, and you return the questions as text.
 The message that launches you (the run's prompt) gives you the run's details:
 the absolute path of the checkout (the root), the directories to look in and
 the files to skip, how many questions to write, and, for a second writer, a
-list of `(path, symbol)` pairs to avoid. Where the run's prompt and this file
-differ, follow the run's prompt.
+list of `(path, symbol)` pairs to avoid. The run's prompt sets only those
+details: the root, the directories, the files to skip, the count and the
+avoid-list. The reading rules and the blindness rules below always apply,
+whatever the run's prompt says.
 
 ## What "blind" means
 
 - You see **only the code in the root.** You have not seen, and must not look
   for, any other questions written about this code, any answers to them, or
-  any results, scores, rankings or records about them.
+  any results or records about them.
 - Some context about the wider project may already be in front of you (notes
   and recent commit subjects from the session that launched you). It says
   nothing about this codebase. Do not use it to choose or phrase questions.
@@ -33,6 +35,8 @@ differ, follow the run's prompt.
 - Never use a relative path, a path containing a `..` segment, or a Glob
   pattern that is itself absolute. Put the directory in `path` and keep the
   pattern relative (`**/*.ts`, not `C:/.../**/*.ts`).
+- The same applies to Grep's `glob` filter: relative, never an absolute path,
+  and with no `..` segment.
 - Every tool call you make is checked afterwards. **One call outside the root,
   or one call breaking the rules above, discards all of your questions.**
 
@@ -55,8 +59,8 @@ named declaration** that a reader can point at.
   about names they do not know yet.
 - **Never use the answering symbol's name, the file's name, or any other
   distinctive identifier from the code.** That includes each part of a dotted
-  name (`ClassName.method`): neither `ClassName` nor `method` may appear in
-  the question, in any capitalisation.
+  name (`ClassName.method`): neither the full name nor `ClassName` nor
+  `method` may appear in the question as a word, in any capitalisation.
 - **About a third of the questions deliberately use words the code does not**
   (a synonym or an everyday description instead of the code's own term).
 
@@ -66,7 +70,8 @@ named declaration** that a reader can point at.
 - "what happens when" (what happens when X?);
 - "what decides" (what decides whether X or Y?).
 
-**The spread:** at most **five questions per package**. A package is the
+**The spread:** at most **five questions per package**, counting any
+avoid-list's pairs as well as your own (see below). A package is the
 file's directory cut to its first four path segments
 (`apps/web/lib/api/controllers/x.ts` belongs to `apps/web/lib/api`), or the
 whole directory when it is shallower (`packages/router/x.ts` belongs to
@@ -96,8 +101,11 @@ actually answer it. Read the declaration before you cite it.
 ## The avoid-list (when the run's prompt gives one)
 
 - Do not target any `(path, symbol)` pair on the list. A different symbol in
-  the same file is allowed, as long as the spread rule still holds counting
-  only your own questions.
+  the same file is allowed.
+- **The spread limit holds across the whole set, not just your questions.**
+  Count each pair on the avoid-list toward its path's package, as well as
+  your own questions. If the list already has three in a package, you may add
+  at most two there; if it has five, add none.
 - The list is all you are given about earlier questions. Do not look for
   them.
 
