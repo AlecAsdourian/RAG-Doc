@@ -29,6 +29,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,6 +66,12 @@ type seedJobRow struct {
 	needsRerun bool
 	lastError  string
 	payload    string // raw JSON; "" => NULL
+
+	// Added by 22.1-03 for the status and current-job scenarios. Each one's
+	// zero value keeps the behaviour every earlier call relied on.
+	runAfter    *time.Duration // nil => NOW() (the database clock); else Go's now + this
+	maxAttempts int            // 0 => the column default (5, migration 000014)
+	createdAt   *time.Time     // nil => the column default, NOW()
 }
 
 // seedJob inserts one job for org/repo and returns its id.
@@ -97,21 +104,63 @@ func seedJob(t *testing.T, pool *pgxpool.Pool, orgID, repoID string, row seedJob
 		payload = row.payload
 	}
 
+	// The optional columns are named only when set, so an unset one takes
+	// its real column default rather than a copy of it written here.
+	columns := `organization_id, repository_id, job_type, state, attempts,
+				   run_after, lease_owner, lease_expires_at, last_stage,
+				   progress, needs_rerun, last_error, payload`
+	values := `$1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10, $11, $12`
+	args := []any{orgID, repoID, row.jobType, row.state, row.attempts,
+		owner, leaseExpiry, stage, progress, row.needsRerun, lastErr, payload}
+	if row.runAfter != nil {
+		args = append(args, time.Now().Add(*row.runAfter))
+		values = strings.Replace(values, "NOW()", fmt.Sprintf("$%d", len(args)), 1)
+	}
+	if row.maxAttempts != 0 {
+		args = append(args, row.maxAttempts)
+		columns += ", max_attempts"
+		values += fmt.Sprintf(", $%d", len(args))
+	}
+	if row.createdAt != nil {
+		args = append(args, *row.createdAt)
+		columns += ", created_at"
+		values += fmt.Sprintf(", $%d", len(args))
+	}
+
 	var id string
 	require.NoError(t, scoper.InTenantTx(auth.ContextWithOrgID(ctx, orgID),
 		func(tx pgx.Tx) error {
 			return tx.QueryRow(ctx, `
-				INSERT INTO ingestion_jobs
-				  (organization_id, repository_id, job_type, state, attempts,
-				   run_after, lease_owner, lease_expires_at, last_stage,
-				   progress, needs_rerun, last_error, payload)
-				VALUES ($1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10, $11, $12)
+				INSERT INTO ingestion_jobs (`+columns+`)
+				VALUES (`+values+`)
 				RETURNING id::text
-			`, orgID, repoID, row.jobType, row.state, row.attempts,
-				owner, leaseExpiry, stage, progress, row.needsRerun, lastErr, payload,
-			).Scan(&id)
+			`, args...).Scan(&id)
 		}))
 	return id
+}
+
+// seedJobRepoWithInstallation creates one extra repository for org, linked
+// to a new github_installations row with GitHub id ghID, and returns the
+// repository's id and the installation's. Under org's tenant, like
+// seedJobRepo; seedInstallation (repositories_isolation_test.go) makes the
+// installation.
+func seedJobRepoWithInstallation(
+	t *testing.T, pool *pgxpool.Pool, org *isolation.TestOrg, name string, ghID int64,
+) (repoID, installationID string) {
+	t.Helper()
+	ctx := context.Background()
+	installationID = seedInstallation(t, pool, org.ID, ghID)
+	repoID = seedJobRepo(t, pool, org, name)
+	require.NoError(t, db.NewTenantScoper(pool).InTenantTx(auth.ContextWithOrgID(ctx, org.ID),
+		func(tx pgx.Tx) error {
+			tag, err := tx.Exec(ctx,
+				`UPDATE repositories SET installation_id = $2 WHERE id = $1`, repoID, installationID)
+			if err == nil && tag.RowsAffected() != 1 {
+				err = fmt.Errorf("linking repository %s to its installation updated %d rows", repoID, tag.RowsAffected())
+			}
+			return err
+		}))
+	return repoID, installationID
 }
 
 // seedJobRepo creates one extra repository for org and returns its id.
@@ -284,10 +333,11 @@ func TestJobsIsolation(t *testing.T) {
 			require.ElementsMatch(t, []string{
 				"id", "repository_id", "job_type", "state",
 				"attempts", "max_attempts", "run_after",
-				"lease_expires_at", "stalled",
+				"lease_expires_at", "stalled", "status",
 				"last_stage", "progress", "needs_rerun", "last_error",
 				"ingestion_run_id", "created_at", "updated_at",
 			}, keys, "the response shape changed; lease_owner and payload must never appear")
+			require.Equal(t, "running", job.Status, "a running job under a live lease")
 
 			// And the values themselves, in case a future field carries one
 			// of them under a name the set above happens to allow.
@@ -428,6 +478,8 @@ func TestJobsIsolation(t *testing.T) {
 				require.NotNil(t, job.LeaseExpiresAt)
 				require.True(t, job.LeaseExpiresAt.Before(time.Now()),
 					"the evidence itself, not only the derived flag")
+				require.Equal(t, "stalled", job.Status,
+					"attempts 2 of 5: stalled, and it will be retried")
 			})
 
 			t.Run("ARunningJobWithANullLeaseReadsAsStalled", func(t *testing.T) {
@@ -453,6 +505,7 @@ func TestJobsIsolation(t *testing.T) {
 				require.True(t, job.Stalled,
 					"a running job with a NULL lease is stalled; "+
 						"`lease_expires_at < NOW()` alone would call it healthy")
+				require.Equal(t, "stalled", job.Status)
 			})
 
 			t.Run("AJobDeferredPartWayThroughAShutdownReadsAsQueued", func(t *testing.T) {
@@ -477,6 +530,8 @@ func TestJobsIsolation(t *testing.T) {
 				require.NotNil(t, job.LastStage)
 				require.Equal(t, "clone", *job.LastStage,
 					"the breadcrumb the replacement worker resumes from")
+				require.Equal(t, "queued", job.Status,
+					"attempts 0 and run_after NOW(): waiting for a worker")
 			})
 
 			t.Run("ARetryingJobIsQueuedWithAttemptsAboveZero", func(t *testing.T) {
@@ -494,6 +549,7 @@ func TestJobsIsolation(t *testing.T) {
 				require.EqualValues(t, 3, job.Attempts)
 				require.NotNil(t, job.LastError)
 				require.False(t, job.Stalled)
+				require.Equal(t, "retrying", job.Status)
 			})
 		})
 	})

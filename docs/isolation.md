@@ -181,6 +181,47 @@ takes the tenant as a parameter and interpolates it without requiring the
 canonical form. Non-test code should construct a context with the tenant
 and use `db.TenantScoper`.
 
+### Readers of `ingestion_jobs`
+
+`ingestion_jobs` has **no row-level security**, by decision (21-CONTEXT L5):
+a worker claims a job before it knows the tenant. So `InTenantTx` scopes
+nothing on this table, and a statement that reads it for a tenant must
+filter by the caller's organization **explicitly**. The CI gate will not ask
+for a test: `check-isolation-tests.py` matches POST/PUT/PATCH/DELETE route
+lines only.
+
+**The tenant-facing readers** (22.1-03), each filtering by the caller's
+organization and each with a test that fails when the filter is neutered:
+
+| Statement | Where | The filter | Its test |
+|---|---|---|---|
+| `jobByIDSQL` | `pkg/api/handlers/jobs.go` (`GET /api/admin/jobs/{id}`) | `AND j.organization_id = $2`, the claim | `jobs_isolation_test.go`, Scenario2 |
+| `currentJobJoinSQL` | `pkg/api/handlers/repositories.go` (`current_job` on the repository API) | `organization_id = $1` in **each** of its two lookups | `repositories_current_job_isolation_test.go`, Scenario4 |
+
+`currentJobJoinSQL`'s filters are **masked** from any request a test can
+make: the job is reached through a repository the caller can already see
+under `repositories`' row-level security, and the composite key makes a
+job's organization equal its repository's. So its test plants the row each
+filter exists for (another organization's job on the caller's repository)
+under `session_replication_role = replica`, in a superuser transaction that
+is never committed, and runs the production statement inside it as the app
+role.
+
+**The exception, by design:** the internal token route's `liveLeaseSQL`
+(`pkg/internalapi/repository_token.go`) reads the queue **queue-wide**,
+authorized by the lease (`id`, `lease_owner`, `state = 'running'`, a live
+`lease_expires_at`) rather than by a tenant, on the internal listener only.
+The organization comes out of that statement, not into it.
+
+`claimSQL` and `sweepSQL` (`pkg/jobs`) are cross-tenant by construction and
+must never reach a request handler; `TestClaimAndSweepNeverReachARequestHandler`
+is the gate for that.
+
+**The rule for the next tenant-facing reader:** filter by the claim in the
+statement, write its isolation test on purpose, make the filter's mutation
+observable (plant the row if row-level security on a joined table masks
+it), and mutation-check the test, because nothing else will ask.
+
 ## Writing a tenant-scoped worker (Python)
 
 Every function that reads or writes a tenant-scoped table takes an

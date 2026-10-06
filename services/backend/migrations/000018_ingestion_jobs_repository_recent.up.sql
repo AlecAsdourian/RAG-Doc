@@ -1,0 +1,30 @@
+-- Phase 22.1-03: an index for "this repository's most recent job".
+--
+-- WHO READS IT. `currentJobJoinSQL` (pkg/api/handlers/repositories.go)
+-- picks a repository's CURRENT job for `current_job` on the repository API
+-- (ISS-034, shape 1) in two lookups: the live job, served by 000014's
+-- partial unique `idx_ingestion_jobs_one_live_per_repo`, and otherwise the
+-- newest job by `(created_at DESC, id DESC)`, served by this index. Neither
+-- of 000014's indexes covers terminal rows, so without this one the second
+-- lookup reads every job of the repository and sorts them, once per
+-- repository on every page of `GET /api/repositories` that a UI polls.
+-- The planner's choice is measured with EXPLAIN in 22.1-03-SUMMARY.md.
+--
+-- A PLAIN INDEX ON A TABLE WITHOUT ROW-LEVEL SECURITY. ISS-031's rule
+-- (foreign keys inside CREATE TABLE, so a key's validation cannot run under
+-- one tenant's view of the rows) is about constraints that validate rows;
+-- an index validates nothing and `ingestion_jobs` has no policy to scope
+-- what it reads, so the rule does not apply here. The seeded-migration gate
+-- runs over this file like every other.
+--
+-- NOT `CONCURRENTLY`. golang-migrate's postgres driver sends a file's
+-- contents as one query string, and Postgres refuses `CREATE INDEX
+-- CONCURRENTLY` inside the implicit transaction a multi-statement string
+-- runs in (SQLSTATE 25001), so it would hold only while this file stayed a
+-- single statement. A failed concurrent build would also leave an INVALID
+-- index behind a dirty version. Before launch the table is small and a
+-- plain build's lock on it is brief. A deployment with a large queue would
+-- build the same index CONCURRENTLY by hand first (this `IF NOT EXISTS` then
+-- skips it); Phase 24's pruning of terminal jobs keeps the table bounded.
+CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_repository_recent
+  ON ingestion_jobs (repository_id, created_at DESC, id DESC);

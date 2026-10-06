@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/yourusername/smart-docs-platform/services/backend/pkg/auth"
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/db"
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/github"
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/jobs"
@@ -92,7 +93,108 @@ type Repository struct {
 	SyncState      string     `json:"sync_state"`
 	LastSyncedAt   *time.Time `json:"last_synced_at"`
 	CreatedAt      time.Time  `json:"created_at"`
+
+	// CurrentJob is the repository's current ingestion job, the same object
+	// GET /api/admin/jobs/{id} returns, or null (ISS-034, shape 1; 22.1-03).
+	//
+	// "Current" is defined once, in currentJobJoinSQL: the live job when
+	// there is one, otherwise the newest by (created_at, id), otherwise
+	// null. Always present, never omitempty: a key that comes and goes is
+	// harder to consume than a null. docs/api-repositories.md is the
+	// contract.
+	CurrentJob *IngestionJob `json:"current_job"`
 }
+
+// repositoryColumnsSQL is a repository's SELECT list, against alias r, in
+// the order repositoryTargets scans it.
+const repositoryColumnsSQL = `
+       r.id::text, r.name, r.git_url, r.default_branch, r.github_repo_id,
+       r.installation_id::text, r.visibility, r.size_kb, r.archived,
+       r.sync_state, r.last_synced_at, r.created_at`
+
+func (repo *Repository) repositoryTargets() []any {
+	return []any{
+		&repo.ID, &repo.Name, &repo.GitURL, &repo.DefaultBranch, &repo.GitHubRepoID,
+		&repo.InstallationID, &repo.Visibility, &repo.SizeKB, &repo.Archived,
+		&repo.SyncState, &repo.LastSyncedAt, &repo.CreatedAt,
+	}
+}
+
+// currentJobJoinSQL attaches a repository's CURRENT job to each row of r,
+// as aliases j (ingestion_jobs) and gi (the installation) for jobColumnsSQL.
+// One fragment, used by List, Get and Connect.
+//
+// ⚠ `ingestion_jobs` HAS NO ROW-LEVEL SECURITY (21-CONTEXT L5). The two
+// `organization_id = $1` filters below are the tenant guard on this read,
+// and $1 is the caller's organization: the verified claim in List and Get,
+// and in Connect the organization its transaction already read from
+// github_installations under row-level security. `repositories`' own policy
+// limits r to the caller's rows, and ingestion_jobs_repo_tenant_fk makes a
+// job's organization equal its repository's, so in normal operation the
+// filters change nothing. They are what keeps a job row whose organization
+// disagrees with its repository's (a drifted or hand-written row the key
+// would refuse) out of another tenant's response, and
+// repositories_current_job_isolation_test.go plants exactly that row to
+// prove each one can fail.
+//
+// TWO LOOKUPS, so that an index serves each (22.1-03's fact-check, I1). A
+// single ORDER BY on (state IN (...)) DESC, created_at DESC could use no
+// index's order: it would read every job of the repository and sort them.
+// The live lookup comes first and wins whatever its created_at says,
+// because created_at is the transaction's start time and commit order can
+// disagree with it. The final join is by primary key, on an id only the
+// two filtered lookups can produce.
+const currentJobJoinSQL = `
+LEFT JOIN LATERAL (
+  SELECT COALESCE(
+    (SELECT j1.id FROM ingestion_jobs j1
+      WHERE j1.repository_id = r.id
+        AND j1.organization_id = $1
+        AND j1.state IN ('queued','running')
+      LIMIT 1),
+    (SELECT j2.id FROM ingestion_jobs j2
+      WHERE j2.repository_id = r.id
+        AND j2.organization_id = $1
+      ORDER BY j2.created_at DESC, j2.id DESC
+      LIMIT 1)
+  ) AS job_id
+) pick ON true
+LEFT JOIN ingestion_jobs j ON j.id = pick.job_id
+LEFT JOIN github_installations gi ON gi.id = r.installation_id`
+
+// The comments inside currentJobJoinSQL are here, not in the SQL, so the
+// statement stays a plain string a mutation check can match exactly:
+//   - j1: the live job, at most one (idx_ingestion_jobs_one_live_per_repo
+//     allows one queued-or-running job per repository), served by that
+//     partial unique index;
+//   - j2: else the newest job, served by idx_ingestion_jobs_repository_recent
+//     (migration 000018);
+//   - each lookup's organization filter is the guard described above.
+
+// repositoryListWithCurrentJobSQL is List's statement: $1 the caller's
+// organization, $2 and $3 the cursor's (created_at, id), $4 the limit.
+// See List for the pagination's semantics.
+const repositoryListWithCurrentJobSQL = `
+SELECT ` + repositoryColumnsSQL + `,` + jobColumnsSQL + `
+FROM repositories r` + currentJobJoinSQL + `
+WHERE ($2::timestamptz IS NULL OR (r.created_at, r.id) > ($2::timestamptz, $3::uuid))
+ORDER BY r.created_at ASC, r.id ASC
+LIMIT $4`
+
+// repositoryWithCurrentJobSQL is Get's statement: $1 the caller's
+// organization, $2 the repository id.
+const repositoryWithCurrentJobSQL = `
+SELECT ` + repositoryColumnsSQL + `,` + jobColumnsSQL + `
+FROM repositories r` + currentJobJoinSQL + `
+WHERE r.id = $2`
+
+// currentJobOfRepositorySQL is Connect's read of the job its response
+// carries: $1 the organization, $2 the repository id. The same fragment as
+// List and Get, selecting the job's columns only.
+const currentJobOfRepositorySQL = `
+SELECT ` + jobColumnsSQL + `
+FROM repositories r` + currentJobJoinSQL + `
+WHERE r.id = $2`
 
 // RepositoryListResponse is the paginated list envelope.
 //
@@ -122,6 +224,17 @@ type ConnectRepositoryRequest struct {
 // List handles GET /api/repositories.
 func (h *RepositoriesHandler) List(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
+	// THE ORGANIZATION COMES FROM THE VERIFIED CLAIM, as in jobs.go: it is
+	// $1, the tenant guard on currentJobJoinSQL's reads of ingestion_jobs,
+	// which has no row-level security. TenantMiddleware should have refused
+	// a claim-less caller already; this is belt and braces. Read first, so a
+	// request with no tenant is 403 whatever its query string says.
+	listOrgID, listOrgOK := auth.OrgIDFromContext(ctx)
+	if !listOrgOK || listOrgID == "" {
+		render.Render(w, r, ErrForbidden())
+		return
+	}
 
 	limit, err := parsePageSize(r.URL.Query().Get("limit"))
 	if err != nil {
@@ -166,16 +279,12 @@ func (h *RepositoriesHandler) List(w http.ResponseWriter, r *http.Request) {
 		//
 		// limit+1 to learn whether another page exists without a second
 		// query.
-		const q = `
-			SELECT id::text, name, git_url, default_branch, github_repo_id,
-			       installation_id::text, visibility, size_kb, archived,
-			       sync_state, last_synced_at, created_at
-			FROM repositories
-			WHERE ($1::timestamptz IS NULL OR (created_at, id) > ($1::timestamptz, $2::uuid))
-			ORDER BY created_at ASC, id ASC
-			LIMIT $3`
-
-		rows, qerr := tx.Query(ctx, q, cursor.createdAt, cursor.id, limit+1)
+		//
+		// The statement is repositoryListWithCurrentJobSQL: the cursor and
+		// limit semantics above, unchanged, renumbered to $2-$4 so that $1
+		// is the organization in every statement currentJobJoinSQL is in.
+		rows, qerr := tx.Query(ctx, repositoryListWithCurrentJobSQL,
+			listOrgID, cursor.createdAt, cursor.id, limit+1)
 		if qerr != nil {
 			return qerr
 		}
@@ -183,13 +292,13 @@ func (h *RepositoriesHandler) List(w http.ResponseWriter, r *http.Request) {
 
 		for rows.Next() {
 			var repo Repository
+			var current jobScan
 			if serr := rows.Scan(
-				&repo.ID, &repo.Name, &repo.GitURL, &repo.DefaultBranch, &repo.GitHubRepoID,
-				&repo.InstallationID, &repo.Visibility, &repo.SizeKB, &repo.Archived,
-				&repo.SyncState, &repo.LastSyncedAt, &repo.CreatedAt,
+				append(repo.repositoryTargets(), current.scanTargets()...)...,
 			); serr != nil {
 				return serr
 			}
+			repo.CurrentJob = current.job()
 			repos = append(repos, repo)
 		}
 		return rows.Err()
@@ -234,6 +343,16 @@ func canonicalUUID(raw string) (string, bool) {
 
 // Get handles GET /api/repositories/{id}.
 func (h *RepositoriesHandler) Get(w http.ResponseWriter, r *http.Request) {
+	// THE ORGANIZATION COMES FROM THE VERIFIED CLAIM, as in jobs.go and in
+	// the same order: read BEFORE the id is parsed, so a request with no
+	// tenant is 403 whatever the id looks like. It is $1, the tenant guard on
+	// currentJobJoinSQL's reads of ingestion_jobs.
+	getOrgID, getOrgOK := auth.OrgIDFromContext(r.Context())
+	if !getOrgOK || getOrgID == "" {
+		render.Render(w, r, ErrForbidden())
+		return
+	}
+
 	id, ok := canonicalUUID(chi.URLParam(r, "id"))
 	if !ok {
 		// 404, not 400. "Malformed id" and "not yours" should be
@@ -243,18 +362,13 @@ func (h *RepositoriesHandler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var repo Repository
+	var current jobScan
 	err := h.scoper.InTenantTx(r.Context(), func(tx pgx.Tx) error {
-		return tx.QueryRow(r.Context(), `
-			SELECT id::text, name, git_url, default_branch, github_repo_id,
-			       installation_id::text, visibility, size_kb, archived,
-			       sync_state, last_synced_at, created_at
-			FROM repositories WHERE id = $1`, id,
-		).Scan(
-			&repo.ID, &repo.Name, &repo.GitURL, &repo.DefaultBranch, &repo.GitHubRepoID,
-			&repo.InstallationID, &repo.Visibility, &repo.SizeKB, &repo.Archived,
-			&repo.SyncState, &repo.LastSyncedAt, &repo.CreatedAt,
+		return tx.QueryRow(r.Context(), repositoryWithCurrentJobSQL, getOrgID, id).Scan(
+			append(repo.repositoryTargets(), current.scanTargets()...)...,
 		)
 	})
+	repo.CurrentJob = current.job()
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Deliberately identical to "does not exist". RLS already made
@@ -793,9 +907,26 @@ func (h *RepositoriesHandler) Connect(w http.ResponseWriter, r *http.Request) {
 		// `sync_state` is read LAST, so the response carries the value
 		// this transaction is about to commit rather than the one the row
 		// write returned. The producer's projection runs between the two.
-		return tx.QueryRow(ctx,
+		if serr := tx.QueryRow(ctx,
 			`SELECT sync_state FROM repositories WHERE id = $1`, created.ID).
-			Scan(&created.SyncState)
+			Scan(&created.SyncState); serr != nil {
+			return serr
+		}
+
+		// And the current job, through the same fragment as List and Get
+		// (ISS-034): the job this connect enqueued, the live job it joined
+		// (WasExisting), or the latest job when no job was needed. Read in
+		// this transaction, after the enqueue, so it is the job about to be
+		// committed. orgID is $1: read from github_installations under
+		// row-level security above, in a transaction scoped to the caller's
+		// claim, so it is the claim's organization; no second claim read.
+		var current jobScan
+		if jerr := tx.QueryRow(ctx, currentJobOfRepositorySQL, orgID, created.ID).
+			Scan(current.scanTargets()...); jerr != nil {
+			return fmt.Errorf("read current ingestion job: %w", jerr)
+		}
+		created.CurrentJob = current.job()
+		return nil
 	})
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
