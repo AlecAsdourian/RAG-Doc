@@ -52,6 +52,7 @@ from workers.ingest import (
     deps_from_env,
     make_full_ingest_handler,
 )
+from workers.ingest.handler import MAX_PARSE_ERROR_SHARE
 from workers.jobs.handlers import REGISTRY, run_full_ingest
 from workers.jobs.runtime import (
     InstallationSuspended,
@@ -334,6 +335,83 @@ def test_a_chunker_that_fails_on_every_file_fails_the_job_instead_of_emptying_th
     assert stages(outcome) == ["fetch", "parse"]
     assert len(outcome.github.revocations()) == 1
     assert job_dirs(outcome) == []
+
+
+# ---------------------------------------------------------------------
+# The tightened guard (22.2-02): the two edges PR #58's let through
+# ---------------------------------------------------------------------
+
+#: Four indexable files (and the `.env`), so "more than half" and "exactly
+#: half" can both be built.
+FOUR_FILES = dict(FIXTURE_FILES, **{"app/extra.py": b"def extra():\n    return 4\n"})
+
+
+class SelectiveChunker:
+    """Raises on the paths in `raising`, returns NO chunks for those in
+    `empty`, and chunks everything else with the real chunker."""
+
+    def __init__(self, raising=(), empty=()) -> None:
+        self.raising, self.empty = set(raising), set(empty)
+        self.real = SemanticChunker()
+        self.calls: List[str] = []
+
+    def chunk_file(self, path, content, language):
+        self.calls.append(path)
+        if path in self.raising:
+            raise RuntimeError(f"the grammar broke on {path}")
+        if path in self.empty:
+            return []
+        return self.real.chunk_file(path, content, language)
+
+
+def test_some_files_raising_and_the_rest_parsing_to_no_chunks_fails_the_job(tmp_path):
+    """Clause 2: `parsed > 0`, so PR #58's guard let it through, and the store
+    would have replaced the index with nothing."""
+    files = {"app/greeting.py": FIXTURE_FILES["app/greeting.py"], "app/billing.py": FIXTURE_FILES["app/billing.py"]}
+    chunker = SelectiveChunker(raising={"app/billing.py"}, empty={"app/greeting.py"})
+    outcome = _run(tmp_path, files=files, chunker=chunker)
+
+    assert isinstance(outcome.error, ParseFailed), repr(outcome.error)
+    assert str(outcome.error) == (
+        "1 of the 2 indexable files failed to parse (raised in the chunker) and the other 1 "
+        "produced no chunks; refusing to replace the repository's index with nothing"
+    )
+    assert outcome.result is None, "no write_results: the repository's chunks are left untouched"
+    assert outcome.embedder.calls == []
+    assert stages(outcome) == ["fetch", "parse"]
+    assert job_dirs(outcome) == []
+
+
+def test_three_of_four_files_raising_fails_the_job_though_one_parsed(tmp_path):
+    """Clause 3: one trivial file parsing while the real ones raise would
+    shrink the index to that file's chunks."""
+    chunker = SelectiveChunker(raising={"app/greeting.py", "app/billing.py", "app/storage.py"})
+    outcome = _run(tmp_path, files=FOUR_FILES, chunker=chunker)
+
+    assert isinstance(outcome.error, ParseFailed), repr(outcome.error)
+    assert str(outcome.error) == (
+        "3 of the 4 indexable files failed to parse (raised in the chunker), more than the 50% "
+        "the handler accepts (MAX_PARSE_ERROR_SHARE); refusing to replace the repository's index "
+        "with what the other 1 produced"
+    )
+    assert MAX_PARSE_ERROR_SHARE == 0.5
+    assert sorted(chunker.calls) == sorted(p for p in FOUR_FILES if p.endswith(".py"))
+    assert outcome.result is None
+    assert outcome.embedder.calls == []
+    assert stages(outcome) == ["fetch", "parse"]
+
+
+def test_exactly_half_the_files_raising_completes_with_the_errors_counted(tmp_path):
+    """Up to half may raise: one bad file must not dead-letter a repository."""
+    chunker = SelectiveChunker(raising={"app/greeting.py", "app/billing.py"})
+    outcome = _run(tmp_path, files=FOUR_FILES, chunker=chunker)
+
+    assert outcome.error is None, repr(outcome.error)
+    final = outcome.ctx.reports[-1][1]
+    assert final["files_indexable"] == 4
+    assert final["files_parsed"] == 2
+    assert final["parse_errors"] == 2
+    assert final["chunks_stored"] > 0
 
 
 def test_a_tree_with_nothing_indexable_is_not_a_parse_failure(tmp_path):

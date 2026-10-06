@@ -183,7 +183,7 @@ would have at the claim.
 | raises **`InstallationSuspended`** — the token route's `409 installation_suspended` | `defer` **60 minutes** | `queued`, attempt handed back, `run_after` an hour out, a reason | **unchanged** (reads `syncing`; see below) | the claim-time policy: a suspension heals on its own and must never dead-letter a healthy repository |
 | raises **`InstallationUninstalled`** — the route's `409 installation_uninstalled` | `abandon` | `superseded` | `never_synced` | the claim-time policy: nothing to do, nothing failed |
 | raises **`LeaseLost`** — `should_abort()`, or a refused token (the route's **marked** 404) | **nothing** | untouched: `running` under the old lease until someone reclaims it | untouched | the job is someone else's; any write would clobber theirs |
-| raises anything else — including `InternalApiMisrouted` (an **unmarked** answer from the token route) and **`ParseFailed`** (every indexable file raised in the chunker) | `fail` | attempt consumed, backoff, `dead` at 5 | `failed` | an ordinary, retried failure, with `last_error` saying why |
+| raises anything else — including `InternalApiMisrouted` (an **unmarked** answer from the token route) and **`ParseFailed`** (the chunker raised on every indexable file, or on some while the rest produced no chunks, or on more than half of them; see below) | `fail` | attempt consumed, backoff, `dead` at 5 | `failed` | an ordinary, retried failure, with `last_error` saying why |
 
 Three rules sit behind that table, each learned the hard way:
 
@@ -211,13 +211,22 @@ completion together, and the runtime then writes the ending that exception
 calls for — normally `fail` — rather than leaving the job `running` until its
 lease expires.
 
-**A parse that produced nothing from files that exist never stores.** One
-file whose chunking raises is skipped and counted (`parse_errors`). When
-**every** indexable file raises, the handler raises `ParseFailed` instead of
-reaching `store`, because `write_results` *replaces* the repository's chunks:
-carrying on would delete a good index, insert nothing and read `synced`
-(PR #58's review). A tree with nothing indexable is not that case — nothing
-raised, and an empty index is then the truth about the repository.
+**A parse that the chunker mostly failed never stores.** One file whose
+chunking raises is skipped and counted (`parse_errors`). The handler raises
+`ParseFailed` instead of reaching `store` when there were indexable files
+and, checked in this order:
+
+1. **every** file raised (PR #58's review);
+2. some raised and the rest produced **no chunks**;
+3. **more than half** of them raised (`MAX_PARSE_ERROR_SHARE` in
+   `workers/ingest/handler.py`, an operational default the user may change).
+
+`write_results` *replaces* the repository's chunks, so carrying on would
+delete a good index and insert nothing, or a sliver, and read `synced`. Up
+to half raising, the job completes and `parse_errors` says how many. A tree
+with nothing indexable, or whose files parse into no chunks with nothing
+raised, is not a failure: an empty index is then the truth about the
+repository. (22.2-02 added clauses 2 and 3.)
 
 ### Stages and progress
 
@@ -257,7 +266,7 @@ removes none:
 | `files_indexable` | `parse` | files the fetch kept |
 | `skipped` | `parse` | skip reason → count, e.g. `{"secret": 1, "unsupported": 12}`. **Counts, never paths** |
 | `files_parsed` | `embed` | files chunked |
-| `parse_errors` | `embed` | files whose chunking raised; skipped and counted rather than failing the job — unless **every** file raised, which is `ParseFailed` and never reaches `embed` |
+| `parse_errors` | `embed` | files whose chunking raised; skipped and counted rather than failing the job — unless every file raised, or the rest produced no chunks, or more than half raised, each of which is `ParseFailed` and never reaches `embed` |
 | `chunks` | `embed` | chunks produced |
 | `chunks_embedded` | `store` | chunks with their vector (duplicates share one) |
 | `chunks_stored` | `store` | chunks the store stage writes; true of a `completed` row |

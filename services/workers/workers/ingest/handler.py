@@ -31,10 +31,12 @@ restated here. What this handler owns is choosing the exception:
   - `is_shutting_down()` at a checkpoint -> **`Unfinished`**.
   - a U6 cap -> **`Rejected`**: its own 100,000-chunk cap here, the
     fetcher's caps as `FetchRejected`.
-  - **every** indexable file raising in the chunker -> **`ParseFailed`**, an
-    ordinary failure: the job is retried and never replaces a good index
-    with nothing (PR #58's review, B-M3). One file raising is counted
-    (`parse_errors`) and the job goes on.
+  - the chunker raising on **every** indexable file, or on some while the
+    rest produce no chunks, or on **more than half** of them
+    (`MAX_PARSE_ERROR_SHARE`) -> **`ParseFailed`**, an ordinary failure: the
+    job is retried and never replaces a good index with nothing or with a
+    sliver (PR #58's review, B-M3; tightened by 22.2-02). Up to half raising
+    is counted (`parse_errors`) and the job goes on.
   - `InstallationSuspended` / `InstallationUninstalled` from the token route
     -> propagated unchanged.
   - `InternalApiMisrouted` (an UNMARKED answer: `INTERNAL_API_URL` reaches
@@ -107,6 +109,15 @@ MAX_CHUNKS = 100_000
 #: the moments a shutdown or a lost lease can stop the most expensive stage.
 EMBED_SLICE = 1_000
 
+#: The share of a repository's indexable files that may RAISE in the chunker
+#: before the job fails (`ParseFailed`, the guard's third clause) instead of
+#: replacing the index. Up to it the job completes and `parse_errors` counts
+#: them -- one bad file must not dead-letter a repository (22-05). Above it the
+#: chunker is broken, not the repository, and yesterday's index is kept.
+#: ⚠ AN OPERATIONAL DEFAULT, not a measured one (22.2-02): the user may change
+#: it, and a later plan may tune it on evidence.
+MAX_PARSE_ERROR_SHARE = 0.5
+
 #: The stage vocabulary, in order. `docs/api-ingestion-jobs.md` is its
 #: authority; `last_stage` carries no `CHECK`, so this tuple is the only
 #: thing in code that says what the values are.
@@ -134,7 +145,12 @@ class ConfigurationError(RuntimeError):
 
 
 class ParseFailed(Exception):
-    """Every indexable file raised in the chunker. An ORDINARY failure: retried.
+    """The chunker raised on too much of the repository to store what is left.
+    An ORDINARY failure: retried.
+
+    Raised by `_parse` when there were indexable files and, checked in this
+    order: (1) EVERY file raised; (2) some raised and the rest produced no
+    chunks; (3) more than `MAX_PARSE_ERROR_SHARE` (half) of them raised.
 
     ⚠ WHY IT EXISTS (PR #58's review, B-M3 and A-L5). One file raising is
     counted and skipped (`parse_errors`), which is right for one bad file.
@@ -146,6 +162,11 @@ class ParseFailed(Exception):
     own grammar errors and falls back, so this takes a systematic failure --
     exactly the kind a chunker change can introduce, and exactly the kind
     that would wipe every repository it touched.
+
+    22.2-02 closed the two edges PR #58's guard let through: some files
+    raising while the rest parse to nothing (clause 2), and a few trivial
+    files parsing while the real ones raise, which would shrink the index to
+    a sliver (clause 3).
 
     Not `Rejected`: nothing about the repository is over a cap, and a fixed
     chunker will parse it. The job fails with this message in `last_error`,
@@ -280,11 +301,13 @@ def _parse(ctx: JobContext, deps: IngestDeps, files: List[FetchedFile]) -> tuple
     cap is checked as chunks accumulate, so a repository over it stops
     being parsed the moment it crosses.
 
-    ⚠ BUT NOT WHEN EVERY FILE RAISES: that is `ParseFailed`, because the
-    store that follows would replace the repository's index with nothing.
-    A tree with no indexable files at all, or whose files parse into no
-    chunks, is not that case -- nothing raised, and an empty index is then
-    the truth about the repository.
+    ⚠ BUT NOT WHEN TOO MANY RAISE: that is `ParseFailed`, because the store
+    that follows would replace the repository's index with nothing, or with
+    a sliver. Its three clauses, in order: every file raised; some raised
+    and the rest produced no chunks; more than `MAX_PARSE_ERROR_SHARE` of
+    the files raised. A tree with no indexable files at all, or whose files
+    parse into no chunks with NOTHING raised, is not that case -- an empty
+    index is then the truth about the repository (clause 2 needs a raise).
 
     The checkpoint runs before EVERY file, not only between stages, so a
     shutdown or a lost lease lands within one file's parse.
@@ -311,11 +334,32 @@ def _parse(ctx: JobContext, deps: IngestDeps, files: List[FetchedFile]) -> tuple
                 f"the repository produces more than {deps.max_chunks} chunks (U6's cap); "
                 f"stopped after {number} of {len(files)} files"
             )
+    # ⚠ THE GUARD, its three clauses checked IN THIS ORDER (22.2-02, which
+    # tightened PR #58's). Each keeps yesterday's index and fails loudly.
     if files and parsed == 0:
+        # 1. Every file raised: PR #58's guard, its message verbatim.
         raise ParseFailed(
             f"every one of the {len(files)} indexable files failed to parse "
             f"({errors} raised in the chunker); refusing to replace the repository's "
             "index with nothing"
+        )
+    if files and errors and not chunks:
+        # 2. Some raised and the rest parsed to NO chunks: the store would still
+        #    replace the index with nothing. (No raise, no chunks is not this
+        #    case: an empty index is then the truth about the repository.)
+        raise ParseFailed(
+            f"{errors} of the {len(files)} indexable files failed to parse (raised in the "
+            f"chunker) and the other {parsed} produced no chunks; refusing to replace the "
+            "repository's index with nothing"
+        )
+    if errors > len(files) * MAX_PARSE_ERROR_SHARE:
+        # 3. Most files raised: a chunker bug, not the repository. A few
+        #    trivial files parsing must not replace the index with a sliver.
+        raise ParseFailed(
+            f"{errors} of the {len(files)} indexable files failed to parse (raised in the "
+            f"chunker), more than the {MAX_PARSE_ERROR_SHARE:.0%} the handler accepts "
+            f"(MAX_PARSE_ERROR_SHARE); refusing to replace the repository's index with what "
+            f"the other {parsed} produced"
         )
     return chunks, parsed, errors
 
