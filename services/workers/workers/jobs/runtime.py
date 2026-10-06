@@ -29,13 +29,25 @@ Until `stop` is set:
      registry, so a deployed worker cannot reach this.
   5. **`mark_started`** -- and not before step 3. See the table.
   6. **Start the heartbeat thread**, on ITS OWN CONNECTION.
-  7. **Run the handler.** Returned normally -> `complete` with whatever
-     `write_results` it gave back, UNLESS the lease was lost meanwhile, in
-     which case write nothing. Raised `Unfinished` -> `defer` with the
-     attempt handed back. Raised anything else -> `fail`. `LeaseLost` from
-     either -> log a warning and carry on; the job belongs to someone else
-     now.
+  7. **Run the handler, and write the ending its return or its exception
+     calls for** -- `complete` UNLESS the lease was lost meanwhile, in
+     which case nothing. See "THE ENDINGS" below.
   8. **Stop the heartbeat thread** and join it.
+
+=====================================================================
+THE ENDINGS
+=====================================================================
+
+The exception TYPE a handler raises is the contract, and
+`docs/api-ingestion-jobs.md`, "How a job ends", is its AUTHORITY: the one
+table of which exception takes which ending, and why. This module keeps no
+copy of it (three files with three lists is the failure mode
+`21-CONTEXT.md` opens by naming). `_invoke` handles `LeaseLost` (write
+nothing) and `Unfinished` (a deferral only during a shutdown); `_settle`
+handles everything else, in the table's order; and since 22-05 an exception
+from `write_results` inside `complete`'s transaction is settled the same
+way, after the rollback, rather than leaving the job `running` until its
+lease expires.
 
 =====================================================================
 ⚠ THE INSTALLATION IS READ AT CLAIM TIME, NOT AT ENQUEUE TIME
@@ -107,6 +119,18 @@ means the job was superseded (L4) or the lease expired and someone else
 reclaimed it. The abort flag goes up, the thread stops beating, and the
 handler sees `should_abort()`.
 
+⚠ AND IT CARRIES A `statement_timeout` (22-05, P16), because the one
+failure 21-06 left open is a beat that BLOCKS: an `UPDATE` waiting on a
+row lock raises nothing, so neither give-up rule is ever evaluated. With
+the timeout the blocked beat raises `57014` and counts as a failure like
+any other. ⚠ THE OPTION IS MERGED INTO THE DSN'S OWN `options`, NEVER
+PASSED AS A KEYWORD: `psycopg2.connect(dsn, options=...)` REPLACES the
+DSN's `options`, which is where a deployment sets the role
+(`-c role=rag_doc_app`) -- so a replacing keyword would silently turn the
+heartbeat connection into whoever the DSN authenticates as, the superuser
+in the test harness. `_merged_options_dsn` is the one place that builds
+it, and `test_the_heartbeat_keeps_its_callers_identity` pins it.
+
 =====================================================================
 SHUTDOWN
 =====================================================================
@@ -121,13 +145,9 @@ never abandons a job mid-write, and it never kills a handler.
   - `is_shutting_down()` -- **the worker is going away; the job is still
     ours.** What gets written depends entirely on how the handler ends.
 
-Three endings, and a handler picks one:
-
-  return              done            -> `complete`
-  raise Unfinished    stopped early   -> `defer` DURING A SHUTDOWN, with the
-                                         attempt handed back; `fail` at any
-                                         other time
-  raise anything else failed          -> `fail`, attempt consumed
+During a shutdown a handler either finishes (`return` -> `complete`) or
+stops early with `raise Unfinished` -> `defer`, the attempt handed back
+(the rest of the endings are `docs/api-ingestion-jobs.md`'s table).
 
 ⚠ `Unfinished` IS ONLY FREE DURING A SHUTDOWN, and the condition is the
 bound. `defer(timedelta(0))` neither consumes an attempt nor moves
@@ -147,20 +167,23 @@ unrepresentable, and `defer` rather than `fail` means an operator's
 restarts cannot walk a healthy repository towards `dead`.
 
 =====================================================================
-WORKER-POOL SIZING (Phase 22 measures it)
+WORKER-POOL SIZING (P16: provisional until 22.1-05 measures it)
 =====================================================================
 
 ONE JOB AT A TIME PER PROCESS. Scale by running more processes; the claim
 is safe across any number of them (`FOR UPDATE SKIP LOCKED`, pinned from
-Python by 21-06's barrier test). How many processes is an OPEN INPUT --
-21-RESEARCH withdrew the arithmetic that answered it, because it applied a
-full-ingest duration to push jobs and nothing has yet ingested end to end.
-Phase 22 measures the incremental duration and sizes the pool from it.
+Python by 21-06's barrier test). 22-05 set the first numbers, PROVISIONAL
+UNTIL 22.1-05 replaces them with per-stage timings: TWO processes (four
+connections, since each holds the loop's and the heartbeat's while a job
+runs), a two-hour `max_job_duration` and a fifteen-second heartbeat
+`statement_timeout`. Each is a named constant below with an environment
+override, and `docs/api-ingestion-jobs.md` records where each came from.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import random
 import threading
 import time
@@ -169,7 +192,7 @@ from datetime import timedelta
 from typing import Any, Callable, Dict, Mapping, Optional
 
 import psycopg2
-from psycopg2.extensions import TRANSACTION_STATUS_UNKNOWN
+from psycopg2.extensions import TRANSACTION_STATUS_UNKNOWN, make_dsn, parse_dsn
 from psycopg2.extras import Json, RealDictCursor
 
 from workers.db import require_tenant
@@ -186,6 +209,7 @@ from workers.jobs.transitions import (
     fail,
     mark_started,
     new_worker_id,
+    reject,
     sanitize_error,
     sweep,
 )
@@ -280,6 +304,45 @@ MAX_HEARTBEAT_FAILURES = 5
 #: short UPDATE, so exceeding it means something is wrong and the log line
 #: is the point.
 HEARTBEAT_JOIN_TIMEOUT = timedelta(seconds=30)
+
+
+# =====================================================================
+# P16: the operating numbers. PROVISIONAL UNTIL 22.1-05.
+# =====================================================================
+#
+# 22-05 sets these so the worker can run at all; 22.1-05 replaces them with
+# numbers derived from per-stage timings over the three benchmark corpora
+# and one large public repository. Each has an environment override, read
+# by `workers/__main__`, so an operator can move one without a release.
+
+#: PROVISIONAL UNTIL 22.1-05. How long a handler may run before the
+#: heartbeat stops extending its lease (see `Worker`'s `max_job_duration`).
+#: Two hours: about three times the extrapolated end-to-end time of a
+#: 50,000-chunk repository, under twice that of U6's 100,000-chunk cap, and
+#: sixty times the largest benchmark repository (22-CONTEXT P16). The first
+#: real data point is 22-05's live proof, recorded in 22-05-SUMMARY.md.
+#: Override: `WORKER_MAX_JOB_DURATION_SECONDS`.
+DEFAULT_MAX_JOB_DURATION = timedelta(hours=2)
+MAX_JOB_DURATION_ENV = "WORKER_MAX_JOB_DURATION_SECONDS"
+
+#: PROVISIONAL UNTIL 22.1-05. The heartbeat connection's `statement_timeout`:
+#: fifteen seconds, a quarter of the sixty-second beat, so a beat that
+#: BLOCKS (on the job row's lock, say) raises `57014` and counts as a
+#: failure instead of silencing both give-up rules. Four blocked beats plus
+#: their waits still fit inside the five-minute lease. The loop's connection
+#: carries no timeout: its statements are the claim and the transitions,
+#: and `complete` runs `write_results`, whose size is the repository's.
+#: Override: `WORKER_HEARTBEAT_STATEMENT_TIMEOUT_MS`.
+DEFAULT_HEARTBEAT_STATEMENT_TIMEOUT = timedelta(seconds=15)
+HEARTBEAT_STATEMENT_TIMEOUT_ENV = "WORKER_HEARTBEAT_STATEMENT_TIMEOUT_MS"
+
+#: PROVISIONAL UNTIL 22.1-05. How many worker processes to run: two, so four
+#: connections while both are busy. It is not read by this module -- a
+#: process runs one job at a time and scales by running more of itself --
+#: but it is the number `docker-compose.yml`'s `workers` service declares
+#: (`deploy.replicas`, override `WORKER_REPLICAS`), and it lives here so the
+#: three P16 numbers are in one place.
+PROVISIONAL_POOL_SIZE = 2
 
 
 # =====================================================================
@@ -415,6 +478,70 @@ class UnknownJobType(Exception):
     """
 
 
+class Rejected(Exception):
+    """The job can never succeed as asked: a U6 hard cap tripped. `dead`, once.
+
+    ⚠ NOT A PLAIN FAILURE, AND THAT IS THE WHOLE REASON IT EXISTS (22-05).
+    A cap violation is DETERMINISTIC -- the same archive trips the same cap
+    every time -- so as a `fail` it would re-download up to 500 MB five
+    times over about 81 minutes of backoff to reach the `dead` it was always
+    going to reach. U6 says a job over a hard cap "ends `dead`", with a plain
+    reason, and `reject` writes exactly that in one attempt: `dead`,
+    `last_error` redacted, the lease cleared, `sync_state = 'failed'`.
+
+    `reason` must be plain and token-free: it is what 21-07's endpoint shows
+    the user. `workers.fetch.FetchRejected` subclasses this, so every cap the
+    fetcher enforces (the 500 MB download and expansion, the 20,000 files)
+    takes this ending as well as the 100,000-chunk cap the ingest handler
+    enforces after parsing.
+
+    ⚠ NEVER RAISE IT FOR SOMETHING THAT HEALS. A suspended installation is
+    not a cap -- see `InstallationSuspended` -- and neither is an outage.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class InstallationSuspended(Exception):
+    """The job's GitHub App installation is suspended. Wait; never fail.
+
+    Raised MID-RUN by `workers.fetch.client.request_token` when the
+    backend's token route answers `409 installation_suspended` (22-04), and
+    handled exactly as the claim-time check handles a suspension (21-06):
+    `defer` for `suspended_defer` (an hour), the attempt handed back,
+    `sync_state` left alone. A suspension heals on its own; a `fail` here
+    would walk a healthy repository to `dead` in five of them.
+
+    ⚠ THE REPOSITORY THEN READS `syncing` FOR UP TO AN HOUR, and that is
+    known and accepted rather than fixed: `mark_started` already projected
+    `syncing`, and `DEFER_SQL` (frozen since 21-05) projects nothing. The
+    job row is the truth -- `state = 'queued'`, `run_after` about an hour
+    out, `last_error` saying why, no lease, `stalled` false.
+    `docs/api-ingestion-jobs.md` says so beside the rule that `syncing` is
+    not evidence of a live worker.
+
+    Defined here, not in `workers.fetch`, so that the runtime owns every
+    ending; `workers.fetch.client` re-exports it, so there is one class.
+    """
+
+
+class InstallationUninstalled(Exception):
+    """The job's GitHub App installation is gone. Nothing to do; never fail.
+
+    Raised MID-RUN by `workers.fetch.client.request_token` when the token
+    route answers `409 installation_uninstalled` (uninstalled, missing, or
+    the repository no longer linked), and handled exactly as the claim-time
+    check handles it (21-06): `abandon` -- `superseded`, `sync_state =
+    'never_synced'`, never `failed`, which is the retry-looking terminal
+    state the uninstall stand-down exists to forbid.
+
+    Defined here and re-exported by `workers.fetch.client`; see
+    `InstallationSuspended`.
+    """
+
+
 #: What a handler returns: a callback that writes its results inside
 #: `complete`'s transaction, or None when there is nothing to write.
 #:
@@ -427,18 +554,55 @@ WriteResults = Callable[[Any], None]
 #: A job handler. Takes the context, does the work, and returns its
 #: `write_results` callback -- or None.
 #:
-#: THREE ENDINGS, and each of them writes something different:
+#: The exception type it raises is the contract; `docs/api-ingestion-jobs.md`,
+#: "How a job ends", is the authority for which ending each one takes.
 #:
-#:   return        the job is DONE          -> `complete`
-#:   raise Unfinished   stopped part-way    -> `defer`, attempt handed back
-#:   raise anything else    it FAILED       -> `fail`, attempt consumed
-#:
-#: ⚠ THE FIRST TWO ARE THE ONES THAT GET CONFUSED. The worker cannot tell
-#: an unfinished return from a finished one, so a bare `return` during a
-#: shutdown writes `completed` over work that did not happen. `Unfinished`
-#: is the difference; see its docstring for the row PR #42's review
-#: produced without it.
+#: ⚠ A RETURN AND AN EARLY STOP ARE THE ONES THAT GET CONFUSED. The worker
+#: cannot tell an unfinished return from a finished one, so a bare `return`
+#: during a shutdown writes `completed` over work that did not happen.
+#: `Unfinished` is the difference; see its docstring for the row PR #42's
+#: review produced without it. The same lesson, one level in: a handler that
+#: finds the job is not its own any more (`should_abort()`, or a refused
+#: token) raises `LeaseLost` rather than returning, because `COMPLETE_SQL`
+#: does not check the lease's EXPIRY and would write `completed` for undone
+#: work.
 Handler = Callable[["JobContext"], Optional[WriteResults]]
+
+
+def _merged_options_dsn(dsn: str, extra_options: str) -> str:
+    """Return `dsn` with `extra_options` APPENDED to its own `options`.
+
+    ⚠ NEVER `psycopg2.connect(dsn, options=...)`. A keyword REPLACES the
+    DSN's `options` rather than adding to it (psycopg2's `make_dsn`, measured
+    by the 22-05 fact-check), and `options` is where a deployment sets the
+    role: `-c role=rag_doc_app` in the test harness's `app_dsn`, and whatever
+    an operator put in `DATABASE_URL`. A replacing keyword would therefore
+    turn the connection into the role the DSN AUTHENTICATES as -- the
+    container superuser in the harness, which bypasses row-level security --
+    and drop every other option on the way, silently. A quiet privilege
+    change is exactly what this phase kept catching late.
+
+    So: parse the DSN, join the two `options` strings with a space (libpq
+    splits them on whitespace), and rebuild it. `make_dsn` quotes the
+    result, so an `options` containing spaces survives.
+
+    ⚠ AND `PGOPTIONS`, WHEN THE DSN NAMES NO OPTIONS (PR #58's review, A-N3).
+    libpq reads the `PGOPTIONS` environment variable only when the
+    connection string carries no `options`; once this adds some, it would be
+    ignored, and the heartbeat alone would lose what an operator set there
+    (measured by the review: the loop got `work_mem` 7MB from `PGOPTIONS`,
+    the heartbeat 4MB) -- including a role, if `PGOPTIONS` is where the
+    role is set. So an empty DSN `options` starts from `PGOPTIONS`, exactly
+    as libpq would have; `test_the_heartbeat_keeps_an_identity_set_through_
+    pgoptions` pins it on real connections. A DSN that names `options`
+    keeps libpq's own rule: `PGOPTIONS` does not apply to it.
+    """
+    params = parse_dsn(dsn)
+    existing = (params.get("options") or "").strip()
+    if not existing:
+        existing = (os.environ.get("PGOPTIONS") or "").strip()
+    params["options"] = f"{existing} {extra_options}" if existing else extra_options
+    return make_dsn(**params)
 
 
 def _sanitize_progress(value: Any) -> Any:
@@ -554,9 +718,19 @@ class JobContext:
     def report_progress(self, stage: str, progress: Optional[dict] = None) -> bool:
         """Record coarse progress on the job row. Fenced. Returns whether it landed.
 
-        `last_stage` is L2's resumability breadcrumb (`clone|parse|embed|
-        store`) and `progress` its detail (`files_parsed`, `chunks_embedded`,
-        `current_file`). Both are read by 21-07's admin endpoint.
+        `last_stage` is L2's resumability breadcrumb and `progress` its
+        detail. Both are read by 21-07's admin endpoint. The stage
+        vocabulary is `fetch|parse|embed|store` since 22-05 -- there is no
+        clone any more (U5), and 000014's `clone|parse|embed|store` column
+        comment is history, not schema (`docs/api-ingestion-jobs.md` is
+        the authority).
+
+        ⚠ `progress` IS REPLACED WHOLE BY EVERY CALL (`PROGRESS_SQL` sets the
+        column), and a call with no payload writes NULL. So a handler that
+        reports `{"chunks_stored": n}` at `store` ERASES the counts it wrote
+        at `fetch`. The contract, since 22-05: every call carries the
+        CUMULATIVE dict -- every count so far, each stage adding its keys and
+        removing none.
 
         ⚠ IT RUNS ON THE WORKER'S MAIN CONNECTION, which is idle for as
         long as a handler is running: every transition opens and closes its
@@ -579,7 +753,7 @@ class JobContext:
 
         ⚠ BOTH ARGUMENTS ARE REDACTED BEFORE THEY ARE WRITTEN. `last_stage`
         is bare `TEXT` (000014) with **no `CHECK`**, so the documented
-        `clone|parse|embed|store` enum is a comment and nothing enforces
+        `fetch|parse|embed|store` enum is a convention and nothing enforces
         it; `progress`'s documented `current_file` is exactly the shape a
         clone URL ends up in --
         `https://x-access-token:ghs_...@github.com/org/repo.git`. 21-07
@@ -656,15 +830,21 @@ class Worker:
             seconds; nothing in production passes them.
         max_job_duration: how long a handler may run before the heartbeat
             stops beating and the job is handed back to the reclaim path.
-            **None by default, which means no bound** -- and that is not an
-            oversight. A hung handler is a real hazard (PR #42's n2: the
+            **None here means no bound**, and a `Worker` built with None
+            says so at WARN when it starts (PR #42's n2: a hung handler's
             lease is extended forever, nothing can reclaim, the repository
-            sits `syncing`, and this worker's sweeper never runs again
-            either), but the right number is a multiple of a typical
-            ingest and NOTHING HAS INGESTED END TO END YET. The mechanism
-            is here and tested; Phase 22 sets the number once it has one
-            to multiply. Inventing it now is the mistake 21-RESEARCH
-            already made once with pool sizing.
+            sits `syncing`, and this worker's sweeper never runs again).
+            `workers/__main__` passes `DEFAULT_MAX_JOB_DURATION` -- two
+            hours, provisional until 22.1-05 (P16) -- so a deployed worker
+            always has one. The default stays None for callers that build a
+            `Worker` directly, so the omission stays visible rather than
+            being papered over with a number nobody chose for them.
+        heartbeat_statement_timeout: the heartbeat connection's
+            `statement_timeout`, so a beat that BLOCKS raises `57014` and
+            counts as a failure. `DEFAULT_HEARTBEAT_STATEMENT_TIMEOUT` (15 s,
+            P16, provisional until 22.1-05). It is MERGED into the DSN's own
+            `options`; see `_merged_options_dsn`. None means no timeout,
+            which is 21-06's behaviour and leaves a blocked beat invisible.
     """
 
     def __init__(
@@ -678,6 +858,7 @@ class Worker:
         idle_poll: timedelta = DEFAULT_IDLE_POLL,
         suspended_defer: timedelta = DEFAULT_SUSPENDED_DEFER,
         max_job_duration: Optional[timedelta] = None,
+        heartbeat_statement_timeout: Optional[timedelta] = DEFAULT_HEARTBEAT_STATEMENT_TIMEOUT,
     ) -> None:
         if not handlers:
             raise ValueError(
@@ -686,6 +867,10 @@ class Worker:
                 "times and dead-letter them. Register handlers in "
                 "workers.jobs.handlers.REGISTRY (Phase 22)."
             )
+        if heartbeat_statement_timeout is not None and heartbeat_statement_timeout <= timedelta(0):
+            # `statement_timeout = 0` means NO timeout in PostgreSQL, so a
+            # zero here would silently switch off the very guard it names.
+            raise ValueError("heartbeat_statement_timeout must be positive, or None for none")
         self.dsn = dsn
         self.worker_id = worker_id or new_worker_id()
         self.lease = lease
@@ -693,6 +878,7 @@ class Worker:
         self.idle_poll = idle_poll
         self.suspended_defer = suspended_defer
         self.max_job_duration = max_job_duration
+        self.heartbeat_statement_timeout = heartbeat_statement_timeout
 
         self._handlers: Dict[str, Handler] = dict(handlers)
         self._rng = random.random
@@ -712,7 +898,8 @@ class Worker:
         """
         logger.info(
             "worker %s starting: job_types=%s lease=%.0fs heartbeat=%.0fs "
-            "idle_poll=%.1fs suspended_defer=%.0fs max_job_duration=%s",
+            "idle_poll=%.1fs suspended_defer=%.0fs max_job_duration=%s "
+            "heartbeat_statement_timeout=%s",
             self.worker_id,
             ",".join(sorted(self._handlers)),
             self.lease.total_seconds(),
@@ -722,6 +909,9 @@ class Worker:
             "none"
             if self.max_job_duration is None
             else f"{self.max_job_duration.total_seconds():.0f}s",
+            "none"
+            if self.heartbeat_statement_timeout is None
+            else f"{self._heartbeat_timeout_ms()}ms",
         )
         if self.max_job_duration is None:
             # ⚠ THE OMISSION HAS TO BE VISIBLE. Shipping the mechanism
@@ -789,12 +979,26 @@ class Worker:
         under failure, so telling them apart from the database's side is
         worth one parameter -- and it is what lets a test kill one of them
         precisely.
+
+        The heartbeat's connection also carries `statement_timeout`, merged
+        into the DSN's own `options` (see `_merged_options_dsn`); the
+        loop's carries nothing extra.
         """
+        dsn = self.dsn
+        if application_name == HEARTBEAT_APPLICATION_NAME and self.heartbeat_statement_timeout:
+            dsn = _merged_options_dsn(
+                dsn, f"-c statement_timeout={self._heartbeat_timeout_ms()}"
+            )
         return psycopg2.connect(
-            self.dsn,
+            dsn,
             application_name=application_name,
             connect_timeout=CONNECT_TIMEOUT_SECONDS,
         )
+
+    def _heartbeat_timeout_ms(self) -> int:
+        """The heartbeat's `statement_timeout` in whole milliseconds, at least 1."""
+        assert self.heartbeat_statement_timeout is not None
+        return max(1, int(self.heartbeat_statement_timeout.total_seconds() * 1000))
 
     def _ensure_live(self, conn: Any, stop: threading.Event) -> Optional[Any]:
         """Return a usable connection, reconnecting if this one has died.
@@ -1044,7 +1248,7 @@ class Worker:
             # UNBINDS an `except ... as` name at the end of the block, so a
             # lambda that captured it would be a `NameError` waiting for
             # the day someone defers the call.
-            self._fail(conn, job, exc)
+            self._settle(conn, job, exc)
             return
 
         if lease_lost.is_set():
@@ -1063,11 +1267,78 @@ class Worker:
             )
             return
 
-        self._guarded(
-            job,
-            "complete",
-            lambda: complete(conn, job, self.worker_id, write_results),
-        )
+        try:
+            self._guarded(
+                job,
+                "complete",
+                lambda: complete(conn, job, self.worker_id, write_results),
+            )
+        except Exception as exc:  # noqa: BLE001 - see below
+            # ⚠ `write_results` RAISED INSIDE `complete`'s TRANSACTION (22-05).
+            # `require_tenant` has rolled everything back -- the results and
+            # the completion together, which is the guarantee -- so the job
+            # is still `running` under our lease. Left there it would sit
+            # until the lease expired, be reclaimed, raise again, and reach
+            # `dead` through the sweeper with `last_error` NULL: five wasted
+            # ingests and no reason recorded. Phase 21's callbacks were one
+            # INSERT; 22-05's replaces a repository's chunks, which can
+            # fail. So it is settled like a handler's exception.
+            # (`LeaseLost` never reaches here: `_guarded` consumed it.)
+            logger.warning(
+                "job %s: the completion transaction raised and was rolled back; "
+                "recording the ending worker=%s repo=%s: %s",
+                job.id,
+                self.worker_id,
+                job.repository_id,
+                sanitize_error(exc),
+            )
+            self._settle(conn, job, exc)
+
+    def _settle(self, conn: Any, job: Job, exc: Exception) -> None:
+        """Write the ending a handler's exception calls for.
+
+        `docs/api-ingestion-jobs.md`, "How a job ends", is the authority for
+        the mapping. ⚠ THE ORDER OF THE `isinstance` TESTS IS THAT TABLE'S,
+        and the catch-all is last. `Rejected` before the rest so a cap is never
+        a retried `fail`; the two installation exceptions before the
+        catch-all so a mid-run suspension defers exactly as a claim-time
+        one does -- the earlier plan mapped it to `Rejected`, which would
+        have dead-lettered a healthy repository, and was withdrawn.
+        `LeaseLost` and `Unfinished` are handled by the caller.
+        """
+        if isinstance(exc, Rejected):
+            logger.warning(
+                "job %s: rejected (a hard cap; dead in one attempt) worker=%s "
+                "org=%s repo=%s: %s",
+                job.id,
+                self.worker_id,
+                job.organization_id,
+                job.repository_id,
+                sanitize_error(exc),
+            )
+            self._guarded(job, "reject", lambda: reject(conn, job, self.worker_id, exc))
+            return
+        if isinstance(exc, InstallationSuspended):
+            reason = (
+                "the GitHub App installation was suspended while the job ran "
+                f"({sanitize_error(exc)}); waiting for an unsuspend"
+            )
+            self._guarded(
+                job,
+                "defer",
+                lambda: defer(conn, job, self.worker_id, self.suspended_defer, reason),
+            )
+            return
+        if isinstance(exc, InstallationUninstalled):
+            reason = (
+                "the GitHub App installation was uninstalled while the job ran "
+                f"({sanitize_error(exc)})"
+            )
+            self._guarded(
+                job, "abandon", lambda: abandon(conn, job, self.worker_id, reason)
+            )
+            return
+        self._fail(conn, job, exc)
 
     def _fail(self, conn: Any, job: Job, error: BaseException) -> None:
         """Record a failed attempt. `last_error` is redacted by `sanitize_error`."""

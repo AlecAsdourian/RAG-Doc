@@ -57,6 +57,7 @@ from psycopg2.extras import RealDictCursor
 from workers.db import require_tenant
 from workers.jobs import (
     LeaseLost,
+    Rejected,
     abandon,
     attach_ingestion_run,
     claim,
@@ -65,6 +66,7 @@ from workers.jobs import (
     fail,
     mark_started,
     new_worker_id,
+    reject,
     resolve_ingestion_run,
     sweep,
 )
@@ -513,12 +515,13 @@ def test_a_reclaimed_workers_mark_started_writes_nothing(db_conn, with_two_orgs)
     )
 
 
-@pytest.mark.parametrize("transition", ["fail", "defer", "abandon"])
+@pytest.mark.parametrize("transition", ["fail", "reject", "defer", "abandon"])
 def test_a_reclaimed_workers_terminal_writes_are_all_refused(
     db_conn, with_two_orgs, transition
 ):
-    """⚠ The `lease_owner` HALF of the fence, for the three statements that
-    only ever saw the `state` half.
+    """⚠ The `lease_owner` HALF of the fence, for the statements that only
+    ever saw the `state` half. `reject` (22-05) joined them: a reclaimed
+    worker rejecting would dead-letter the new attempt's job.
 
     The superseded test below cannot reach it: a superseded row keeps A's
     lease, so `lease_owner = %s` matches by construction there and only
@@ -549,6 +552,7 @@ def test_a_reclaimed_workers_terminal_writes_are_all_refused(
 
     calls = {
         "fail": lambda: fail(db_conn, job_a, worker_a, RuntimeError("boom")),
+        "reject": lambda: reject(db_conn, job_a, worker_a, Rejected("over the cap")),
         "defer": lambda: defer(db_conn, job_a, worker_a, timedelta(hours=1), "suspended"),
         "abandon": lambda: abandon(db_conn, job_a, worker_a, "uninstalled"),
     }
@@ -598,7 +602,7 @@ def test_the_new_owner_is_unaffected_by_the_stale_worker(db_conn, with_two_orgs)
 # =====================================================================
 
 
-@pytest.mark.parametrize("transition", ["complete", "fail", "defer", "abandon"])
+@pytest.mark.parametrize("transition", ["complete", "fail", "reject", "defer", "abandon"])
 def test_a_superseded_workers_writes_all_raise_lease_lost(
     db_conn, with_two_orgs, worker_id, transition
 ):
@@ -625,6 +629,7 @@ def test_a_superseded_workers_writes_all_raise_lease_lost(
     calls = {
         "complete": lambda: complete(db_conn, job, worker_id),
         "fail": lambda: fail(db_conn, job, worker_id, RuntimeError("boom")),
+        "reject": lambda: reject(db_conn, job, worker_id, Rejected("over the cap")),
         "defer": lambda: defer(db_conn, job, worker_id, timedelta(hours=1), "suspended"),
         "abandon": lambda: abandon(db_conn, job, worker_id, "uninstalled"),
     }
@@ -883,6 +888,59 @@ def test_fail_on_the_final_attempt_writes_dead_directly(db_conn, with_two_orgs, 
     assert row["state"] == "dead"
     assert row["lease_owner"] is None
     assert repo_row(db_conn, org_a.id, org_a.repo_id)["sync_state"] == "failed"
+
+
+# =====================================================================
+# Rejection (a U6 hard cap; 22-05)
+# =====================================================================
+
+
+def test_reject_writes_dead_in_one_attempt_with_a_redacted_reason(
+    db_conn, with_two_orgs, worker_id
+):
+    """A cap is deterministic: `dead` now, not after five 500 MB retries.
+
+    ⚠ ONE ATTEMPT is the point, so the job is claimed ONCE and rejected, and
+    the row must read `dead` at `attempts == 1` -- `fail` would have written
+    `queued` with a backoff here, which is what the `Rejected`-as-a-plain-
+    failure mutation reproduces end to end.
+    """
+    org_a, _ = with_two_orgs
+    job_id = seed_job(db_conn, org_a)
+    backdate(db_conn, job_id)
+    job = claimed_job(db_conn, worker_id, job_id)
+    assert job.attempts == 1
+
+    reject(db_conn, job, worker_id, Rejected(f"archive exceeds 500 MB near {FAKE_TOKEN}"))
+
+    row = job_row(db_conn, job_id)
+    assert row["state"] == "dead", "a cap ends the job dead, in this attempt"
+    assert row["attempts"] == 1, "rejected in ONE attempt; nothing consumed after the claim"
+    assert row["lease_owner"] is None
+    assert row["lease_expires_at"] is None
+    assert row["last_error"].startswith("Rejected: archive exceeds 500 MB")
+    assert "ghs_" not in row["last_error"], "the reason is redacted like every last_error"
+    assert "[REDACTED]" in row["last_error"]
+    assert repo_row(db_conn, org_a.id, org_a.repo_id)["sync_state"] == "failed"
+
+
+def test_a_rejected_job_is_terminal_and_the_repository_can_be_queued_again(
+    db_conn, with_two_orgs, worker_id
+):
+    """`dead` is outside the live set: never re-claimed, never swept again,
+    and the next push or reconnect enqueues a fresh job (the recovery path
+    until ISS-023)."""
+    org_a, _ = with_two_orgs
+    job_id = seed_job(db_conn, org_a)
+    backdate(db_conn, job_id)
+    job = claimed_job(db_conn, worker_id, job_id)
+    reject(db_conn, job, worker_id, Rejected("more than 20000 indexable files"))
+
+    assert sweep(db_conn) >= 0
+    assert job_row(db_conn, job_id)["state"] == "dead"
+    second = seed_job(db_conn, org_a)
+    assert second != job_id
+    assert job_row(db_conn, second)["state"] == "queued"
 
 
 # =====================================================================

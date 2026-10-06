@@ -298,6 +298,58 @@ def test_other_unsafe_spellings_are_refused(tmp_path, name: str) -> None:
     assert_nothing_outside_dest(tmp_path)
 
 
+@pytest.mark.parametrize(
+    "char",
+    ["\n", "\r", "\t", "\x01", "\x1b", "\x7f", "\x85", "\x9b"],
+    ids=["LF", "CR", "TAB", "SOH", "ESC", "DEL", "NEL", "CSI"],
+)
+def test_a_control_character_in_a_member_name_is_refused(tmp_path, char: str) -> None:
+    # PR #58's review, A-L1: a file name is customer-controlled text that
+    # reaches plain-text log lines (the chunker logs the path it chunks) and
+    # `chunks.file_path`. A newline in one forged a whole log record
+    # (measured by the review). C0, DEL and C1 are all refused -- NEL
+    # (U+0085) is a line break to `str.splitlines()`, and CSI (U+009B)
+    # starts a terminal escape sequence.
+    name = f"{TOP}/src/x{char}2026-09-29 20:17:10,248 INFO job FORGED: complete.py"
+    archive = write(tmp_path, build([regular("src/a.py"), Member(name, b"x = 1\n")]))
+    members = listing(archive)
+    assert name in members and members[name].isreg(), "premise: the hostile member is in the archive"
+
+    stats, files, _, dest = run(tmp_path, archive)
+    assert stats.skipped.get("unsafe_path") == 1, stats.skipped
+    assert [f.path for f in files] == ["src/a.py"]
+    assert everything_under(dest) == ["src/a.py"]
+    assert_nothing_outside_dest(tmp_path)
+
+
+def test_a_control_character_in_a_directory_name_is_refused_too(tmp_path) -> None:
+    name = f"{TOP}/sr\nc/forged.py"
+    archive = write(tmp_path, build([regular("src/a.py"), Member(name, b"x = 1\n")]))
+    assert name in listing(archive), "premise"
+
+    stats, files, _, dest = run(tmp_path, archive)
+    assert stats.skipped.get("unsafe_path") == 1, stats.skipped
+    assert everything_under(dest) == ["src/a.py"]
+
+
+def test_a_name_that_is_merely_not_ascii_is_still_extracted(tmp_path) -> None:
+    # The refusal is exactly Unicode category Cc, not "anything unusual": a
+    # real tree may hold non-ASCII names, and they are indexed as before.
+    archive = write(tmp_path, build([regular("src/café.py"), regular("docs/日本.md", b"# hi\n")]))
+    stats, files, _, dest = run(tmp_path, archive)
+    assert "unsafe_path" not in stats.skipped, stats.skipped
+    assert sorted(f.path for f in files) == ["docs/日本.md", "src/café.py"]
+
+
+def test_a_top_level_name_with_a_trailing_newline_is_described_not_printed() -> None:
+    # PR #58's review, A-N1: `$` also matches just before a trailing newline,
+    # so the plain-name check is a full match.
+    assert archive_module._describe_top_level("acme-widgets-abc") == "'acme-widgets-abc'"
+    assert archive_module._describe_top_level("acme-widgets-abc\n") == (
+        "(a 17-character name, not printed)"
+    )
+
+
 def test_a_second_top_level_directory_is_refused(tmp_path) -> None:
     # GitHub's archives have exactly one. A member under another top-level
     # name is not from the archive we asked for.
@@ -321,6 +373,60 @@ def test_the_top_level_directory_is_checked_against_the_expected_name(tmp_path) 
         extract_archive(archive, dest2, DEFAULT_LIMITS, expected_top_level="acme-widgets-0000000")
     assert "top-level directory" in str(raised.value)
     assert everything_under(dest2) == []
+
+
+PRIVATE_SHA = "f798806452c0743312780e0cc3e97301286696bd"
+
+
+def test_both_measured_directory_names_are_accepted_and_nothing_else(tmp_path) -> None:
+    # 22-05's live proof: GitHub archives a PRIVATE repository under
+    # `{owner}-{repo}-{sha}`, the FULL SHA (measured on
+    # AlecAsdourian/ES-SC-API-Navigator, by SHA and by branch), and a PUBLIC
+    # one under `{sha7}` (mealie and octocat/Hello-World, with and without
+    # authentication). 22-04 knew only the public form and refused every
+    # private repository's archive. Both forms name the commit asked for;
+    # every other name -- an unobserved abbreviation length included -- is
+    # still refused before anything is written.
+    short, full = archive_module.expected_top_levels_for("acme/widgets", PRIVATE_SHA)
+    assert short == f"acme-widgets-{PRIVATE_SHA[:7]}"
+    assert full == f"acme-widgets-{PRIVATE_SHA}"
+
+    for label, top in (("public", short), ("private", full)):
+        archive = write(tmp_path, build([Member(top, kind=tarfile.DIRTYPE), Member(f"{top}/src/a.py", b"#\n")]))
+        dest = os.path.join(str(tmp_path), f"dest-{label}")
+        stats = extract_archive(archive, dest, DEFAULT_LIMITS, expected_top_level=(short, full))
+        assert stats.top_level == top
+        assert everything_under(dest) == ["src/a.py"], f"the {label} form must be accepted"
+
+    for label, top in (
+        ("a twelve-character abbreviation, never observed", f"acme-widgets-{PRIVATE_SHA[:12]}"),
+        ("another commit's full SHA", "acme-widgets-" + "0" * 40),
+        ("another repository", f"acme-gadgets-{PRIVATE_SHA}"),
+    ):
+        archive = write(tmp_path, build([Member(f"{top}/src/a.py", b"#\n")]))
+        dest = os.path.join(str(tmp_path), "dest-refused")
+        with pytest.raises(FetchFailed) as raised:
+            extract_archive(archive, dest, DEFAULT_LIMITS, expected_top_level=(short, full))
+        assert everything_under(dest) == [], label
+        # The message says what the archive HELD, which is what made the
+        # live failure diagnosable only by downloading the archive again.
+        assert repr(top) in str(raised.value), label
+        assert repr(full) in str(raised.value) and repr(short) in str(raised.value)
+
+
+def test_a_top_level_name_that_is_not_plain_is_described_not_printed(tmp_path) -> None:
+    # The directory name is archive-controlled text: it reaches `last_error`
+    # only when it is the kind of name GitHub builds.
+    hostile = "acme-widgets-‮evil\x1b[31m"
+    archive = write(tmp_path, build([Member(f"{hostile}/src/a.py", b"#\n")]))
+    with pytest.raises(FetchFailed) as raised:
+        extract_archive(
+            archive, os.path.join(str(tmp_path), "dest"), DEFAULT_LIMITS,
+            expected_top_level=archive_module.expected_top_levels_for("acme/widgets", PRIVATE_SHA),
+        )
+    message = str(raised.value)
+    assert "evil" not in message and "\x1b" not in message
+    assert f"(a {len(hostile)}-character name, not printed)" in message
 
 
 def test_the_data_filter_alone_refuses_traversal(tmp_path, monkeypatch) -> None:

@@ -24,8 +24,12 @@ WHAT HAPPENS, IN ORDER (`fetch_repository`):
    which is stricter than the wire if the host ever compresses the stream
    again; recorded, not relied on.)
 3. **Extract**, streaming, member by member, into `<job dir>/tree/`. The
-   first member's top-level directory must be the `{owner}-{repo}-{sha7}`
-   GitHub builds, or the archive is refused as not the one asked for.
+   first member's top-level directory must be one GitHub builds for the
+   requested commit -- `{owner}-{repo}-{sha7}` for a public repository,
+   `{owner}-{repo}-{sha}` (the full SHA) for a private one, both measured
+   (`expected_top_levels_for`; 22-04 had measured only the public form, and
+   22-05's live proof found the private one) -- or the archive is refused as
+   not the one asked for.
    Before a member is written its HEADER is checked: regular files only
    (symlinks, hardlinks, devices and FIFOs are skipped and counted); its
    DECLARED size is charged to the expansion budget; a sparse member is
@@ -66,14 +70,24 @@ into each other's tree by path (PR #52's review, M1). `sweep_stale_workdirs`
 removes job directories older than a bound no live job can reach; 22-05
 calls it when the worker starts.
 
-NOTHING HERE LOGS A URL. The download link may carry a credential of its
-own ([not verified], 22-RESEARCH Q8), so every message names a HOST, a
-status and a count, never a link -- and every `httpx` exception is
-re-raised `from None`, because a chained traceback prints the original's
-message, and that is where the URL would be.
+NOTHING HERE LOGS A URL. The download link DOES carry a credential of its
+own for a private repository -- measured by 22-05's live proof, by name
+only: one query parameter, `token` (a public repository's link had none,
+22-04) -- so every message names a HOST, a status and a count, never a
+link, and every `httpx` exception is re-raised `from None`, because a
+chained traceback prints the original's message, and that is where the URL
+would be.
 
-What `FetchRejected` means for the job: a hard cap, so 22-05 ends it `dead`
-in one attempt (U6). `FetchFailed` is an ordinary failure: retried.
+What `FetchRejected` means for the job: a hard cap, so the runtime ends it
+`dead` in one attempt (U6) -- it subclasses `workers.jobs.runtime.Rejected`
+since 22-05. `FetchFailed` is an ordinary failure: retried.
+
+THE TOKEN IS REVOKED WHEN THE FETCH ENDS (22-05, `revoke_token`). The lease
+gates a token's ISSUANCE, not its validity: a token the backend issued stays
+valid for GitHub's full hour after the lease that bought it has expired
+(measured in PR #52's review). The ingest handler therefore revokes it as
+soon as the fetch no longer needs it, on every path, so the credential's
+life is the fetch rather than the hour.
 """
 
 from __future__ import annotations
@@ -88,19 +102,21 @@ import stat
 import tarfile
 import tempfile
 import time
+import unicodedata
 import uuid
 import zlib
 from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Any, Dict, Iterator, List, NamedTuple, Optional, Tuple
+from typing import Any, Dict, Iterator, List, NamedTuple, Optional, Sequence, Tuple, Union
 from urllib.parse import quote, urlsplit
 
 import httpx
 
 from workers.fetch import filters
 from workers.fetch.client import RepositoryToken
+from workers.jobs.runtime import Rejected
 
 logger = logging.getLogger(__name__)
 
@@ -167,17 +183,18 @@ class Limits:
 DEFAULT_LIMITS = Limits()
 
 
-class FetchRejected(Exception):
-    """A hard cap tripped. 22-05 ends the job `dead` in one attempt (U6).
+class FetchRejected(Rejected):
+    """A hard cap tripped. The runtime ends the job `dead` in one attempt (U6).
 
-    `reason` is plain and token-free. `members_seen` says how far the
-    extractor got, so a test can prove it stopped at the cap rather than
-    after reading everything.
+    A `workers.jobs.runtime.Rejected` since 22-05, so the runtime's one
+    `except Rejected` covers the fetcher's caps and the ingest handler's
+    chunk cap alike. `reason` is plain and token-free. `members_seen` says
+    how far the extractor got, so a test can prove it stopped at the cap
+    rather than after reading everything.
     """
 
     def __init__(self, reason: str, *, members_seen: int = 0) -> None:
         super().__init__(reason)
-        self.reason = reason
         self.members_seen = members_seen
 
 
@@ -348,6 +365,81 @@ def download_archive(
     return stats
 
 
+#: Seconds a revocation may take. Short: nothing waits on its answer, and a
+#: failed revocation costs only the rest of the token's own hour.
+REVOKE_TIMEOUT_SECONDS = 10.0
+
+
+def revoke_token(
+    token: RepositoryToken,
+    *,
+    api_base: str = GITHUB_API,
+    transport: Optional[httpx.BaseTransport] = None,
+    timeout: float = REVOKE_TIMEOUT_SECONDS,
+) -> Optional[int]:
+    """Revoke an installation token the moment the fetch stops needing it.
+
+    `DELETE /installation/token`, authenticated BY THE TOKEN BEING REVOKED
+    -- GitHub's documented way for a token to end itself; no App key, no
+    JWT, nothing the worker does not already hold. GitHub answers `204 No
+    Content`.
+
+    ⚠ WHY IT EXISTS (PR #52's review, L1, measured): the lease gates the
+    token's ISSUANCE, not its VALIDITY. Once the lease expires the route
+    refuses to mint again, but a token it already handed out stays valid
+    for GitHub's full hour, and nothing on the backend's side can shorten
+    it. A worker that lost its lease mid-fetch, or simply finished, would
+    otherwise leave a live read credential for the repository behind it.
+
+    ⚠ IT NEVER RAISES. A failed revocation must not fail the job: the fetch
+    already succeeded or already failed for its own reason, and either
+    outcome is the one to record. It is LOGGED instead -- the repository,
+    the host and the status or the exception's CLASS, never the token and
+    never an exception message (an `httpx` message can carry request
+    detail). The token then simply lives out its hour, which is 22-04's
+    behaviour and no worse.
+
+    Returns:
+        The HTTP status GitHub answered (204 when revoked), or None when no
+        answer arrived. The status is logged at INFO when it is 204, which
+        is where 22-05's live proof reads it from.
+    """
+    _silence_library_request_logging()
+    url = f"{api_base.rstrip('/')}/installation/token"
+    host = _host(api_base)
+    try:
+        with httpx.Client(transport=transport, timeout=timeout, follow_redirects=False) as client:
+            response = client.delete(url, headers=_headers(token.token))
+    except Exception as exc:  # noqa: BLE001 - a revocation never fails the job
+        logger.warning(
+            "could not revoke the repository token for %s at %s: %s; it expires on "
+            "its own at %s",
+            token.full_name,
+            host,
+            type(exc).__name__,
+            token.expires_at.isoformat(),
+        )
+        return None
+    status = response.status_code
+    if status == 204:
+        logger.info(
+            "revoked the repository token for %s at %s (HTTP %d)",
+            token.full_name,
+            host,
+            status,
+        )
+    else:
+        logger.warning(
+            "revoking the repository token for %s: %s answered HTTP %d; it expires "
+            "on its own at %s",
+            token.full_name,
+            host,
+            status,
+            token.expires_at.isoformat(),
+        )
+    return status
+
+
 # ---------------------------------------------------------------------
 # Extraction
 # ---------------------------------------------------------------------
@@ -381,9 +473,29 @@ class _CountingReader:
         return data
 
 
+def _has_control_character(name: str) -> bool:
+    """True when `name` holds a C0 or C1 control character or DEL.
+
+    Exactly Unicode category `Cc`: U+0000-U+001F, U+007F and U+0080-U+009F.
+    """
+    return any(unicodedata.category(ch) == "Cc" for ch in name)
+
+
 def _unsafe(name: str) -> bool:
     """True for any member name that must not be joined to a directory."""
     if not name or "\x00" in name or "\\" in name:
+        return True
+    # ⚠ NO CONTROL CHARACTER, ANYWHERE IN THE NAME (PR #58's review, A-L1).
+    # A file name is customer-controlled text that the worker writes into
+    # plain-text log lines (the chunker logs the path it is chunking) and
+    # into `chunks.file_path`, which every UI shows. Measured by the review: a
+    # member named `app/x\n2026-09-29 ... INFO workers.jobs.transitions job
+    # FORGED: complete.py` was extracted, indexed, and logged with its raw
+    # newline -- a tenant forging the worker's log. Refused here, counted
+    # `unsafe_path`, so no such name reaches the disk, a log line or a row. A
+    # tab is refused too, as a control character: a repository holding such
+    # a name loses that one file from the index, and `skipped` counts it.
+    if _has_control_character(name):
         return True
     try:
         name.encode("utf-8")
@@ -418,13 +530,17 @@ def extract_archive(
     dest: str,
     limits: Limits = DEFAULT_LIMITS,
     *,
-    expected_top_level: Optional[str] = None,
+    expected_top_level: Optional[Union[str, Sequence[str]]] = None,
 ) -> ExtractStats:
     """Extract the regular files that pass every check into `dest`, streaming.
 
     See the module docstring, step 3. Raises `FetchRejected` at a cap and
     `FetchFailed` for an archive that cannot be read, is not the expected
     one, or cannot be written for a reason other than a member's name.
+
+    `expected_top_level` is the name, or the names, the archive's single
+    top-level directory may have (`expected_top_levels_for`); None skips the
+    check.
     """
     stats = ExtractStats()
     skipped: Counter = Counter()
@@ -432,6 +548,13 @@ def extract_archive(
     real_dest = os.path.realpath(dest)
     cap_mb = limits.max_expanded_bytes // MB
     target: Optional[str] = None
+    accepted: Optional[Tuple[str, ...]] = None
+    if expected_top_level is not None:
+        accepted = (
+            (expected_top_level,)
+            if isinstance(expected_top_level, str)
+            else tuple(expected_top_level)
+        )
 
     try:
         with gzip.open(archive_path, "rb") as raw:
@@ -445,15 +568,19 @@ def extract_archive(
                     target = None
 
                     # GitHub's archives put everything under one directory,
-                    # `{owner}-{repo}-{sha7}`. The FIRST member fixes it, and
-                    # when the caller knows what it must be, it is checked:
-                    # an archive under another name is not the one asked for.
+                    # `{owner}-{repo}-{sha7}` for a public repository and
+                    # `{owner}-{repo}-{sha}` for a private one (both measured;
+                    # `expected_top_levels_for`). The FIRST member fixes it,
+                    # and when the caller knows what it must be, it is
+                    # checked: an archive under another name is not the one
+                    # asked for.
                     top, _, rel = member.name.partition("/")
                     if stats.top_level is None:
-                        if expected_top_level is not None and top != expected_top_level:
+                        if accepted is not None and top not in accepted:
                             raise FetchFailed(
-                                f"archive top-level directory is not the expected "
-                                f"{expected_top_level!r}"
+                                f"archive top-level directory {_describe_top_level(top)} "
+                                "is not one of the expected "
+                                + ", ".join(repr(name) for name in accepted)
                             )
                         stats.top_level = top
 
@@ -661,10 +788,40 @@ def sweep_stale_workdirs(workdir: str, older_than: timedelta) -> int:
 # ---------------------------------------------------------------------
 
 
-def expected_top_level_for(full_name: str, sha: str) -> str:
-    """The directory GitHub puts an archive under: `{owner}-{repo}-{sha7}`."""
+def expected_top_levels_for(full_name: str, sha: str) -> Tuple[str, str]:
+    """The directory names GitHub puts an archive of `sha` under. BOTH MEASURED.
+
+    - `{owner}-{repo}-{sha7}` for a PUBLIC repository: `mealie-recipes-mealie-
+      84b2677` (22-04, twice), and on 2026-09-29 again for mealie and for
+      `octocat/Hello-World`, unauthenticated and authenticated alike;
+    - `{owner}-{repo}-{sha}` -- the FULL 40-hex SHA -- for a PRIVATE one:
+      `AlecAsdourian-ES-SC-API-Navigator-f798806452c0743312780e0cc3e97301286696bd`,
+      found by 22-05's live proof when 22-04's sha7-only check refused the
+      archive (and confirmed by branch name and by SHA through `gh api`).
+
+    Both name exactly the commit that was asked for, which is what the check
+    exists to establish. Anything else -- another abbreviation length
+    included, which has never been observed -- is refused, loudly.
+    """
     owner, _, repo = full_name.partition("/")
-    return f"{owner}-{repo}-{sha[:7]}"
+    prefix = f"{owner}-{repo}-"
+    return (prefix + sha[:7], prefix + sha)
+
+
+_PRINTABLE_TOP_LEVEL = re.compile(r"^[A-Za-z0-9._-]{1,200}$")
+
+
+def _describe_top_level(name: str) -> str:
+    """The archive's own directory name for an error message, when it is plain.
+
+    It is archive-controlled text, so it is printed only when it is the kind
+    of name GitHub builds; anything else is described by its length alone.
+    """
+    # `fullmatch`, not `match`: `$` also matches just before a trailing
+    # newline (PR #58's review, A-N1). `repr()` would have escaped it anyway.
+    if _PRINTABLE_TOP_LEVEL.fullmatch(name):
+        return repr(name)
+    return f"(a {len(name)}-character name, not printed)"
 
 
 @contextmanager
@@ -705,7 +862,7 @@ def fetch_repository(
         tree_dir = os.path.join(jobdir, "tree")
         extract = extract_archive(
             archive, tree_dir, limits,
-            expected_top_level=expected_top_level_for(token.full_name, sha),
+            expected_top_level=expected_top_levels_for(token.full_name, sha),
         )
         os.remove(archive)
         files, walk_skipped = collect_tree(tree_dir, limits)

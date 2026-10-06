@@ -586,6 +586,9 @@ func TestRepositoryTokenIsolation(t *testing.T) {
 					require.Contains(t, captured, jobA, "the line names the job")
 					require.Contains(t, captured, orgA.ID, "the line names the organization")
 					require.Contains(t, captured, "1103353668", "the line names the GitHub repository id")
+					// 22-05: the scope GitHub reported, names and levels only.
+					require.Contains(t, captured, `"reported_repository_ids":"1103353668"`)
+					require.Contains(t, captured, `"reported_permissions":"contents:read,metadata:read"`)
 					require.NotContains(t, captured, token)
 					require.NotContains(t, captured, "ghs_")
 					require.NotContains(t, captured, ownerA, "the lease owner is a credential too")

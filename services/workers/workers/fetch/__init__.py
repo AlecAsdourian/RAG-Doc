@@ -17,11 +17,15 @@ Three modules, one rule each:
   plus the vendored, generated and lockfile rules, applied BEFORE a file
   is written to disk, so a committed `.env` never lands anywhere.
 
-22-05 wires these into the `full_ingest` handler and maps the exceptions
-onto Phase 21's endings: `TokenRefused` -> `LeaseLost` (write nothing);
-`InstallationSuspended` -> defer; `InstallationUninstalled` -> abandon;
-`FetchRejected` -> `Rejected` (`dead` in one attempt); anything else ->
-`fail`.
+22-05 wires these into the `full_ingest` handler (`workers.ingest`), which
+maps their exceptions onto the runtime's endings; which ending each takes is
+`docs/api-ingestion-jobs.md`, "How a job ends" (the authority, not restated
+here). The two installation classes are defined by the runtime and
+re-exported here, and `FetchRejected` is the runtime's `Rejected`.
+`revoke_token` ends the token the moment the fetch is over, because the
+lease gates a token's issuance, not its hour of validity. A member name with
+a control character is never extracted (`unsafe_path`), so no file name can
+forge a log line.
 """
 
 from workers.fetch.archive import (
@@ -35,11 +39,12 @@ from workers.fetch.archive import (
     Limits,
     collect_tree,
     download_archive,
-    expected_top_level_for,
+    expected_top_levels_for,
     extract_archive,
     fetch_repository,
     job_directory,
     resolve_head,
+    revoke_token,
     sweep_stale_workdirs,
 )
 from workers.fetch.client import (
@@ -79,7 +84,7 @@ __all__ = [
     "classify_path",
     "collect_tree",
     "download_archive",
-    "expected_top_level_for",
+    "expected_top_levels_for",
     "extract_archive",
     "fetch_repository",
     "is_generated_go",
@@ -87,5 +92,6 @@ __all__ = [
     "job_directory",
     "request_token",
     "resolve_head",
+    "revoke_token",
     "sweep_stale_workdirs",
 ]
