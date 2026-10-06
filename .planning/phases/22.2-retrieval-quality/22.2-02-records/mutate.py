@@ -61,13 +61,19 @@ def main() -> int:
         lines.append(text)
 
     head_blob = git("rev-parse", f"HEAD:{a.file}")
-    pristine = path.read_bytes()
     clean = git("hash-object", a.file) == head_blob
     say(f"== {a.label}: {a.file}")
-    say(f"   HEAD {git('rev-parse', '--short=12', 'HEAD')}, blob {head_blob[:12]}; "
-        f"pristine sha256 {sha(pristine)[:16]}; hash-object == HEAD blob: {clean}")
     if not clean:
         raise SystemExit("the file differs from HEAD before mutating; commit first")
+    # The pristine bytes are what `git checkout --` writes (22.2-02's addition):
+    # a file written by an editor with LF, under core.autocrlf, hashes equal to
+    # HEAD but comes back from the restore as CRLF, so its own bytes could never
+    # prove the restore. Checking it out first makes pristine == restored a
+    # comparison that can succeed, and still fail on a real difference.
+    git("checkout", "--", a.file)
+    pristine = path.read_bytes()
+    say(f"   HEAD {git('rev-parse', '--short=12', 'HEAD')}, blob {head_blob[:12]}; "
+        f"pristine sha256 {sha(pristine)[:16]}; hash-object == HEAD blob: {clean}")
     find, replace = a.find.encode("utf-8"), a.replace.encode("utf-8")
     if pristine.count(find) != a.occurrences:
         raise SystemExit(f"--find occurs {pristine.count(find)} times; it must occur exactly {a.occurrences}")
