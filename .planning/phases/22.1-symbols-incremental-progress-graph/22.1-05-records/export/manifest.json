@@ -1,0 +1,63 @@
+{
+  "dimensions": 1536,
+  "dtype": "float32",
+  "order": "file_path, start_line, end_line, id",
+  "repositories": [
+    {
+      "label": "django",
+      "file": "django.npy",
+      "rows": 48704,
+      "models": [
+        "text-embedding-ada-002"
+      ],
+      "sha256": "2a01386957e46947a7d4ebf97fa0de4fd8629121f51ec31a023b421cde0b30fd",
+      "norm_min": 0.9999998211860657,
+      "norm_max": 1.0000001192092896,
+      "full_name": "django/django",
+      "sha": "8c34887b1ad8bb3ec61c6e713442dab3c643d557",
+      "repository_id": "e01d5ab2-dd96-48ae-a00d-be829fa7a509"
+    },
+    {
+      "label": "mealie",
+      "file": "mealie.npy",
+      "rows": 5940,
+      "models": [
+        "text-embedding-ada-002"
+      ],
+      "sha256": "364f452568a3f2277d41672f6bde393146f697f60d5dafdc2911213155eb3041",
+      "norm_min": 0.9999998211860657,
+      "norm_max": 1.0000001192092896,
+      "full_name": "mealie-recipes/mealie",
+      "sha": "84b2677f76069a6fb2bac6e2c633c9dbe7379ce4",
+      "repository_id": "45f61e6d-1203-497a-b6c4-21db5abb5bb3"
+    },
+    {
+      "label": "miniflux",
+      "file": "miniflux.npy",
+      "rows": 3600,
+      "models": [
+        "text-embedding-ada-002"
+      ],
+      "sha256": "e9b4f1e4e4a715b1bad7f091d7718546c9e638470d0f620514fec146f4255531",
+      "norm_min": 0.9999998211860657,
+      "norm_max": 1.0000001192092896,
+      "full_name": "miniflux/v2",
+      "sha": "76889f08b12c2577b37e524e645afa5dd46ff050",
+      "repository_id": "404f8eb7-522e-44ad-854b-f607395d82b7"
+    },
+    {
+      "label": "rag-doc",
+      "file": "rag-doc.npy",
+      "rows": 3872,
+      "models": [
+        "text-embedding-ada-002"
+      ],
+      "sha256": "839f3366c77a732963115bbdcd787a17df9b26c63b1c34079b4f5cc34f8638d2",
+      "norm_min": 0.9999998211860657,
+      "norm_max": 1.0000001192092896,
+      "full_name": "AlecAsdourian/RAG-Doc",
+      "sha": "ffdd06ee12bb973f6a585053b86974f66d0fa41f",
+      "repository_id": "864edcb5-5bc9-41fe-a478-3596ebfa19f1"
+    }
+  ]
+}
