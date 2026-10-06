@@ -386,6 +386,7 @@ class TestGrammarChoice:
             (TSX_FIXTURE, "typescript", "web/card.tsx", "tsx"),
             (JS_FIXTURE, "javascript", "web/cache.js", "javascript"),
         ],
+        ids=["ts", "tsx", "js"],
     )
     def test_each_fixture_parses_clean_in_the_grammar_the_parser_chooses(self, code, language, path, grammar):
         parser = TreeSitterParser()
