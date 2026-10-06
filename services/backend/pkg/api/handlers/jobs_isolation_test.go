@@ -29,7 +29,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -106,16 +105,19 @@ func seedJob(t *testing.T, pool *pgxpool.Pool, orgID, repoID string, row seedJob
 
 	// The optional columns are named only when set, so an unset one takes
 	// its real column default rather than a copy of it written here.
+	//
+	// run_after is always a placeholder: NULL (unset) falls back to the
+	// database clock's NOW(), as every earlier caller relied on.
+	var runAfter any
+	if row.runAfter != nil {
+		runAfter = time.Now().Add(*row.runAfter)
+	}
 	columns := `organization_id, repository_id, job_type, state, attempts,
 				   run_after, lease_owner, lease_expires_at, last_stage,
 				   progress, needs_rerun, last_error, payload`
-	values := `$1, $2, $3, $4, $5, NOW(), $6, $7, $8, $9, $10, $11, $12`
-	args := []any{orgID, repoID, row.jobType, row.state, row.attempts,
+	values := `$1, $2, $3, $4, $5, COALESCE($6::timestamptz, NOW()), $7, $8, $9, $10, $11, $12, $13`
+	args := []any{orgID, repoID, row.jobType, row.state, row.attempts, runAfter,
 		owner, leaseExpiry, stage, progress, row.needsRerun, lastErr, payload}
-	if row.runAfter != nil {
-		args = append(args, time.Now().Add(*row.runAfter))
-		values = strings.Replace(values, "NOW()", fmt.Sprintf("$%d", len(args)), 1)
-	}
 	if row.maxAttempts != 0 {
 		args = append(args, row.maxAttempts)
 		columns += ", max_attempts"

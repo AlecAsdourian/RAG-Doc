@@ -41,6 +41,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/yourusername/smart-docs-platform/services/backend/pkg/api"
@@ -377,6 +378,8 @@ func TestRepositoriesCurrentJob_ThePlantedDriftRows(t *testing.T) {
 		"premise: Get's statement is built from the fragment")
 	require.Contains(t, handlers.RepositoryListWithCurrentJobSQL, handlers.CurrentJobJoinSQL,
 		"premise: List's statement is built from the fragment")
+	require.Contains(t, handlers.CurrentJobOfRepositorySQL, handlers.CurrentJobJoinSQL,
+		"premise: Connect's statement is built from the fragment")
 
 	isolation.WithTwoOrgs(t, pool, func(orgA, orgB *isolation.TestOrg) {
 		// X and Y each hold ONE completed job of A's and no live job, so a
@@ -449,22 +452,48 @@ func TestRepositoriesCurrentJob_ThePlantedDriftRows(t *testing.T) {
 			want := map[string]string{repoX: ownX, repoY: ownY}
 			forbidden := map[string]string{repoX: plantedLive, repoY: plantedNewest}
 
+			// assert, not require, for the per-statement verdicts: a neutered
+			// filter must fail Get, List AND Connect visibly, so the record
+			// shows each of the three statements covered, not only the first.
+
 			// Get's statement, for X and for Y.
 			for _, repo := range []string{repoX, repoY} {
 				got := currentJobIDsFrom(t, tx, handlers.RepositoryWithCurrentJobSQL, orgA.ID, repo)
 				require.Len(t, got, 1)
-				require.NotEqual(t, forbidden[repo], got[repo],
+				assert.NotEqual(t, forbidden[repo], got[repo],
 					"Get: B's planted job became A's current job on %s; an organization filter is gone", repo)
-				require.Equal(t, want[repo], got[repo], "Get: %s's current job is A's own completed job", repo)
+				assert.Equal(t, want[repo], got[repo], "Get: %s's current job is A's own completed job", repo)
 			}
 
 			// List's statement, the whole first page.
 			got := currentJobIDsFrom(t, tx, handlers.RepositoryListWithCurrentJobSQL,
 				orgA.ID, (*time.Time)(nil), (*string)(nil), 100)
 			for _, repo := range []string{repoX, repoY} {
-				require.NotEqual(t, forbidden[repo], got[repo],
+				assert.NotEqual(t, forbidden[repo], got[repo],
 					"List: B's planted job became A's current job on %s; an organization filter is gone", repo)
-				require.Equal(t, want[repo], got[repo], "List: %s", repo)
+				assert.Equal(t, want[repo], got[repo], "List: %s", repo)
+			}
+
+			// Connect's statement, for X and for Y. It selects the job's
+			// columns only, so the job's id is its first column.
+			for _, repo := range []string{repoX, repoY} {
+				rows, err := tx.Query(ctx, handlers.CurrentJobOfRepositorySQL, orgA.ID, repo)
+				require.NoError(t, err)
+				require.Equal(t, "id", rows.FieldDescriptions()[0].Name)
+				require.Equal(t, "repository_id", rows.FieldDescriptions()[1].Name)
+				var jobs []string
+				for rows.Next() {
+					values, verr := rows.Values()
+					require.NoError(t, verr)
+					job, _ := values[0].(string)
+					jobs = append(jobs, job)
+				}
+				require.NoError(t, rows.Err())
+				rows.Close()
+				require.Len(t, jobs, 1)
+				assert.NotEqual(t, forbidden[repo], jobs[0],
+					"Connect: B's planted job became A's current job on %s; an organization filter is gone", repo)
+				assert.Equal(t, want[repo], jobs[0], "Connect: %s", repo)
 			}
 
 			require.NoError(t, tx.Rollback(ctx))
@@ -604,13 +633,19 @@ func TestRepositoriesCurrentJob_EveryStatus(t *testing.T) {
 			repo   func(name string) string // nil => seedJobRepo
 			reason string
 		}
+		// One installation per repository: github_installation_id is unique.
+		nextGitHubInstallationID := int64(2213600)
+		installedRepo := func(name string) (string, string) {
+			nextGitHubInstallationID++
+			return seedJobRepoWithInstallation(t, pool, orgA, name, nextGitHubInstallationID)
+		}
 		suspendedRepo := func(name string) string {
-			repo, inst := seedJobRepoWithInstallation(t, pool, orgA, name, 2213601)
+			repo, inst := installedRepo(name)
 			suspend(inst, false)
 			return repo
 		}
 		uninstalledRepo := func(name string) string {
-			repo, inst := seedJobRepoWithInstallation(t, pool, orgA, name, 2213602)
+			repo, inst := installedRepo(name)
 			suspend(inst, true)
 			return repo
 		}
@@ -647,6 +682,21 @@ func TestRepositoriesCurrentJob_EveryStatus(t *testing.T) {
 			{name: "NotDeferredSuspended_WhenAlsoUninstalled", want: "scheduled", repo: uninstalledRepo,
 				row:    seedJobRow{jobType: "full_ingest", state: "queued", attempts: 0, runAfter: &later},
 				reason: "an uninstalled installation is not suspended, whatever suspended_at says"},
+
+			// PR #64's review (B1): rows that tell the cap and the precedence
+			// apart. Every row above sits at the default max_attempts of 5 and
+			// both suspended rows at attempts 0, so a cap hard-coded as 5 (M11)
+			// and retrying moved above deferred_suspended (M12) both survived.
+			{name: "deferred_suspended_AfterAFailedAttempt", want: "deferred_suspended", repo: suspendedRepo,
+				row: seedJobRow{jobType: "full_ingest", state: "queued", attempts: 2, runAfter: &later,
+					lastError: "the installation is suspended"},
+				reason: "a job that failed and was then deferred has attempts > 0; suspended wins over retrying"},
+			{name: "dead_pending_AtACapOfTwo", want: "dead_pending",
+				row:    seedJobRow{jobType: "full_ingest", state: "queued", attempts: 2, maxAttempts: 2},
+				reason: "the cap is the row's max_attempts, not the default"},
+			{name: "retrying_BelowACapOfEight", want: "retrying",
+				row:    seedJobRow{jobType: "full_ingest", state: "queued", attempts: 5, maxAttempts: 8, runAfter: &backoff},
+				reason: "attempts 5 of 8 is below the row's cap, so it is retried"},
 		}
 
 		seen := map[string]bool{}
