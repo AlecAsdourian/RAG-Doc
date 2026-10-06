@@ -102,3 +102,30 @@
    restored: sha256 b36aec3f5312aa4c == pristine True; hash-object == HEAD blob True
    VERDICT T2-M4: KILLED (expected to fail: test_a_decorated_method_starts_at_its_first_decorator_and_keeps_its_breadcrumb, test_an_exported_class_starts_at_the_decorator_before_export)
 
+== T3-M1: services/workers/workers/ingest/handler.py
+   HEAD 49cc44443a36, blob 6462384cb23e; pristine sha256 bb7345b2541b306f; hash-object == HEAD blob: True
+   mutation: '    if files and errors and not chunks:' -> '    if False and files and errors and not chunks:'
+   landed: True (mutated sha256 4f4f6a503867fc5b; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/ingest: exit 1; 1 failed, 38 passed in 7.02s
+      FAILED tests/ingest/test_handler.py::test_some_files_raising_and_the_rest_parsing_to_no_chunks_fails_the_job
+   restored: sha256 bb7345b2541b306f == pristine True; hash-object == HEAD blob True
+   VERDICT T3-M1: KILLED (expected to fail: test_some_files_raising_and_the_rest_parsing_to_no_chunks_fails_the_job)
+
+== T3-M2: services/workers/workers/ingest/handler.py
+   HEAD 49cc44443a36, blob 6462384cb23e; pristine sha256 bb7345b2541b306f; hash-object == HEAD blob: True
+   mutation: '    if errors > len(files) * MAX_PARSE_ERROR_SHARE:' -> '    if False and errors > len(files) * MAX_PARSE_ERROR_SHARE:'
+   landed: True (mutated sha256 e1ee263d68f987f7; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/ingest: exit 1; 1 failed, 38 passed in 4.35s
+      FAILED tests/ingest/test_handler.py::test_three_of_four_files_raising_fails_the_job_though_one_parsed
+   restored: sha256 bb7345b2541b306f == pristine True; hash-object == HEAD blob True
+   VERDICT T3-M2: KILLED (expected to fail: test_three_of_four_files_raising_fails_the_job_though_one_parsed)
+
+== T3-M3: services/workers/workers/ingest/handler.py
+   HEAD 49cc44443a36, blob 6462384cb23e; pristine sha256 bb7345b2541b306f; hash-object == HEAD blob: True
+   mutation: '    if files and parsed == 0:' -> '    if False and files and parsed == 0:'
+   landed: True (mutated sha256 0ba000313445ddde; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/ingest: exit 1; 1 failed, 38 passed in 9.75s
+      FAILED tests/ingest/test_handler.py::test_a_chunker_that_fails_on_every_file_fails_the_job_instead_of_emptying_the_index
+   restored: sha256 bb7345b2541b306f == pristine True; hash-object == HEAD blob True
+   VERDICT T3-M3: KILLED (expected to fail: test_a_chunker_that_fails_on_every_file_fails_the_job_instead_of_emptying_the_index)
+
