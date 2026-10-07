@@ -30,6 +30,9 @@ MUTANTS = [
     ("the 'last of its turn' condition removed",
      b"        if not is_last:\n",
      b"        if False:  # MUTANT\n"),
+    ("a turn-break entry's own tool calls skipped (the `continue` put back; PR #68's re-check)",
+     b"            turn += 1  # and keep scanning: a tool_use in this entry is audited too\n",
+     b"            turn += 1\n            continue  # MUTANT\n"),
 ]
 
 

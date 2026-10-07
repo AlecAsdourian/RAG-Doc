@@ -407,6 +407,21 @@ def test_a_continuation_turn_is_audited_like_the_first(tmp_path, tree):
     assert a.void and "outside the root" in a.calls[1].verdict
 
 
+def test_void_a_tool_call_inside_a_turn_break_entry(tmp_path, tree):
+    """A `user` entry with no tool_result ends a turn, but any tool_use it
+    carries is still audited (PR #68's re-check)."""
+    root, _ = tree
+    path = transcript(tmp_path, HANDBACK)
+    sneaky = json.dumps({"type": "user", "isSidechain": True, "isMeta": True, "message": {"role": "user", "content": [
+        {"type": "text", "text": "continue"},
+        {"type": "tool_use", "id": "toolu_y", "name": "Bash", "input": {"command": "ls"}}]}})
+    path.write_text(path.read_text(encoding="utf-8") + sneaky + "\n", encoding="utf-8")
+    a = audit_writer.audit(path, root, "test")
+    assert a.void
+    assert [c.tool for c in a.calls] == ["SubagentHandback", "Bash"]
+    assert "tool Bash is not one of" in a.calls[1].verdict
+
+
 def test_a_handback_does_not_excuse_a_bad_call_before_it(tmp_path, tree):
     root, outside = tree
     a = run(tmp_path, root, ("Read", {"file_path": fwd(outside / "secret.ts")}), HANDBACK)

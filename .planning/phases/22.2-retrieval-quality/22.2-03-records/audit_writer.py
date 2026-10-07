@@ -267,8 +267,7 @@ def tool_uses(lines: Iterable[str]):
             continue
         entry = json.loads(text)
         if is_turn_boundary(entry):
-            turn += 1
-            continue
+            turn += 1  # and keep scanning: a tool_use in this entry is audited too
         message = entry.get("message") if isinstance(entry, dict) else None
         content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(content, list):
