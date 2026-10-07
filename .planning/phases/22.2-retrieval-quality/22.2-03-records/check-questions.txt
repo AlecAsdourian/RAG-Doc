@@ -30,3 +30,10 @@ harness, chunker, corpus and environment as above (chunker version e3d3175e3d756
 [*] check linkwarden: 379 files; questions: 15 tuning, 15 holdout, 0 confirm; 30 naming a symbol; 0 failures, 0 warnings
 exit 0
 note: useOutsideAlerter is named by a chunk of apps/web/components/ClickAwayHandler.tsx (no symbol warning), and lw-15's question does not contain it; the spread is unchanged, since the path is.
+
+######## 2026-10-06, after PR #68's review (finding 1): lw-15's cited line
+change: lw-15's evidence cites ClickAwayHandler.tsx:27 (the line `function useOutsideAlerter(` starts on) instead of :28; its path, symbol, question, id and set are unchanged; no other question changed. spot-check.md has a dated correction appended; its committed text is not rewritten.
+harness, chunker, corpus and environment as above (chunker version e3d3175e3d756d3d; no database, no OpenAI call; linkwarden never ingested)
+== --corpus linkwarden --corpora-dir C:/Users/Alec/Desktop/code/rag-bench-corpora --check
+[*] check linkwarden: 379 files; questions: 15 tuning, 15 holdout, 0 confirm; 30 naming a symbol; 0 failures, 0 warnings
+exit 0
