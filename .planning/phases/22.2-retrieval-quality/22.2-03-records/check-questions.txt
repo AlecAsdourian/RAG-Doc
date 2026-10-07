@@ -22,3 +22,11 @@ note: 0 warnings of either kind. No question names its symbol, and every answeri
 1 apps/web/lib
 1 apps/web/lib/shared
 max 5 (apps/web/lib/api: lw-12, lw-13, lw-14, lw-23, lw-24); 12 packages; 30 distinct (path, symbol) pairs
+
+######## 2026-10-06, commit C: after the planner's spot-check (spot-check.md)
+change: lw-15's answer key only, symbol ClickAwayHandler -> useOutsideAlerter and its evidence (:55 -> :28), as the planner's record gives it; its question, path, id and set are unchanged; no other question changed
+harness, chunker, corpus and environment as above (chunker version e3d3175e3d756d3d; no database, no OpenAI call; linkwarden never ingested)
+== --corpus linkwarden --corpora-dir C:/Users/Alec/Desktop/code/rag-bench-corpora --check
+[*] check linkwarden: 379 files; questions: 15 tuning, 15 holdout, 0 confirm; 30 naming a symbol; 0 failures, 0 warnings
+exit 0
+note: useOutsideAlerter is named by a chunk of apps/web/components/ClickAwayHandler.tsx (no symbol warning), and lw-15's question does not contain it; the spread is unchanged, since the path is.

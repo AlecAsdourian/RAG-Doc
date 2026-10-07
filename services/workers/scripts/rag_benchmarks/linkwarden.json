@@ -153,8 +153,8 @@
       "set": "tuning",
       "question": "What decides whether clicking outside a popup closes it, especially when the click lands on something layered above it?",
       "path": "apps/web/components/ClickAwayHandler.tsx",
-      "symbol": "ClickAwayHandler",
-      "evidence": "apps/web/components/ClickAwayHandler.tsx:55 — Wraps its children in a ref'd div and registers a mousedown listener through useOutsideAlerter. That listener ignores clicks inside the wrapper or on [data-ignore-click-away] elements, and fires the callback only when the clicked element's z-index is not above the wrapper's."
+      "symbol": "useOutsideAlerter",
+      "evidence": "apps/web/components/ClickAwayHandler.tsx:28 — Registers the mousedown listener that ignores clicks inside the wrapped element or on [data-ignore-click-away] elements, and fires the callback only when the clicked element's z-index (from getZIndex) is not above the wrapper's."
     },
     {
       "id": "lw-16",
