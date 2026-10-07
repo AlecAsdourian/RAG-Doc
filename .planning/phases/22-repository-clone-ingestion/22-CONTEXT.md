@@ -274,7 +274,7 @@ Where each item lands:
 | D1 | re-ingesting an unchanged commit gives identical `symbol_id`s | 22.1-01 |
 | D1 | adding an unrelated line does not change ids below it | 22.1-01 |
 | D1 | a re-export resolves to its leaf's id | **22.1-04** (moved; see P8) |
-| D2 | a multi-tenant recall test against exact search | 22.1-05 (with the 2026-09-17 correction on what it must seed) |
+| D2 | a multi-tenant recall test against exact search | 22.1-05 (with the 2026-09-17 correction on what it must seed). **Done 2026-10-06: `../22.1-symbols-incremental-progress-graph/22.1-05-recall.md`** — HNSW proven in use; R3 fails at the default `ef_search`, the user decides |
 | D2 | `EXPLAIN` shows `Subplans Removed` | 22-02 |
 | D3 | a traversal over a cyclic fixture terminates | 22.1-04 |
 | D3 | tier 2 upgrades tier 1 in place; tier 1 never downgrades tier 2 | 22.1-04 (the SQL rule, tested when `symbol_edges` is created; moved from 22-02) |

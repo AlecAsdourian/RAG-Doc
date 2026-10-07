@@ -218,7 +218,7 @@ Plans:
   - call-site and import candidates, and the resolver;
   - reconciliation without `edge_kind` (SCIP has no notion of a call);
   - a `CYCLE`-safe traversal helper.
-- [ ] 22.1-05: D2's recall test, seeded with real embeddings and at least one tenant large enough to use HNSW, filtering by repository. Then the operating numbers, measured: pool size, `max_job_duration`, OpenAI throughput.
+- [x] 22.1-05: D2's recall test, seeded with real embeddings and at least one tenant large enough to use HNSW, filtering by repository. Then the operating numbers, measured: pool size, `max_job_duration`, OpenAI throughput. **Executed 2026-10-06, in review** (`22.1-05-SUMMARY.md`): P16 replaced by measurement (3 h 45 min, 5 s, one worker, 6 min grace), A-L3 fixed, $1.51 of the $3.00 cap spent; the recall test proves HNSW in use but **R3 fails at the default `ef_search`**, a decision for the user.
 
 ### Phase 22.2: Retrieval Quality
 
@@ -323,7 +323,7 @@ Plans:
 | 20. Repository Integration Backend | v1.0 | 5/5 | Complete | 2026-09-09 |
 | 21. Ingestion Job Infrastructure | v1.0 | 7/7 | Complete | 2026-09-16 |
 | 22. pgvector Storage & the First Real Repository | v1.0 | 5/5 | Executed: 22-01 to 22-04 merged (PRs #48, #49, #53, #52); 22-05 in review (PR #58); A1–A11 met with evidence (`22-05-SUMMARY.md`) | - |
-| 22.1. Symbols, Incremental Updates, Progress & the Code Graph | v1.0 | 1/5 | Researched, decisions locked; 22.1-03 executed (in review, PR #64), 22.1-05 planned | - |
+| 22.1. Symbols, Incremental Updates, Progress & the Code Graph | v1.0 | 2/5 | Researched, decisions locked; 22.1-03 executed (in review, PR #64), 22.1-05 executed (in review) | - |
 | 22.2. Retrieval Quality | v1.0 | 0/7 | Researched, decisions locked 2026-09-29; 22.2-01, -02, -03 and -07 planned and revised after fact-check, QD3 and QD12 locked 2026-10-06 (PR #59) | - |
 | 23. Frontend Wiring & Onboarding UX | v1.0 | 0/5 | Not started | - |
 | 24. Production Deployment & Cost Controls | v1.0 | 0/5 | Not started | - |
