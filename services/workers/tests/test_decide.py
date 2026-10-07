@@ -225,6 +225,22 @@ def make_repo(repo: pathlib.Path, order: str) -> pathlib.Path:
     return repo
 
 
+class TestRequireGit:
+    """Without git, the order and verdict tests skip off CI and fail on CI (review B, m6)."""
+
+    def test_it_skips_off_ci(self, monkeypatch):
+        monkeypatch.setattr(shutil, "which", lambda name: None)
+        monkeypatch.delenv("CI", raising=False)
+        with pytest.raises(pytest.skip.Exception, match="git is not installed"):
+            require_git("a reason")
+
+    def test_it_fails_on_ci(self, monkeypatch):
+        monkeypatch.setattr(shutil, "which", lambda name: None)
+        monkeypatch.setenv("CI", "true")
+        with pytest.raises(pytest.fail.Exception, match="CI must have git"):
+            require_git("a reason")
+
+
 @pytest.fixture(scope="session")
 def template(tmp_path_factory) -> pathlib.Path:
     return make_repo(tmp_path_factory.mktemp("template") / "repo", "rule-first")
