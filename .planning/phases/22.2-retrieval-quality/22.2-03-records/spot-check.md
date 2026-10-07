@@ -54,4 +54,4 @@ commit as this record. `--check` is re-run after the correction.
 
 ## Correction, 2026-10-06, by the planner
 
-Correction, 2026-10-06, by the planner: lw-15's declaration is at `ClickAwayHandler.tsx:27`, not :28 as written above. The answer key (path and symbol) is unchanged; only the cited line moves. Found by PR #68's review.
+lw-15's declaration is at `ClickAwayHandler.tsx:27`, not :28 as written above. The answer key (path and symbol) is unchanged; only the cited line moves. Found by PR #68's review.
