@@ -293,6 +293,60 @@ def test_void_any_other_tool(tmp_path, tree, tool):
     assert a.void and f"tool {tool} is not one of" in a.calls[0].verdict
 
 
+# ---------------------------------------------------------------------------
+# The hand-back (amended 2026-10-06): one SubagentHandback, last, {"message": str}
+# ---------------------------------------------------------------------------
+
+HANDBACK = ("SubagentHandback", {"message": "[]"})
+
+
+def test_accepts_one_final_handback_with_only_a_message(tmp_path, tree):
+    root, _ = tree
+    a = run(tmp_path, root, ("Read", {"file_path": fwd(root / "apps/web/lib/x.ts")}), HANDBACK)
+    assert not a.void, a.report()
+    assert a.calls[-1].tool == "SubagentHandback" and a.calls[-1].verdict == "ok"
+
+
+def test_void_two_handbacks(tmp_path, tree):
+    root, _ = tree
+    a = run(tmp_path, root, ("Read", {"file_path": fwd(root / "apps/web/lib/x.ts")}), HANDBACK, HANDBACK)
+    assert a.void
+    assert "not the final tool call" in a.calls[1].verdict
+    assert a.calls[2].verdict == "ok"
+
+
+def test_void_a_handback_that_is_not_last(tmp_path, tree):
+    root, _ = tree
+    a = run(tmp_path, root, HANDBACK, ("Read", {"file_path": fwd(root / "apps/web/lib/x.ts")}))
+    assert a.void and "not the final tool call" in a.calls[0].verdict
+
+
+@pytest.mark.parametrize("args", [
+    {"message": "[]", "path": "C:/x"},
+    {"message": "[]", "file_path": "apps/web/lib/x.ts"},
+    {"message": "[]", "extra": 1},
+    {"text": "[]"},
+    {},
+])
+def test_void_a_handback_with_any_other_key(tmp_path, tree, args):
+    root, _ = tree
+    a = run(tmp_path, root, ("SubagentHandback", args))
+    assert a.void and "not exactly ['message']" in a.calls[0].verdict
+
+
+@pytest.mark.parametrize("message", [None, 3, ["[]"], {"q": 1}])
+def test_void_a_handback_whose_message_is_not_a_string(tmp_path, tree, message):
+    root, _ = tree
+    a = run(tmp_path, root, ("SubagentHandback", {"message": message}))
+    assert a.void and "message is not a string" in a.calls[0].verdict
+
+
+def test_a_handback_does_not_excuse_a_bad_call_before_it(tmp_path, tree):
+    root, outside = tree
+    a = run(tmp_path, root, ("Read", {"file_path": fwd(outside / "secret.ts")}), HANDBACK)
+    assert a.void and a.calls[-1].verdict == "ok"
+
+
 def test_void_another_agent_type(tmp_path, tree):
     root, _ = tree
     a = run(tmp_path, root, ("Read", {"file_path": fwd(root / "apps/web/lib/x.ts")}), agent_type="general-purpose")

@@ -8,7 +8,13 @@ subagent, `<project>/<session>/subagents/agent-<id>.jsonl`) and checks every
 `tool_use` block in it.
 
 Any one of these voids the writer's whole batch:
-- a tool other than Read, Grep and Glob;
+- a tool other than Read, Grep and Glob, except one `SubagentHandback`
+  (amended 2026-10-06, the user's decision: writers are launched in the
+  background from the planner's session, and the harness returns their
+  answer through that call). It is allowed only when it is the final
+  `tool_use` in the transcript and its input is exactly `{"message": <a
+  string>}`, which names no path. A second hand-back, one that is not last,
+  or one with any other key or a non-string message voids the batch;
 - a Read with no `file_path`, or a Grep or Glob with no `path` (without one
   they search the session's working directory, which is this repository);
 - a relative path anywhere (it resolves against the session's working
@@ -55,6 +61,11 @@ from pathlib import Path
 from typing import Iterable, List, Optional, Sequence
 
 ALLOWED_TOOLS = ("Read", "Grep", "Glob")
+# A writer launched in the background (from the planner's session) hands its
+# answer back through one call of this tool, which the harness adds. One is
+# allowed, only as the final tool_use and only as {"message": <string>}
+# (22.2-03-PLAN.md, revision notice of 2026-10-06).
+HANDBACK_TOOL = "SubagentHandback"
 AGENT_TYPE = "blind-question-writer"
 WINDOWS = os.name == "nt"
 
@@ -192,7 +203,10 @@ def check_links(call: Call, links: Sequence[str]) -> None:
         call.reasons.append("its search directory holds a link out of the root: " + ", ".join(below))
 
 
-def audit_call(line: int, name: str, args: dict, root_resolved: str, links: Sequence[str]) -> Call:
+def audit_call(line: int, name: str, args: dict, root_resolved: str, links: Sequence[str],
+               is_last: bool = False) -> Call:
+    """One call's verdict. `is_last`: whether it is the transcript's final
+    tool_use, which only matters for the one hand-back allowed."""
     args = args if isinstance(args, dict) else {}
     if name == "Read":
         call = Call(line, name, args.get("file_path"), None, None)
@@ -209,6 +223,14 @@ def audit_call(line: int, name: str, args: dict, root_resolved: str, links: Sequ
             call.reasons.append("no pattern")
         check_pattern(call, args.get("pattern"), "pattern")
         check_links(call, links)
+    elif name == HANDBACK_TOOL:
+        call = Call(line, name, None, None, None)
+        if not is_last:
+            call.reasons.append(f"{HANDBACK_TOOL} is not the final tool call")
+        if set(args) != {"message"}:
+            call.reasons.append(f"{HANDBACK_TOOL} input keys are {sorted(args)}, not exactly ['message']")
+        elif not isinstance(args["message"], str):
+            call.reasons.append(f"{HANDBACK_TOOL} message is not a string")
     else:
         call = Call(line, name, None, None, None)
         call.reasons.append(f"tool {name} is not one of {', '.join(ALLOWED_TOOLS)}")
@@ -296,7 +318,9 @@ def audit(transcript: Path, root: Path, label: str = "writer") -> Audit:
         raise ValueError(f"the root is not a directory: {root_resolved}")
     lines = transcript.read_text(encoding="utf-8").splitlines()
     links = outward_links(root_resolved)
-    calls = [audit_call(n, name, args, root_resolved, links) for n, name, args in tool_uses(lines)]
+    uses = list(tool_uses(lines))
+    calls = [audit_call(n, name, args, root_resolved, links, is_last=(i == len(uses) - 1))
+             for i, (n, name, args) in enumerate(uses)]
 
     batch_reasons = []
     agent_type = None

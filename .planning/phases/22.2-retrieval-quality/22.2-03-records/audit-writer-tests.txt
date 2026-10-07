@@ -55,3 +55,81 @@ collecting ... collected 42 items
 SKIPPED [1] .planning\phases\22.2-retrieval-quality\22.2-03-records\test_audit_writer.py:192: cannot create a symlink here: [WinError 1314] A required privilege is not held by the client: 'C:\\Users\\Alec\\AppData\\Local\\Temp\\pytest-of-Alec\\pytest-494\\test_void_a_true_symlink_point0\\outside\\secret.ts' -> 'C:\\Users\\Alec\\AppData\\Local\\Temp\\pytest-of-Alec\\pytest-494\\test_void_a_true_symlink_point0\\corpora\\linkwarden\\apps\\web\\lib\\s.ts'
 ======================== 41 passed, 1 skipped in 0.61s ========================
 exit 0
+
+######## 2026-10-06, after the hand-back amendment (22.2-03-PLAN.md, revision notice of 2026-10-06)
+The section above is the first run, on dfb8075's tool. This section is the amended tool: one SubagentHandback allowed, only as the final tool_use and only as {"message": <string>}.
+new tests: one final hand-back accepted; two hand-backs, a hand-back not last, a hand-back with any other key (5 cases) and a non-string message (4 cases) each void; a hand-back does not excuse a bad call before it.
+== mutation check: mutate_handback.py removes the "is last" condition (if not is_last: -> if False:), runs the test file, and restores the tool byte for byte
+audit_writer.py sha256 before: 7fcd52b5ca8cc8a3280bc0cb9a78e1fc76bb57295e8e7fe30a69529bda3b2bd1
+mutant landed: sha256 4598e873abae13d41d01f21a060be8ed7a31ce2cc378e7192f6c7f4e5de9745a; 'if not is_last:' -> 'if False:'
+FAILED .planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_two_handbacks
+FAILED .planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_a_handback_that_is_not_last
+2 failed, 52 passed, 1 skipped in 0.81s
+pytest exit on the mutant: 1
+audit_writer.py sha256 after restore: 7fcd52b5ca8cc8a3280bc0cb9a78e1fc76bb57295e8e7fe30a69529bda3b2bd1; restored byte for byte: True
+== python -m pytest .planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py -v -p no:cacheprovider -rs
+============================= test session starts =============================
+rootdir: C:\Users\Alec\Desktop\code\testtGSD\.claude\worktrees\agent-ae467ac7a967d75bb
+plugins: anyio-4.15.1, platformdirs-4.12.3
+collecting ... collected 55 items
+
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_accepts_the_three_tools_inside_the_root PASSED [  1%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_accepts_backslashes PASSED [  3%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_accepts_forward_slashes_and_a_lower_case_drive PASSED [  5%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_accepts_git_bash_form PASSED [  7%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_accepts_long_path_prefix PASSED [  9%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_a_root_given_in_git_bash_form_is_the_same_root PASSED [ 10%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_a_call_into_the_sessions_working_directory PASSED [ 12%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_a_grep_of_the_sessions_working_directory PASSED [ 14%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_a_path_outside_the_root PASSED [ 16%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_a_sibling_whose_name_extends_the_roots PASSED [ 18%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_a_symlink_inside_the_checkout_pointing_outside PASSED [ 20%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_a_true_symlink_pointing_outside SKIPPED [ 21%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_a_search_over_a_directory_holding_a_link_out PASSED [ 23%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_a_link_that_stays_inside_the_root_is_accepted PASSED [ 25%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_a_relative_path PASSED [ 27%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_a_relative_search_path PASSED [ 29%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_a_dotdot_path_even_when_it_lands_inside PASSED [ 30%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_a_dotdot_path_leaving_the_root PASSED [ 32%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_a_grep_with_no_path PASSED [ 34%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_a_glob_with_no_path PASSED [ 36%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_a_read_with_no_file_path PASSED [ 38%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_an_absolute_glob_pattern[C:/Users/**/*.ts] PASSED [ 40%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_an_absolute_glob_pattern[c:\\Users\\*.ts] PASSED [ 41%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_an_absolute_glob_pattern[/c/Users/**/*.ts] PASSED [ 43%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_an_absolute_glob_pattern[/etc/*] PASSED [ 45%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_an_absolute_glob_pattern[~/*.ts] PASSED [ 47%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_an_absolute_glob_pattern[\\\\?\\C:\\x\\*.ts] PASSED [ 49%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_a_dotdot_glob_pattern PASSED [ 50%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_an_absolute_grep_glob_filter[C:/Users/**/*.ts] PASSED [ 52%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_an_absolute_grep_glob_filter[/c/Users/*.ts] PASSED [ 54%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_an_absolute_grep_glob_filter[\\\\?\\C:\\x\\*.ts] PASSED [ 56%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_a_dotdot_grep_glob_filter[../**/*.ts] PASSED [ 58%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_a_dotdot_grep_glob_filter[apps/..\\..\\*.ts] PASSED [ 60%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_any_other_tool[Bash] PASSED [ 61%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_any_other_tool[WebFetch] PASSED [ 63%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_any_other_tool[Write] PASSED [ 65%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_any_other_tool[Agent] PASSED [ 67%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_any_other_tool[mcp__x__y] PASSED [ 69%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_accepts_one_final_handback_with_only_a_message PASSED [ 70%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_two_handbacks PASSED [ 72%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_a_handback_that_is_not_last PASSED [ 74%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_a_handback_with_any_other_key[args0] PASSED [ 76%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_a_handback_with_any_other_key[args1] PASSED [ 78%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_a_handback_with_any_other_key[args2] PASSED [ 80%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_a_handback_with_any_other_key[args3] PASSED [ 81%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_a_handback_with_any_other_key[args4] PASSED [ 83%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_a_handback_whose_message_is_not_a_string[None] PASSED [ 85%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_a_handback_whose_message_is_not_a_string[3] PASSED [ 87%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_a_handback_whose_message_is_not_a_string[message2] PASSED [ 89%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_a_handback_whose_message_is_not_a_string[message3] PASSED [ 90%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_a_handback_does_not_excuse_a_bad_call_before_it PASSED [ 92%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_void_another_agent_type PASSED [ 94%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_one_bad_call_voids_the_whole_batch PASSED [ 96%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_cli_exit_codes_and_appended_report PASSED [ 98%]
+.planning/phases/22.2-retrieval-quality/22.2-03-records/test_audit_writer.py::test_cli_refuses_a_relative_root PASSED [100%]
+
+=========================== short test summary info ===========================
+SKIPPED [1] .planning\phases\22.2-retrieval-quality\22.2-03-records\test_audit_writer.py:192: cannot create a symlink here: [WinError 1314] A required privilege is not held by the client: 'C:\\Users\\Alec\\AppData\\Local\\Temp\\pytest-of-Alec\\pytest-509\\test_void_a_true_symlink_point0\\outside\\secret.ts' -> 'C:\\Users\\Alec\\AppData\\Local\\Temp\\pytest-of-Alec\\pytest-509\\test_void_a_true_symlink_point0\\corpora\\linkwarden\\apps\\web\\lib\\s.ts'
+======================== 54 passed, 1 skipped in 0.68s ========================
+exit 0
