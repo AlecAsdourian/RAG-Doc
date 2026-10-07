@@ -409,6 +409,10 @@ class DryRunEmbedder:
         self.tokens = 0
         self.max_tokens_one = 0
 
+    def tokens_over_limit(self, chunk):
+        """The generator's own truncation test (22.2-02), local tokenizer only."""
+        return self.generator.tokens_over_limit(chunk)
+
     def generate_embeddings_for_chunks(self, chunks, use_cache: bool = True):
         client = self.generator.client
         for chunk in chunks:
@@ -517,6 +521,15 @@ class ReplayEmbedder:
         self.next = 0
         self.distinct = 0
         self.perturbed = 0
+        from workers.embeddings import EmbeddingGenerator
+
+        # Only for `tokens_over_limit` (22.2-02's truncation count); its SDK
+        # client is replaced, so nothing can reach OpenAI.
+        self._generator = EmbeddingGenerator(api_key=DRY_RUN_KEY)
+        self._generator.client.client = _Forbidden()
+
+    def tokens_over_limit(self, chunk):
+        return self._generator.tokens_over_limit(chunk)
 
     def generate_embeddings_for_chunks(self, chunks, use_cache: bool = True):
         import numpy as np
