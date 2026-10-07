@@ -201,7 +201,7 @@ Plans:
 **Goal:** Stable symbol identity, push-driven incremental ingestion, a progress contract a UI can poll, tier-1 graph edges, and D2's multi-tenant recall test. All of it is built on the pipeline Phase 22 proved end to end.
 **Depends on:** Phase 22. **22.1-01 depends on 22.2-02** (the chunker fixes), by the user's answer QU4 of 2026-09-29 (`22.2-CONTEXT.md` QD11). 22.1-02 follows 22.1-01, and 22.1-04 follows both; **22.1-03 and 22.1-05 depend only on Phase 22** and can run now.
 **Research:** Complete — `22-RESEARCH.md`; decisions locked in `22-CONTEXT.md` (same document as Phase 22; the name keeps every existing "Phase 23" reference correct, U2)
-**Plans:** 5. 22.1-03 and 22.1-05 written 2026-10-06 (`22.1-03-PLAN.md`, `22.1-05-PLAN.md`; criteria in `22.1-ACCEPTANCE.md`, with placeholders for the other three); the rest are written when their predecessors land.
+**Plans:** 5, all written 2026-10-06. 22.1-03 and 22.1-05 first (`22.1-03-PLAN.md`, `22.1-05-PLAN.md`); 22.1-01, 22.1-02 and 22.1-04 after 22.2-02 merged (`22.1-01-PLAN.md`, `22.1-02-PLAN.md`, `22.1-04-PLAN.md`, with their questions SU1–SU22 for the user). Criteria S1–S14 in `22.1-ACCEPTANCE.md`. Estimates: 22.1-01 21–29 h, 22.1-02 19–27 h, 22.1-04 27–37 h.
 
 Plans:
 - [ ] 22.1-01: D1 symbol identity from the chunker, **after 22.2-02**:

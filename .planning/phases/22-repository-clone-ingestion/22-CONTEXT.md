@@ -736,6 +736,29 @@ detail; this note records only what moved).
   The two plans grew by 1 h each after PR #61's fact-check (22.1-03 11–15 h,
   22.1-05 17–24 h).
 
+**Revised again 2026-10-06, when 22.1-01, 22.1-02 and 22.1-04 were
+planned** (their plans and `22.1-ACCEPTANCE.md` S1–S4 are the detail; this
+note records only what moved). P8 and P11 stay **PROPOSED** until the user
+answers those plans' questions, SU1–SU22.
+- **22.1-01: 21–29 h** (was 14–20, plus QU4's 3–5). ISS-036's migration
+  needs its own test over seeded chunks, because the seeded gate holds no
+  chunk after 000017 and its audit sees an empty table; and **full-ingest
+  archival moves here from 22.1-02**, so a full ingest never leaves a
+  vanished symbol live.
+- **22.1-02: 19–27 h** (was 12–16). P11's manifest also needs the
+  embedding model (or a model change strands unchanged files' rows under the
+  old model, which the retriever filters out) and the chunk count (U6's cap
+  over the whole repository); reuse needs a per-row hash of the text
+  **actually** embedded, because `_embed` shares one vector across chunks
+  with the same body and different breadcrumbs or docstrings
+  (22-RESEARCH Q3).
+- **22.1-04: 27–37 h** (was 20–30). D3's DDL gains composite symbol keys
+  (as written it repeats ISS-036) and a re-resolution key, and D3's
+  no-downgrade rule gains a guard against re-inserting a retired unresolved
+  edge.
+- **Phase 22.1's estimate is now ~95–132 h** (22.1-03 11–15, 22.1-05 17–24,
+  and the three above).
+
 **The user's decisions at plan approval, 2026-10-06** (recorded in both plans
 and in `22.1-ACCEPTANCE.md`):
 1. 22.1-05's OpenAI spend is approved up to a **hard cap of $3.00** on
