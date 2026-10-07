@@ -51,3 +51,91 @@ PASS  total $0.040387 within the plan's $0.05 cap
       all      symbol   30  25/30     18/30    0.691
 PASS  the record's ranks give the summary's file aggregates
 0 FAIL
+
+######## 2026-10-06, after PR #70's review (M1): baseline_checks.py hardened, and shown able to fail
+The section above is the first version's output. The hardened version also checks: the header's connections are exactly {fts, vector}; the usage logs' batch counts (attempt 1: 7 sent, 6 billed; the run: 11) and texts (991 ingest + 30 questions); the ingest's tokens equal the census's embedded_total_if_every_chunk; both ranks recomputed from trace.top with scoring.ranks, the table built from them; each row's (id, set, question, path, symbol) against the spec; top_k 5, set all and no boost config in the header and the summary. No new measurement: it reads the committed records.
+== baseline_checks.py on the committed records
+== the header
+PASS  chunk_set_digest b1c7c1082197ed74 = offline = census-linkwarden.json's
+PASS  chunk rows 991 = offline = census = visible to rag_doc_app
+PASS  chunk_models names one model: {'text-embedding-ada-002': 991}
+PASS  the query model text-embedding-ada-002 is the chunks' model
+PASS  the header records exactly the fts and vector connections: ['fts', 'vector']
+PASS  fts connection: current_user rag_doc_app, rolsuper False, rolbypassrls False
+PASS  vector connection: current_user rag_doc_app, rolsuper False, rolbypassrls False
+PASS  chunker e3d3175e3d756d3d = census's, verified
+PASS  corpus commit 952ac4540657cae3a67c3ca59433899d2fda8374 = the spec's pin
+PASS  vector tolerance 2e-06 (QD2)
+PASS  breadcrumb column mismatches 0
+PASS  header: top_k 5, set 'all', boost_config None
+PASS  summary: top_k 5, set 'all', boost_config None
+      harness_commit a635402ae300d741f5673a3ebc781965ac6de715, retrieval_code_version 7fcefd6af7bbb5d1, hnsw.ef_search 40, server 16.15 (Debian 16.15-1.pgdg12+2)
+== the questions against the spec
+PASS  30 rows' (id, set, question, path, symbol) equal the spec's 30, in order
+PASS  odd ids are tuning and even ids holdout
+== the queries
+PASS  30 questions recorded, 0 failed
+PASS  30 cached query vectors, one per question
+== the ranks, recomputed from each row's trace.top with scoring.ranks
+PASS  every trace.top has at most 5 results
+PASS  recorded file and symbol ranks equal the recomputed ones (mismatches: none)
+PASS  summary.json's ranks equal the recomputed ones (mismatches: none)
+== the spend (text-embedding-ada-002 at $0.10 per million tokens)
+PASS  attempt 1: 7 batches sent, 6 billed (expected 7 and 6; the last was the 429)
+PASS  the run: 11 batches sent, 11 billed (expected 11)
+PASS  the ingest embedded 991 texts = the census's 991 chunk rows
+PASS  the ingest's 248157 tokens = the census's embedded_total_if_every_chunk 248157
+PASS  the last batch is the 30 questions (30 texts)
+      attempt 1: 154994 tokens; the run: 248157 ingest + 715 questions; total 403866 tokens, $0.040387
+PASS  total $0.040387 within the plan's $0.05 cap
+== the aggregates per set, from the recomputed ranks (reported, not judged)
+      set      level     n  recall@5  rank-1   MRR@5
+      tuning   file     15  14/15     13/15    0.880
+      tuning   symbol   15  13/15     10/15    0.756
+      holdout  file     15  12/15      8/15    0.627
+      holdout  symbol   15  12/15      8/15    0.627
+      all      file     30  26/30     21/30    0.753
+PASS  all / file: the recomputed aggregates equal summary.json's
+      all      symbol   30  25/30     18/30    0.691
+PASS  all / symbol: the recomputed aggregates equal summary.json's
+0 FAIL
+
+== baseline_checks_vacuity.py: each of the review's five mutations, on scratch copies of the records, proven by bytes
+== the committed records: exit 0; 0 FAIL
+== mutation 1: connections = {}
+   baseline-linkwarden.jsonl.gz: committed sha256 9a3b5878bfc3e2a7, mutated copy c0d6dbf33e1be143, differs: True
+   the mutated field reads back as intended: True
+   FAIL  the header records exactly the fts and vector connections: []
+   baseline_checks.py exit 1; 1 FAIL
+== mutation 2: both usage files emptied
+   baseline-usage.txt: committed sha256 5b60146513a22a59, mutated copy e3b0c44298fc1c14, differs: True
+   baseline-usage-attempt1-429.txt: committed sha256 2e49c18c3329b61e, mutated copy e3b0c44298fc1c14, differs: True
+   the mutated field reads back as intended: True
+   FAIL  attempt 1: 0 batches sent, 0 billed (expected 7 and 6; the last was the 429)
+   FAIL  the run: 0 batches sent, 0 billed (expected 11)
+   FAIL  the ingest embedded 0 texts = the census's 991 chunk rows
+   FAIL  the ingest's 0 tokens = the census's embedded_total_if_every_chunk 248157
+   FAIL  the last batch is the 30 questions (0 texts)
+   FAIL  total $0.000000 within the plan's $0.05 cap
+   baseline_checks.py exit 1; 6 FAIL
+== mutation 3: every symbol_rank set to 1
+   baseline-linkwarden.jsonl.gz: committed sha256 9a3b5878bfc3e2a7, mutated copy 3186b5824e896151, differs: True
+   baseline-linkwarden.summary.json: committed sha256 f9cd819e5e314099, mutated copy 6c822e7d438ab236, differs: True
+   the mutated field reads back as intended: True
+   FAIL  recorded file and symbol ranks equal the recomputed ones (mismatches: ['lw-01', 'lw-04', 'lw-06', 'lw-08', 'lw-09', 'lw-10', 'lw-14', 'lw-15', 'lw-16', 'lw-17', 'lw-19', 'lw-26'])
+   FAIL  summary.json's ranks equal the recomputed ones (mismatches: ['lw-01', 'lw-04', 'lw-06', 'lw-08', 'lw-09', 'lw-10', 'lw-14', 'lw-15', 'lw-16', 'lw-17', 'lw-19', 'lw-26'])
+   baseline_checks.py exit 1; 2 FAIL
+== mutation 4: every row labelled tuning
+   baseline-linkwarden.jsonl.gz: committed sha256 9a3b5878bfc3e2a7, mutated copy d3316a884298cbdb, differs: True
+   the mutated field reads back as intended: True
+   FAIL  30 rows' (id, set, question, path, symbol) equal the spec's 30, in order
+   FAIL  odd ids are tuning and even ids holdout
+   baseline_checks.py exit 1; 2 FAIL
+== mutation 5: top_k = 50
+   baseline-linkwarden.jsonl.gz: committed sha256 9a3b5878bfc3e2a7, mutated copy c251f60b55582987, differs: True
+   baseline-linkwarden.summary.json: committed sha256 f9cd819e5e314099, mutated copy 1625217b3cd6ea83, differs: True
+   the mutated field reads back as intended: True
+   FAIL  header: top_k 50, set 'all', boost_config None
+   FAIL  summary: top_k 50, set 'all', boost_config None
+   baseline_checks.py exit 1; 2 FAIL
+== 5 of 5 mutations FAIL; the records directory is unchanged: True
