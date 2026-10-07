@@ -1,0 +1,256 @@
+{
+ "record": "dry-terraform",
+ "written_at": "2026-10-06T21:16:21.753521+00:00",
+ "mode": "no-embed",
+ "job_type": "full_ingest",
+ "job_type_note": null,
+ "repository": {
+  "full_name": "hashicorp/terraform",
+  "sha": "73bf678bc9d12fb35bc8cf0c978466462dc45314",
+  "branch": "main"
+ },
+ "copies": 1,
+ "workers": 1,
+ "worker_settings": {
+  "lease_s": 300.0,
+  "heartbeat_s": 60.0,
+  "heartbeat_statement_timeout_ms": 15000,
+  "max_job_duration_s": 7200.0
+ },
+ "host": {
+  "hostname": "29f148aa87bb",
+  "platform": "Linux-6.6.87.1-microsoft-standard-WSL2-x86_64-with-glibc2.41",
+  "python": "3.11.16",
+  "cpus": 16,
+  "mem_bytes": 33185533952,
+  "postgres": "16.15 (Debian 16.15-1.pgdg12+2)",
+  "pgvector": "0.8.6",
+  "max_connections": 100,
+  "docker_host_note": "Windows 11 Pro 10.0.26200, Docker Desktop 29.1.3 VM (16 CPUs, 31 GiB), host 16 cores 63 GiB"
+ },
+ "wall_seconds": 64.609,
+ "jobs": [
+  {
+   "label": "terraform",
+   "job_id": "f85c7c21-4125-4ff4-827a-7296a7f22be1",
+   "repository_id": "47546d09-1800-4468-a911-eedb46ccabb4",
+   "organization_id": "3f505dab-e070-4bb1-b40d-413b746e1eff",
+   "partition": 40,
+   "final": {
+    "state": "queued",
+    "attempts": 1,
+    "last_stage": "embed"
+   },
+   "last_error": "DryRunStop: dry run: 17129 distinct chunks, 5088251 tokens counted",
+   "progress": {
+    "chunks": 17350,
+    "skipped": {
+     "secret": 27,
+     "symlink": 10,
+     "lockfile": 11,
+     "generated": 70,
+     "unsupported": 3438
+    },
+    "files_parsed": 2006,
+    "parse_errors": 0,
+    "files_indexable": 2006
+   },
+   "stages": {
+    "marks": {
+     "claim": 1791321317.1308386,
+     "fetch": 1791321317.1387463,
+     "parse": 1791321319.4724095,
+     "embed": 1791321377.7294576
+    },
+    "seconds": {
+     "claim_to_fetch": 0.0079,
+     "fetch": 2.3337,
+     "parse": 58.257
+    }
+   },
+   "archive_bytes": 6108542,
+   "chunks_stored": 0,
+   "distinct_stored": 0
+  }
+ ],
+ "fetch_expanded_lines": [
+  "fetched hashicorp/terraform@73bf678bc9d1: 2006 indexable files, 8201 members, 32696320 bytes expanded (26846001 declared), skipped={'generated': 70, 'lockfile': 11, 'secret': 27, 'symlink': 10, 'unsupported': 3438}"
+ ],
+ "parse": {
+  "files": 2006,
+  "bytes_expanded_files": 20280317,
+  "chunks": 17350,
+  "chunks_by_language": {
+   "markdown": 123,
+   "go": 17227
+  }
+ },
+ "github_events": [
+  {
+   "event": "resolve_head",
+   "t": 1791321317.1402953
+  },
+  {
+   "event": "tarball_redirect",
+   "t": 1791321317.1405933
+  },
+  {
+   "event": "download_start",
+   "t": 1791321317.1407168
+  },
+  {
+   "event": "download_end",
+   "t": 1791321318.2031183,
+   "bytes": 6108542
+  },
+  {
+   "event": "revoke",
+   "t": 1791321319.469396
+  }
+ ],
+ "statements": {
+  "loop": {
+   "other": {
+    "count": 8,
+    "total_seconds": 0.006,
+    "max_seconds": 0.001604,
+    "first_at": 0.0042,
+    "last_end_at": 64.2078,
+    "errors": {}
+   },
+   "set_tenant": {
+    "count": 6,
+    "total_seconds": 0.0017,
+    "max_seconds": 0.000415,
+    "first_at": 0.0092,
+    "last_end_at": 64.207,
+    "errors": {}
+   },
+   "progress": {
+    "count": 4,
+    "total_seconds": 0.002,
+    "max_seconds": 0.000693,
+    "first_at": 0.0147,
+    "last_end_at": 64.2042,
+    "errors": {}
+   }
+  },
+  "loop_entries": 18
+ },
+ "loop_statements_detail": [
+  {
+   "label": "other",
+   "at": 0.0042,
+   "seconds": 0.00158
+  },
+  {
+   "label": "set_tenant",
+   "at": 0.0092,
+   "seconds": 0.000251
+  },
+  {
+   "label": "set_tenant",
+   "at": 0.0108,
+   "seconds": 0.000205
+  },
+  {
+   "label": "other",
+   "at": 0.011,
+   "seconds": 0.001604
+  },
+  {
+   "label": "progress",
+   "at": 0.0147,
+   "seconds": 0.000373
+  },
+  {
+   "label": "progress",
+   "at": 2.3479,
+   "seconds": 0.000693
+  },
+  {
+   "label": "progress",
+   "at": 60.6058,
+   "seconds": 0.000579
+  },
+  {
+   "label": "set_tenant",
+   "at": 64.1757,
+   "seconds": 0.000323
+  },
+  {
+   "label": "other",
+   "at": 64.176,
+   "seconds": 0.000483
+  },
+  {
+   "label": "other",
+   "at": 64.1765,
+   "seconds": 0.000528
+  },
+  {
+   "label": "other",
+   "at": 64.1937,
+   "seconds": 0.000554
+  },
+  {
+   "label": "set_tenant",
+   "at": 64.1979,
+   "seconds": 0.000415
+  },
+  {
+   "label": "set_tenant",
+   "at": 64.199,
+   "seconds": 0.000245
+  },
+  {
+   "label": "other",
+   "at": 64.1993,
+   "seconds": 0.000508
+  },
+  {
+   "label": "progress",
+   "at": 64.2039,
+   "seconds": 0.000308
+  },
+  {
+   "label": "set_tenant",
+   "at": 64.2067,
+   "seconds": 0.000307
+  },
+  {
+   "label": "other",
+   "at": 64.207,
+   "seconds": 0.000336
+  },
+  {
+   "label": "other",
+   "at": 64.2074,
+   "seconds": 0.00043
+  }
+ ],
+ "heartbeat": {
+  "beats": [
+   {
+    "label": "heartbeat",
+    "at": 60.3525,
+    "seconds": 0.011935
+   }
+  ],
+  "beats_total": 1,
+  "beats_57014": 0,
+  "beats_raised": 0,
+  "log_heartbeat_failed_querycanceled": 0,
+  "log_assuming_it_is_lost": 0,
+  "max_beat_seconds": 0.011935
+ },
+ "peak_rss_bytes": 187392000,
+ "peak_workdir_bytes": 20441137,
+ "workdir_samples": 121,
+ "dry_run": {
+  "distinct_chunks": 17129,
+  "tokens": 5088251,
+  "max_tokens_one_chunk": 8000,
+  "projected_usd_one_pass": "0.508825"
+ }
+}

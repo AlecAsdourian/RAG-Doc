@@ -1,0 +1,274 @@
+{
+ "N1": {
+  "F_cap": 494.04878856469185,
+  "fetch_worst": {
+   "run": "real-miniflux-1",
+   "fetch_seconds": 0.9288,
+   "archive_mb": 0.9399881362915039,
+   "seconds_per_mb": 0.9880975771293837
+  },
+  "fetch_all": [
+   {
+    "run": "real-django",
+    "fetch_seconds": 3.986,
+    "archive_mb": 10.091554641723633,
+    "seconds_per_mb": 0.3949837405150485
+   },
+   {
+    "run": "real-mealie-1",
+    "fetch_seconds": 6.294,
+    "archive_mb": 22.435839653015137,
+    "seconds_per_mb": 0.2805332939324227
+   },
+   {
+    "run": "real-mealie-2",
+    "fetch_seconds": 3.9916,
+    "archive_mb": 22.435839653015137,
+    "seconds_per_mb": 0.17791177249136614
+   },
+   {
+    "run": "real-miniflux-1",
+    "fetch_seconds": 0.9288,
+    "archive_mb": 0.9399881362915039,
+    "seconds_per_mb": 0.9880975771293837
+   },
+   {
+    "run": "real-miniflux-2",
+    "fetch_seconds": 0.8595,
+    "archive_mb": 0.9399881362915039,
+    "seconds_per_mb": 0.9143732424017069
+   },
+   {
+    "run": "real-rag-doc-1",
+    "fetch_seconds": 2.4816,
+    "archive_mb": 6.051811218261719,
+    "seconds_per_mb": 0.4100590567847881
+   },
+   {
+    "run": "real-rag-doc-2",
+    "fetch_seconds": 1.8448,
+    "archive_mb": 6.051811218261719,
+    "seconds_per_mb": 0.30483436007276643
+   }
+  ],
+  "P_cap": 711.8984,
+  "E_cap": 2707.9926074541245,
+  "tokens_per_chunk_max": {
+   "run": "real-rag-doc-1",
+   "tokens": 1658854,
+   "distinct_chunks": 3860,
+   "tokens_per_chunk": 429.75492227979277
+  },
+  "tokens_per_chunk_all": [
+   {
+    "run": "real-django",
+    "tokens": 7808992,
+    "distinct_chunks": 46027,
+    "tokens_per_chunk": 169.66111195602582
+   },
+   {
+    "run": "real-mealie-1",
+    "tokens": 977036,
+    "distinct_chunks": 5782,
+    "tokens_per_chunk": 168.9789000345901
+   },
+   {
+    "run": "real-mealie-2",
+    "tokens": 977036,
+    "distinct_chunks": 5782,
+    "tokens_per_chunk": 168.9789000345901
+   },
+   {
+    "run": "real-miniflux-1",
+    "tokens": 683547,
+    "distinct_chunks": 3580,
+    "tokens_per_chunk": 190.93491620111732
+   },
+   {
+    "run": "real-miniflux-2",
+    "tokens": 683547,
+    "distinct_chunks": 3580,
+    "tokens_per_chunk": 190.93491620111732
+   },
+   {
+    "run": "real-rag-doc-1",
+    "tokens": 1658854,
+    "distinct_chunks": 3860,
+    "tokens_per_chunk": 429.75492227979277
+   },
+   {
+    "run": "real-rag-doc-2",
+    "tokens": 1658854,
+    "distinct_chunks": 3860,
+    "tokens_per_chunk": 429.75492227979277
+   }
+  ],
+  "rate_min": {
+   "run": "real-django",
+   "embed_seconds": 492.064,
+   "tokens": 7808992,
+   "http_calls": 609,
+   "tokens_per_second": 15869.87058594004,
+   "tokens_per_minute": 952192.2351564023,
+   "calls_per_minute": 74.25863302334656
+  },
+  "rates_all": [
+   {
+    "run": "real-django",
+    "embed_seconds": 492.064,
+    "tokens": 7808992,
+    "http_calls": 609,
+    "tokens_per_second": 15869.87058594004,
+    "tokens_per_minute": 952192.2351564023,
+    "calls_per_minute": 74.25863302334656
+   },
+   {
+    "run": "real-mealie-1",
+    "embed_seconds": 47.6047,
+    "tokens": 977036,
+    "http_calls": 58,
+    "tokens_per_second": 20523.939863080745,
+    "tokens_per_minute": 1231436.3917848447,
+    "calls_per_minute": 73.10202564032544
+   },
+   {
+    "run": "real-mealie-2",
+    "embed_seconds": 45.3156,
+    "tokens": 977036,
+    "http_calls": 58,
+    "tokens_per_second": 21560.698743920413,
+    "tokens_per_minute": 1293641.9246352247,
+    "calls_per_minute": 76.7947461801234
+   },
+   {
+    "run": "real-miniflux-1",
+    "embed_seconds": 29.8346,
+    "tokens": 683547,
+    "http_calls": 36,
+    "tokens_per_second": 22911.21717737124,
+    "tokens_per_minute": 1374673.0306422743,
+    "calls_per_minute": 72.3991607060259
+   },
+   {
+    "run": "real-miniflux-2",
+    "embed_seconds": 28.4784,
+    "tokens": 683547,
+    "http_calls": 36,
+    "tokens_per_second": 24002.296477330186,
+    "tokens_per_minute": 1440137.788639811,
+    "calls_per_minute": 75.8469576942525
+   },
+   {
+    "run": "real-rag-doc-1",
+    "embed_seconds": 48.5371,
+    "tokens": 1658854,
+    "http_calls": 39,
+    "tokens_per_second": 34177.03159026806,
+    "tokens_per_minute": 2050621.8954160835,
+    "calls_per_minute": 48.210544099256026
+   },
+   {
+    "run": "real-rag-doc-2",
+    "embed_seconds": 62.702,
+    "tokens": 1658854,
+    "http_calls": 60,
+    "tokens_per_second": 26456.157698319035,
+    "tokens_per_minute": 1587369.461899142,
+    "calls_per_minute": 57.414436541099164
+   }
+  ],
+  "S_cap": 296.6794,
+  "T_cap": 4210.619196018816,
+  "three_T_cap": 12631.85758805645,
+  "longest_real_job": 1000.1086,
+  "max_job_duration_seconds": 13500,
+  "over_4h": false
+ },
+ "N2": {
+  "before_fix": {
+   "runs": 6,
+   "beats": 49,
+   "beats_57014": 16,
+   "log_heartbeat_failed_querycanceled": 16,
+   "log_assuming_it_is_lost": 2,
+   "longest_beat_seconds": 16.365474
+  },
+  "after_fix": {
+   "runs": 7,
+   "beats": 35,
+   "beats_57014": 0,
+   "log_heartbeat_failed_querycanceled": 0,
+   "log_assuming_it_is_lost": 0,
+   "longest_beat_seconds": 0.165494
+  },
+  "keep_5_minutes": true,
+  "lease_seconds": 300,
+  "beat_seconds": 60
+ },
+ "N3": {
+  "applies": true,
+  "H": 0.165494,
+  "ten_H": 1.65494,
+  "timeout_seconds": 5,
+  "constraint": "4 x 60 + 5 = 245 < 300",
+  "constraint_holds": true,
+  "ten_H_over_15": false
+ },
+ "N4": {
+  "W_tpm": 952192.2351564023,
+  "W_rpm": 74.25863302334656,
+  "TPM": 1000000,
+  "RPM": 5000,
+  "TPM_over_W_tpm": 1.0502081019761151,
+  "RPM_over_W_rpm": 67.33223864258346,
+  "N_openai": 0,
+  "max_connections": 100,
+  "N_db": 12,
+  "N": 1,
+  "confirmations": [
+   {
+    "record": "confirm-n1",
+    "workers": 1,
+    "http_429": 0,
+    "jobs": [
+     [
+      "confirm-miniflux",
+      {
+       "state": "completed",
+       "attempts": 1,
+       "last_stage": "store"
+      }
+     ]
+    ]
+   }
+  ]
+ },
+ "N5": {
+  "TPM": 1000000,
+  "RPM": 5000,
+  "model": "text-embedding-ada-002",
+  "W_tpm": 952192.2351564023,
+  "W_rpm": 74.25863302334656,
+  "C": 1,
+  "http_429_by_run": {
+   "real-django": 148,
+   "real-mealie-1": 0,
+   "real-mealie-2": 0,
+   "real-miniflux-1": 0,
+   "real-miniflux-2": 0,
+   "real-rag-doc-1": 0,
+   "real-rag-doc-2": 21,
+   "confirm-n1": 0
+  }
+ },
+ "N6": {
+  "S_cap": 296.6794,
+  "stop_grace_period_seconds": 360
+ },
+ "N7": {
+  "peak_rss_at_cap_bytes": 9741950976,
+  "peak_rss_at_cap_gib": 9.072898864746094,
+  "over_4_gb": true,
+  "disk_peak_workdir_bytes": 945982045
+ }
+}

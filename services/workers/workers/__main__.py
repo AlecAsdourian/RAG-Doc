@@ -18,10 +18,10 @@ It still FAILS CLOSED, and the order of the checks below is load-bearing:
      `OPENAI_API_KEY` (`workers.ingest.handler.deps_from_env`). Missing ->
      exit 2. Without them every job would fail five times and dead-letter,
      which is the accident step 1 exists to prevent, one step later.
-  4. **The operating numbers** (P16, provisional until 22.1-05):
-     `max_job_duration` two hours, the heartbeat's `statement_timeout`
-     fifteen seconds, each with an environment override. A malformed
-     override -> exit 2.
+  4. **The operating numbers** (P16, measured by 22.1-05):
+     `max_job_duration` and the heartbeat's `statement_timeout`, each
+     `workers.jobs.runtime`'s constant with an environment override. A
+     malformed override -> exit 2.
   5. **Sweep stale job directories** once, then run.
 
 Exit codes: 2 is "this build or its configuration says not to run", which
@@ -71,9 +71,9 @@ NO_DSN_MESSAGE = (
 def operating_numbers(environ: Mapping[str, str]) -> Tuple[timedelta, timedelta]:
     """P16's `(max_job_duration, heartbeat_statement_timeout)`, with overrides.
 
-    PROVISIONAL UNTIL 22.1-05: the defaults are `workers.jobs.runtime`'s
-    `DEFAULT_MAX_JOB_DURATION` (2 h) and
-    `DEFAULT_HEARTBEAT_STATEMENT_TIMEOUT` (15 s);
+    Measured by 22.1-05 (`22.1-05-operating-numbers.md`): the defaults are
+    `workers.jobs.runtime`'s `DEFAULT_MAX_JOB_DURATION` and
+    `DEFAULT_HEARTBEAT_STATEMENT_TIMEOUT`;
     `WORKER_MAX_JOB_DURATION_SECONDS` and
     `WORKER_HEARTBEAT_STATEMENT_TIMEOUT_MS` override them. The third P16
     number, the pool size, is the compose service's replica count.
@@ -159,7 +159,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         logger.error("%s", exc)
         return REFUSED
 
-    # 4. The operating numbers (P16, provisional until 22.1-05).
+    # 4. The operating numbers (P16, measured by 22.1-05).
     try:
         worker = build_worker(dsn, REGISTRY, os.environ)
     except ValueError as exc:

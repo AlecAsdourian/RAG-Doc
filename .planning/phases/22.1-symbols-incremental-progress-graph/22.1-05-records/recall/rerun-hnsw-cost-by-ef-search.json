@@ -1,0 +1,22 @@
+{
+ "40": {
+  "scan": "Index Scan using chunks_p10_embedding_idx",
+  "limit_total_cost": 5344.25
+ },
+ "60": {
+  "scan": "Index Scan using chunks_p10_embedding_idx",
+  "limit_total_cost": 6671.84
+ },
+ "80": {
+  "scan": "Index Scan using chunks_p10_embedding_idx",
+  "limit_total_cost": 7933.84
+ },
+ "100": {
+  "scan": "Index Scan using chunks_p10_embedding_idx",
+  "limit_total_cost": 9150.8
+ },
+ "200": {
+  "scan": "Index Scan using chunks_p10_embedding_idx",
+  "limit_total_cost": 8274.99
+ }
+}

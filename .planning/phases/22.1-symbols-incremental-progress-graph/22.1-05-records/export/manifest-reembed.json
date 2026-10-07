@@ -1,0 +1,63 @@
+{
+  "dimensions": 1536,
+  "dtype": "float32",
+  "order": "file_path, start_line, end_line, id",
+  "repositories": [
+    {
+      "label": "django",
+      "file": "django.npy",
+      "rows": 48707,
+      "models": [
+        "text-embedding-ada-002"
+      ],
+      "sha256": "b2d5d7b3b660dd76276c20e7b2bc2779419f04c80bff12817e29384271968ca8",
+      "norm_min": 0.9999998211860657,
+      "norm_max": 1.0000001192092896,
+      "full_name": "django/django",
+      "sha": "8c34887b1ad8bb3ec61c6e713442dab3c643d557",
+      "repository_id": "0f0ee6b7-e70b-4a48-888e-3e9db055f084"
+    },
+    {
+      "label": "mealie",
+      "file": "mealie.npy",
+      "rows": 6149,
+      "models": [
+        "text-embedding-ada-002"
+      ],
+      "sha256": "ce711d806696b31932f389531cccca6a98e0d9bc3041541126cac66958e5975b",
+      "norm_min": 0.9999998211860657,
+      "norm_max": 1.0000001192092896,
+      "full_name": "mealie-recipes/mealie",
+      "sha": "84b2677f76069a6fb2bac6e2c633c9dbe7379ce4",
+      "repository_id": "a5a820be-ac25-443e-bcbe-6ee3ddbcbc7b"
+    },
+    {
+      "label": "miniflux",
+      "file": "miniflux.npy",
+      "rows": 3600,
+      "models": [
+        "text-embedding-ada-002"
+      ],
+      "sha256": "406bb3b6fc42b2563d4cc4cf2250977dcb37be47326fefa0757a89e853a99ada",
+      "norm_min": 0.9999998211860657,
+      "norm_max": 1.0000001192092896,
+      "full_name": "miniflux/v2",
+      "sha": "76889f08b12c2577b37e524e645afa5dd46ff050",
+      "repository_id": "79f67e33-f1bf-4b0d-ba2f-95e8cff1671c"
+    },
+    {
+      "label": "rag-doc",
+      "file": "rag-doc.npy",
+      "rows": 3868,
+      "models": [
+        "text-embedding-ada-002"
+      ],
+      "sha256": "21275542b38fc3753785cbb65c167cc8bbb6899489b645865fc0b7a3e3df4e13",
+      "norm_min": 0.9999998211860657,
+      "norm_max": 1.0000001192092896,
+      "full_name": "AlecAsdourian/RAG-Doc",
+      "sha": "ffdd06ee12bb973f6a585053b86974f66d0fa41f",
+      "repository_id": "0ee787a2-e294-458b-949c-60841b36746d"
+    }
+  ]
+}

@@ -1,0 +1,239 @@
+{
+ "record": "dry2-django",
+ "written_at": "2026-10-07T00:41:21.398743+00:00",
+ "mode": "no-embed",
+ "code": "0d7c647",
+ "write_results_order": [
+  "check_fence",
+  "resolve_ingestion_run",
+  "delete_repository_chunks_on",
+  "complete_ingestion_run_on",
+  "attach_ingestion_run"
+ ],
+ "job_type": "full_ingest",
+ "job_type_note": null,
+ "repository": {
+  "full_name": "django/django",
+  "sha": "8c34887b1ad8bb3ec61c6e713442dab3c643d557",
+  "branch": "main"
+ },
+ "copies": 1,
+ "workers": 1,
+ "worker_settings": {
+  "lease_s": 300.0,
+  "heartbeat_s": 60.0,
+  "heartbeat_statement_timeout_ms": 5000,
+  "max_job_duration_s": 13500.0
+ },
+ "host": {
+  "hostname": "0385d7f46835",
+  "platform": "Linux-6.6.87.1-microsoft-standard-WSL2-x86_64-with-glibc2.41",
+  "python": "3.11.16",
+  "cpus": 16,
+  "mem_bytes": 33185533952,
+  "postgres": "16.15 (Debian 16.15-1.pgdg12+2)",
+  "pgvector": "0.8.6",
+  "max_connections": 100,
+  "docker_host_note": "Windows 11 Pro 10.0.26200, Docker Desktop 29.1.3 VM (16 CPUs, 31 GiB), host 16 cores 63 GiB"
+ },
+ "wall_seconds": 220.902,
+ "jobs": [
+  {
+   "label": "django",
+   "job_id": "6a7ef6b8-b804-46e4-ad58-e95f1f98df0a",
+   "repository_id": "ff471df8-d768-43c6-b7f1-50d256e402ad",
+   "organization_id": "72dd2a23-694d-48fe-bbf5-9cca3f211516",
+   "partition": 21,
+   "final": {
+    "state": "queued",
+    "attempts": 1,
+    "last_stage": "embed"
+   },
+   "last_error": "DryRunStop: dry run: 46133 distinct chunks, 7917704 tokens counted",
+   "progress": {
+    "chunks": 48707,
+    "skipped": {
+     "symlink": 4,
+     "vendored": 72,
+     "unsupported": 4025
+    },
+    "files_parsed": 2984,
+    "parse_errors": 0,
+    "files_indexable": 2984,
+    "chunks_truncated": 47
+   },
+   "stages": {
+    "marks": {
+     "claim": 1791333460.484303,
+     "fetch": 1791333460.4910812,
+     "parse": 1791333506.368864,
+     "embed": 1791333673.9660048
+    },
+    "seconds": {
+     "claim_to_fetch": 0.0068,
+     "fetch": 45.8778,
+     "parse": 167.5971
+    }
+   },
+   "archive_bytes": 10581762,
+   "chunks_stored": 0,
+   "distinct_stored": 0
+  }
+ ],
+ "fetch_expanded_lines": [
+  "fetched django/django@8c34887b1ad8: 2984 indexable files, 10358 members, 53155840 bytes expanded (46138914 declared), skipped={'symlink': 4, 'unsupported': 4025, 'vendored': 72}"
+ ],
+ "parse": {
+  "files": 2984,
+  "bytes_expanded_files": 19653028,
+  "chunks": 48707,
+  "chunks_by_language": {
+   "javascript": 152,
+   "markdown": 7,
+   "python": 48548
+  }
+ },
+ "github_events": [
+  {
+   "event": "resolve_head",
+   "t": 1791333460.4925385
+  },
+  {
+   "event": "tarball_redirect",
+   "t": 1791333460.4927483
+  },
+  {
+   "event": "download_start",
+   "t": 1791333460.492935
+  },
+  {
+   "event": "download_end",
+   "t": 1791333504.8544238,
+   "bytes": 10581762
+  },
+  {
+   "event": "revoke",
+   "t": 1791333506.3647888
+  }
+ ],
+ "statements": {
+  "loop": {
+   "other": {
+    "count": 5,
+    "total_seconds": 0.0038,
+    "max_seconds": 0.001355,
+    "first_at": 0.0031,
+    "last_end_at": 220.1258,
+    "errors": {}
+   },
+   "set_tenant": {
+    "count": 3,
+    "total_seconds": 0.0007,
+    "max_seconds": 0.000326,
+    "first_at": 0.0074,
+    "last_end_at": 220.0954,
+    "errors": {}
+   },
+   "progress": {
+    "count": 3,
+    "total_seconds": 0.0018,
+    "max_seconds": 0.000796,
+    "first_at": 0.0118,
+    "last_end_at": 213.4875,
+    "errors": {}
+   }
+  },
+  "loop_entries": 11
+ },
+ "loop_statements_detail": [
+  {
+   "label": "other",
+   "at": 0.0031,
+   "seconds": 0.001355
+  },
+  {
+   "label": "set_tenant",
+   "at": 0.0074,
+   "seconds": 0.000206
+  },
+  {
+   "label": "set_tenant",
+   "at": 0.0087,
+   "seconds": 0.000198
+  },
+  {
+   "label": "other",
+   "at": 0.0089,
+   "seconds": 0.001119
+  },
+  {
+   "label": "progress",
+   "at": 0.0118,
+   "seconds": 0.000433
+  },
+  {
+   "label": "progress",
+   "at": 45.888,
+   "seconds": 0.000571
+  },
+  {
+   "label": "progress",
+   "at": 213.4867,
+   "seconds": 0.000796
+  },
+  {
+   "label": "set_tenant",
+   "at": 220.0951,
+   "seconds": 0.000326
+  },
+  {
+   "label": "other",
+   "at": 220.0954,
+   "seconds": 0.000416
+  },
+  {
+   "label": "other",
+   "at": 220.0958,
+   "seconds": 0.000413
+  },
+  {
+   "label": "other",
+   "at": 220.1253,
+   "seconds": 0.000456
+  }
+ ],
+ "heartbeat": {
+  "beats": [
+   {
+    "label": "heartbeat",
+    "at": 60.0117,
+    "seconds": 0.006878
+   },
+   {
+    "label": "heartbeat",
+    "at": 120.0515,
+    "seconds": 0.005881
+   },
+   {
+    "label": "heartbeat",
+    "at": 180.1284,
+    "seconds": 0.016131
+   }
+  ],
+  "beats_total": 3,
+  "beats_57014": 0,
+  "beats_raised": 0,
+  "log_heartbeat_failed_querycanceled": 0,
+  "log_assuming_it_is_lost": 0,
+  "max_beat_seconds": 0.016131
+ },
+ "peak_rss_bytes": 241774592,
+ "peak_workdir_bytes": 20538645,
+ "workdir_samples": 421,
+ "dry_run": {
+  "distinct_chunks": 46133,
+  "tokens": 7917704,
+  "max_tokens_one_chunk": 8000,
+  "projected_usd_one_pass": "0.791770"
+ }
+}

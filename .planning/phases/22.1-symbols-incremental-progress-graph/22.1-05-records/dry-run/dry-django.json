@@ -1,0 +1,410 @@
+{
+ "record": "dry-django",
+ "written_at": "2026-10-06T21:15:06.128994+00:00",
+ "mode": "no-embed",
+ "job_type": "full_ingest",
+ "job_type_note": null,
+ "repository": {
+  "full_name": "django/django",
+  "sha": "8c34887b1ad8bb3ec61c6e713442dab3c643d557",
+  "branch": "main"
+ },
+ "copies": 1,
+ "workers": 1,
+ "worker_settings": {
+  "lease_s": 300.0,
+  "heartbeat_s": 60.0,
+  "heartbeat_statement_timeout_ms": 15000,
+  "max_job_duration_s": 7200.0
+ },
+ "host": {
+  "hostname": "29f148aa87bb",
+  "platform": "Linux-6.6.87.1-microsoft-standard-WSL2-x86_64-with-glibc2.41",
+  "python": "3.11.16",
+  "cpus": 16,
+  "mem_bytes": 33185533952,
+  "postgres": "16.15 (Debian 16.15-1.pgdg12+2)",
+  "pgvector": "0.8.6",
+  "max_connections": 100,
+  "docker_host_note": "Windows 11 Pro 10.0.26200, Docker Desktop 29.1.3 VM (16 CPUs, 31 GiB), host 16 cores 63 GiB"
+ },
+ "wall_seconds": 269.898,
+ "jobs": [
+  {
+   "label": "django",
+   "job_id": "1db8ecd6-7204-4d55-9261-40ee50ab4939",
+   "repository_id": "5324d86b-cfc2-400b-ad51-3ce3a31e5b76",
+   "organization_id": "42bad36e-d75b-45d4-9317-75f277393946",
+   "partition": 12,
+   "final": {
+    "state": "queued",
+    "attempts": 1,
+    "last_stage": "embed"
+   },
+   "last_error": "DryRunStop: dry run: 46027 distinct chunks, 7808992 tokens counted",
+   "progress": {
+    "chunks": 48704,
+    "skipped": {
+     "symlink": 4,
+     "vendored": 72,
+     "unsupported": 4025
+    },
+    "files_parsed": 2984,
+    "parse_errors": 0,
+    "files_indexable": 2984
+   },
+   "stages": {
+    "marks": {
+     "claim": 1791321036.239709,
+     "fetch": 1791321036.2454767,
+     "parse": 1791321040.46758,
+     "embed": 1791321297.5468533
+    },
+    "seconds": {
+     "claim_to_fetch": 0.0058,
+     "fetch": 4.2221,
+     "parse": 257.0793
+    }
+   },
+   "archive_bytes": 10581762,
+   "chunks_stored": 0,
+   "distinct_stored": 0
+  }
+ ],
+ "fetch_expanded_lines": [
+  "fetched django/django@8c34887b1ad8: 2984 indexable files, 10358 members, 53155840 bytes expanded (46138914 declared), skipped={'symlink': 4, 'unsupported': 4025, 'vendored': 72}"
+ ],
+ "parse": {
+  "files": 2984,
+  "bytes_expanded_files": 19653028,
+  "chunks": 48704,
+  "chunks_by_language": {
+   "javascript": 150,
+   "markdown": 7,
+   "python": 48547
+  }
+ },
+ "github_events": [
+  {
+   "event": "resolve_head",
+   "t": 1791321036.2473698
+  },
+  {
+   "event": "tarball_redirect",
+   "t": 1791321036.2477095
+  },
+  {
+   "event": "download_start",
+   "t": 1791321036.247872
+  },
+  {
+   "event": "download_end",
+   "t": 1791321038.2500215,
+   "bytes": 10581762
+  },
+  {
+   "event": "revoke",
+   "t": 1791321040.4643881
+  }
+ ],
+ "statements": {
+  "loop": {
+   "other": {
+    "count": 20,
+    "total_seconds": 0.0115,
+    "max_seconds": 0.001963,
+    "first_at": 0.0042,
+    "last_end_at": 269.2042,
+    "errors": {}
+   },
+   "set_tenant": {
+    "count": 18,
+    "total_seconds": 0.0046,
+    "max_seconds": 0.000317,
+    "first_at": 0.01,
+    "last_end_at": 269.2034,
+    "errors": {}
+   },
+   "progress": {
+    "count": 8,
+    "total_seconds": 0.0042,
+    "max_seconds": 0.001035,
+    "first_at": 0.0165,
+    "last_end_at": 269.2012,
+    "errors": {}
+   }
+  },
+  "loop_entries": 46
+ },
+ "loop_statements_detail": [
+  {
+   "label": "other",
+   "at": 0.0042,
+   "seconds": 0.001863
+  },
+  {
+   "label": "set_tenant",
+   "at": 0.01,
+   "seconds": 0.000232
+  },
+  {
+   "label": "set_tenant",
+   "at": 0.0115,
+   "seconds": 0.000208
+  },
+  {
+   "label": "other",
+   "at": 0.0117,
+   "seconds": 0.001963
+  },
+  {
+   "label": "progress",
+   "at": 0.0165,
+   "seconds": 0.000402
+  },
+  {
+   "label": "set_tenant",
+   "at": 0.02,
+   "seconds": 0.000262
+  },
+  {
+   "label": "other",
+   "at": 0.0203,
+   "seconds": 0.000296
+  },
+  {
+   "label": "other",
+   "at": 0.0206,
+   "seconds": 0.000447
+  },
+  {
+   "label": "set_tenant",
+   "at": 0.028,
+   "seconds": 0.000258
+  },
+  {
+   "label": "set_tenant",
+   "at": 0.0288,
+   "seconds": 0.000221
+  },
+  {
+   "label": "other",
+   "at": 0.029,
+   "seconds": 0.00043
+  },
+  {
+   "label": "progress",
+   "at": 0.0314,
+   "seconds": 0.000397
+  },
+  {
+   "label": "set_tenant",
+   "at": 0.0344,
+   "seconds": 0.000296
+  },
+  {
+   "label": "other",
+   "at": 0.0347,
+   "seconds": 0.000293
+  },
+  {
+   "label": "other",
+   "at": 0.035,
+   "seconds": 0.000341
+  },
+  {
+   "label": "set_tenant",
+   "at": 0.0403,
+   "seconds": 0.00025
+  },
+  {
+   "label": "set_tenant",
+   "at": 0.041,
+   "seconds": 0.000222
+  },
+  {
+   "label": "other",
+   "at": 0.0413,
+   "seconds": 0.000433
+  },
+  {
+   "label": "progress",
+   "at": 0.0436,
+   "seconds": 0.000326
+  },
+  {
+   "label": "progress",
+   "at": 4.2653,
+   "seconds": 0.001035
+  },
+  {
+   "label": "progress",
+   "at": 261.3444,
+   "seconds": 0.000834
+  },
+  {
+   "label": "set_tenant",
+   "at": 269.1233,
+   "seconds": 0.000313
+  },
+  {
+   "label": "other",
+   "at": 269.1237,
+   "seconds": 0.000411
+  },
+  {
+   "label": "other",
+   "at": 269.1241,
+   "seconds": 0.000735
+  },
+  {
+   "label": "other",
+   "at": 269.1684,
+   "seconds": 0.000702
+  },
+  {
+   "label": "set_tenant",
+   "at": 269.1717,
+   "seconds": 0.000317
+  },
+  {
+   "label": "set_tenant",
+   "at": 269.1727,
+   "seconds": 0.000265
+  },
+  {
+   "label": "other",
+   "at": 269.173,
+   "seconds": 0.000599
+  },
+  {
+   "label": "progress",
+   "at": 269.1761,
+   "seconds": 0.00044
+  },
+  {
+   "label": "set_tenant",
+   "at": 269.1793,
+   "seconds": 0.000238
+  },
+  {
+   "label": "other",
+   "at": 269.1795,
+   "seconds": 0.000291
+  },
+  {
+   "label": "other",
+   "at": 269.1798,
+   "seconds": 0.000338
+  },
+  {
+   "label": "set_tenant",
+   "at": 269.1847,
+   "seconds": 0.000219
+  },
+  {
+   "label": "set_tenant",
+   "at": 269.1854,
+   "seconds": 0.000265
+  },
+  {
+   "label": "other",
+   "at": 269.1857,
+   "seconds": 0.000474
+  },
+  {
+   "label": "progress",
+   "at": 269.1886,
+   "seconds": 0.000386
+  },
+  {
+   "label": "set_tenant",
+   "at": 269.1912,
+   "seconds": 0.000251
+  },
+  {
+   "label": "other",
+   "at": 269.1915,
+   "seconds": 0.000318
+  },
+  {
+   "label": "other",
+   "at": 269.1918,
+   "seconds": 0.000395
+  },
+  {
+   "label": "set_tenant",
+   "at": 269.1969,
+   "seconds": 0.000248
+  },
+  {
+   "label": "set_tenant",
+   "at": 269.1977,
+   "seconds": 0.00024
+  },
+  {
+   "label": "other",
+   "at": 269.1979,
+   "seconds": 0.000459
+  },
+  {
+   "label": "progress",
+   "at": 269.2008,
+   "seconds": 0.00038
+  },
+  {
+   "label": "set_tenant",
+   "at": 269.2032,
+   "seconds": 0.000247
+  },
+  {
+   "label": "other",
+   "at": 269.2035,
+   "seconds": 0.000296
+  },
+  {
+   "label": "other",
+   "at": 269.2038,
+   "seconds": 0.000368
+  }
+ ],
+ "heartbeat": {
+  "beats": [
+   {
+    "label": "heartbeat",
+    "at": 60.4381,
+    "seconds": 0.00859
+   },
+   {
+    "label": "heartbeat",
+    "at": 120.776,
+    "seconds": 0.006499
+   },
+   {
+    "label": "heartbeat",
+    "at": 181.1966,
+    "seconds": 0.005787
+   },
+   {
+    "label": "heartbeat",
+    "at": 241.5949,
+    "seconds": 0.005793
+   }
+  ],
+  "beats_total": 4,
+  "beats_57014": 0,
+  "beats_raised": 0,
+  "log_heartbeat_failed_querycanceled": 0,
+  "log_assuming_it_is_lost": 0,
+  "max_beat_seconds": 0.00859
+ },
+ "peak_rss_bytes": 231706624,
+ "peak_workdir_bytes": 27963434,
+ "workdir_samples": 492,
+ "dry_run": {
+  "distinct_chunks": 46027,
+  "tokens": 7808992,
+  "max_tokens_one_chunk": 8000,
+  "projected_usd_one_pass": "0.780899"
+ }
+}

@@ -274,7 +274,7 @@ Where each item lands:
 | D1 | re-ingesting an unchanged commit gives identical `symbol_id`s | 22.1-01 |
 | D1 | adding an unrelated line does not change ids below it | 22.1-01 |
 | D1 | a re-export resolves to its leaf's id | **22.1-04** (moved; see P8) |
-| D2 | a multi-tenant recall test against exact search | 22.1-05 (with the 2026-09-17 correction on what it must seed) |
+| D2 | a multi-tenant recall test against exact search | 22.1-05 (with the 2026-09-17 correction on what it must seed). **Done 2026-10-06: `../22.1-symbols-incremental-progress-graph/22.1-05-recall.md`** — HNSW chosen at 48,604 rows in runs 1–2 but below R3; after the `ef_search = 100` fix the planner served it exactly (R1 fails); open for the user |
 | D2 | `EXPLAIN` shows `Subplans Removed` | 22-02 |
 | D3 | a traversal over a cyclic fixture terminates | 22.1-04 |
 | D3 | tier 2 upgrades tier 1 in place; tier 1 never downgrades tier 2 | 22.1-04 (the SQL rule, tested when `symbol_edges` is created; moved from 22-02) |
@@ -305,7 +305,7 @@ Where each item lands:
 | P13 | the seeded-migration CI gate lands first | **LOCKED** · U1 |
 | P14 | `pgvector/pgvector:pg16` everywhere; the harness's reuse container renamed | **LOCKED** · U1 + D2 |
 | P15 | Qdrant leaves in the storage plans | **LOCKED** · U1 + D2 |
-| P16 | initial operating numbers | PROPOSED · set in 22-05's plan, replaced by 22.1-05's measurements |
+| P16 | initial operating numbers | **LOCKED by measurement** · replaced 2026-10-06 by 22.1-05's measurements (`22.1-05-operating-numbers.md`) |
 | P17 | drop `retrievals.chunk_id`'s foreign key | **LOCKED** · U9 |
 
 ### P1 — Drop and recreate `chunks`; re-ingest from source. No data migration.
@@ -615,7 +615,15 @@ hazard", and it is deliberate and bounded:
 
 Keeping both stores for any stretch is the consistency hazard D2 exists to remove.
 
-### P16 — Initial operating numbers · PROPOSED
+### P16 — Initial operating numbers · LOCKED by measurement
+
+**Replaced 2026-10-06 by 22.1-05's measurements:
+`../22.1-symbols-incremental-progress-graph/22.1-05-operating-numbers.md`.**
+`max_job_duration` 3 h 45 min; the heartbeat's `statement_timeout` 5 s; one
+worker process; the lease (5 min) and beat (60 s) kept; compose's
+`stop_grace_period` 6 min. Each by a rule committed before measuring, with its
+re-measure triggers. The text below is 22-05's provisional proposal, kept as
+history.
 
 **Who decides:** 22-05's plan sets them, the reviewer checks them, and 22.1-05
 replaces them with measurements.

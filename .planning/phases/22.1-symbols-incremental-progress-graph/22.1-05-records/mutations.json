@@ -1,0 +1,72 @@
+{
+ "M1-attach-first": {
+  "proof": [
+   {
+    "file": "services/workers/workers/ingest/handler.py",
+    "mutated_count": 1,
+    "original_count_after": 1,
+    "original_is_part_of_mutation": true
+   },
+   {
+    "file": "services/workers/workers/ingest/handler.py",
+    "mutated_count": 2,
+    "original_count_after": 0,
+    "original_is_part_of_mutation": false
+   }
+  ],
+  "exit": 1,
+  "lines": [
+   "FAILED tests/ingest/test_handler.py::test_the_store_takes_the_job_row_lock_last",
+   "FAILED tests/isolation/test_ingest_end_to_end.py::test_a_long_store_never_blocks_its_own_heartbeat",
+   "2 failed, 3 passed in 15.94s"
+  ]
+ },
+ "M2-fence-owner": {
+  "proof": [
+   {
+    "file": "services/workers/workers/jobs/transitions.py",
+    "mutated_count": 1,
+    "original_count_after": 0,
+    "original_is_part_of_mutation": false
+   }
+  ],
+  "exit": 1,
+  "lines": [
+   "FAILED tests/isolation/test_ingest_end_to_end.py::test_a_reclaimed_or_superseded_worker_never_starts_the_store[reclaimed]",
+   "1 failed, 4 passed in 24.19s"
+  ]
+ },
+ "M3-fence-state": {
+  "proof": [
+   {
+    "file": "services/workers/workers/jobs/transitions.py",
+    "mutated_count": 1,
+    "original_count_after": 0,
+    "original_is_part_of_mutation": false
+   }
+  ],
+  "exit": 1,
+  "lines": [
+   "FAILED tests/isolation/test_ingest_end_to_end.py::test_a_reclaimed_or_superseded_worker_never_starts_the_store[superseded]",
+   "1 failed, 4 passed in 17.78s"
+  ]
+ },
+ "M4-fence-call-removed": {
+  "proof": [
+   {
+    "file": "services/workers/workers/ingest/handler.py",
+    "mutated_count": 1,
+    "original_count_after": 0,
+    "original_is_part_of_mutation": false
+   }
+  ],
+  "exit": 1,
+  "lines": [
+   "FAILED tests/ingest/test_handler.py::test_a_fence_that_finds_no_row_starts_no_store",
+   "FAILED tests/ingest/test_handler.py::test_the_store_takes_the_job_row_lock_last",
+   "FAILED tests/isolation/test_ingest_end_to_end.py::test_a_reclaimed_or_superseded_worker_never_starts_the_store[reclaimed]",
+   "FAILED tests/isolation/test_ingest_end_to_end.py::test_a_reclaimed_or_superseded_worker_never_starts_the_store[superseded]",
+   "4 failed, 1 passed in 15.65s"
+  ]
+ }
+}

@@ -14,10 +14,13 @@ one transactional write:
   3. **embed** -- one vector per DISTINCT chunk text, in slices, checking
      between slices whether the job is still ours and the worker still up.
   4. **store** -- reported, then `write_results` is RETURNED. The runtime
-     runs it inside `complete()`'s transaction: resolve and attach the
-     `ingestion_runs` row, delete the repository's chunks, insert the new
-     set with their vectors and model, mark the run completed. The chunks,
-     the run and the job's completion commit together or not at all (L1).
+     runs it inside `complete()`'s transaction: check the fence (no lock),
+     resolve the `ingestion_runs` row, delete the repository's chunks,
+     insert the new set with their vectors and model, mark the run
+     completed, and attach the run to the job LAST, so the job row is
+     locked only at the end and the heartbeat lands throughout (A-L3). The
+     chunks, the run and the job's completion commit together or not at
+     all (L1).
 
 ⚠ WHAT IT RAISES, AND WHEN. Which ending each exception takes is
 `docs/api-ingestion-jobs.md`, "How a job ends" -- the authority, not
@@ -92,6 +95,7 @@ from workers.jobs.transitions import (
     Job,
     LeaseLost,
     attach_ingestion_run,
+    check_fence,
     resolve_ingestion_run,
     sanitize_error,
 )
@@ -439,26 +443,39 @@ def _write_results(
 ) -> WriteResults:
     """The store stage's write, run by the runtime inside `complete()`.
 
-    In that one tenant-scoped transaction, in this order:
+    ⚠ TAKE THE JOB ROW'S LOCK LAST (22.1-05, A-L3): the heartbeat updates
+    that row, so a store that locks it first blocks its own heartbeat for
+    as long as the store runs -- and at U6's chunk cap that is longer than
+    the lease. In that one tenant-scoped transaction, in this order:
 
-      1. `resolve_ingestion_run` then `attach_ingestion_run`: a retry of the
-         same commit reuses its run (`UNIQUE (repository_id, commit_sha)`),
-         and the attach is fenced, so a worker that lost its lease raises
-         `LeaseLost` here and the whole transaction rolls back;
-      2. delete EVERY chunk of the repository -- which is what makes a
+      1. `check_fence`: a plain SELECT, NO lock. A worker that lost the job
+         (reclaimed, or superseded with its lease still attached) raises
+         `LeaseLost` here, before anything is deleted;
+      2. `resolve_ingestion_run`: a retry of the same commit reuses its run
+         (`UNIQUE (repository_id, commit_sha)`);
+      3. delete EVERY chunk of the repository -- which is what makes a
          retry, a rerun or a second push idempotent (ISS-027's full-ingest
          half) -- leaving any `retrievals` that cited them dangling, by
          design (see `DELETE_REPOSITORY_CHUNKS_SQL`, P17);
-      3. insert the new set, each chunk with its vector and `model`;
-      4. mark the run `completed` with its count.
+      4. insert the new set, each chunk with its vector and `model`;
+      5. mark the run `completed` with its count;
+      6. `attach_ingestion_run`, LAST: the first statement that locks the
+         job row. It is fenced too, so a job lost DURING the store raises
+         `LeaseLost` here and the whole transaction rolls back. `complete()`
+         then runs `CLEAR_RERUN_SQL` and `COMPLETE_SQL`, so the row is locked
+         only for those final statements, never for the delete and insert.
+
+    Pinned by `test_a_long_store_never_blocks_its_own_heartbeat` (the order)
+    and `test_a_reclaimed_or_superseded_worker_never_starts_the_store` (the
+    fence), in `tests/isolation/test_ingest_end_to_end.py`.
 
     It must not commit, roll back or open a transaction: `complete()`
     commits it with the job's completion, or rolls it all back.
     """
 
     def write_results(cur: Any) -> None:
+        check_fence(cur, job, worker_id)
         run_id = resolve_ingestion_run(cur, job.repository_id, sha, branch)
-        attach_ingestion_run(cur, job, worker_id, run_id)
         replaced = PostgresWriter.delete_repository_chunks_on(cur, job.repository_id)
         PostgresWriter.insert_chunks_on(
             cur,
@@ -470,6 +487,7 @@ def _write_results(
             embedding_model=model,
         )
         PostgresWriter.complete_ingestion_run_on(cur, run_id, len(chunks))
+        attach_ingestion_run(cur, job, worker_id, run_id)
         logger.info(
             "job %s: stored %d chunks of %s@%s under run %s (model %s), replacing %d",
             job.id,

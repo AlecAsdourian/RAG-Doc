@@ -1,0 +1,315 @@
+{
+ "record": "cap-before-10000-1",
+ "written_at": "2026-10-06T21:47:22.503927+00:00",
+ "mode": "replay",
+ "code": "526c7f7",
+ "write_results_order": [
+  "resolve_ingestion_run",
+  "attach_ingestion_run",
+  "delete_repository_chunks_on",
+  "complete_ingestion_run_on"
+ ],
+ "job_type": "full_ingest",
+ "job_type_note": null,
+ "repository": {
+  "full_name": "measure/cap-10000",
+  "sha": "302515e803110aa04142ea75b7f2f0435eb1704d",
+  "branch": "main"
+ },
+ "copies": 1,
+ "workers": 1,
+ "worker_settings": {
+  "lease_s": 300.0,
+  "heartbeat_s": 60.0,
+  "heartbeat_statement_timeout_ms": 15000,
+  "max_job_duration_s": 7200.0
+ },
+ "host": {
+  "hostname": "29f148aa87bb",
+  "platform": "Linux-6.6.87.1-microsoft-standard-WSL2-x86_64-with-glibc2.41",
+  "python": "3.11.16",
+  "cpus": 16,
+  "mem_bytes": 33185533952,
+  "postgres": "16.15 (Debian 16.15-1.pgdg12+2)",
+  "pgvector": "0.8.6",
+  "max_connections": 100,
+  "docker_host_note": "Windows 11 Pro 10.0.26200, Docker Desktop 29.1.3 VM (16 CPUs, 31 GiB), host 16 cores 63 GiB"
+ },
+ "wall_seconds": 57.456,
+ "jobs": [
+  {
+   "label": "cap-10000",
+   "job_id": "28b30beb-4128-474e-9270-caa843308b80",
+   "repository_id": "9fed2af1-7702-431f-9d1d-89cc223372fa",
+   "organization_id": "0b258545-b65a-48bd-b717-9e08cc70e01c",
+   "partition": 17,
+   "final": {
+    "state": "completed",
+    "attempts": 1,
+    "last_stage": "store"
+   },
+   "last_error": null,
+   "progress": {
+    "chunks": 9825,
+    "skipped": {},
+    "files_parsed": 784,
+    "parse_errors": 0,
+    "chunks_stored": 9825,
+    "chunks_embedded": 9825,
+    "files_indexable": 784
+   },
+   "stages": {
+    "marks": {
+     "claim": 1791323185.0038981,
+     "fetch": 1791323185.012354,
+     "parse": 1791323185.4872468,
+     "embed": 1791323201.724163,
+     "store": 1791323202.9772563,
+     "completed": 1791323241.4540114
+    },
+    "seconds": {
+     "claim_to_fetch": 0.0085,
+     "fetch": 0.4749,
+     "parse": 16.2369,
+     "embed": 1.2531,
+     "store": 38.4768,
+     "claim_to_completion": 56.4501
+    }
+   },
+   "archive_bytes": 1023442,
+   "chunks_stored": 9825,
+   "distinct_stored": 9456
+  }
+ ],
+ "fetch_expanded_lines": [
+  "fetched measure/cap-10000@302515e80311: 784 indexable files, 784 members, 5273600 bytes expanded (4686852 declared), skipped={}"
+ ],
+ "parse": {
+  "files": 784,
+  "bytes_expanded_files": 4686852,
+  "chunks": 9825,
+  "chunks_by_language": {
+   "javascript": 95,
+   "markdown": 6,
+   "python": 9724
+  }
+ },
+ "github_events": [
+  {
+   "event": "resolve_head",
+   "t": 1791323185.0145535
+  },
+  {
+   "event": "tarball_redirect",
+   "t": 1791323185.0148752
+  },
+  {
+   "event": "download_start",
+   "t": 1791323185.0150228
+  },
+  {
+   "event": "download_end",
+   "t": 1791323185.0150237,
+   "bytes": 1023442,
+   "local": true
+  },
+  {
+   "event": "revoke",
+   "t": 1791323185.4802248
+  }
+ ],
+ "statements": {
+  "loop": {
+   "other": {
+    "count": 2,
+    "total_seconds": 0.0032,
+    "max_seconds": 0.001706,
+    "first_at": 0.0043,
+    "last_end_at": 0.0126,
+    "errors": {}
+   },
+   "set_tenant": {
+    "count": 3,
+    "total_seconds": 0.0007,
+    "max_seconds": 0.000263,
+    "first_at": 0.0092,
+    "last_end_at": 17.9836,
+    "errors": {}
+   },
+   "progress": {
+    "count": 4,
+    "total_seconds": 0.0035,
+    "max_seconds": 0.001451,
+    "first_at": 0.0155,
+    "last_end_at": 17.9798,
+    "errors": {}
+   },
+   "resolve_run": {
+    "count": 1,
+    "total_seconds": 0.0055,
+    "max_seconds": 0.005504,
+    "first_at": 17.9839,
+    "last_end_at": 17.9894,
+    "errors": {}
+   },
+   "attach_run": {
+    "count": 1,
+    "total_seconds": 0.0011,
+    "max_seconds": 0.001119,
+    "first_at": 17.9894,
+    "last_end_at": 17.9905,
+    "errors": {}
+   },
+   "delete_chunks": {
+    "count": 1,
+    "total_seconds": 0.04,
+    "max_seconds": 0.04003,
+    "first_at": 17.9905,
+    "last_end_at": 18.0305,
+    "errors": {}
+   },
+   "insert_chunks": {
+    "count": 99,
+    "total_seconds": 28.085,
+    "max_seconds": 0.503624,
+    "first_at": 27.4602,
+    "last_end_at": 56.3954,
+    "errors": {}
+   },
+   "complete_run": {
+    "count": 1,
+    "total_seconds": 0.0502,
+    "max_seconds": 0.050226,
+    "first_at": 56.4046,
+    "last_end_at": 56.4548,
+    "errors": {}
+   },
+   "clear_rerun": {
+    "count": 1,
+    "total_seconds": 0.0003,
+    "max_seconds": 0.000341,
+    "first_at": 56.4549,
+    "last_end_at": 56.4552,
+    "errors": {}
+   },
+   "complete": {
+    "count": 1,
+    "total_seconds": 0.0009,
+    "max_seconds": 0.000908,
+    "first_at": 56.4553,
+    "last_end_at": 56.4562,
+    "errors": {}
+   },
+   "project_synced": {
+    "count": 1,
+    "total_seconds": 0.0004,
+    "max_seconds": 0.000412,
+    "first_at": 56.4562,
+    "last_end_at": 56.4566,
+    "errors": {}
+   }
+  },
+  "loop_entries": 115
+ },
+ "loop_statements_detail": [
+  {
+   "label": "other",
+   "at": 0.0043,
+   "seconds": 0.001706
+  },
+  {
+   "label": "set_tenant",
+   "at": 0.0092,
+   "seconds": 0.00026
+  },
+  {
+   "label": "set_tenant",
+   "at": 0.0108,
+   "seconds": 0.000225
+  },
+  {
+   "label": "other",
+   "at": 0.0111,
+   "seconds": 0.001482
+  },
+  {
+   "label": "progress",
+   "at": 0.0155,
+   "seconds": 0.000439
+  },
+  {
+   "label": "progress",
+   "at": 0.4859,
+   "seconds": 0.001451
+  },
+  {
+   "label": "progress",
+   "at": 16.7242,
+   "seconds": 0.000649
+  },
+  {
+   "label": "progress",
+   "at": 17.9789,
+   "seconds": 0.000921
+  },
+  {
+   "label": "set_tenant",
+   "at": 17.9833,
+   "seconds": 0.000263
+  },
+  {
+   "label": "resolve_run",
+   "at": 17.9839,
+   "seconds": 0.005504
+  },
+  {
+   "label": "attach_run",
+   "at": 17.9894,
+   "seconds": 0.001119
+  },
+  {
+   "label": "delete_chunks",
+   "at": 17.9905,
+   "seconds": 0.04003
+  },
+  {
+   "label": "complete_run",
+   "at": 56.4046,
+   "seconds": 0.050226
+  },
+  {
+   "label": "clear_rerun",
+   "at": 56.4549,
+   "seconds": 0.000341
+  },
+  {
+   "label": "complete",
+   "at": 56.4553,
+   "seconds": 0.000908
+  },
+  {
+   "label": "project_synced",
+   "at": 56.4562,
+   "seconds": 0.000412
+  }
+ ],
+ "heartbeat": {
+  "beats": [],
+  "beats_total": 0,
+  "beats_57014": 0,
+  "beats_raised": 0,
+  "log_heartbeat_failed_querycanceled": 0,
+  "log_assuming_it_is_lost": 0,
+  "max_beat_seconds": null
+ },
+ "peak_rss_bytes": 1088532480,
+ "peak_workdir_bytes": 0,
+ "workdir_samples": 110,
+ "replay": {
+  "distinct_chunks": 9456,
+  "model": "replay-of-text-embedding-ada-002",
+  "vectors_available": 48704,
+  "perturbed": 0,
+  "note": "vectors memory-mapped from the export; not counted as heap"
+ }
+}

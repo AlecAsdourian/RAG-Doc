@@ -1,0 +1,17 @@
+{
+  "archive": "cap-50000.tar.gz",
+  "full_name": "measure/cap-50000",
+  "sha": "11a568163cd8486576639139f786913272d00a22",
+  "branch": "main",
+  "expected_chunks": 49819,
+  "files": 3232,
+  "expanded_bytes": 20415475,
+  "archive_bytes": 3691677,
+  "copies_started": 2,
+  "source": {
+    "full_name": "django/django",
+    "sha": "8c34887b1ad8bb3ec61c6e713442dab3c643d557",
+    "chunks_per_full_copy": 48704,
+    "indexable_files": 2984
+  }
+}

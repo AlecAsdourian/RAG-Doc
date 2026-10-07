@@ -104,17 +104,18 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    # ⚠ TWO MINUTES TO STOP, NOT DOCKER'S TEN SECONDS (PR #58's review, A-L4).
-    # SIGTERM makes the worker finish the stretch it is in and stop at the
-    # next checkpoint, handing the job back with its attempt; a SIGKILL skips
-    # every `finally`, so the job sits `running` until its lease lapses and
-    # the token is never revoked (it dies with the process, and GitHub ends
-    # it within the hour). Two minutes covers the stretches measured: the
-    # live proof's whole job took 8 s, and one embedding slice is ten API
-    # calls. A fetch near the 500 MB cap on a slow link, or a store near the
-    # 100,000-chunk cap (about 5 minutes, inferred), can still outlast it;
-    # then the open transaction rolls back and the job is reclaimed.
-    stop_grace_period: 2m
+    # ⚠ SIX MINUTES TO STOP, NOT DOCKER'S TEN SECONDS (PR #58's review, A-L4;
+    # the value is 22.1-05's N6, measured 2026-10-06). SIGTERM makes the worker
+    # finish the stretch it is in and stop at the next checkpoint, handing the
+    # job back with its attempt; a SIGKILL skips every `finally`, so the job
+    # sits `running` until its lease lapses and the token is never revoked.
+    # `write_results` has NO checkpoint, so a worker told to stop mid-store
+    # finishes the store first: the grace is the larger of two minutes and the
+    # store measured at U6's 100,000-chunk cap (297 s) plus 30 s, rounded up
+    # to the minute. Shorter, and a store at the cap is killed and rolled back
+    # on every shutdown. `workers.jobs.runtime.DEFAULT_STOP_GRACE_PERIOD` is
+    # the authority; tests/test_compose_environment.py pins the two together.
+    stop_grace_period: 6m
     # Exit 1 is "could not reach the database" -- the case a restart is for
     # (workers/__main__.py). Docker cannot tell it from exit 2, a refusal no
     # restart can fix (OPENAI_API_KEY unset on the host, say), so the retries
@@ -124,11 +125,15 @@ services:
     # lines instead of looping for as long as compose is up. Docker counts
     # the five per `up`, not per outage.
     restart: on-failure:5
-    # P16: two worker processes (four connections), PROVISIONAL UNTIL 22.1-05
-    # replaces it with a measured number. Each needs about 1 GB of free disk
-    # for its job directory (docs/local-development.md).
+    # P16: ONE worker process (two connections), measured by 22.1-05
+    # (2026-10-06, N4): a single worker embedding a large repository already
+    # runs at 95 % of the OpenAI key's 1,000,000 tokens a minute, so a second
+    # one would only trade time for 429s. Raise it with a higher-tier key, and
+    # re-measure. `workers.jobs.runtime.DEFAULT_POOL_SIZE` is the authority.
+    # Each process needs about 0.95 GB of free disk for its job directory and
+    # up to about 9.7 GB of memory at U6's chunk cap (ISS-042; measured).
     deploy:
-      replicas: ${WORKER_REPLICAS:-2}
+      replicas: ${WORKER_REPLICAS:-1}
 
   frontend:
     build: ./services/frontend
