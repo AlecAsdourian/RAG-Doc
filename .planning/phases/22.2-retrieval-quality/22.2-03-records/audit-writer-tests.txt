@@ -238,3 +238,6 @@ collecting ... collected 62 items
 SKIPPED [1] .planning\phases\22.2-retrieval-quality\22.2-03-records\test_audit_writer.py:201: cannot create a symlink here: [WinError 1314] A required privilege is not held by the client: 'C:\\Users\\Alec\\AppData\\Local\\Temp\\pytest-of-Alec\\pytest-522\\test_void_a_true_symlink_point0\\outside\\secret.ts' -> 'C:\\Users\\Alec\\AppData\\Local\\Temp\\pytest-of-Alec\\pytest-522\\test_void_a_true_symlink_point0\\corpora\\linkwarden\\apps\\web\\lib\\s.ts'
 ======================== 61 passed, 1 skipped in 0.91s ========================
 exit 0
+
+######## 2026-10-06, note after PR #68's review (nit 7)
+Every sha256 in this file's mutation sections, including the first one (mutate_handback.py: 7fcd52b5..., 4598e873...), is the hash of audit_writer.py's LF bytes, the form git commits (7fcd52b5... is 7411291's committed blob). On a core.autocrlf=true checkout the working file is CRLF and hashes differently (7411291's tool hashes to 27b91d5d... there), so a rerun on such a checkout prints other numbers. Both mutation scripts handle either line ending.
