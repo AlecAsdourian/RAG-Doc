@@ -176,7 +176,13 @@ def test_d2_recall_on_real_vectors_under_the_locked_rule():  # noqa: C901 - one 
     from workers.db import require_tenant
     from workers.jobs.runtime import _merged_options_dsn
     from workers.jobs.transitions import resolve_ingestion_run
-    from workers.retrieval.vector_retriever import VECTOR_SEARCH_SQL, VectorRetriever, vector_literal
+    from workers.retrieval.vector_retriever import (
+        EF_SEARCH_SQL,
+        ITERATIVE_SCAN_SQL,
+        VECTOR_SEARCH_SQL,
+        VectorRetriever,
+        vector_literal,
+    )
     from workers.storage.postgres_writer import PostgresWriter, content_hash
 
     export = pathlib.Path(os.environ[VECTORS_ENV])
@@ -307,6 +313,8 @@ def test_d2_recall_on_real_vectors_under_the_locked_rule():  # noqa: C901 - one 
                     (f"chunks_p{shared}_embedding_idx",))
         settings["shared_index_reloptions"] = [list(r) for r in cur.fetchall()]
     results["settings"] = settings
+    # What the production search sets per transaction, on top of the server defaults above.
+    results["production_vector_leg_sets"] = [ITERATIVE_SCAN_SQL, EF_SEARCH_SQL]
 
     # ---- premises: placements and row counts ----------------------------
     scope_ids: Dict[Tuple[str, str], set] = {}
@@ -344,7 +352,9 @@ def test_d2_recall_on_real_vectors_under_the_locked_rule():  # noqa: C901 - one 
             first = next(iter(queries.values()))
             params0 = {"q": vector_literal(first), "repo": repo, "model": MODEL, "limit": LIMIT}
             with require_tenant(exact_conn, org) as cur:
-                cur.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
+                # Exactly what VectorRetriever.search sets, imported, never copied.
+                cur.execute(ITERATIVE_SCAN_SQL)
+                cur.execute(EF_SEARCH_SQL)
                 prod_plan = _plan(cur, VECTOR_SEARCH_SQL, params0)
             with require_tenant(exact_conn, org) as cur:
                 cur.execute("SET LOCAL enable_indexscan = off")
@@ -394,6 +404,8 @@ def test_d2_recall_on_real_vectors_under_the_locked_rule():  # noqa: C901 - one 
                        for k in ("H/L", "T/L-twin", "Z/L-slice-20000", "Z/L-slice-rest") if k in scopes}
 
     # R3's exploration, only if R3 fails: the ef_search curve. Nothing tuned.
+    # (Since the user's decision of 2026-10-06 production sets ef_search to
+    # HNSW_EF_SEARCH; "default" below is pgvector's server default, 40.)
     r3_failing = [k for k, v in scopes.items() if v["served_by"] == "hnsw" and (
         v["recall_at_10"]["mean"] < R3_MEAN_AT_10 or v["recall_at_10"]["min"] < R3_EACH_AT_10
         or v["recall_at_50"]["mean"] < R3_MEAN_AT_50)]

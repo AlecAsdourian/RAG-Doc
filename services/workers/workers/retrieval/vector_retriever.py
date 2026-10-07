@@ -17,6 +17,10 @@ tests/isolation/test_query_engine_isolation.py:
   measured queries (22-RESEARCH Q5, P5). Relaxed order may return rows
   slightly out of distance order, so the rows are re-sorted here by the exact
   distance the SELECT list computes.
+- **`hnsw.ef_search = 2 x the search limit`, per transaction** (22.1-05, the
+  user's decision of 2026-10-06). pgvector's default, 40, is below the leg's
+  LIMIT of 50, so an HNSW-served query could come back short; see
+  `HNSW_EF_SEARCH`.
 - **`embedding_model` is filtered to the generator's model.** Two models at
   the same dimension produce vectors in different spaces, and mixing them
   fails silently (P4). The predicate reads `EmbeddingGenerator.model`, never a
@@ -46,6 +50,21 @@ VECTOR_SEARCH_SQL = """
 """
 
 ITERATIVE_SCAN_SQL = "SET LOCAL hnsw.iterative_scan = relaxed_order"
+
+#: How many rows the vector leg asks for. `QueryEngine` passes this, and it
+#: is the one authority for the number.
+VECTOR_LEG_LIMIT = 50
+
+#: `hnsw.ef_search` for the vector leg: TWO TIMES THE SEARCH LIMIT. A
+#: correctness setting, not tuning (the user's decision of 2026-10-06, 22.1-05,
+#: `22.1-05-recall.md`). pgvector's default is 40, BELOW the leg's LIMIT of
+#: 50, so an HNSW-served query could not return the results it asked for:
+#: D2's recall test measured a short result and mean recall@10 of 0.93 at the
+#: default, against the locked rule's 0.95. Set per transaction beside
+#: `ITERATIVE_SCAN_SQL`. A caller asking for more than `VECTOR_LEG_LIMIT` rows
+#: must raise this with it.
+HNSW_EF_SEARCH = 2 * VECTOR_LEG_LIMIT
+EF_SEARCH_SQL = f"SET LOCAL hnsw.ef_search = {HNSW_EF_SEARCH}"
 
 
 def vector_literal(vector: Sequence[float]) -> str:
@@ -130,6 +149,7 @@ class VectorRetriever:
                 self.conn, organization_id, cursor_factory=RealDictCursor
             ) as cur:
                 cur.execute(ITERATIVE_SCAN_SQL)
+                cur.execute(EF_SEARCH_SQL)
                 cur.execute(VECTOR_SEARCH_SQL, params)
                 rows = [dict(row) for row in cur.fetchall()]
         except psycopg2.Error as e:

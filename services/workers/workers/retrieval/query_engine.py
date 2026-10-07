@@ -18,7 +18,7 @@ from .fts_retriever import FTSRetriever
 from .metadata_booster import MetadataBooster
 from .query_parser import QueryParser
 from .rrf_fusion import RRFFusion
-from .vector_retriever import VectorRetriever
+from .vector_retriever import VECTOR_LEG_LIMIT, VectorRetriever
 
 logger = logging.getLogger(__name__)
 
@@ -370,7 +370,7 @@ class QueryEngine:
             query=query_text,
             organization_id=organization_id,
             repository_id=repository_id,
-            limit=50,
+            limit=VECTOR_LEG_LIMIT,  # HNSW_EF_SEARCH is derived from it
         )
 
     def _enrich_results_with_metadata(

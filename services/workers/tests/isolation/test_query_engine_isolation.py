@@ -301,6 +301,53 @@ def test_iterative_scan_is_set_inside_the_retrievers_own_transaction(app_dsn, wi
         engine.vector_retriever.close()
 
 
+def test_ef_search_is_twice_the_limit_inside_the_retrievers_own_transaction(
+    app_dsn, with_two_orgs, monkeypatch
+):
+    """`hnsw.ef_search = 2 x the vector leg's LIMIT`, where the statement runs.
+
+    22.1-05, the user's decision of 2026-10-06: pgvector's default (40) is
+    below the leg's LIMIT of 50, so an HNSW-served query could not return what
+    it asked for -- D2's recall test measured a short result and recall@10 of
+    0.93. A correctness setting, read here in the retriever's own transaction
+    (as the iterative-scan test above reads its setting), and LOCAL to it.
+    """
+    from workers.retrieval.vector_retriever import HNSW_EF_SEARCH, VECTOR_LEG_LIMIT
+
+    assert HNSW_EF_SEARCH == 2 * VECTOR_LEG_LIMIT, "the setting is defined as twice the search limit"
+    org_a, _ = with_two_orgs
+    query = _unit(5)
+    engine = _engine(app_dsn, query)
+    _seed_chunk(app_dsn, org_a, "any chunk", _mix(query, _unit(6), 0.4), engine.embedding_generator.model)
+
+    real_require_tenant = vector_retriever_module.require_tenant
+    seen: List[str] = []
+
+    @contextmanager
+    def spying_require_tenant(conn, tenant_id, cursor_factory=None):
+        with real_require_tenant(conn, tenant_id, cursor_factory=cursor_factory) as cur:
+            yield cur
+            cur.execute("SELECT current_setting('hnsw.ef_search') AS setting")
+            row = cur.fetchone()
+            seen.append(row["setting"] if isinstance(row, dict) else row[0])
+
+    monkeypatch.setattr(vector_retriever_module, "require_tenant", spying_require_tenant)
+    try:
+        results = engine.vector_retriever.search(
+            query="probe", organization_id=org_a.id, repository_id=org_a.repo_id, limit=VECTOR_LEG_LIMIT
+        )
+        assert len(results) == 1
+        assert seen == [str(HNSW_EF_SEARCH)], f"hnsw.ef_search in the search's transaction: {seen}"
+
+        with engine.vector_retriever.conn.cursor() as cur:
+            cur.execute("SELECT current_setting('hnsw.ef_search')")
+            after = cur.fetchone()[0]
+        engine.vector_retriever.conn.rollback()
+        assert after != str(HNSW_EF_SEARCH), f"the setting leaked out of its transaction: {after}"
+    finally:
+        engine.vector_retriever.close()
+
+
 def test_the_hnsw_index_can_serve_the_vector_leg(app_dsn, with_two_orgs):
     """HNSW eligibility for VECTOR_SEARCH_SQL, on the production statement.
 
