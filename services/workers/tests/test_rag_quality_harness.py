@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import pathlib
 import shutil
 import sys
@@ -229,6 +230,9 @@ def _git(cwd, *args):
 def self_tree(tmp_path):
     """A tiny `self` tree, its own git checkout, with one Go and one Python file."""
     if shutil.which("git") is None:
+        if os.environ.get("CI"):
+            # On CI a silent skip would keep the job green (PR #67, review B, m6).
+            pytest.fail(NO_GIT + "; CI must have git, so this is not skipped there")
         pytest.skip(NO_GIT)
     root = tmp_path / "tree"
     (root / "services" / "backend" / "pkg" / "db").mkdir(parents=True)

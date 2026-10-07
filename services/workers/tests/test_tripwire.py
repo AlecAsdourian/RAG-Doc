@@ -259,8 +259,14 @@ def _old_compare_runs_score(ranks):
 # built-in `sum`, whose result changed in Python 3.12 (compensated summation),
 # so their MRR can differ from scoring.aggregate's correctly rounded `fsum` in
 # the last bits, by interpreter. The counts must match exactly; the MRR within
-# this bound, far below a rank step (0.05 / 45 ~ 1.1e-3) and M2's 1e-9
-# allowance (ISS-041).
+# this bound (ISS-041). It is tight on both sides:
+#   - above the rounding it absorbs: left-to-right summation of n <= 45 terms
+#     of at most 1 errs by at most about (n - 1) * 2**-53 * n ~ 2.2e-13 in the
+#     sum, so ~5e-15 in the mean; on 22-03's records the measured worst is
+#     5.6e-17 (one ULP, mealie file; PR #67, review B). 1e-12 is ~200x the
+#     analytical worst;
+#   - far below any real difference: a rank step is 0.05 / 45 ~ 1.1e-3 and
+#     M2's allowance is 1e-9, so a bound of 1e-12 cannot hide either.
 SUM_ROUNDING = 1e-12
 
 
@@ -294,6 +300,25 @@ def test_the_mrr_is_correctly_rounded_on_every_python():
     assert scoring.aggregate(ranks)["mrr"] == math.fsum(1.0 / r for r in found) / len(ranks)
     # Order cannot change a correctly rounded sum.
     assert scoring.aggregate(list(reversed(ranks)))["mrr"] == scoring.aggregate(ranks)["mrr"]
+
+
+def test_the_aggregate_adds_with_fsum(monkeypatch):
+    """Structural, so it fails on every Python if the aggregate goes back to the
+    built-in `sum`: on 3.12+ `sum` is compensated and agrees with `fsum` on most
+    inputs, so the value test above catches a revert only on 3.11, which CI does
+    not run (PR #67, review B, m1)."""
+    calls = []
+    real_fsum = math.fsum
+
+    def recording_fsum(values):
+        values = list(values)
+        calls.append(values)
+        return real_fsum(values)
+
+    monkeypatch.setattr(scoring.math, "fsum", recording_fsum)
+    result = scoring.aggregate([1, None, 4, 2])
+    assert calls == [[1.0, 0.25, 0.5]], "the reciprocal ranks are added by math.fsum"
+    assert result["mrr"] == real_fsum([1.0, 0.25, 0.5]) / 4
 
 
 def test_every_reader_calls_the_one_aggregate():
