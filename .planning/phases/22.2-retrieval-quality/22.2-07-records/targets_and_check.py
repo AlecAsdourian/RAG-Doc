@@ -4,7 +4,7 @@
 A MEASUREMENT RECORD, not product code. It runs the harness from this tree,
 with the interpreter it is run with:
 
-  - `--corpus <c> --list-targets` for miniflux and mealie, into targets.txt:
+  - `--corpus <c> --list-targets` for miniflux, mealie and linkwarden, into targets.txt:
     the list a blind writer is given (no question text);
   - `--corpus <c> --check` for every committed spec, into check.txt: offline,
     no database, no OpenAI, with validate_spec's independence check on (it runs
@@ -40,7 +40,7 @@ def main() -> int:
     ap.add_argument("--corpora-dir", type=Path, required=True)
     a = ap.parse_args()
     targets = []
-    for corpus in ("miniflux", "mealie"):
+    for corpus in ("miniflux", "mealie", "linkwarden"):
         targets += run(["--corpus", corpus, "--list-targets"])
     (HERE / "targets.txt").write_text("\n".join(targets), encoding="utf-8")
     specs = sorted(p.stem for p in SPECS.glob("*.json") if not p.stem.endswith("-rule"))

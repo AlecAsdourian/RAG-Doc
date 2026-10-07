@@ -101,3 +101,39 @@ targets of mealie at 84b2677f76069a6fb2bac6e2c633c9dbe7379ce4: (path, symbol) pe
   mealie/pkgs/i18n/json_provider.py :: JsonProvider._parse_plurals
   mealie/scripts/reprocess_images.py :: check_needs_reprocess
 (exit 0)
+
+$ python scripts/rag_quality_harness.py --corpus linkwarden --list-targets
+targets of linkwarden at 952ac4540657cae3a67c3ca59433899d2fda8374: (path, symbol) per question, by set; no question text
+[tuning] 15
+  apps/worker/lib/getLinkBatchFairly.ts :: getLinkBatchFairly
+  apps/worker/lib/preservationScheme/sanitizeHtmlForMonolith.ts :: sanitizeHtmlForMonolith
+  apps/worker/workers/rssPolling.ts :: startRSSPolling
+  packages/lib/verifyCapacity.ts :: hasPassedLimit
+  packages/lib/ssrf.ts :: isIpAddressBlockedForServerSideFetch
+  packages/filesystem/moveFile.ts :: moveFile
+  apps/web/lib/api/searchQueryBuilder.ts :: parseSearchTokens
+  apps/web/components/ClickAwayHandler.tsx :: useOutsideAlerter
+  apps/worker/lib/archiveHandler.ts :: determineLinkType
+  apps/worker/workers/linkProcessing.ts :: linkProcessingOnDemand
+  packages/lib/getFormatFromContentType.ts :: getFormatFromContentType
+  apps/web/lib/api/getPermission.ts :: getPermission
+  apps/web/lib/client/resizeImage.ts :: resizeImage
+  apps/web/lib/copyToClipboard.ts :: fallbackCopyTextToClipboard
+  apps/web/hooks/useCollectivePermissions.ts :: useCollectivePermissions
+[holdout] 15
+  apps/worker/lib/protectPageRequests.ts :: protectPageRequests
+  apps/worker/lib/preservationScheme/sendToWayback.ts :: sendToWayback
+  apps/worker/workers/linkIndexing.ts :: startIndexing
+  packages/lib/getFormatBasedOnPreference.ts :: getFormatBasedOnPreference
+  packages/filesystem/readFile.ts :: readFile
+  apps/web/lib/api/verifyToken.ts :: verifyToken
+  apps/web/lib/api/controllers/tags/mergeTags.ts :: mergeTags
+  apps/worker/lib/autoTagLink.ts :: getAIModel
+  apps/worker/lib/preservationScheme/handleMonolith.ts :: handleMonolith
+  packages/router/lib.ts :: resetInfiniteQueryPagination
+  packages/filesystem/removeFolder.ts :: emptyS3Directory
+  apps/web/lib/api/controllers/collections/collectionId/deleteCollectionById.ts :: updateDashboardSectionLayout
+  apps/web/lib/client/openLink.ts :: openLink
+  apps/web/lib/shared/fetchTitleAndHeaders.ts :: fetchTitleAndHeaders
+  apps/web/hooks/useSidebarCollapse.ts :: useSidebarCollapse
+(exit 0)
