@@ -51,11 +51,17 @@ inferred.*
 ## Arms, and the ones the rule is judged on
 
 - *Each arm: its record prefix (`<arm>-<corpus>.jsonl.gz`), and the value of
-  the variable on it (a model, or a chunker version and variant). The JSON's
-  `arms` holds the same.*
+  the variable on it: a model name, or `{"chunker_version": "<16 hex>"}`. The
+  JSON's `arms` holds the same.*
+  - A chunker arm declares its `chunker_version` only. That version is the one
+    the record header carries, and it names the variant too (`chunk_digest.py`).
+    No header records a separate `chunker_variant`, so `decide.py`'s schema
+    refuses one. A rule may declare it only after a plan makes the header
+    record it and adds it to the schema, with tests.
 - *The pair this rule is judged on: `pair` in the JSON, or, when it follows
   another rule, `after` with `arms_by_verdict` (which pair each of that
-  rule's verdicts selects), and why.*
+  rule's verdicts selects), and why. A rule it follows must be judged on the
+  same set and corpora.*
 
 ## Rule
 
@@ -68,6 +74,11 @@ on Δ = candidate − baseline in MRR@k.*
 `variable`, `arms`, `pair` or `after` with `arms_by_verdict`, `clauses`,
 `allowance`). A rule that needs a clause type the schema lacks extends the
 schema in its own plan, with tests, before its questions exist.
+
+**Once the questions exist, the JSON is frozen.** Any edit to it after the
+set's first question commit refuses, even an edit to its `description`.
+`decide.py` requires every commit that changed the rule file to precede the
+questions. A different rule needs a new set of questions.
 
 **They agree,** as this command's output shows: *a test that reads this
 document's Rule and Precision sections and compares them with the JSON, as
@@ -125,6 +136,14 @@ This protocol's commit is `<sha>`, the one that adds this file, on <date>, in
 PR #<n>. *Under QD12 (`22.2-CONTEXT.md`) a protocol PR is merged with a merge
 commit, so every commit below is an ancestor of `main` and `decide.py` reads
 their order from `main`'s history.*
+
+- **Never rebase a protocol branch.** Ancestry is what proves the order, and a
+  rebase rewrites the commits it reads.
+- **Commit each spec at its path before its questions.** A spec that arrives
+  with its questions, as a new file or through a `git mv`, hides where they
+  were written, so `decide.py` refuses it.
+- **Cite the judge's own output.** The rows below are the commits `decide.py`
+  prints under "Order of record verified".
 
 | # | Commit | Time | What |
 |---|---|---|---|
