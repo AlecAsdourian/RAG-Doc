@@ -40,6 +40,15 @@ def tree(tmp_path):
 
 
 def line(name, args):
+    """A transcript line: a tool_use, or (sentinels) "USER", a user or
+    continuation message (`args` is its text), or "RESULT", a tool's result,
+    which comes back as a `user` entry and does not end a turn."""
+    if name == "USER":
+        return json.dumps({"type": "user", "isSidechain": True, "isMeta": True,
+                           "message": {"role": "user", "content": args}})
+    if name == "RESULT":
+        return json.dumps({"type": "user", "isSidechain": True, "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_x", "content": args, "is_error": False}]}})
     return json.dumps({"type": "assistant", "isSidechain": True, "message": {
         "role": "assistant", "content": [{"type": "tool_use", "id": "toolu_x", "name": name, "input": args}]}})
 
@@ -311,14 +320,14 @@ def test_void_two_handbacks(tmp_path, tree):
     root, _ = tree
     a = run(tmp_path, root, ("Read", {"file_path": fwd(root / "apps/web/lib/x.ts")}), HANDBACK, HANDBACK)
     assert a.void
-    assert "not the final tool call" in a.calls[1].verdict
+    assert "not the last tool call of its turn" in a.calls[1].verdict
     assert a.calls[2].verdict == "ok"
 
 
 def test_void_a_handback_that_is_not_last(tmp_path, tree):
     root, _ = tree
     a = run(tmp_path, root, HANDBACK, ("Read", {"file_path": fwd(root / "apps/web/lib/x.ts")}))
-    assert a.void and "not the final tool call" in a.calls[0].verdict
+    assert a.void and "not the last tool call of its turn" in a.calls[0].verdict
 
 
 @pytest.mark.parametrize("args", [
@@ -339,6 +348,63 @@ def test_void_a_handback_whose_message_is_not_a_string(tmp_path, tree, message):
     root, _ = tree
     a = run(tmp_path, root, ("SubagentHandback", {"message": message}))
     assert a.void and "message is not a string" in a.calls[0].verdict
+
+
+# One hand-back per turn (amended 2026-10-06 after PR #68's review): a writer
+# continued for a top-up or a rephrasing hands back once per continuation.
+
+TOP_UP = ("USER", "Please write 2 more questions under the same instructions, ...")
+SENT = ("RESULT", "Your report has been delivered.")
+
+
+def test_accepts_two_turns_each_ending_in_one_handback(tmp_path, tree):
+    root, _ = tree
+    read = ("Read", {"file_path": fwd(root / "apps/web/lib/x.ts")})
+    a = run(tmp_path, root, read, ("RESULT", "1\tx"), HANDBACK, SENT, TOP_UP, read, ("RESULT", "1\tx"), HANDBACK, SENT)
+    assert not a.void, a.report()
+    assert [c.tool for c in a.calls] == ["Read", "SubagentHandback", "Read", "SubagentHandback"]
+
+
+def test_a_tool_result_does_not_end_a_turn(tmp_path, tree):
+    root, _ = tree
+    a = run(tmp_path, root, HANDBACK, SENT, ("Read", {"file_path": fwd(root / "apps/web/lib/x.ts")}))
+    assert a.void and "not the last tool call of its turn" in a.calls[0].verdict
+
+
+def test_void_two_handbacks_in_one_turn_of_two(tmp_path, tree):
+    root, _ = tree
+    a = run(tmp_path, root, HANDBACK, SENT, TOP_UP, HANDBACK, SENT, HANDBACK)
+    assert a.void
+    assert [c.verdict for c in a.calls][0] == "ok"
+    assert "not the last tool call of its turn" in a.calls[1].verdict
+    assert a.calls[2].verdict == "ok"
+
+
+def test_void_a_handback_followed_by_more_calls_in_its_turn(tmp_path, tree):
+    root, _ = tree
+    read = ("Read", {"file_path": fwd(root / "apps/web/lib/x.ts")})
+    a = run(tmp_path, root, read, HANDBACK, TOP_UP, HANDBACK, read, ("RESULT", "1\tx"))
+    assert a.void
+    assert a.calls[1].verdict == "ok"
+    assert "not the last tool call of its turn" in a.calls[2].verdict
+
+
+def test_void_a_continuation_handback_with_another_key(tmp_path, tree):
+    root, _ = tree
+    a = run(tmp_path, root, HANDBACK, TOP_UP, ("SubagentHandback", {"message": "[]", "path": fwd(root)}))
+    assert a.void and "not exactly ['message']" in a.calls[1].verdict
+
+
+def test_void_a_continuation_handback_with_a_non_string_message(tmp_path, tree):
+    root, _ = tree
+    a = run(tmp_path, root, HANDBACK, TOP_UP, ("SubagentHandback", {"message": ["[]"]}))
+    assert a.void and "message is not a string" in a.calls[1].verdict
+
+
+def test_a_continuation_turn_is_audited_like_the_first(tmp_path, tree):
+    root, outside = tree
+    a = run(tmp_path, root, HANDBACK, TOP_UP, ("Read", {"file_path": fwd(outside / "secret.ts")}), HANDBACK)
+    assert a.void and "outside the root" in a.calls[1].verdict
 
 
 def test_a_handback_does_not_excuse_a_bad_call_before_it(tmp_path, tree):

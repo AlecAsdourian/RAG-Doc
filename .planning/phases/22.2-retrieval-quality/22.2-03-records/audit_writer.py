@@ -8,13 +8,19 @@ subagent, `<project>/<session>/subagents/agent-<id>.jsonl`) and checks every
 `tool_use` block in it.
 
 Any one of these voids the writer's whole batch:
-- a tool other than Read, Grep and Glob, except one `SubagentHandback`
+- a tool other than Read, Grep and Glob, except `SubagentHandback`
   (amended 2026-10-06, the user's decision: writers are launched in the
   background from the planner's session, and the harness returns their
-  answer through that call). It is allowed only when it is the final
-  `tool_use` in the transcript and its input is exactly `{"message": <a
-  string>}`, which names no path. A second hand-back, one that is not last,
-  or one with any other key or a non-string message voids the batch;
+  answer through that call). **One hand-back is allowed per turn** (amended
+  again 2026-10-06, after PR #68's review, so that the plan's top-up and
+  rephrasing, which continue the same writer, can each hand back). A turn
+  ends at the next user or continuation message (a `user` entry carrying no
+  `tool_result`) or at the end of the transcript. A hand-back is allowed only
+  when it is the last `tool_use` of its turn and its input is exactly
+  `{"message": <a string>}`. That key check is what keeps it free of any path
+  argument. Two hand-backs in one turn, a hand-back followed by more tool
+  calls in the same turn, or one with any other key or a non-string message
+  voids the batch;
 - a Read with no `file_path`, or a Grep or Glob with no `path` (without one
   they search the session's working directory, which is this repository);
 - a relative path anywhere (it resolves against the session's working
@@ -63,8 +69,8 @@ from typing import Iterable, List, Optional, Sequence
 ALLOWED_TOOLS = ("Read", "Grep", "Glob")
 # A writer launched in the background (from the planner's session) hands its
 # answer back through one call of this tool, which the harness adds. One is
-# allowed, only as the final tool_use and only as {"message": <string>}
-# (22.2-03-PLAN.md, revision notice of 2026-10-06).
+# allowed per turn, only as the turn's last tool_use and only as
+# {"message": <string>} (22.2-03-PLAN.md, revision notices of 2026-10-06).
 HANDBACK_TOOL = "SubagentHandback"
 AGENT_TYPE = "blind-question-writer"
 WINDOWS = os.name == "nt"
@@ -205,8 +211,8 @@ def check_links(call: Call, links: Sequence[str]) -> None:
 
 def audit_call(line: int, name: str, args: dict, root_resolved: str, links: Sequence[str],
                is_last: bool = False) -> Call:
-    """One call's verdict. `is_last`: whether it is the transcript's final
-    tool_use, which only matters for the one hand-back allowed."""
+    """One call's verdict. `is_last`: whether it is the last tool_use of its
+    turn, which only matters for the one hand-back allowed per turn."""
     args = args if isinstance(args, dict) else {}
     if name == "Read":
         call = Call(line, name, args.get("file_path"), None, None)
@@ -226,7 +232,10 @@ def audit_call(line: int, name: str, args: dict, root_resolved: str, links: Sequ
     elif name == HANDBACK_TOOL:
         call = Call(line, name, None, None, None)
         if not is_last:
-            call.reasons.append(f"{HANDBACK_TOOL} is not the final tool call")
+            call.reasons.append(f"{HANDBACK_TOOL} is not the last tool call of its turn")
+        # Its only key is `message`: this is the check that keeps a hand-back
+        # free of any path argument (the message itself holds the answers,
+        # relative paths included, and is not a path).
         if set(args) != {"message"}:
             call.reasons.append(f"{HANDBACK_TOOL} input keys are {sorted(args)}, not exactly ['message']")
         elif not isinstance(args["message"], str):
@@ -237,20 +246,36 @@ def audit_call(line: int, name: str, args: dict, root_resolved: str, links: Sequ
     return call
 
 
+def is_turn_boundary(entry) -> bool:
+    """A user or continuation message: a `user` entry that carries no
+    tool_result (a tool's result comes back as a `user` entry too)."""
+    if not isinstance(entry, dict) or entry.get("type") != "user":
+        return False
+    content = (entry.get("message") or {}).get("content")
+    if isinstance(content, list):
+        return not any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
+    return True
+
+
 def tool_uses(lines: Iterable[str]):
-    """(line number, tool name, input) for every tool_use block, in order."""
+    """(line number, tool name, input, turn) for every tool_use block, in
+    order. The turn counts the user or continuation messages before it."""
+    turn = 0
     for n, text in enumerate(lines, 1):
         text = text.strip()
         if not text:
             continue
         entry = json.loads(text)
+        if is_turn_boundary(entry):
+            turn += 1
+            continue
         message = entry.get("message") if isinstance(entry, dict) else None
         content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(content, list):
             continue
         for block in content:
             if isinstance(block, dict) and block.get("type") == "tool_use":
-                yield n, str(block.get("name")), block.get("input")
+                yield n, str(block.get("name")), block.get("input"), turn
 
 
 def first_prompt(lines: Sequence[str]) -> Optional[str]:
@@ -319,8 +344,9 @@ def audit(transcript: Path, root: Path, label: str = "writer") -> Audit:
     lines = transcript.read_text(encoding="utf-8").splitlines()
     links = outward_links(root_resolved)
     uses = list(tool_uses(lines))
-    calls = [audit_call(n, name, args, root_resolved, links, is_last=(i == len(uses) - 1))
-             for i, (n, name, args) in enumerate(uses)]
+    calls = [audit_call(n, name, args, root_resolved, links,
+                        is_last=(i == len(uses) - 1 or uses[i + 1][3] != turn))
+             for i, (n, name, args, turn) in enumerate(uses)]
 
     batch_reasons = []
     agent_type = None
