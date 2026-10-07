@@ -1,0 +1,53 @@
+22.2-03 Task 2: linkwarden's first ingest and its baseline, measured as rag_doc_app. The aggregates are reported, not judged.
+
+== precondition
+main 2c5ffe7 (PR #68 merged with a merge commit; the 30 questions on main before this ingest); 22.2-02 is on main (#66); chunker version e3d3175e3d756d3d
+this branch: feat/22.2-03-linkwarden-baseline, cut from 2c5ffe7; the harness ran from this worktree at a635402 (the header's harness_commit), which adds only check-fixed-chunker.txt and census-linkwarden.json to 2c5ffe7
+not on main and not used: 22.2-07's decide.py (PR #67) and 22.1-05's hnsw.ef_search change (PR #69); the header records hnsw.ef_search 40, the server default
+environment: Python 3.13.7, a fresh venv from services/workers/requirements.txt; OPENAI_API_KEY read from services/workers/.env into the child process only (164 characters, never printed)
+
+== the scratch database
+docker run -d --name w2203-pg -p 127.0.0.1::5432 pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b  (published on 127.0.0.1:56688; never compose, never port 5434)
+22.2-01-records/scratch_db.py: scratch database at 127.0.0.1:56688 (server 16.15 (Debian 16.15-1.pgdg12+2)): 18 migrations applied (000001_create_core_schema.up.sql .. 000018_ingestion_jobs_repository_recent.up.sql); rag_doc_app rolsuper=False rolbypassrls=False
+removed afterwards: docker rm -fv w2203-pg (docker ps -a shows no w2203 container)
+
+== the commands (baseline_run.py; logs baseline-ingest.txt, baseline-measure.txt, baseline-usage.txt)
+1. as the scratch superuser: rag_quality_harness.py --corpus linkwarden --corpora-dir C:/Users/Alec/Desktop/code/rag-bench-corpora --clear --ingest
+   -> 379 files, 991 chunks, offline chunk set b1c7c108..., status success
+2. as rag_doc_app (DSN option -c role=rag_doc_app): rag_quality_harness.py --corpus linkwarden --corpora-dir C:/Users/Alec/Desktop/code/rag-bench-corpora --measure --set all --query-vectors <scratch>/w2203-bench/vecs-linkwarden-ada-002.json --record <scratch>/w2203-bench/baseline-linkwarden.jsonl --json-out <scratch>/w2203-bench/baseline-linkwarden.summary.json --vector-tolerance 2e-6
+   -> the 30 questions embedded once (0 cached, 30 embedded) and written back; 0 failed queries
+   No --exact run: the plan does not call for one.
+
+== a first ingest attempt failed, and was rerun (baseline-ingest-attempt1-429.txt, baseline-usage-attempt1-429.txt)
+The first --clear --ingest stopped on an OpenAI 429 (tokens per minute) after 6 embedding batches: another session's re-embedding job was using the organisation's rate limit at the same time. Nothing was written (the rerun's --clear found runs=0 chunks=0). I waited for that job to finish and ran the ingest again. The failed attempt's 154,994 tokens were billed and are counted in the spend below. (The organisation id in its error text is redacted.)
+
+== the checks (baseline_checks.py)
+== the header
+PASS  chunk_set_digest b1c7c1082197ed74 = offline = census-linkwarden.json's
+PASS  chunk rows 991 = offline = census = visible to rag_doc_app
+PASS  chunk_models names one model: {'text-embedding-ada-002': 991}
+PASS  the query model text-embedding-ada-002 is the chunks' model
+PASS  fts connection: current_user rag_doc_app, rolsuper False, rolbypassrls False
+PASS  vector connection: current_user rag_doc_app, rolsuper False, rolbypassrls False
+PASS  chunker e3d3175e3d756d3d = census's, verified
+PASS  corpus commit 952ac4540657cae3a67c3ca59433899d2fda8374
+PASS  vector tolerance 2e-06 (QD2)
+PASS  breadcrumb column mismatches 0
+      harness_commit a635402ae300d741f5673a3ebc781965ac6de715, retrieval_code_version 7fcefd6af7bbb5d1, hnsw.ef_search 40, server 16.15 (Debian 16.15-1.pgdg12+2)
+== the queries
+PASS  30 questions recorded, 0 failed
+PASS  30 cached query vectors, one per question
+== the spend (text-embedding-ada-002 at $0.10 per million tokens)
+      baseline-usage-attempt1-429.txt: 6 batches, 154994 tokens, $0.015499
+      baseline-usage.txt: 11 batches, 248872 tokens, $0.024887
+PASS  total $0.040387 within the plan's $0.05 cap
+== the aggregates per set (reported, not judged)
+      set      level     n  recall@5  rank-1   MRR@5
+      tuning   file     15  14/15     13/15    0.880
+      tuning   symbol   15  13/15     10/15    0.756
+      holdout  file     15  12/15      8/15    0.627
+      holdout  symbol   15  12/15      8/15    0.627
+      all      file     30  26/30     21/30    0.753
+      all      symbol   30  25/30     18/30    0.691
+PASS  the record's ranks give the summary's file aggregates
+0 FAIL
