@@ -1,0 +1,354 @@
+{
+ "corpus": "linkwarden",
+ "commit": "952ac4540657cae3a67c3ca59433899d2fda8374",
+ "set": "all",
+ "top_k": 5,
+ "boost_config": null,
+ "summary": {
+  "file": {
+   "questions": 30,
+   "found": 26,
+   "rank1": 21,
+   "mrr": 0.7533333333333334
+  },
+  "symbol": {
+   "questions": 30,
+   "found": 25,
+   "rank1": 18,
+   "mrr": 0.6911111111111111
+  },
+  "errors": 0
+ },
+ "rows": [
+  {
+   "id": "lw-01",
+   "set": "tuning",
+   "question": "How does the background archiver share out each batch of pending bookmarks so that one user who saves thousands of pages doesn't starve everyone else?",
+   "path": "apps/worker/lib/getLinkBatchFairly.ts",
+   "symbol": "getLinkBatchFairly",
+   "file_rank": null,
+   "symbol_rank": null,
+   "top_hit": "apps/worker/lib/preservationScheme/handleScreenshotAndPdf.ts",
+   "error": null
+  },
+  {
+   "id": "lw-02",
+   "set": "holdout",
+   "question": "Where are the headless browser's outgoing requests intercepted so that a page being captured can't reach internal network addresses?",
+   "path": "apps/worker/lib/protectPageRequests.ts",
+   "symbol": "protectPageRequests",
+   "file_rank": 1,
+   "symbol_rank": 1,
+   "top_hit": "apps/worker/lib/protectPageRequests.ts",
+   "error": null
+  },
+  {
+   "id": "lw-03",
+   "set": "tuning",
+   "question": "Before a page is turned into a single self-contained HTML file, how are embedded image, script and stylesheet references to private hosts removed?",
+   "path": "apps/worker/lib/preservationScheme/sanitizeHtmlForMonolith.ts",
+   "symbol": "sanitizeHtmlForMonolith",
+   "file_rank": 1,
+   "symbol_rank": 1,
+   "top_hit": "apps/worker/lib/preservationScheme/sanitizeHtmlForMonolith.ts",
+   "error": null
+  },
+  {
+   "id": "lw-04",
+   "set": "holdout",
+   "question": "What happens if submitting a saved page to the Internet Archive fails?",
+   "path": "apps/worker/lib/preservationScheme/sendToWayback.ts",
+   "symbol": "sendToWayback",
+   "file_rank": 2,
+   "symbol_rank": 2,
+   "top_hit": "apps/worker/lib/archiveHandler.ts",
+   "error": null
+  },
+  {
+   "id": "lw-05",
+   "set": "tuning",
+   "question": "How often are subscribed news feeds checked for new entries, and what stops one slow feed from holding up the others?",
+   "path": "apps/worker/workers/rssPolling.ts",
+   "symbol": "startRSSPolling",
+   "file_rank": 1,
+   "symbol_rank": 1,
+   "top_hit": "apps/worker/workers/rssPolling.ts",
+   "error": null
+  },
+  {
+   "id": "lw-06",
+   "set": "holdout",
+   "question": "How do saved bookmarks get pushed into the full-text search engine, and how does the worker know which ones still need to be sent?",
+   "path": "apps/worker/workers/linkIndexing.ts",
+   "symbol": "startIndexing",
+   "file_rank": null,
+   "symbol_rank": null,
+   "top_hit": "apps/web/lib/api/controllers/migration/importFromHTMLFile.ts",
+   "error": null
+  },
+  {
+   "id": "lw-07",
+   "set": "tuning",
+   "question": "What decides whether a user is over their bookmark quota when they import, including for team plans that share seats?",
+   "path": "packages/lib/verifyCapacity.ts",
+   "symbol": "hasPassedLimit",
+   "file_rank": 1,
+   "symbol_rank": 1,
+   "top_hit": "packages/lib/verifyCapacity.ts",
+   "error": null
+  },
+  {
+   "id": "lw-08",
+   "set": "holdout",
+   "question": "When someone clicks a bookmark, what decides whether they get the original website, the PDF copy, the reader view, the screenshot or the single-file snapshot?",
+   "path": "packages/lib/getFormatBasedOnPreference.ts",
+   "symbol": "getFormatBasedOnPreference",
+   "file_rank": 5,
+   "symbol_rank": 5,
+   "top_hit": "packages/lib/getOriginalFormat.ts",
+   "error": null
+  },
+  {
+   "id": "lw-09",
+   "set": "tuning",
+   "question": "What decides whether a resolved IP address counts as private or internal and must not be fetched by the server?",
+   "path": "packages/lib/ssrf.ts",
+   "symbol": "isIpAddressBlockedForServerSideFetch",
+   "file_rank": 1,
+   "symbol_rank": 3,
+   "top_hit": "packages/lib/ssrf.ts",
+   "error": null
+  },
+  {
+   "id": "lw-10",
+   "set": "holdout",
+   "question": "What happens when a stored snapshot is requested from the cloud storage bucket but the object isn't there?",
+   "path": "packages/filesystem/readFile.ts",
+   "symbol": "readFile",
+   "file_rank": 5,
+   "symbol_rank": 5,
+   "top_hit": "packages/filesystem/fileExists.ts",
+   "error": null
+  },
+  {
+   "id": "lw-11",
+   "set": "tuning",
+   "question": "How is an archived file relocated to a new path, both when storage is on local disk and when it lives in an object store?",
+   "path": "packages/filesystem/moveFile.ts",
+   "symbol": "moveFile",
+   "file_rank": 1,
+   "symbol_rank": 1,
+   "top_hit": "packages/filesystem/moveFile.ts",
+   "error": null
+  },
+  {
+   "id": "lw-12",
+   "set": "holdout",
+   "question": "Where does the API check that a caller's login or API key hasn't expired or been revoked?",
+   "path": "apps/web/lib/api/verifyToken.ts",
+   "symbol": "verifyToken",
+   "file_rank": 1,
+   "symbol_rank": 1,
+   "top_hit": "apps/web/lib/api/verifyToken.ts",
+   "error": null
+  },
+  {
+   "id": "lw-13",
+   "set": "tuning",
+   "question": "How does the search box handle filters like 'tag:news' or a leading exclamation mark that negates a filter?",
+   "path": "apps/web/lib/api/searchQueryBuilder.ts",
+   "symbol": "parseSearchTokens",
+   "file_rank": 1,
+   "symbol_rank": 1,
+   "top_hit": "apps/web/lib/api/searchQueryBuilder.ts",
+   "error": null
+  },
+  {
+   "id": "lw-14",
+   "set": "holdout",
+   "question": "When a user combines several labels into one, what happens to the bookmarks that carried the old labels?",
+   "path": "apps/web/lib/api/controllers/tags/mergeTags.ts",
+   "symbol": "mergeTags",
+   "file_rank": null,
+   "symbol_rank": null,
+   "top_hit": "apps/web/lib/api/controllers/migration/importFromHTMLFile.ts",
+   "error": null
+  },
+  {
+   "id": "lw-15",
+   "set": "tuning",
+   "question": "What decides whether clicking outside a popup closes it, especially when the click lands on something layered above it?",
+   "path": "apps/web/components/ClickAwayHandler.tsx",
+   "symbol": "useOutsideAlerter",
+   "file_rank": 1,
+   "symbol_rank": 2,
+   "top_hit": "apps/web/components/ClickAwayHandler.tsx",
+   "error": null
+  },
+  {
+   "id": "lw-16",
+   "set": "holdout",
+   "question": "When several AI provider API keys are set in the environment at once, which one does the background worker pick for automatic tagging?",
+   "path": "apps/worker/lib/autoTagLink.ts",
+   "symbol": "getAIModel",
+   "file_rank": 2,
+   "symbol_rank": 2,
+   "top_hit": "apps/worker/workers/autoTagPreservedLinks.ts",
+   "error": null
+  },
+  {
+   "id": "lw-17",
+   "set": "tuning",
+   "question": "How does the archiving worker tell whether a saved URL points to a PDF, a picture or an ordinary web page?",
+   "path": "apps/worker/lib/archiveHandler.ts",
+   "symbol": "determineLinkType",
+   "file_rank": 5,
+   "symbol_rank": null,
+   "top_hit": "apps/worker/lib/preservationScheme/handleScreenshotAndPdf.ts",
+   "error": null
+  },
+  {
+   "id": "lw-18",
+   "set": "holdout",
+   "question": "Where is the single-file HTML snapshot of a page produced, and what happens if the external tool's output is empty or too big?",
+   "path": "apps/worker/lib/preservationScheme/handleMonolith.ts",
+   "symbol": "handleMonolith",
+   "file_rank": 1,
+   "symbol_rank": 1,
+   "top_hit": "apps/worker/lib/preservationScheme/handleMonolith.ts",
+   "error": null
+  },
+  {
+   "id": "lw-19",
+   "set": "tuning",
+   "question": "What happens to the headless browser in the default mode when there are no bookmarks waiting to be archived for a while?",
+   "path": "apps/worker/workers/linkProcessing.ts",
+   "symbol": "linkProcessingOnDemand",
+   "file_rank": 1,
+   "symbol_rank": 2,
+   "top_hit": "apps/worker/workers/linkProcessing.ts",
+   "error": null
+  },
+  {
+   "id": "lw-20",
+   "set": "holdout",
+   "question": "How is a cached endlessly-scrolling list trimmed back to just its first page before it is refetched?",
+   "path": "packages/router/lib.ts",
+   "symbol": "resetInfiniteQueryPagination",
+   "file_rank": 1,
+   "symbol_rank": 1,
+   "top_hit": "packages/router/lib.ts",
+   "error": null
+  },
+  {
+   "id": "lw-21",
+   "set": "tuning",
+   "question": "Which MIME types of an uploaded file are accepted as a stored copy of a page, and what kind of archive does each become?",
+   "path": "packages/lib/getFormatFromContentType.ts",
+   "symbol": "getFormatFromContentType",
+   "file_rank": 1,
+   "symbol_rank": 1,
+   "top_hit": "packages/lib/getFormatFromContentType.ts",
+   "error": null
+  },
+  {
+   "id": "lw-22",
+   "set": "holdout",
+   "question": "When files live in cloud object storage, how does removing a whole folder handle a bucket listing that comes back only partly filled?",
+   "path": "packages/filesystem/removeFolder.ts",
+   "symbol": "emptyS3Directory",
+   "file_rank": 1,
+   "symbol_rank": 1,
+   "top_hit": "packages/filesystem/removeFolder.ts",
+   "error": null
+  },
+  {
+   "id": "lw-23",
+   "set": "tuning",
+   "question": "How does the server look up whether a user is allowed to reach a given collection, or the collection holding a given bookmark?",
+   "path": "apps/web/lib/api/getPermission.ts",
+   "symbol": "getPermission",
+   "file_rank": 1,
+   "symbol_rank": 1,
+   "top_hit": "apps/web/lib/api/getPermission.ts",
+   "error": null
+  },
+  {
+   "id": "lw-24",
+   "set": "holdout",
+   "question": "What happens to the ordered blocks on a user's home screen when they leave or delete a collection that had its own block there?",
+   "path": "apps/web/lib/api/controllers/collections/collectionId/deleteCollectionById.ts",
+   "symbol": "updateDashboardSectionLayout",
+   "file_rank": 1,
+   "symbol_rank": 1,
+   "top_hit": "apps/web/lib/api/controllers/collections/collectionId/deleteCollectionById.ts",
+   "error": null
+  },
+  {
+   "id": "lw-25",
+   "set": "tuning",
+   "question": "What size and quality are pictures shrunk to in the browser before they are uploaded?",
+   "path": "apps/web/lib/client/resizeImage.ts",
+   "symbol": "resizeImage",
+   "file_rank": 1,
+   "symbol_rank": 1,
+   "top_hit": "apps/web/lib/client/resizeImage.ts",
+   "error": null
+  },
+  {
+   "id": "lw-26",
+   "set": "holdout",
+   "question": "What decides whether clicking a saved bookmark shows its details pane, opens a stored copy, or goes to the live website?",
+   "path": "apps/web/lib/client/openLink.ts",
+   "symbol": "openLink",
+   "file_rank": null,
+   "symbol_rank": null,
+   "top_hit": "apps/web/components/LinkDetails.tsx",
+   "error": null
+  },
+  {
+   "id": "lw-27",
+   "set": "tuning",
+   "question": "How does the web app copy text when the browser blocks the modern copy-to-system API, for example on a non-HTTPS page?",
+   "path": "apps/web/lib/copyToClipboard.ts",
+   "symbol": "fallbackCopyTextToClipboard",
+   "file_rank": 1,
+   "symbol_rank": 1,
+   "top_hit": "apps/web/lib/copyToClipboard.ts",
+   "error": null
+  },
+  {
+   "id": "lw-28",
+   "set": "holdout",
+   "question": "How long does the app wait when grabbing a web page's title while a new bookmark is added, and what does it return if that fails?",
+   "path": "apps/web/lib/shared/fetchTitleAndHeaders.ts",
+   "symbol": "fetchTitleAndHeaders",
+   "file_rank": 1,
+   "symbol_rank": 1,
+   "top_hit": "apps/web/lib/shared/fetchTitleAndHeaders.ts",
+   "error": null
+  },
+  {
+   "id": "lw-29",
+   "set": "tuning",
+   "question": "When several collections are selected at once in the UI, what decides which create, edit and delete rights the current user is treated as having?",
+   "path": "apps/web/hooks/useCollectivePermissions.ts",
+   "symbol": "useCollectivePermissions",
+   "file_rank": 1,
+   "symbol_rank": 1,
+   "top_hit": "apps/web/hooks/useCollectivePermissions.ts",
+   "error": null
+  },
+  {
+   "id": "lw-30",
+   "set": "holdout",
+   "question": "Where is the folded or expanded state of the side navigation panel remembered between page reloads?",
+   "path": "apps/web/hooks/useSidebarCollapse.ts",
+   "symbol": "useSidebarCollapse",
+   "file_rank": 1,
+   "symbol_rank": 1,
+   "top_hit": "apps/web/hooks/useSidebarCollapse.ts",
+   "error": null
+  }
+ ]
+}
