@@ -139,3 +139,20 @@ PASS  all / symbol: the recomputed aggregates equal summary.json's
    FAIL  summary: top_k 50, set 'all', boost_config None
    baseline_checks.py exit 1; 2 FAIL
 == 5 of 5 mutations FAIL; the records directory is unchanged: True
+
+######## 2026-10-06, after PR #70's review (M2, N7): how the committed logs were made
+The logs were written by the first version of baseline_run.py, which wrote <out>/ingest.txt, <out>/measure.txt and <out>/usage.txt (appending) under <scratch>/w2203-bench, concatenated each child's stdout and then its stderr (so the chunker's WARNING lines follow the status block, out of time order), and did not redact org- ids. After the 429'd attempt, and before the rerun, its two logs were renamed by hand:
+  cd <scratch>/w2203-bench && mv ingest.txt ingest-attempt1-429.txt && mv usage.txt usage-attempt1-429.txt
+After the measure, the logs were copied into 22.2-03-records/ under these names:
+  cp ingest.txt baseline-ingest.txt; cp measure.txt baseline-measure.txt; cp usage.txt baseline-usage.txt
+  cp ingest-attempt1-429.txt baseline-ingest-attempt1-429.txt; cp usage-attempt1-429.txt baseline-usage-attempt1-429.txt
+and the organisation id in the 429 messages was redacted in the committed copy only (4 occurrences):
+  sed -i 's/org-[A-Za-z0-9]\{8,\}/org-<redacted>/g' baseline-ingest-attempt1-429.txt
+No other edit was made to any log. baseline_run.py now does the redaction, names the logs with --prefix (default baseline-), merges stderr into stdout, and guards against an empty secret; it was not rerun, so the logs above are the first version's output.
+
+######## 2026-10-06, after PR #70's review (M3): the census's provenance
+The census ran on 2c5ffe7's tree (main after #68; the worktree was at 2c5ffe7, changed only by the then-uncommitted check-fixed-chunker.txt, no code), before the ingest, and its output was committed in a635402:
+  cd services/workers && python scripts/rag_benchmarks/chunk_census.py --corpora C:/Users/Alec/Desktop/code/rag-bench-corpora --out <scratch>/w2203-census --only linkwarden
+  -> linkwarden: 379 files, 991 chunks, digest b1c7c1082197ed74, chunker e3d3175e3d756d3d, index/source 0.895, truncated 0, billed tokens 247081
+  then: cp <scratch>/w2203-census/census-linkwarden.json .planning/phases/22.2-retrieval-quality/22.2-03-records/census-linkwarden.json
+(The census's "billed tokens 247081" counts distinct content; the ingest embedded all 991 texts, 248157 tokens, the census's embedded_total_if_every_chunk.)

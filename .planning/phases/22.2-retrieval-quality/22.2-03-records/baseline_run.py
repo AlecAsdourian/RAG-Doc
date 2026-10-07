@@ -17,7 +17,13 @@ bench_run.py, for one corpus and the plan's flags. With this tree's harness:
 Secrets: OPENAI_API_KEY is read from --env-file and DATABASE_URL from the DSN
 files, into the child's environment only. Nothing here prints either; the key
 is reported by its length alone. Paths under the scratch directory are
-printed as `<scratch>`.
+printed as `<scratch>`, and OpenAI organisation ids as `org-<redacted>`.
+
+Changed after PR #70's review (M2, N6, N7): the `org-` redaction, `--prefix`
+for the log names (default `baseline-`), the `if secret:` guard, and stderr
+merged into stdout so the log keeps time order. The committed logs were
+written by the first version, then renamed and redacted by hand; baseline.txt
+records the exact commands.
 
 USAGE
     baseline_run.py --workers <tree>/services/workers --corpora-dir <dir> --vectors <vecs.json>
@@ -26,6 +32,7 @@ USAGE
 """
 import argparse
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -60,6 +67,8 @@ def main() -> int:
                  "--app-dsn-file", "--env-file", "--out", "--scratch"):
         ap.add_argument(flag, required=True)
     ap.add_argument("--step", choices=["ingest", "measure", "both"], default="both")
+    ap.add_argument("--prefix", default="baseline-",
+                    help="prefix of the log names: <prefix>ingest.txt, <prefix>measure.txt, <prefix>usage.txt")
     a = ap.parse_args()
     out, scratch = Path(a.out), Path(a.scratch).resolve()
     key = read_env_key(Path(a.env_file), "OPENAI_API_KEY")
@@ -69,10 +78,12 @@ def main() -> int:
 
     def clean(text: str) -> str:
         for secret in (key, su, app):
-            text = text.replace(secret, "<redacted>")
+            if secret:  # an empty value would interleave the marker between every character
+                text = text.replace(secret, "<redacted>")
         for form in (str(scratch), str(scratch).replace("\\", "/")):
             text = text.replace(form, "<scratch>")
-        return text
+        # OpenAI's error messages name the organisation (`org-...`).
+        return re.sub(r"org-[A-Za-z0-9]{8,}", "org-<redacted>", text)
 
     harness = str(Path(a.workers) / "scripts" / "rag_quality_harness.py")
     base = ["--corpus", "linkwarden", "--corpora-dir", a.corpora_dir]
@@ -80,8 +91,8 @@ def main() -> int:
     def run(args, dsn: str, log: Path, usage: Path) -> int:
         env = dict(os.environ, OPENAI_API_KEY=key, DATABASE_URL=dsn, PYTHONIOENCODING="utf-8")
         r = subprocess.run([sys.executable, "-c", SHIM, harness, *base, *args], cwd=a.workers, env=env,
-                           capture_output=True, text=True, encoding="utf-8")
-        lines = (r.stdout + r.stderr).splitlines()
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8")
+        lines = r.stdout.splitlines()  # stderr merged in, so the lines keep their time order
         usage_lines = [ln[len("USAGE "):] for ln in lines if ln.startswith("USAGE ")]
         other = [ln for ln in lines if not ln.startswith("USAGE ")]
         shown = " ".join(["rag_quality_harness.py", *base, *args])
@@ -92,14 +103,14 @@ def main() -> int:
         print(f"  {' '.join(args[:2])}: exit {r.returncode}")
         return r.returncode
 
-    usage = out / "usage.txt"
+    usage = out / f"{a.prefix}usage.txt"
     if a.step in ("ingest", "both"):
-        if run(["--clear", "--ingest"], su, out / "ingest.txt", usage):
+        if run(["--clear", "--ingest"], su, out / f"{a.prefix}ingest.txt", usage):
             return 1
     if a.step in ("measure", "both"):
         if run(["--measure", "--set", "all", "--query-vectors", a.vectors, "--record", a.record,
                 "--json-out", a.json_out, "--vector-tolerance", VECTOR_TOLERANCE],
-               app, out / "measure.txt", usage):
+               app, out / f"{a.prefix}measure.txt", usage):
             return 1
     return 0
 
