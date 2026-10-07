@@ -1,5 +1,15 @@
 ## 1. the default arms
 $ decide.py --rules <tmp>\repo\rules\chunk-shape-rule.json <tmp>\repo\rules\embedding-model-rule.json --records <tmp>\records --specs <tmp>\repo\specs --query-vectors text-embedding-ada-002=<tmp>\vectors-ada.json text-embedding-3-small=<tmp>\vectors-3small.json.gz
+Order of record verified (every rule change precedes every question's first commit):
+  chunk-shape: chunk-shape-rule.json changed in 3628842691f2 (2026-10-06T18:30:43-07:00)
+  chunk-shape: miniflux's shape-model questions arrived in f74c9633e6e5 (2026-10-06T18:30:44-07:00)
+  chunk-shape: mealie's shape-model questions arrived in f74c9633e6e5 (2026-10-06T18:30:44-07:00)
+  chunk-shape: linkwarden's shape-model questions arrived in f74c9633e6e5 (2026-10-06T18:30:44-07:00)
+  M2: embedding-model-rule.json changed in 3628842691f2 (2026-10-06T18:30:43-07:00)
+  M2: miniflux's shape-model questions arrived in f74c9633e6e5 (2026-10-06T18:30:44-07:00)
+  M2: mealie's shape-model questions arrived in f74c9633e6e5 (2026-10-06T18:30:44-07:00)
+  M2: linkwarden's shape-model questions arrived in f74c9633e6e5 (2026-10-06T18:30:44-07:00)
+
 === RULE chunk-shape (chunk-shape-rule.json, protocol chunk-shape-protocol.md)
   variable chunker: baseline current-ada ({'chunker_version': 'cccccccccccccccc'}) vs candidate candidate-ada ({'chunker_version': 'dddddddddddddddd'}), its own pair; set shape-model, corpora miniflux, mealie, linkwarden
   corpus       level   baseline MRR rec rank1   candidate MRR rec rank1  delta MRR
@@ -163,6 +173,16 @@ Rules run: chunk-shape ADOPT, M2 REJECT
 
 ## 2. candidate-3small +0.0333 at symbol level
 $ decide.py --rules <tmp>\repo\rules\chunk-shape-rule.json <tmp>\repo\rules\embedding-model-rule.json --records <tmp>\records --specs <tmp>\repo\specs --query-vectors text-embedding-ada-002=<tmp>\vectors-ada.json text-embedding-3-small=<tmp>\vectors-3small.json.gz
+Order of record verified (every rule change precedes every question's first commit):
+  chunk-shape: chunk-shape-rule.json changed in 933f78cc0239 (2026-10-06T18:30:45-07:00)
+  chunk-shape: miniflux's shape-model questions arrived in 80f8f799b0f5 (2026-10-06T18:30:45-07:00)
+  chunk-shape: mealie's shape-model questions arrived in 80f8f799b0f5 (2026-10-06T18:30:45-07:00)
+  chunk-shape: linkwarden's shape-model questions arrived in 80f8f799b0f5 (2026-10-06T18:30:45-07:00)
+  M2: embedding-model-rule.json changed in 933f78cc0239 (2026-10-06T18:30:45-07:00)
+  M2: miniflux's shape-model questions arrived in 80f8f799b0f5 (2026-10-06T18:30:45-07:00)
+  M2: mealie's shape-model questions arrived in 80f8f799b0f5 (2026-10-06T18:30:45-07:00)
+  M2: linkwarden's shape-model questions arrived in 80f8f799b0f5 (2026-10-06T18:30:45-07:00)
+
 === RULE chunk-shape (chunk-shape-rule.json, protocol chunk-shape-protocol.md)
   variable chunker: baseline current-ada ({'chunker_version': 'cccccccccccccccc'}) vs candidate candidate-ada ({'chunker_version': 'dddddddddddddddd'}), its own pair; set shape-model, corpora miniflux, mealie, linkwarden
   corpus       level   baseline MRR rec rank1   candidate MRR rec rank1  delta MRR

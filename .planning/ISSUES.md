@@ -4,6 +4,24 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 ## Open Enhancements
 
+### ISS-043: tiktoken downloads its encoding at run time, so 67 tests and an offline worker's first ingest fail without network
+
+- **Discovered:** 2026-10-06, while measuring ISS-041 for PR #67 (22.2-07). Review B of PR #67 counted it; this entry's numbers are re-measured at `525d898` (`22.2-07-records/tiktoken-offline.txt`, by `tiktoken_offline.sh`).
+- **Type:** Testing / Operations
+- **Priority:** Low–Medium. CI and the developer machines have network, so nothing fails today. But a test run or a worker with no egress fails, and flaky network already failed single tests in PR #67's container runs (`test_handler.py::test_the_stages_run_in_order…`, once on 3.11 and once on 3.12).
+- **What:** `OpenAIEmbeddingClient` calls `tiktoken.encoding_for_model`, and the census counts tokens with `tiktoken` too. tiktoken fetches `cl100k_base.tiktoken` from `openaipublic.blob.core.windows.net` on first use, into a cache directory.
+  - Measured in `python:3.12-slim` at `525d898`, with `TIKTOKEN_CACHE_DIR` empty and HTTPS/HTTP sent to a dead proxy (`NO_PROXY` for localhost): **67 tests fail or error**, 55 failed and 12 errors, where the same run online passes (651 passed, exit 0).
+  - Per file: `tests/ingest/test_handler.py` 38, `tests/test_chunk_census.py` 19 (7 failed, 12 errors), `workers/embeddings/test_embeddings.py` 8, `tests/ingest/test_progress_contract.py` 2. The tracebacks name `openaipublic.blob.core.windows.net`.
+  - Nothing pre-caches the encoding: no `tiktoken` mention in `services/workers/Dockerfile`, `Dockerfile.api` or `.github/workflows/`.
+- **Why it matters:** a worker started without egress (an air-gapped or locked-down deployment) fails its first ingest the same way, and the test suite's result depends on the network.
+- **Fix options:**
+  1. **In the images:** download `cl100k_base` at build time into a fixed directory and set `TIKTOKEN_CACHE_DIR` to it, so a running worker never fetches.
+  2. **In CI and tests:** the same cache through `TIKTOKEN_CACHE_DIR`, restored by CI's cache step or vendored for tests and set by a `conftest.py`; or mark the tests that need it `network` and skip them with a reason when offline.
+  
+  Option 1 fixes production; option 2 makes the suite deterministic. Both are small.
+- **Owner:** Phase 24, or the next workers PR that touches the Dockerfiles or CI. Left open by PR #67, which only measured it.
+- **Related:** ISS-041 (closed by PR #67), whose measurements first surfaced it.
+
 ### ISS-040: A marked refusal from another deployment's token route reads as a lost lease, so every job dies silently
 
 - **Discovered:** 2026-09-29, by PR #58's review (22-05), reviewer A's L2. Reasoned from the code and from a signature one test already shows; not measured against two real deployments.
@@ -462,11 +480,18 @@ Enhancements discovered during execution. Not critical - address in future phase
 
 - **✅ CLOSED 2026-10-06 by PR #67 (22.2-07, branch `feat/22.2-07-judge`), on the version-independent fix.** Evidence in `22.2-07-SUMMARY.md` §6 and `22.2-07-records/python-versions.txt`:
   - **`scoring.aggregate` adds reciprocal ranks with `math.fsum`** (correctly rounded, the same double on every Python), and so does `decide.py`'s MRR@20. The tolerances stay explicit; no locked rule number changed.
-  - **`test_tripwire.py`** compares the 22-03 summaries and its two `sum`-based reference copies by exact counts and MRR within a named `SUM_ROUNDING = 1e-12`, and a new test pins the MRR to `fsum`'s exactly.
-  - **The git-dependent tests skip with a reason when `git` is missing:** the harness test's `self_tree` fixture (the 7 errors) and `test_decide.py`'s repository builder.
-  - **Measured in scratch containers:** at the base `5bb8693`, `tests/test_tripwire.py` fails `[mealie]` on 3.11 and passes on 3.12; on the branch, `pytest tests/ workers/ --ignore=tests/isolation` gives 583 passed, 86 skipped (git absent) on `python:3.11-slim` and 663 passed, 6 skipped (git installed) on `python:3.12-slim`, both exit 0.
+  - **`test_tripwire.py`** compares the 22-03 summaries and its two `sum`-based reference copies by exact counts and MRR within a named `SUM_ROUNDING = 1e-12` (bounded from both sides in its comment). Two tests pin the fix: one pins the MRR to `fsum`'s value, and one asserts structurally that `aggregate` calls `math.fsum`. The structural test kills a revert to `sum` on every Python, CI's 3.12 included (PR #67, review B, m1).
+  - **The git-dependent tests skip with a reason when `git` is missing,** and fail instead when `CI` is set, so CI can never go green on a silent skip. That covers the harness test's `self_tree` fixture (the 7 errors) and `test_decide.py`'s repository builder.
+  - **Measured in scratch containers, on `525d898`** (the code after PR #67's review round):
+    - At the base `5bb8693`, `tests/test_tripwire.py` fails `[mealie]` on 3.11 (exit 1) and passes on 3.12 (exit 0).
+    - At `525d898`, `pytest tests/ workers/ --ignore=tests/isolation` gives:
+      - 651 passed, 99 skipped (93 for git, each with its reason) on `python:3.11-slim` without git;
+      - 744 passed, 6 skipped on `python:3.12-slim` with git installed.
+      
+      Both exit 0.
+    - A first 3.12 run at `525d898` failed one handler test on tiktoken's download, ISS-043's cause, and was re-run.
 - **Not chosen:** aligning the versions (the images to 3.12, or 3.11 in CI's matrix). It stays an operations choice; the tests no longer depend on it.
-- **Seen while measuring, not part of this issue:** about 25 existing tests need tiktoken to download its encoding from the network (`test_embeddings.py`, `test_chunk_census.py`, `test_handler.py`); with the network blocked they fail.
+- **Seen while measuring, not part of this issue:** 67 existing tests need tiktoken to download its encoding (55 failed and 12 errors with the network blocked, at `525d898`). Filed as **ISS-043**.
 - *The entry as filed:*
 - **Discovered:** 2026-10-06, by the 22.1-03 worker's verification of PR #64 in `python:3.11-slim`. Measured there: 701 passed, **1 failed, 7 errors**, none in PR #64's files. CI runs 3.12 (`workers-ci.yml:72`, `isolation-check.yml:28`), so it passes there.
 - **Type:** Testing / Operations

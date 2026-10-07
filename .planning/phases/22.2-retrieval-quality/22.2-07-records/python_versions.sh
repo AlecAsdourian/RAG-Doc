@@ -26,7 +26,8 @@ pip install -q -r requirements.txt >/dev/null 2>&1 || echo "pip install failed"
 python -m pytest tests/ workers/ --ignore=tests/isolation -q -p no:cacheprovider -rfEs > /tmp/o.txt 2>&1
 rc=$?
 grep -E '^(FAILED|ERROR) ' /tmp/o.txt | sed 's/ - .*//'
-grep -E '^SKIPPED' /tmp/o.txt | sed -E 's/^SKIPPED \[([0-9]+)\] [^:]+:[0-9]+: /\1 x /' | sort | uniq -c
+grep -E '^SKIPPED' /tmp/o.txt | sed -E 's/^SKIPPED \[([0-9]+)\] [^:]+:[0-9]+: /\1\t/' \
+  | awk -F'\t' '{n[$2] += $1} END {for (r in n) printf "%5d skipped: %s\n", n[r], r}' | sort -rn
 tail -1 /tmp/o.txt
 echo "pytest exit $rc"
 INNER

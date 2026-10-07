@@ -1,15 +1,15 @@
 22.2-07 mutation table: every guard, under the mutation rule (22.2-07-PLAN.md).
 Each block: mutate.py's proof that the file was clean at HEAD, the mutation landed (bytes differ from HEAD's),
 the tests run, the failing tests, and the restore proven by sha256 and hash-object equal to HEAD's blob.
-Run on commit 410c804957fb, the final code (after ISS-041's fsum change).
-Task 1: decide.py (mutations_decide.py, tests/test_decide.py); Tasks 2 and 3 (mutations_t23.py).
+Run on commit 525d898c795e, the code after PR #67's review round.
+Tasks 2 and 3 (mutations_t23.py); Task 1, decide.py (mutations_decide.py); the review round's guards (mutations_review.py).
 
 -- T2-M1: the independence check neutered (the plan's)
 == T2-M1: services/workers/scripts/rag_quality_harness.py
-   HEAD 410c804957fb, blob ba8c37d0e411; pristine sha256 58df8c7402c5a6c0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob ba8c37d0e411; pristine sha256 58df8c7402c5a6c0; hash-object == HEAD blob: True
    mutation: 'if (a.get("set") in DECISION_SETS or b.get("set") in DECISION_SETS) and same_target(a, b):' -> 'if (a.get("set") in DECISION_SETS or b.get("set") in DECISION_SETS) and same_target(a, b) and False:'
    landed: True (mutated sha256 2afacba397d91747; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_rag_quality_harness.py: exit 1; 5 failed, 47 passed in 3.69s
+   pytest tests/test_rag_quality_harness.py: exit 1; 5 failed, 47 passed in 5.96s
       FAILED tests/test_rag_quality_harness.py::TestDecisionSets::test_a_decision_question_on_another_questions_target_is_refused_naming_both[first0-second0]
       FAILED tests/test_rag_quality_harness.py::TestDecisionSets::test_a_decision_question_on_another_questions_target_is_refused_naming_both[first1-second1]
       FAILED tests/test_rag_quality_harness.py::TestDecisionSets::test_a_decision_question_on_another_questions_target_is_refused_naming_both[first2-second2]
@@ -20,10 +20,10 @@ Task 1: decide.py (mutations_decide.py, tests/test_decide.py); Tasks 2 and 3 (mu
 
 -- T2-M2: only pairs of two decision-set questions checked
 == T2-M2: services/workers/scripts/rag_quality_harness.py
-   HEAD 410c804957fb, blob ba8c37d0e411; pristine sha256 58df8c7402c5a6c0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob ba8c37d0e411; pristine sha256 58df8c7402c5a6c0; hash-object == HEAD blob: True
    mutation: 'or b.get("set") in DECISION_SETS) and same_target(a, b):' -> 'and b.get("set") in DECISION_SETS) and same_target(a, b):'
    landed: True (mutated sha256 fa9af79a43f29a2d; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_rag_quality_harness.py: exit 1; 3 failed, 49 passed in 3.67s
+   pytest tests/test_rag_quality_harness.py: exit 1; 3 failed, 49 passed in 3.56s
       FAILED tests/test_rag_quality_harness.py::TestDecisionSets::test_a_decision_question_on_another_questions_target_is_refused_naming_both[first0-second0]
       FAILED tests/test_rag_quality_harness.py::TestDecisionSets::test_a_decision_question_on_another_questions_target_is_refused_naming_both[first1-second1]
       FAILED tests/test_rag_quality_harness.py::TestDecisionSets::test_a_decision_question_on_another_questions_target_is_refused_naming_both[first4-second4]
@@ -32,20 +32,20 @@ Task 1: decide.py (mutations_decide.py, tests/test_decide.py); Tasks 2 and 3 (mu
 
 -- T2-M3: a symbol-less question no longer targets its file
 == T2-M3: services/workers/scripts/rag_quality_harness.py
-   HEAD 410c804957fb, blob ba8c37d0e411; pristine sha256 58df8c7402c5a6c0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob ba8c37d0e411; pristine sha256 58df8c7402c5a6c0; hash-object == HEAD blob: True
    mutation: 'if not sa or not sb:' -> 'if not sa and not sb:'
    landed: True (mutated sha256 54f276e2bf962c4d; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_rag_quality_harness.py: exit 1; 1 failed, 51 passed in 7.34s
+   pytest tests/test_rag_quality_harness.py: exit 1; 1 failed, 51 passed in 8.81s
       FAILED tests/test_rag_quality_harness.py::TestDecisionSets::test_a_decision_question_on_another_questions_target_is_refused_naming_both[first4-second4]
    restored: sha256 58df8c7402c5a6c0 == pristine True; hash-object == HEAD blob True
    VERDICT T2-M3: KILLED (expected to fail: test_a_decision_question_on_another_questions_target_is_refused_naming_both[first4)
 
 -- T2-M4: symbols compared by equality, not symbol_matches
 == T2-M4: services/workers/scripts/rag_quality_harness.py
-   HEAD 410c804957fb, blob ba8c37d0e411; pristine sha256 58df8c7402c5a6c0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob ba8c37d0e411; pristine sha256 58df8c7402c5a6c0; hash-object == HEAD blob: True
    mutation: 'return symbol_matches(sa, sb) or symbol_matches(sb, sa)' -> 'return sa == sb'
    landed: True (mutated sha256 c8b3be25adb08611; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_rag_quality_harness.py: exit 1; 2 failed, 50 passed in 3.77s
+   pytest tests/test_rag_quality_harness.py: exit 1; 2 failed, 50 passed in 3.51s
       FAILED tests/test_rag_quality_harness.py::TestDecisionSets::test_a_decision_question_on_another_questions_target_is_refused_naming_both[first1-second1]
       FAILED tests/test_rag_quality_harness.py::TestDecisionSets::test_a_decision_question_on_another_questions_target_is_refused_naming_both[first2-second2]
    restored: sha256 58df8c7402c5a6c0 == pristine True; hash-object == HEAD blob True
@@ -53,30 +53,30 @@ Task 1: decide.py (mutations_decide.py, tests/test_decide.py); Tasks 2 and 3 (mu
 
 -- T3-M1: the pipeline ignores embedding_model (the plan's)
 == T3-M1: services/workers/workers/pipeline/ingestion_pipeline.py
-   HEAD 410c804957fb, blob 56604238296a; pristine sha256 e6562d4593f13749; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 56604238296a; pristine sha256 e6562d4593f13749; hash-object == HEAD blob: True
    mutation: 'EmbeddingGenerator(api_key=openai_api_key, model=embedding_model)' -> 'EmbeddingGenerator(api_key=openai_api_key)'
    landed: True (mutated sha256 c14c6fa39cd2838e; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest workers/pipeline/test_pipeline.py: exit 1; 1 failed, 4 passed in 0.71s
+   pytest workers/pipeline/test_pipeline.py: exit 1; 1 failed, 4 passed in 0.77s
       FAILED workers/pipeline/test_pipeline.py::TestTheEmbeddingModel::test_a_given_model_reaches_the_generator_and_the_stored_rows
    restored: sha256 e6562d4593f13749 == pristine True; hash-object == HEAD blob True
    VERDICT T3-M1: KILLED (expected to fail: test_a_given_model_reaches_the_generator_and_the_stored_rows)
 
 -- T3-M2: the engine ignores embedding_model (the plan's)
 == T3-M2: services/workers/workers/retrieval/query_engine.py
-   HEAD 410c804957fb, blob 5dff4ce5e7fd; pristine sha256 23c71a480d1a4191; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 5dff4ce5e7fd; pristine sha256 23c71a480d1a4191; hash-object == HEAD blob: True
    mutation: 'EmbeddingGenerator(api_key=openai_api_key, model=embedding_model)' -> 'EmbeddingGenerator(api_key=openai_api_key)'
    landed: True (mutated sha256 a95823e5d8907853; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest workers/retrieval/test_query_engine.py: exit 1; 1 failed, 13 passed in 0.69s
+   pytest workers/retrieval/test_query_engine.py: exit 1; 1 failed, 13 passed in 0.68s
       FAILED workers/retrieval/test_query_engine.py::TestTheEmbeddingModel::test_a_given_model_reaches_the_generator_and_the_vector_legs_filter
    restored: sha256 23c71a480d1a4191 == pristine True; hash-object == HEAD blob True
    VERDICT T3-M2: KILLED (expected to fail: test_a_given_model_reaches_the_generator_and_the_vector_legs_filter)
 
 -- T3-M3: --embedding-model does not reach --ingest's pipeline
 == T3-M3: services/workers/scripts/rag_quality_harness.py
-   HEAD 410c804957fb, blob ba8c37d0e411; pristine sha256 58df8c7402c5a6c0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob ba8c37d0e411; pristine sha256 58df8c7402c5a6c0; hash-object == HEAD blob: True
    mutation: 'openai_api_key=OPENAI, embedding_model=embedding_model)' -> 'openai_api_key=OPENAI)'
    landed: True (mutated sha256 981cadcbb577f036; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_rag_quality_harness.py: exit 1; 2 failed, 50 passed in 3.83s
+   pytest tests/test_rag_quality_harness.py: exit 1; 2 failed, 50 passed in 3.49s
       FAILED tests/test_rag_quality_harness.py::TestEmbeddingModelArgument::test_the_flag_reaches_the_pipeline_the_engine_and_exact
       FAILED tests/test_rag_quality_harness.py::TestEmbeddingModelArgument::test_with_no_flag_the_resolved_model_is_ada_002
    restored: sha256 58df8c7402c5a6c0 == pristine True; hash-object == HEAD blob True
@@ -84,10 +84,10 @@ Task 1: decide.py (mutations_decide.py, tests/test_decide.py); Tasks 2 and 3 (mu
 
 -- T3-M4: --embedding-model does not reach --measure
 == T3-M4: services/workers/scripts/rag_quality_harness.py
-   HEAD 410c804957fb, blob ba8c37d0e411; pristine sha256 58df8c7402c5a6c0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob ba8c37d0e411; pristine sha256 58df8c7402c5a6c0; hash-object == HEAD blob: True
    mutation: 'vector_tolerance=a.vector_tolerance, embedding_model=a.embedding_model)' -> 'vector_tolerance=a.vector_tolerance)'
    landed: True (mutated sha256 88252400ed5c609f; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_rag_quality_harness.py: exit 1; 2 failed, 50 passed in 3.84s
+   pytest tests/test_rag_quality_harness.py: exit 1; 2 failed, 50 passed in 3.98s
       FAILED tests/test_rag_quality_harness.py::TestEmbeddingModelArgument::test_the_flag_reaches_the_pipeline_the_engine_and_exact
       FAILED tests/test_rag_quality_harness.py::TestEmbeddingModelArgument::test_the_query_vector_cache_refuses_the_other_models_vector
    restored: sha256 58df8c7402c5a6c0 == pristine True; hash-object == HEAD blob True
@@ -95,10 +95,10 @@ Task 1: decide.py (mutations_decide.py, tests/test_decide.py); Tasks 2 and 3 (mu
 
 -- T3-M5: --embedding-model does not reach --exact
 == T3-M5: services/workers/scripts/rag_quality_harness.py
-   HEAD 410c804957fb, blob ba8c37d0e411; pristine sha256 58df8c7402c5a6c0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob ba8c37d0e411; pristine sha256 58df8c7402c5a6c0; hash-object == HEAD blob: True
    mutation: 'openai_api_key=OPENAI, embedding_model=a.embedding_model)' -> 'openai_api_key=OPENAI)'
    landed: True (mutated sha256 fb2f72c2a9877a67; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_rag_quality_harness.py: exit 1; 2 failed, 50 passed in 3.84s
+   pytest tests/test_rag_quality_harness.py: exit 1; 2 failed, 50 passed in 3.76s
       FAILED tests/test_rag_quality_harness.py::TestEmbeddingModelArgument::test_the_flag_reaches_the_pipeline_the_engine_and_exact
       FAILED tests/test_rag_quality_harness.py::TestEmbeddingModelArgument::test_with_no_flag_the_resolved_model_is_ada_002
    restored: sha256 58df8c7402c5a6c0 == pristine True; hash-object == HEAD blob True
@@ -106,10 +106,10 @@ Task 1: decide.py (mutations_decide.py, tests/test_decide.py); Tasks 2 and 3 (mu
 
 -- T3-M6: the default model changed
 == T3-M6: services/workers/workers/embeddings/defaults.py
-   HEAD 410c804957fb, blob 04e650b577a0; pristine sha256 3081df619f4e804c; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 04e650b577a0; pristine sha256 3081df619f4e804c; hash-object == HEAD blob: True
    mutation: 'DEFAULT_EMBEDDING_MODEL = "text-embedding-ada-002"' -> 'DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"'
    landed: True (mutated sha256 74c0d3eeb83e3201; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest workers/pipeline/test_pipeline.py workers/retrieval/test_query_engine.py tests/test_rag_quality_harness.py: exit 1; 4 failed, 67 passed in 3.61s
+   pytest workers/pipeline/test_pipeline.py workers/retrieval/test_query_engine.py tests/test_rag_quality_harness.py: exit 1; 4 failed, 67 passed in 4.05s
       FAILED tests/test_rag_quality_harness.py::TestEmbeddingModelArgument::test_the_query_vector_cache_refuses_the_other_models_vector
       FAILED tests/test_rag_quality_harness.py::TestEmbeddingModelArgument::test_with_no_flag_the_resolved_model_is_ada_002
       FAILED workers/pipeline/test_pipeline.py::TestTheEmbeddingModel::test_the_default_is_ada_002
@@ -119,51 +119,51 @@ Task 1: decide.py (mutations_decide.py, tests/test_decide.py); Tasks 2 and 3 (mu
 
 -- T1-M1: refusal 5: the chunk-set digest check
 == T1-M1: services/workers/scripts/rag_benchmarks/decide.py
-   HEAD 410c804957fb, blob 3e3d9f13bd16; pristine sha256 85a193a286e199e0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
    mutation: 'if not bh.get("chunk_set_digest") or bh.get("chunk_set_digest") != ch.get("chunk_set_digest"):' -> 'if (not bh.get("chunk_set_digest") or bh.get("chunk_set_digest") != ch.get("chunk_set_digest")) and False:'
-   landed: True (mutated sha256 df289612d4fe14fa; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_decide.py: exit 1; 1 failed, 80 passed in 56.79s
+   landed: True (mutated sha256 a8f705ccfb7444e5; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 1 failed, 95 passed in 74.34s (0:01:14)
       FAILED tests/test_decide.py::TestRefusal5ArmsDiffer::test_a_model_comparison_with_different_chunk_set_digests_is_refused
-   restored: sha256 85a193a286e199e0 == pristine True; hash-object == HEAD blob True
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
    VERDICT T1-M1: KILLED (expected to fail: test_a_model_comparison_with_different_chunk_set_digests_is_refused)
 
 -- T1-M2: refusal 6: the query-vector model check
 == T1-M2: services/workers/scripts/rag_benchmarks/decide.py
-   HEAD 410c804957fb, blob 3e3d9f13bd16; pristine sha256 85a193a286e199e0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
    mutation: 'elif entry.get("model") != model:' -> 'elif entry.get("model") != model and False:'
-   landed: True (mutated sha256 a9f12d601edc44e5; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_decide.py: exit 1; 1 failed, 80 passed in 58.40s
+   landed: True (mutated sha256 3930e020041cb615; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 1 failed, 95 passed in 73.25s (0:01:13)
       FAILED tests/test_decide.py::TestRefusal6QueryVectors::test_a_vector_embedded_with_another_model_is_refused
-   restored: sha256 85a193a286e199e0 == pristine True; hash-object == HEAD blob True
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
    VERDICT T1-M2: KILLED (expected to fail: test_a_vector_embedded_with_another_model_is_refused)
 
 -- T1-M3: refusal 7: the order check (every rule commit taken as an ancestor)
 == T1-M3: services/workers/scripts/rag_benchmarks/decide.py
-   HEAD 410c804957fb, blob 3e3d9f13bd16; pristine sha256 85a193a286e199e0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
    mutation: 'capture_output=True).returncode == 0' -> 'capture_output=True).returncode >= 0'
-   landed: True (mutated sha256 dcff88d3bfafac8d; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_decide.py: exit 1; 2 failed, 79 passed in 58.94s
+   landed: True (mutated sha256 f8fcd11ef8351964; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 2 failed, 94 passed in 71.60s (0:01:11)
       FAILED tests/test_decide.py::TestRefusal7Order::test_a_rule_changed_after_its_questions_is_refused
       FAILED tests/test_decide.py::TestRefusal7Order::test_questions_then_rule_is_refused
-   restored: sha256 85a193a286e199e0 == pristine True; hash-object == HEAD blob True
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
    VERDICT T1-M3: KILLED (expected to fail: test_questions_then_rule_is_refused, test_a_rule_changed_after_its_questions_is_refused)
 
 -- T1-M4: refusal 2: the rank recompute
 == T1-M4: services/workers/scripts/rag_benchmarks/decide.py
-   HEAD 410c804957fb, blob 3e3d9f13bd16; pristine sha256 85a193a286e199e0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
    mutation: 'if expected != (rec["file_rank"], rec.get("symbol_rank")):' -> 'if expected != (rec["file_rank"], rec.get("symbol_rank")) and False:'
-   landed: True (mutated sha256 dda3b9486cc668b6; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_decide.py: exit 1; 1 failed, 80 passed in 58.32s
+   landed: True (mutated sha256 47afe247e0842a1d; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 1 failed, 95 passed in 76.38s (0:01:16)
       FAILED tests/test_decide.py::TestRefusal2Ranks::test_a_rank_its_final_list_does_not_give_is_refused
-   restored: sha256 85a193a286e199e0 == pristine True; hash-object == HEAD blob True
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
    VERDICT T1-M4: KILLED (expected to fail: test_a_rank_its_final_list_does_not_give_is_refused)
 
 -- T1-M5: the allowance's sign
 == T1-M5: services/workers/scripts/rag_benchmarks/decide.py
-   HEAD 410c804957fb, blob 3e3d9f13bd16; pristine sha256 85a193a286e199e0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
    mutation: 'return delta >= min_delta - allowance' -> 'return delta >= min_delta + allowance'
-   landed: True (mutated sha256 7c56cbcb387cbf8e; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_decide.py: exit 1; 12 failed, 69 passed in 59.10s
+   landed: True (mutated sha256 e50cc8ca42016175; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 13 failed, 83 passed in 72.64s (0:01:12)
       FAILED tests/test_decide.py::TestTheBoundaries::test_clause_1_adopts_at_exactly_plus_0_03_and_rejects_one_step_short
       FAILED tests/test_decide.py::TestTheBoundaries::test_clause_2_adopts_at_zero_and_rejects_one_step_below
       FAILED tests/test_decide.py::TestTheBoundaries::test_clause_3_adopts_at_exactly_minus_0_11_and_rejects_one_step_past
@@ -176,15 +176,16 @@ Task 1: decide.py (mutations_decide.py, tests/test_decide.py); Tasks 2 and 3 (mu
       FAILED tests/test_decide.py::TestTheCleanRun::test_the_default_arms_adopt_the_chunk_shape_and_reject_m2
       FAILED tests/test_decide.py::TestTheRuleOrder::test_chunk_shape_adopt_judges_m2_on_the_candidate_arms
       FAILED tests/test_decide.py::TestTheRuleOrder::test_chunk_shape_reject_with_current_arms_that_adopt
-   restored: sha256 85a193a286e199e0 == pristine True; hash-object == HEAD blob True
+      FAILED tests/test_decide.py::test_pooled_mrr_at_20_scores_each_corpus_with_its_own_exact_paths
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
    VERDICT T1-M5: KILLED (expected to fail: test_exactly_at_the_threshold_minus_the_allowance_holds_and_2e9_past_it_fails, test_clause_1_adopts_at_exactly_plus_0_03_and_rejects_one_step_short, test_clause_2_adopts_at_zero_and_rejects_one_step_below, test_clause_3_adopts_at_exactly_minus_0_11_and_rejects_one_step_past)
 
 -- T1-M6: M2 judged on the wrong chunker's arms
 == T1-M6: services/workers/scripts/rag_benchmarks/decide.py
-   HEAD 410c804957fb, blob 3e3d9f13bd16; pristine sha256 85a193a286e199e0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
    mutation: 'pair, why = rule["arms_by_verdict"][prior],' -> 'pair, why = rule["arms_by_verdict"]["REJECT" if prior == "ADOPT" else "ADOPT"],'
-   landed: True (mutated sha256 5f917e3efa3ff304; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_decide.py: exit 1; 9 failed, 72 passed in 55.70s
+   landed: True (mutated sha256 953e352cd372dbb6; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 10 failed, 86 passed in 73.60s (0:01:13)
       FAILED tests/test_decide.py::TestTheBoundaries::test_clause_1_adopts_at_exactly_plus_0_03_and_rejects_one_step_short
       FAILED tests/test_decide.py::TestTheBoundaries::test_clause_2_adopts_at_zero_and_rejects_one_step_below
       FAILED tests/test_decide.py::TestTheBoundaries::test_clause_3_adopts_at_exactly_minus_0_11_and_rejects_one_step_past
@@ -194,229 +195,357 @@ Task 1: decide.py (mutations_decide.py, tests/test_decide.py); Tasks 2 and 3 (mu
       FAILED tests/test_decide.py::TestTheRuleOrder::test_chunk_shape_adopt_judges_m2_on_the_candidate_arms
       FAILED tests/test_decide.py::TestTheRuleOrder::test_chunk_shape_reject_judges_m2_on_the_current_arms
       FAILED tests/test_decide.py::TestTheRuleOrder::test_chunk_shape_reject_with_current_arms_that_adopt
-   restored: sha256 85a193a286e199e0 == pristine True; hash-object == HEAD blob True
+      FAILED tests/test_decide.py::test_pooled_mrr_at_20_scores_each_corpus_with_its_own_exact_paths
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
    VERDICT T1-M6: KILLED (expected to fail: test_chunk_shape_adopt_judges_m2_on_the_candidate_arms, test_chunk_shape_reject_judges_m2_on_the_current_arms)
 
 -- T1-M7: refusal 7: one commit adding both
 == T1-M7: services/workers/scripts/rag_benchmarks/decide.py
-   HEAD 410c804957fb, blob 3e3d9f13bd16; pristine sha256 85a193a286e199e0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
    mutation: 'if r == q:' -> 'if r == q and False:'
-   landed: True (mutated sha256 4cc0ffd77c8a2e92; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_decide.py: exit 1; 1 failed, 80 passed in 59.62s
+   landed: True (mutated sha256 688b5f76316aa8c3; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 1 failed, 95 passed in 76.91s (0:01:16)
       FAILED tests/test_decide.py::TestRefusal7Order::test_one_commit_adding_both_is_refused
-   restored: sha256 85a193a286e199e0 == pristine True; hash-object == HEAD blob True
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
    VERDICT T1-M7: KILLED (expected to fail: test_one_commit_adding_both_is_refused)
 
 -- T1-M8: refusal 7: an uncommitted rule or spec
 == T1-M8: services/workers/scripts/rag_benchmarks/decide.py
-   HEAD 410c804957fb, blob 3e3d9f13bd16; pristine sha256 85a193a286e199e0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
    mutation: 'if status:' -> 'if status and False:'
-   landed: True (mutated sha256 3db033593a69bc60; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_decide.py: exit 1; 2 failed, 79 passed in 63.12s (0:01:03)
+   landed: True (mutated sha256 56b8b597c986e5cc; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 2 failed, 94 passed in 77.96s (0:01:17)
       FAILED tests/test_decide.py::TestRefusal7Order::test_an_uncommitted_rule_is_refused
       FAILED tests/test_decide.py::TestRefusal7Order::test_uncommitted_questions_are_refused
-   restored: sha256 85a193a286e199e0 == pristine True; hash-object == HEAD blob True
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
    VERDICT T1-M8: KILLED (expected to fail: test_an_uncommitted_rule_is_refused, test_uncommitted_questions_are_refused)
 
 -- T1-M9: refusal 7: a merge commit counted as writing the rule
 == T1-M9: services/workers/scripts/rag_benchmarks/decide.py
-   HEAD 410c804957fb, blob 3e3d9f13bd16; pristine sha256 85a193a286e199e0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
    mutation: 'if all(_blob(cwd, p, name) != blob for p in _parents(cwd, commit)):' -> 'if True or all(_blob(cwd, p, name) != blob for p in _parents(cwd, commit)):'
-   landed: True (mutated sha256 870ac8941d720b04; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_decide.py: exit 1; 1 failed, 80 passed in 53.75s
+   landed: True (mutated sha256 4f7aa4532422a3fa; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 1 failed, 95 passed in 75.58s (0:01:15)
       FAILED tests/test_decide.py::TestRefusal7Order::test_a_protocol_pr_merged_with_a_merge_commit_passes
-   restored: sha256 85a193a286e199e0 == pristine True; hash-object == HEAD blob True
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
    VERDICT T1-M9: KILLED (expected to fail: test_a_protocol_pr_merged_with_a_merge_commit_passes)
 
 -- T1-M10: refusal 1: the question against the spec
 == T1-M10: services/workers/scripts/rag_benchmarks/decide.py
-   HEAD 410c804957fb, blob 3e3d9f13bd16; pristine sha256 85a193a286e199e0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
    mutation: 'if records[qid].get(key) != spec[qid].get(key):' -> 'if records[qid].get(key) != spec[qid].get(key) and False:'
-   landed: True (mutated sha256 baf89319d87e249c; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_decide.py: exit 1; 1 failed, 80 passed in 57.80s
+   landed: True (mutated sha256 1d896743b0d9c563; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 1 failed, 95 passed in 75.71s (0:01:15)
       FAILED tests/test_decide.py::TestRefusal1QuestionSets::test_a_question_text_that_differs_is_refused
-   restored: sha256 85a193a286e199e0 == pristine True; hash-object == HEAD blob True
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
    VERDICT T1-M10: KILLED (expected to fail: test_a_question_text_that_differs_is_refused)
 
 -- T1-M11: refusal 1: the question across the arms
 == T1-M11: services/workers/scripts/rag_benchmarks/decide.py
-   HEAD 410c804957fb, blob 3e3d9f13bd16; pristine sha256 85a193a286e199e0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
    mutation: 'if b[qid].get(key) != c[qid].get(key):' -> 'if b[qid].get(key) != c[qid].get(key) and False:'
-   landed: True (mutated sha256 0941c6292f568907; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_decide.py: exit 1; 1 failed, 80 passed in 56.83s
+   landed: True (mutated sha256 93cadcc84d483b9f; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 1 failed, 95 passed in 76.10s (0:01:16)
       FAILED tests/test_decide.py::TestRefusal1QuestionSets::test_the_arms_question_sets_are_compared_with_each_other_too
-   restored: sha256 85a193a286e199e0 == pristine True; hash-object == HEAD blob True
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
    VERDICT T1-M11: KILLED (expected to fail: test_the_arms_question_sets_are_compared_with_each_other_too)
 
 -- T1-M12: refusal 1: a symbol clause over a symbol-less question
 == T1-M12: services/workers/scripts/rag_benchmarks/decide.py
-   HEAD 410c804957fb, blob 3e3d9f13bd16; pristine sha256 85a193a286e199e0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
    mutation: 'if nameless:' -> 'if nameless and False:'
-   landed: True (mutated sha256 98554242b435e523; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_decide.py: exit 1; 1 failed, 80 passed in 56.24s
+   landed: True (mutated sha256 5b22e521aee48036; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 1 failed, 95 passed in 79.49s (0:01:19)
       FAILED tests/test_decide.py::TestRefusal1QuestionSets::test_a_symbol_clause_over_a_question_with_no_symbol_is_refused
-   restored: sha256 85a193a286e199e0 == pristine True; hash-object == HEAD blob True
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
    VERDICT T1-M12: KILLED (expected to fail: test_a_symbol_clause_over_a_question_with_no_symbol_is_refused)
 
 -- T1-M13: refusal 2: a boosted chunk in neither leg
 == T1-M13: services/workers/scripts/rag_benchmarks/decide.py
-   HEAD 410c804957fb, blob 3e3d9f13bd16; pristine sha256 85a193a286e199e0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
    mutation: 'if leg is None:' -> 'if leg is None and False:'
-   landed: True (mutated sha256 700cb51a3138560b; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_decide.py: exit 1; 1 failed, 80 passed in 57.49s
+   landed: True (mutated sha256 dacee75cc76858dd; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 1 failed, 95 passed in 74.84s (0:01:14)
       FAILED tests/test_decide.py::TestRefusal2Ranks::test_a_boosted_chunk_in_neither_leg_is_refused
-   restored: sha256 85a193a286e199e0 == pristine True; hash-object == HEAD blob True
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
    VERDICT T1-M13: KILLED (expected to fail: test_a_boosted_chunk_in_neither_leg_is_refused)
 
 -- T1-M14: MRR@20: the keyword leg left out of the join
 == T1-M14: services/workers/scripts/rag_benchmarks/decide.py
-   HEAD 410c804957fb, blob 3e3d9f13bd16; pristine sha256 85a193a286e199e0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
    mutation: 'for leg in ("vector", "fts"):' -> 'for leg in ("vector",):'
-   landed: True (mutated sha256 4edf73c3987ea0c7; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_decide.py: exit 1; 1 failed, 80 passed in 57.33s
+   landed: True (mutated sha256 b758442c3c3a8bb0; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 1 failed, 95 passed in 75.06s (0:01:15)
       FAILED tests/test_decide.py::TestTheCleanRun::test_a_boosted_chunk_found_by_keyword_search_only_is_joined_to_that_leg
-   restored: sha256 85a193a286e199e0 == pristine True; hash-object == HEAD blob True
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
    VERDICT T1-M14: KILLED (expected to fail: test_a_boosted_chunk_found_by_keyword_search_only_is_joined_to_that_leg)
 
 -- T1-M15: refusal 3: the header's database connection
 == T1-M15: services/workers/scripts/rag_benchmarks/decide.py
-   HEAD 410c804957fb, blob 3e3d9f13bd16; pristine sha256 85a193a286e199e0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
    mutation: 'if identity["rolsuper"] or identity["rolbypassrls"]:' -> 'if (identity["rolsuper"] or identity["rolbypassrls"]) and False:'
-   landed: True (mutated sha256 6017832bf3a1c356; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_decide.py: exit 1; 1 failed, 80 passed in 57.47s
+   landed: True (mutated sha256 d9b0137f3d6d983d; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 1 failed, 95 passed in 74.14s (0:01:14)
       FAILED tests/test_decide.py::TestRefusal3Connections::test_a_superuser_or_rls_bypassing_connection_is_refused[database-change2-the run's database connection was rag_doc_app (rolsuper=True]
-   restored: sha256 85a193a286e199e0 == pristine True; hash-object == HEAD blob True
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
    VERDICT T1-M15: KILLED (expected to fail: test_a_superuser_or_rls_bypassing_connection_is_refused[database)
 
 -- T1-M16: refusal 3: the legs' connections dropped
 == T1-M16: services/workers/scripts/rag_benchmarks/decide.py
-   HEAD 410c804957fb, blob 3e3d9f13bd16; pristine sha256 85a193a286e199e0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
    mutation: 'for p in connection_problems(header) + database_connection_problems(header):' -> 'for p in database_connection_problems(header):'
-   landed: True (mutated sha256 8f3ece706e3ddf8e; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_decide.py: exit 1; 4 failed, 77 passed in 57.74s
+   landed: True (mutated sha256 afd953e4b4bb27d3; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 4 failed, 92 passed in 82.85s (0:01:22)
       FAILED tests/test_decide.py::TestRefusal3Connections::test_a_superuser_or_rls_bypassing_connection_is_refused[fts-change0-the run's fts connection was rag_doc_app (rolsuper=True]
       FAILED tests/test_decide.py::TestRefusal3Connections::test_a_superuser_or_rls_bypassing_connection_is_refused[vector-change1-the run's vector connection was rag_doc_app (rolsuper=False, rolbypassrls=True]
       FAILED tests/test_decide.py::TestRefusal3Connections::test_an_unrecorded_connection_is_refused[connections-records no measuring connection]
       FAILED tests/test_decide.py::TestRefusal3Connections::test_an_unrecorded_connection_is_refused[vector-records no vector connection]
-   restored: sha256 85a193a286e199e0 == pristine True; hash-object == HEAD blob True
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
    VERDICT T1-M16: KILLED (expected to fail: test_a_superuser_or_rls_bypassing_connection_is_refused[fts, test_an_unrecorded_connection_is_refused[connections)
 
 -- T1-M17: refusal 4: a failed query
 == T1-M17: services/workers/scripts/rag_benchmarks/decide.py
-   HEAD 410c804957fb, blob 3e3d9f13bd16; pristine sha256 85a193a286e199e0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
    mutation: 'if rec.get("error"):' -> 'if rec.get("error") and False:'
-   landed: True (mutated sha256 27101fa4f5aea4e7; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_decide.py: exit 1; 1 failed, 80 passed in 56.98s
+   landed: True (mutated sha256 78ea09d658f4d73d; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 1 failed, 95 passed in 100.58s (0:01:40)
       FAILED tests/test_decide.py::TestRefusal4FailedQuery::test_a_failed_query_is_refused
-   restored: sha256 85a193a286e199e0 == pristine True; hash-object == HEAD blob True
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
    VERDICT T1-M17: KILLED (expected to fail: test_a_failed_query_is_refused)
 
 -- T1-M18: refusal 5: the shared header keys
 == T1-M18: services/workers/scripts/rag_benchmarks/decide.py
-   HEAD 410c804957fb, blob 3e3d9f13bd16; pristine sha256 85a193a286e199e0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
    mutation: 'if bh.get(key) != ch.get(key):' -> 'if bh.get(key) != ch.get(key) and False:'
-   landed: True (mutated sha256 226d9e100558e2d7; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_decide.py: exit 1; 9 failed, 72 passed in 57.52s
+   landed: True (mutated sha256 fa7e3617734edbc4; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 11 failed, 85 passed in 82.60s (0:01:22)
       FAILED tests/test_decide.py::TestRefusal5ArmsDiffer::test_arms_that_differ_in_a_shared_key_are_refused[boost_config-value4]
       FAILED tests/test_decide.py::TestRefusal5ArmsDiffer::test_arms_that_differ_in_a_shared_key_are_refused[commit-9999999999999999999999999999999999999999]
       FAILED tests/test_decide.py::TestRefusal5ArmsDiffer::test_arms_that_differ_in_a_shared_key_are_refused[corpus-other]
+      FAILED tests/test_decide.py::TestRefusal5ArmsDiffer::test_arms_that_differ_in_a_shared_key_are_refused[corpus_tree_digest-8888888888888888888888888888888888888888888888888888888888888888]
       FAILED tests/test_decide.py::TestRefusal5ArmsDiffer::test_arms_that_differ_in_a_shared_key_are_refused[exact_paths-False]
       FAILED tests/test_decide.py::TestRefusal5ArmsDiffer::test_arms_that_differ_in_a_shared_key_are_refused[harness_commit-8888888888888888888888888888888888888888]
+      FAILED tests/test_decide.py::TestRefusal5ArmsDiffer::test_arms_that_differ_in_a_shared_key_are_refused[retrieval_code_version-9999999999999999]
       FAILED tests/test_decide.py::TestRefusal5ArmsDiffer::test_arms_that_differ_in_a_shared_key_are_refused[set-tuning]
       FAILED tests/test_decide.py::TestRefusal5ArmsDiffer::test_arms_that_differ_in_a_shared_key_are_refused[top_k-10]
       FAILED tests/test_decide.py::TestRefusal5ArmsDiffer::test_arms_that_differ_in_a_shared_key_are_refused[vector_backend-qdrant]
       FAILED tests/test_decide.py::TestRefusal5ArmsDiffer::test_the_unchosen_pair_is_checked_too
-   restored: sha256 85a193a286e199e0 == pristine True; hash-object == HEAD blob True
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
    VERDICT T1-M18: KILLED (expected to fail: test_arms_that_differ_in_a_shared_key_are_refused, test_the_unchosen_pair_is_checked_too)
 
 -- T1-M19: refusal 5: one model in a chunk comparison
 == T1-M19: services/workers/scripts/rag_benchmarks/decide.py
-   HEAD 410c804957fb, blob 3e3d9f13bd16; pristine sha256 85a193a286e199e0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
    mutation: 'if bh.get("embedding_model") != ch.get("embedding_model"):' -> 'if bh.get("embedding_model") != ch.get("embedding_model") and False:'
-   landed: True (mutated sha256 8edcf56a38d4a703; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_decide.py: exit 1; 1 failed, 80 passed in 55.69s
+   landed: True (mutated sha256 95c6f5f03da54027; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 1 failed, 95 passed in 111.51s (0:01:51)
       FAILED tests/test_decide.py::TestRefusal5ArmsDiffer::test_a_chunk_comparison_across_models_is_refused
-   restored: sha256 85a193a286e199e0 == pristine True; hash-object == HEAD blob True
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
    VERDICT T1-M19: KILLED (expected to fail: test_a_chunk_comparison_across_models_is_refused)
 
 -- T1-M20: refusal 5: one query vector in a chunk comparison
 == T1-M20: services/workers/scripts/rag_benchmarks/decide.py
-   HEAD 410c804957fb, blob 3e3d9f13bd16; pristine sha256 85a193a286e199e0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
    mutation: 'if b[qid].get("query_vector_sha256") != c[qid].get("query_vector_sha256"):' -> 'if b[qid].get("query_vector_sha256") != c[qid].get("query_vector_sha256") and False:'
-   landed: True (mutated sha256 22c88fd4f6809b3b; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_decide.py: exit 1; 1 failed, 80 passed in 56.03s
+   landed: True (mutated sha256 701f95687107de85; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 1 failed, 95 passed in 119.49s (0:01:59)
       FAILED tests/test_decide.py::TestRefusal5ArmsDiffer::test_a_chunk_comparison_with_another_query_vector_is_refused
-   restored: sha256 85a193a286e199e0 == pristine True; hash-object == HEAD blob True
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
    VERDICT T1-M20: KILLED (expected to fail: test_a_chunk_comparison_with_another_query_vector_is_refused)
 
 -- T1-M21: refusal 5: the arm's declared model
 == T1-M21: services/workers/scripts/rag_benchmarks/decide.py
-   HEAD 410c804957fb, blob 3e3d9f13bd16; pristine sha256 85a193a286e199e0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
    mutation: 'if header.get("embedding_model") != declared:' -> 'if header.get("embedding_model") != declared and False:'
-   landed: True (mutated sha256 6c3b06b95689bbb4; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_decide.py: exit 1; 1 failed, 80 passed in 55.74s
+   landed: True (mutated sha256 6ab35d50115735ad; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 1 failed, 95 passed in 124.59s (0:02:04)
       FAILED tests/test_decide.py::TestRefusal5ArmsDiffer::test_an_arm_that_is_not_its_declared_model_is_refused
-   restored: sha256 85a193a286e199e0 == pristine True; hash-object == HEAD blob True
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
    VERDICT T1-M21: KILLED (expected to fail: test_an_arm_that_is_not_its_declared_model_is_refused)
 
 -- T1-M22: refusal 5: the arm's declared chunker
 == T1-M22: services/workers/scripts/rag_benchmarks/decide.py
-   HEAD 410c804957fb, blob 3e3d9f13bd16; pristine sha256 85a193a286e199e0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
    mutation: 'if header.get(key) != value:' -> 'if header.get(key) != value and False:'
-   landed: True (mutated sha256 07ec36f773a7da35; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_decide.py: exit 1; 1 failed, 80 passed in 55.28s
+   landed: True (mutated sha256 73c0f3c64ba34785; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 1 failed, 95 passed in 116.67s (0:01:56)
       FAILED tests/test_decide.py::TestRefusal5ArmsDiffer::test_an_arm_that_is_not_its_declared_chunker_is_refused
-   restored: sha256 85a193a286e199e0 == pristine True; hash-object == HEAD blob True
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
    VERDICT T1-M22: KILLED (expected to fail: test_an_arm_that_is_not_its_declared_chunker_is_refused)
 
 -- T1-M23: refusal 5: the header's set against the rule's
 == T1-M23: services/workers/scripts/rag_benchmarks/decide.py
-   HEAD 410c804957fb, blob 3e3d9f13bd16; pristine sha256 85a193a286e199e0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
    mutation: 'if header.get("set") != rule["set"]:' -> 'if header.get("set") != rule["set"] and False:'
-   landed: True (mutated sha256 52768dfa78ad7c2e; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_decide.py: exit 1; 1 failed, 80 passed in 61.41s (0:01:01)
+   landed: True (mutated sha256 1d6bd8a9a0ed3f11; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 1 failed, 95 passed in 116.53s (0:01:56)
       FAILED tests/test_decide.py::TestRefusal1QuestionSets::test_arms_that_agree_with_each_other_but_not_the_rule_are_refused[set-tuning-the header's set is 'tuning', not the rule's 'shape-model']
-   restored: sha256 85a193a286e199e0 == pristine True; hash-object == HEAD blob True
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
    VERDICT T1-M23: KILLED (expected to fail: test_arms_that_agree_with_each_other_but_not_the_rule_are_refused[set)
 
 -- T1-M24: refusal 6: the cached vector's hash
 == T1-M24: services/workers/scripts/rag_benchmarks/decide.py
-   HEAD 410c804957fb, blob 3e3d9f13bd16; pristine sha256 85a193a286e199e0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
    mutation: 'elif vector_sha256(entry["vector"]) != rec.get("query_vector_sha256"):' -> 'elif vector_sha256(entry["vector"]) != rec.get("query_vector_sha256") and False:'
-   landed: True (mutated sha256 3cb51c750bb3d66e; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_decide.py: exit 1; 1 failed, 80 passed in 56.11s
+   landed: True (mutated sha256 df01078bc0c2e251; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 1 failed, 95 passed in 98.77s (0:01:38)
       FAILED tests/test_decide.py::TestRefusal6QueryVectors::test_a_vector_whose_hash_is_not_the_records_is_refused
-   restored: sha256 85a193a286e199e0 == pristine True; hash-object == HEAD blob True
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
    VERDICT T1-M24: KILLED (expected to fail: test_a_vector_whose_hash_is_not_the_records_is_refused)
 
 -- T1-M25: refusal 6: the cached vector's question text
 == T1-M25: services/workers/scripts/rag_benchmarks/decide.py
-   HEAD 410c804957fb, blob 3e3d9f13bd16; pristine sha256 85a193a286e199e0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
    mutation: 'elif entry.get("question") != rec.get("question"):' -> 'elif entry.get("question") != rec.get("question") and False:'
-   landed: True (mutated sha256 b6fa0adde37b1d5c; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_decide.py: exit 1; 1 failed, 80 passed in 56.90s
+   landed: True (mutated sha256 a370d69e87cd0680; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 1 failed, 95 passed in 84.87s (0:01:24)
       FAILED tests/test_decide.py::TestRefusal6QueryVectors::test_a_missing_vector_or_text_is_refused
-   restored: sha256 85a193a286e199e0 == pristine True; hash-object == HEAD blob True
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
    VERDICT T1-M25: KILLED (expected to fail: test_a_missing_vector_or_text_is_refused)
 
 -- T1-M26: refusal 8: the allowance's range
 == T1-M26: services/workers/scripts/rag_benchmarks/decide.py
-   HEAD 410c804957fb, blob 3e3d9f13bd16; pristine sha256 85a193a286e199e0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
    mutation: 'if not (_is_number(allowance) and 0 <= allowance < MAX_ALLOWANCE):' -> 'if not (_is_number(allowance) and 0 <= allowance < MAX_ALLOWANCE) and False:'
-   landed: True (mutated sha256 d9cd984ee6d5f5fc; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_decide.py: exit 1; 1 failed, 80 passed in 62.71s (0:01:02)
+   landed: True (mutated sha256 61cac962e6aa8bb9; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 1 failed, 95 passed in 85.12s (0:01:25)
       FAILED tests/test_decide.py::TestRefusal8Schema::test_a_rule_that_fails_the_schema_is_refused[<lambda>-allowance must be a number in [0, 1e-06)]
-   restored: sha256 85a193a286e199e0 == pristine True; hash-object == HEAD blob True
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
    VERDICT T1-M26: KILLED (expected to fail: allowance must be a number)
 
 -- T1-M27: refusal 8: after naming a rule not applied first
 == T1-M27: services/workers/scripts/rag_benchmarks/decide.py
-   HEAD 410c804957fb, blob 3e3d9f13bd16; pristine sha256 85a193a286e199e0; hash-object == HEAD blob: True
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
    mutation: 'if "after" in rule and rule["after"] not in seen:' -> 'if "after" in rule and rule["after"] not in seen and False:'
-   landed: True (mutated sha256 d7a75f1a8ee968f8; replacement present True; original absent True; hash-object != HEAD blob True)
-   pytest tests/test_decide.py: exit 1; 2 failed, 79 passed in 60.12s (0:01:00)
+   landed: True (mutated sha256 3036bdd79d4bb553; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 3 failed, 93 passed in 86.16s (0:01:26)
+      FAILED tests/test_decide.py::TestRefusal8Schema::test_a_chunker_variant_no_header_records_is_refused
       FAILED tests/test_decide.py::TestRefusal8Schema::test_m2_alone_is_refused_because_its_after_rule_was_not_applied
       FAILED tests/test_decide.py::TestRefusal8Schema::test_m2_before_the_chunk_shape_rule_is_refused
-   restored: sha256 85a193a286e199e0 == pristine True; hash-object == HEAD blob True
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
    VERDICT T1-M27: KILLED (expected to fail: test_m2_alone_is_refused_because_its_after_rule_was_not_applied, test_m2_before_the_chunk_shape_rule_is_refused)
+
+-- R-I1: a spec arriving with its questions (a rename) accepted
+== R-I1: services/workers/scripts/rag_benchmarks/decide.py
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
+   mutation: 'if not any(_blob(spec.parent, p, spec.name) for p in _parents(spec.parent, q)):' -> 'if not any(_blob(spec.parent, p, spec.name) for p in _parents(spec.parent, q)) and False:'
+   landed: True (mutated sha256 9ba7fd82a8d56945; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 1 failed, 95 passed in 85.13s (0:01:25)
+      FAILED tests/test_decide.py::TestRefusal7Order::test_specs_moved_after_the_rule_are_refused
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
+   VERDICT R-I1: KILLED (expected to fail: test_specs_moved_after_the_rule_are_refused)
+
+-- R-I2a: main catching only foreseen exceptions
+== R-I2a: services/workers/scripts/rag_benchmarks/decide.py
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
+   mutation: 'except Exception as exc:  # noqa: BLE001' -> 'except ArithmeticError as exc:  # noqa: BLE001'
+   landed: True (mutated sha256 feb5b706450a2566; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 2 failed, 94 passed in 86.16s (0:01:26)
+      FAILED tests/test_decide.py::TestUnreadableInput::test_any_unforeseen_exception_exits_2
+      FAILED tests/test_decide.py::test_a_malformed_record_is_refused_not_judged
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
+   VERDICT R-I2a: KILLED (expected to fail: test_any_unforeseen_exception_exits_2, test_a_malformed_record_is_refused_not_judged)
+
+-- R-I2b: a truncated .gz not read as unreadable
+== R-I2b: services/workers/scripts/rag_benchmarks/decide.py
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
+   mutation: 'UNREADABLE = (OSError, ValueError, EOFError)' -> 'UNREADABLE = (OSError, ValueError)'
+   landed: True (mutated sha256 7f05d531d524c196; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 2 failed, 94 passed in 92.82s (0:01:32)
+      FAILED tests/test_decide.py::TestUnreadableInput::test_a_truncated_query_vectors_file_is_refused
+      FAILED tests/test_decide.py::TestUnreadableInput::test_a_truncated_record_is_refused
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
+   VERDICT R-I2b: KILLED (expected to fail: test_a_truncated_record_is_refused, test_a_truncated_query_vectors_file_is_refused)
+
+-- R-I3: retrieval_code_version and corpus_tree_digest not compared
+== R-I3: services/workers/scripts/rag_benchmarks/decide.py
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
+   mutation: '"retrieval_code_version", "corpus_tree_digest", "vector_backend")' -> '"vector_backend")'
+   landed: True (mutated sha256 b39d4f9215e92389; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 2 failed, 94 passed in 82.27s (0:01:22)
+      FAILED tests/test_decide.py::TestRefusal5ArmsDiffer::test_arms_that_differ_in_a_shared_key_are_refused[corpus_tree_digest-8888888888888888888888888888888888888888888888888888888888888888]
+      FAILED tests/test_decide.py::TestRefusal5ArmsDiffer::test_arms_that_differ_in_a_shared_key_are_refused[retrieval_code_version-9999999999999999]
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
+   VERDICT R-I3: KILLED (expected to fail: test_arms_that_differ_in_a_shared_key_are_refused[retrieval_code_version, test_arms_that_differ_in_a_shared_key_are_refused[corpus_tree_digest)
+
+-- R-M1: a run off pgvector accepted
+== R-M1: services/workers/scripts/rag_benchmarks/decide.py
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
+   mutation: 'if header.get("vector_backend") != "pgvector":' -> 'if header.get("vector_backend") != "pgvector" and False:'
+   landed: True (mutated sha256 ac851538b72f927d; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 1 failed, 95 passed in 85.51s (0:01:25)
+      FAILED tests/test_decide.py::TestRefusal3Connections::test_a_run_not_on_pgvector_is_refused
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
+   VERDICT R-M1: KILLED (expected to fail: test_a_run_not_on_pgvector_is_refused)
+
+-- R-M2: a final list past the cut accepted
+== R-M2: services/workers/scripts/rag_benchmarks/decide.py
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
+   mutation: 'if len(top) > rule["top_k"]:' -> 'if len(top) > rule["top_k"] and False:'
+   landed: True (mutated sha256 7c1b8350e7dd6447; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 1 failed, 95 passed in 92.35s (0:01:32)
+      FAILED tests/test_decide.py::TestRefusal2Ranks::test_a_final_list_longer_than_the_cut_is_refused
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
+   VERDICT R-M2: KILLED (expected to fail: test_a_final_list_longer_than_the_cut_is_refused)
+
+-- R-M3: chunker_variant accepted again
+== R-M3: services/workers/scripts/rag_benchmarks/decide.py
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
+   mutation: 'CHUNKER_KEYS = ("chunker_version",)' -> 'CHUNKER_KEYS = ("chunker_version", "chunker_variant")'
+   landed: True (mutated sha256 4f4789bee5d606ec; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 1 failed, 95 passed in 89.71s (0:01:29)
+      FAILED tests/test_decide.py::TestRefusal8Schema::test_a_chunker_variant_no_header_records_is_refused
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
+   VERDICT R-M3: KILLED (expected to fail: test_a_chunker_variant_no_header_records_is_refused)
+
+-- R-N1: pooled MRR@20 scored with the first corpus's exact_paths
+== R-N1: services/workers/scripts/rag_benchmarks/decide.py
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
+   mutation: 'recs = [(r, runs[(arm, c)][0]["exact_paths"]) for c in corpora' -> 'recs = [(r, runs[(arm, corpora[0])][0]["exact_paths"]) for c in corpora'
+   landed: True (mutated sha256 7d22f84e320e0f1f; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 1 failed, 95 passed in 101.65s (0:01:41)
+      FAILED tests/test_decide.py::test_pooled_mrr_at_20_scores_each_corpus_with_its_own_exact_paths
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
+   VERDICT R-N1: KILLED (expected to fail: test_pooled_mrr_at_20_scores_each_corpus_with_its_own_exact_paths)
+
+-- R-N2: an after-rule on other questions accepted
+== R-N2: services/workers/scripts/rag_benchmarks/decide.py
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
+   mutation: 'if prior[key] != rule[key]:' -> 'if prior[key] != rule[key] and False:'
+   landed: True (mutated sha256 de3f3aeeff947cbf; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 2 failed, 94 passed in 105.54s (0:01:45)
+      FAILED tests/test_decide.py::TestRefusal8Schema::test_an_after_rule_on_other_questions_is_refused[corpora-value1]
+      FAILED tests/test_decide.py::TestRefusal8Schema::test_an_after_rule_on_other_questions_is_refused[set-keyword-leg]
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
+   VERDICT R-N2: KILLED (expected to fail: test_an_after_rule_on_other_questions_is_refused)
+
+-- R-N3: the verified order not printed
+== R-N3: services/workers/scripts/rag_benchmarks/decide.py
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
+   mutation: '*order_record, ""]' -> '""]'
+   landed: True (mutated sha256 6aba2d7834486d84; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 1 failed, 95 passed in 110.74s (0:01:50)
+      FAILED tests/test_decide.py::TestTheCleanRun::test_the_default_arms_adopt_the_chunk_shape_and_reject_m2
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
+   VERDICT R-N3: KILLED (expected to fail: test_the_default_arms_adopt_the_chunk_shape_and_reject_m2)
+
+-- R-m5c: git missing reported as 'not in a git checkout'
+== R-m5c: services/workers/scripts/rag_benchmarks/decide.py
+   HEAD 525d898c795e, blob 423db082fb09; pristine sha256 aec1ccaf19a5943b; hash-object == HEAD blob: True
+   mutation: 'except FileNotFoundError:' -> 'except NotADirectoryError:'
+   landed: True (mutated sha256 4bc78d095987ae30; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_decide.py: exit 1; 1 failed, 95 passed in 95.04s (0:01:35)
+      FAILED tests/test_decide.py::TestRefusal7Order::test_git_missing_at_run_time_is_named_as_such
+   restored: sha256 aec1ccaf19a5943b == pristine True; hash-object == HEAD blob True
+   VERDICT R-m5c: KILLED (expected to fail: test_git_missing_at_run_time_is_named_as_such)
+
+-- R-m1: the aggregate back on the built-in sum (ISS-041)
+== R-m1: services/workers/scripts/rag_benchmarks/scoring.py
+   HEAD 525d898c795e, blob 9b0be3b6fb97; pristine sha256 3da77de3ecf2b3ea; hash-object == HEAD blob: True
+   mutation: '"mrr": (math.fsum(1.0 / r for r in found) / total)' -> '"mrr": (sum(1.0 / r for r in found) / total)'
+   landed: True (mutated sha256 ccf07a8b81835086; replacement present True; original absent True; hash-object != HEAD blob True)
+   pytest tests/test_tripwire.py: exit 1; 1 failed, 32 passed in 4.63s
+      FAILED tests/test_tripwire.py::test_the_aggregate_adds_with_fsum
+   restored: sha256 3da77de3ecf2b3ea == pristine True; hash-object == HEAD blob True
+   VERDICT R-m1: KILLED (expected to fail: test_the_aggregate_adds_with_fsum)
 

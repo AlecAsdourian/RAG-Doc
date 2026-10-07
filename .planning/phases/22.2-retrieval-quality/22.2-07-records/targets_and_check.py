@@ -25,8 +25,10 @@ HARNESS = WORKERS / "scripts" / "rag_quality_harness.py"
 SPECS = WORKERS / "scripts" / "rag_benchmarks"
 
 
-def run(args):
-    shown = "python scripts/rag_quality_harness.py " + " ".join(args)
+def run(args, corpora_dir=None):
+    # The corpora directory is a local path (a username on Windows): shown as <corpora> (PR #67, review B, n3).
+    shown = "python scripts/rag_quality_harness.py " + " ".join(
+        "<corpora>" if corpora_dir is not None and a == str(corpora_dir) else a for a in args)
     done = subprocess.run([sys.executable, str(HARNESS), *args], cwd=WORKERS, capture_output=True, text=True,
                           encoding="utf-8")
     return [f"$ {shown}", done.stdout.rstrip(), *([done.stderr.rstrip()] if done.stderr.strip() else []),
@@ -44,7 +46,7 @@ def main() -> int:
     specs = sorted(p.stem for p in SPECS.glob("*.json") if not p.stem.endswith("-rule"))
     check = [f"committed specs: {', '.join(specs)}", ""]
     for corpus in specs:
-        check += run(["--corpus", corpus, "--corpora-dir", str(a.corpora_dir), "--check"])
+        check += run(["--corpus", corpus, "--corpora-dir", str(a.corpora_dir), "--check"], a.corpora_dir)
     (HERE / "check.txt").write_text("\n".join(check), encoding="utf-8")
     print("\n".join(check))
     return 0
