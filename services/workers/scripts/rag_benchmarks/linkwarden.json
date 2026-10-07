@@ -1,0 +1,280 @@
+{
+  "description": "linkwarden, a self-hosted collaborative bookmark manager that archives web pages, written in TypeScript as a Next.js web app, a background worker and shared packages.",
+  "repository": "https://github.com/linkwarden/linkwarden",
+  "commit": "952ac4540657cae3a67c3ca59433899d2fda8374",
+  "roots": [
+    {
+      "path": "apps/web",
+      "extensions": [
+        ".ts",
+        ".tsx"
+      ],
+      "language": "typescript"
+    },
+    {
+      "path": "apps/worker",
+      "extensions": [
+        ".ts",
+        ".tsx"
+      ],
+      "language": "typescript"
+    },
+    {
+      "path": "packages",
+      "extensions": [
+        ".ts",
+        ".tsx"
+      ],
+      "language": "typescript"
+    }
+  ],
+  "exclude": [
+    "\\.d\\.ts$",
+    "\\.(test|spec)\\.tsx?$",
+    "(^|/)e2e/"
+  ],
+  "scope": "TypeScript (.ts and .tsx) under apps/web, apps/worker and packages, except type declaration files (.d.ts), unit tests (.test and .spec) and e2e/ suites; the harness also skips node_modules/ and vendor/.",
+  "question_policy": "Written blind, by agents with read access to this checkout only, before any retrieval result for this corpus existed. Split fixed before any question was written: odd-numbered ids are tuning, even-numbered ids are holdout.",
+  "questions": [
+    {
+      "id": "lw-01",
+      "set": "tuning",
+      "question": "How does the background archiver share out each batch of pending bookmarks so that one user who saves thousands of pages doesn't starve everyone else?",
+      "path": "apps/worker/lib/getLinkBatchFairly.ts",
+      "symbol": "getLinkBatchFairly",
+      "evidence": "apps/worker/lib/getLinkBatchFairly.ts:12 — Orders eligible users by when they were last picked. It then takes links from each user in round-robin slices of maxBatchLinks / users.length until the batch is full, and stamps lastPickedAt on the users it served."
+    },
+    {
+      "id": "lw-02",
+      "set": "holdout",
+      "question": "Where are the headless browser's outgoing requests intercepted so that a page being captured can't reach internal network addresses?",
+      "path": "apps/worker/lib/protectPageRequests.ts",
+      "symbol": "protectPageRequests",
+      "evidence": "apps/worker/lib/protectPageRequests.ts:16 — Routes every browser-context request. about:/blob:/data: URLs pass through. With a remote browser it checks the URL with the SSRF guard. Otherwise it proxies the request through safeFetch, and it aborts with 'blockedbyclient' when the URL is unsafe."
+    },
+    {
+      "id": "lw-03",
+      "set": "tuning",
+      "question": "Before a page is turned into a single self-contained HTML file, how are embedded image, script and stylesheet references to private hosts removed?",
+      "path": "apps/worker/lib/preservationScheme/sanitizeHtmlForMonolith.ts",
+      "symbol": "sanitizeHtmlForMonolith",
+      "evidence": "apps/worker/lib/preservationScheme/sanitizeHtmlForMonolith.ts:106 — Parses the HTML with JSDOM and drops unsafe src/href/poster/data attributes, SVG hrefs and srcset entries. It also rewrites CSS url()/@import targets in style attributes and <style> blocks to about:invalid when they point at internal hosts."
+    },
+    {
+      "id": "lw-04",
+      "set": "holdout",
+      "question": "What happens if submitting a saved page to the Internet Archive fails?",
+      "path": "apps/worker/lib/preservationScheme/sendToWayback.ts",
+      "symbol": "sendToWayback",
+      "evidence": "apps/worker/lib/preservationScheme/sendToWayback.ts:3 — Sends a GET to web.archive.org/save/<url> with browser-like headers. It logs on success, and its empty catch swallows any error silently."
+    },
+    {
+      "id": "lw-05",
+      "set": "tuning",
+      "question": "How often are subscribed news feeds checked for new entries, and what stops one slow feed from holding up the others?",
+      "path": "apps/worker/workers/rssPolling.ts",
+      "symbol": "startRSSPolling",
+      "evidence": "apps/worker/workers/rssPolling.ts:16 — Loops forever. Each pass fetches every eligible subscription in parallel with Promise.allSettled, each with a 30-second abort timeout and an SSRF check. It then sleeps for the configured interval, which defaults to 60 minutes."
+    },
+    {
+      "id": "lw-06",
+      "set": "holdout",
+      "question": "How do saved bookmarks get pushed into the full-text search engine, and how does the worker know which ones still need to be sent?",
+      "path": "apps/worker/workers/linkIndexing.ts",
+      "symbol": "startIndexing",
+      "evidence": "apps/worker/workers/linkIndexing.ts:63 — Sets up the Meilisearch index schema. It then repeatedly takes batches of links whose indexVersion is null or differs from MEILI_INDEX_VERSION, adds them as documents with collection/tag/pin fields, and marks them with the current version."
+    },
+    {
+      "id": "lw-07",
+      "set": "tuning",
+      "question": "What decides whether a user is over their bookmark quota when they import, including for team plans that share seats?",
+      "path": "packages/lib/verifyCapacity.ts",
+      "symbol": "hasPassedLimit",
+      "evidence": "packages/lib/verifyCapacity.ts:8 — Without Stripe, or during a trial, it compares the user's own link count plus the incoming links against MAX_LINKS_PER_USER. For organisation or multi-seat subscriptions it multiplies the per-user cap by the seat quantity and counts links across all members."
+    },
+    {
+      "id": "lw-08",
+      "set": "holdout",
+      "question": "When someone clicks a bookmark, what decides whether they get the original website, the PDF copy, the reader view, the screenshot or the single-file snapshot?",
+      "path": "packages/lib/getFormatBasedOnPreference.ts",
+      "symbol": "getFormatBasedOnPreference",
+      "evidence": "packages/lib/getFormatBasedOnPreference.ts:15 — Maps the account's route preference and the link type to an ArchivedFormat (pdf, readability, png/jpeg, monolith). It returns null, meaning the original URL, when the preference is ORIGINAL or the chosen copy is missing or 'unavailable'."
+    },
+    {
+      "id": "lw-09",
+      "set": "tuning",
+      "question": "What decides whether a resolved IP address counts as private or internal and must not be fetched by the server?",
+      "path": "packages/lib/ssrf.ts",
+      "symbol": "isIpAddressBlockedForServerSideFetch",
+      "evidence": "packages/lib/ssrf.ts:204 — Parses the address as IPv4, or as IPv4 mapped inside IPv6, and checks it against the blocked IPv4 CIDR ranges. Otherwise it parses it as IPv6 and checks the blocked IPv6 prefixes, and anything unparseable is treated as blocked."
+    },
+    {
+      "id": "lw-10",
+      "set": "holdout",
+      "question": "What happens when a stored snapshot is requested from the cloud storage bucket but the object isn't there?",
+      "path": "packages/filesystem/readFile.ts",
+      "symbol": "readFile",
+      "evidence": "packages/filesystem/readFile.ts:19 — In S3 mode a failing HeadObjectCommand produces a plain-text 'File not found.' response with status 400. On local disk a missing path returns the same message with status 404. Otherwise it infers the content type from the file extension."
+    },
+    {
+      "id": "lw-11",
+      "set": "tuning",
+      "question": "How is an archived file relocated to a new path, both when storage is on local disk and when it lives in an object store?",
+      "path": "packages/filesystem/moveFile.ts",
+      "symbol": "moveFile",
+      "evidence": "packages/filesystem/moveFile.ts:6 — With an S3 client it copies the object to the new key and deletes the original after the copy succeeds. On local storage it renames the file under STORAGE_FOLDER if it exists."
+    },
+    {
+      "id": "lw-12",
+      "set": "holdout",
+      "question": "Where does the API check that a caller's login or API key hasn't expired or been revoked?",
+      "path": "apps/web/lib/api/verifyToken.ts",
+      "symbol": "verifyToken",
+      "evidence": "apps/web/lib/api/verifyToken.ts:10 — Extracts the JWT from the request. It returns an error string when there is no user id or when exp has passed, and it looks up the jti in accessToken with revoked: true to reject revoked tokens."
+    },
+    {
+      "id": "lw-13",
+      "set": "tuning",
+      "question": "How does the search box handle filters like 'tag:news' or a leading exclamation mark that negates a filter?",
+      "path": "apps/web/lib/api/searchQueryBuilder.ts",
+      "symbol": "parseSearchTokens",
+      "evidence": "apps/web/lib/api/searchQueryBuilder.ts:20 — Splits the query on spaces outside quotes. A leading '!' becomes a negation only when a known field prefix follows it. Tokens are classified by field prefix (url, name, tag, before, after...) or as general text, and filters are capped by SEARCH_FILTER_LIMIT."
+    },
+    {
+      "id": "lw-14",
+      "set": "holdout",
+      "question": "When a user combines several labels into one, what happens to the bookmarks that carried the old labels?",
+      "path": "apps/web/lib/api/controllers/tags/mergeTags.ts",
+      "symbol": "mergeTags",
+      "evidence": "apps/web/lib/api/controllers/tags/mergeTags.ts:7 — Finds the links holding any of the given tags. In a transaction it deletes those tags, creates the new tag connected to all of those links, and resets their indexVersion to null so the search index is rebuilt."
+    },
+    {
+      "id": "lw-15",
+      "set": "tuning",
+      "question": "What decides whether clicking outside a popup closes it, especially when the click lands on something layered above it?",
+      "path": "apps/web/components/ClickAwayHandler.tsx",
+      "symbol": "useOutsideAlerter",
+      "evidence": "apps/web/components/ClickAwayHandler.tsx:27 — Registers the mousedown listener that ignores clicks inside the wrapped element or on [data-ignore-click-away] elements, and fires the callback only when the clicked element's z-index (from getZIndex) is not above the wrapper's."
+    },
+    {
+      "id": "lw-16",
+      "set": "holdout",
+      "question": "When several AI provider API keys are set in the environment at once, which one does the background worker pick for automatic tagging?",
+      "path": "apps/worker/lib/autoTagLink.ts",
+      "symbol": "getAIModel",
+      "evidence": "apps/worker/lib/autoTagLink.ts:25 — Checks env vars in a fixed order (OpenAI-compatible, Azure, Anthropic, Ollama, OpenRouter, Perplexity), returns the first configured model and throws if none is set."
+    },
+    {
+      "id": "lw-17",
+      "set": "tuning",
+      "question": "How does the archiving worker tell whether a saved URL points to a PDF, a picture or an ordinary web page?",
+      "path": "apps/worker/lib/archiveHandler.ts",
+      "symbol": "determineLinkType",
+      "evidence": "apps/worker/lib/archiveHandler.ts:237 — Fetches the URL's headers, classifies by content-type as pdf, image (with jpeg/png extension) or url, and writes that type onto the link record."
+    },
+    {
+      "id": "lw-18",
+      "set": "holdout",
+      "question": "Where is the single-file HTML snapshot of a page produced, and what happens if the external tool's output is empty or too big?",
+      "path": "apps/worker/lib/preservationScheme/handleMonolith.ts",
+      "symbol": "handleMonolith",
+      "evidence": "apps/worker/lib/preservationScheme/handleMonolith.ts:8 — Spawns the monolith binary through an optional SSRF proxy, rejects on a non-zero exit, empty output or output above MONOLITH_MAX_BUFFER MB, and otherwise saves the .html file and records its path on the link."
+    },
+    {
+      "id": "lw-19",
+      "set": "tuning",
+      "question": "What happens to the headless browser in the default mode when there are no bookmarks waiting to be archived for a while?",
+      "path": "apps/worker/workers/linkProcessing.ts",
+      "symbol": "linkProcessingOnDemand",
+      "evidence": "apps/worker/workers/linkProcessing.ts:112 — Launches a browser only when a batch arrives, closes it once it has been idle for 60 seconds, rotates it after 30 minutes, and drops the reference if it disconnects mid-batch."
+    },
+    {
+      "id": "lw-20",
+      "set": "holdout",
+      "question": "How is a cached endlessly-scrolling list trimmed back to just its first page before it is refetched?",
+      "path": "packages/router/lib.ts",
+      "symbol": "resetInfiniteQueryPagination",
+      "evidence": "packages/router/lib.ts:3 — Cancels in-flight queries, slices the cached pages and pageParams down to the first entry, then invalidates the key so it refetches."
+    },
+    {
+      "id": "lw-21",
+      "set": "tuning",
+      "question": "Which MIME types of an uploaded file are accepted as a stored copy of a page, and what kind of archive does each become?",
+      "path": "packages/lib/getFormatFromContentType.ts",
+      "symbol": "getFormatFromContentType",
+      "evidence": "packages/lib/getFormatFromContentType.ts:3 — Maps image/jpeg, image/png, application/pdf, text/html and text/plain to the matching archived format and throws 'Invalid file type.' for anything else."
+    },
+    {
+      "id": "lw-22",
+      "set": "holdout",
+      "question": "When files live in cloud object storage, how does removing a whole folder handle a bucket listing that comes back only partly filled?",
+      "path": "packages/filesystem/removeFolder.ts",
+      "symbol": "emptyS3Directory",
+      "evidence": "packages/filesystem/removeFolder.ts:10 — Lists objects under the prefix, batch-deletes them, and calls itself again when the listing is truncated so the remaining keys are removed too."
+    },
+    {
+      "id": "lw-23",
+      "set": "tuning",
+      "question": "How does the server look up whether a user is allowed to reach a given collection, or the collection holding a given bookmark?",
+      "path": "apps/web/lib/api/getPermission.ts",
+      "symbol": "getPermission",
+      "evidence": "apps/web/lib/api/getPermission.ts:9 — For a linkId it finds the collection containing that link; for a collectionId it finds the collection only if the user is its owner or a member, including the members list in both cases."
+    },
+    {
+      "id": "lw-24",
+      "set": "holdout",
+      "question": "What happens to the ordered blocks on a user's home screen when they leave or delete a collection that had its own block there?",
+      "path": "apps/web/lib/api/controllers/collections/collectionId/deleteCollectionById.ts",
+      "symbol": "updateDashboardSectionLayout",
+      "evidence": "apps/web/lib/api/controllers/collections/collectionId/deleteCollectionById.ts:177 — In a transaction it deletes that collection's dashboard section and decrements the order of every later section so the sequence stays contiguous."
+    },
+    {
+      "id": "lw-25",
+      "set": "tuning",
+      "question": "What size and quality are pictures shrunk to in the browser before they are uploaded?",
+      "path": "apps/web/lib/client/resizeImage.ts",
+      "symbol": "resizeImage",
+      "evidence": "apps/web/lib/client/resizeImage.ts:3 — Wraps the image resizer to output a 150x150 JPEG blob at quality 100 with no rotation."
+    },
+    {
+      "id": "lw-26",
+      "set": "holdout",
+      "question": "What decides whether clicking a saved bookmark shows its details pane, opens a stored copy, or goes to the live website?",
+      "path": "apps/web/lib/client/openLink.ts",
+      "symbol": "openLink",
+      "evidence": "apps/web/lib/client/openLink.ts:5 — If the user's linksRouteTo preference is DETAILS it opens the modal; otherwise it opens /preserved/{id} with the preferred format in a new tab, or the original URL when no such format exists."
+    },
+    {
+      "id": "lw-27",
+      "set": "tuning",
+      "question": "How does the web app copy text when the browser blocks the modern copy-to-system API, for example on a non-HTTPS page?",
+      "path": "apps/web/lib/copyToClipboard.ts",
+      "symbol": "fallbackCopyTextToClipboard",
+      "evidence": "apps/web/lib/copyToClipboard.ts:1 — Creates a hidden read-only textarea, selects its contents, runs document.execCommand('copy') and removes the element, returning false when there is no document."
+    },
+    {
+      "id": "lw-28",
+      "set": "holdout",
+      "question": "How long does the app wait when grabbing a web page's title while a new bookmark is added, and what does it return if that fails?",
+      "path": "apps/web/lib/shared/fetchTitleAndHeaders.ts",
+      "symbol": "fetchTitleAndHeaders",
+      "evidence": "apps/web/lib/shared/fetchTitleAndHeaders.ts:3 — Races a safe fetch against a 10-second timeout, regex-extracts the <title> from the HTML (or from supplied content), and returns an empty title with null headers on non-http URLs, timeouts or errors."
+    },
+    {
+      "id": "lw-29",
+      "set": "tuning",
+      "question": "When several collections are selected at once in the UI, what decides which create, edit and delete rights the current user is treated as having?",
+      "path": "apps/web/hooks/useCollectivePermissions.ts",
+      "symbol": "useCollectivePermissions",
+      "evidence": "apps/web/hooks/useCollectivePermissions.ts:6 — Iterates the given collection ids and sets the result to true for an owner or to the user's member entry, treating a member with no create/update/delete rights as having none."
+    },
+    {
+      "id": "lw-30",
+      "set": "holdout",
+      "question": "Where is the folded or expanded state of the side navigation panel remembered between page reloads?",
+      "path": "apps/web/hooks/useSidebarCollapse.ts",
+      "symbol": "useSidebarCollapse",
+      "evidence": "apps/web/hooks/useSidebarCollapse.ts:3 — Initialises state from localStorage's 'sidebarIsCollapsed' key, writes it back on every change, and exposes a toggle function."
+    }
+  ]
+}
