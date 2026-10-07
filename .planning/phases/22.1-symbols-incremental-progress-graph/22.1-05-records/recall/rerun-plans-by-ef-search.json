@@ -1,0 +1,22 @@
+{
+ "40": {
+  "scan": "Index Scan using chunks_p10_organization_id_idx",
+  "limit_total_cost": 4813.62
+ },
+ "60": {
+  "scan": "Index Scan using chunks_p10_organization_id_idx",
+  "limit_total_cost": 4813.62
+ },
+ "80": {
+  "scan": "Index Scan using chunks_p10_organization_id_idx",
+  "limit_total_cost": 4813.62
+ },
+ "100": {
+  "scan": "Index Scan using chunks_p10_organization_id_idx",
+  "limit_total_cost": 4813.62
+ },
+ "200": {
+  "scan": "Index Scan using chunks_p10_organization_id_idx",
+  "limit_total_cost": 4813.62
+ }
+}

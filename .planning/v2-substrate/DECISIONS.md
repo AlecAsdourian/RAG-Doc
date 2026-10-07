@@ -433,9 +433,11 @@ is the consistency hazard we are removing.
   - **2026-10-06 — Done in 22.1-05: `22.1-05-recall.md`.** On real ada-002
     vectors the planner does choose HNSW for a 48,604-row repository in a
     120,160-row shared partition, and no result crosses a tenant or a
-    repository, but at the default `hnsw.ef_search` (40) recall misses the
-    locked thresholds (mean recall@10 0.93–0.94) where `ef_search` 80 gives
-    1.000; the setting is the user's decision.
+    repository, but HNSW's recall misses the locked thresholds (mean
+    recall@10 0.93–0.94) both at the default `hnsw.ef_search` (40) and,
+    forced, at 100; and after the user's `ef_search = 100` fix the planner
+    served that size exactly, so **HNSW at production volumes is not yet
+    proven to meet the rule**. Open for the user.
 - `EXPLAIN` on the production query shape shows `Subplans Removed`.
 
 **⚠ Correction (2026-09-17, measured on synthetic vectors, `22-RESEARCH.md`

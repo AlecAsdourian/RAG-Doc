@@ -1,0 +1,220 @@
+{
+ "record": "dry2-mealie",
+ "written_at": "2026-10-07T00:36:32.445253+00:00",
+ "mode": "no-embed",
+ "code": "0d7c647",
+ "write_results_order": [
+  "check_fence",
+  "resolve_ingestion_run",
+  "delete_repository_chunks_on",
+  "complete_ingestion_run_on",
+  "attach_ingestion_run"
+ ],
+ "job_type": "full_ingest",
+ "job_type_note": null,
+ "repository": {
+  "full_name": "mealie-recipes/mealie",
+  "sha": "84b2677f76069a6fb2bac6e2c633c9dbe7379ce4",
+  "branch": "mealie-next"
+ },
+ "copies": 1,
+ "workers": 1,
+ "worker_settings": {
+  "lease_s": 300.0,
+  "heartbeat_s": 60.0,
+  "heartbeat_statement_timeout_ms": 5000,
+  "max_job_duration_s": 13500.0
+ },
+ "host": {
+  "hostname": "0385d7f46835",
+  "platform": "Linux-6.6.87.1-microsoft-standard-WSL2-x86_64-with-glibc2.41",
+  "python": "3.11.16",
+  "cpus": 16,
+  "mem_bytes": 33185533952,
+  "postgres": "16.15 (Debian 16.15-1.pgdg12+2)",
+  "pgvector": "0.8.6",
+  "max_connections": 100,
+  "docker_host_note": "Windows 11 Pro 10.0.26200, Docker Desktop 29.1.3 VM (16 CPUs, 31 GiB), host 16 cores 63 GiB"
+ },
+ "wall_seconds": 8.054,
+ "jobs": [
+  {
+   "label": "mealie",
+   "job_id": "b7b38ff9-2be4-46bb-8572-c5d5172c452b",
+   "repository_id": "f59d0822-02f8-41be-bb84-6b9e8ec8775a",
+   "organization_id": "dbc07504-47ef-47d2-b98a-e4fd0f80a27c",
+   "partition": 26,
+   "final": {
+    "state": "queued",
+    "attempts": 1,
+    "last_stage": "embed"
+   },
+   "last_error": "DryRunStop: dry run: 6008 distinct chunks, 1015857 tokens counted",
+   "progress": {
+    "chunks": 6149,
+    "skipped": {
+     "symlink": 1,
+     "lockfile": 2,
+     "unsupported": 688,
+     "oversize_file": 4
+    },
+    "files_parsed": 979,
+    "parse_errors": 0,
+    "files_indexable": 979,
+    "chunks_truncated": 0
+   },
+   "stages": {
+    "marks": {
+     "claim": 1791333384.3807747,
+     "fetch": 1791333384.3879242,
+     "parse": 1791333387.56666,
+     "embed": 1791333391.4014585
+    },
+    "seconds": {
+     "claim_to_fetch": 0.0071,
+     "fetch": 3.1787,
+     "parse": 3.8348
+    }
+   },
+   "archive_bytes": 23525683,
+   "chunks_stored": 0,
+   "distinct_stored": 0
+  }
+ ],
+ "fetch_expanded_lines": [
+  "fetched mealie-recipes/mealie@84b2677f7606: 979 indexable files, 1967 members, 55654400 bytes expanded (54218029 declared), skipped={'lockfile': 2, 'oversize_file': 4, 'symlink': 1, 'unsupported': 688}"
+ ],
+ "parse": {
+  "files": 979,
+  "bytes_expanded_files": 3611551,
+  "chunks": 6149,
+  "chunks_by_language": {
+   "markdown": 128,
+   "python": 4974,
+   "javascript": 6,
+   "typescript": 1041
+  }
+ },
+ "github_events": [
+  {
+   "event": "resolve_head",
+   "t": 1791333384.3896754
+  },
+  {
+   "event": "tarball_redirect",
+   "t": 1791333384.3898885
+  },
+  {
+   "event": "download_start",
+   "t": 1791333384.3899858
+  },
+  {
+   "event": "download_end",
+   "t": 1791333387.0216124,
+   "bytes": 23525683
+  },
+  {
+   "event": "revoke",
+   "t": 1791333387.5637076
+  }
+ ],
+ "statements": {
+  "loop": {
+   "other": {
+    "count": 4,
+    "total_seconds": 0.0031,
+    "max_seconds": 0.001174,
+    "first_at": 0.0033,
+    "last_end_at": 7.6905,
+    "errors": {}
+   },
+   "set_tenant": {
+    "count": 3,
+    "total_seconds": 0.0008,
+    "max_seconds": 0.000336,
+    "first_at": 0.0076,
+    "last_end_at": 7.6896,
+    "errors": {}
+   },
+   "progress": {
+    "count": 3,
+    "total_seconds": 0.0016,
+    "max_seconds": 0.000627,
+    "first_at": 0.0124,
+    "last_end_at": 7.0268,
+    "errors": {}
+   }
+  },
+  "loop_entries": 10
+ },
+ "loop_statements_detail": [
+  {
+   "label": "other",
+   "at": 0.0033,
+   "seconds": 0.001163
+  },
+  {
+   "label": "set_tenant",
+   "at": 0.0076,
+   "seconds": 0.000261
+  },
+  {
+   "label": "set_tenant",
+   "at": 0.0092,
+   "seconds": 0.000193
+  },
+  {
+   "label": "other",
+   "at": 0.0094,
+   "seconds": 0.001174
+  },
+  {
+   "label": "progress",
+   "at": 0.0124,
+   "seconds": 0.000402
+  },
+  {
+   "label": "progress",
+   "at": 3.1907,
+   "seconds": 0.000627
+  },
+  {
+   "label": "progress",
+   "at": 7.0262,
+   "seconds": 0.000602
+  },
+  {
+   "label": "set_tenant",
+   "at": 7.6893,
+   "seconds": 0.000336
+  },
+  {
+   "label": "other",
+   "at": 7.6897,
+   "seconds": 0.000405
+  },
+  {
+   "label": "other",
+   "at": 7.6901,
+   "seconds": 0.000379
+  }
+ ],
+ "heartbeat": {
+  "beats": [],
+  "beats_total": 0,
+  "beats_57014": 0,
+  "beats_raised": 0,
+  "log_heartbeat_failed_querycanceled": 0,
+  "log_assuming_it_is_lost": 0,
+  "max_beat_seconds": null
+ },
+ "peak_rss_bytes": 136466432,
+ "peak_workdir_bytes": 26002170,
+ "workdir_samples": 16,
+ "dry_run": {
+  "distinct_chunks": 6008,
+  "tokens": 1015857,
+  "max_tokens_one_chunk": 7657,
+  "projected_usd_one_pass": "0.101586"
+ }
+}

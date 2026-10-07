@@ -1,0 +1,30 @@
+{
+ "Recall H/L ef=40": {
+  "hnsw_forced": true,
+  "r10_mean": 0.9252173913043479,
+  "r10_min": 0.1,
+  "r50_mean": 0.8811304347826087,
+  "short": 0
+ },
+ "Recall H/L ef=100": {
+  "hnsw_forced": true,
+  "r10_mean": 0.9391304347826087,
+  "r10_min": 0.1,
+  "r50_mean": 0.8973913043478261,
+  "short": 0
+ },
+ "Recall T/L-twin ef=40": {
+  "hnsw_forced": true,
+  "r10_mean": 0.922608695652174,
+  "r10_min": 0.1,
+  "r50_mean": 0.8790434782608696,
+  "short": 0
+ },
+ "Recall T/L-twin ef=100": {
+  "hnsw_forced": true,
+  "r10_mean": 0.9365217391304349,
+  "r10_min": 0.1,
+  "r50_mean": 0.896,
+  "short": 0
+ }
+}

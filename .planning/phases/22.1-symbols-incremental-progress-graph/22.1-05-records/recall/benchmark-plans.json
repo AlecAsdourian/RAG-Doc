@@ -1,0 +1,28 @@
+{
+ "organization": "0ca11117-0000-4000-8000-00000000f001",
+ "partitions": [
+  "chunks_p0"
+ ],
+ "organization_rows": 13617,
+ "production_sets": [
+  "SET LOCAL hnsw.iterative_scan = relaxed_order",
+  "SET LOCAL hnsw.ef_search = 100"
+ ],
+ "corpora": {
+  "self": {
+   "rows": 3868,
+   "served_by": "exact",
+   "plan": "Limit\n  ->  Sort\n        Sort Key: ((chunks.embedding <=> '[<the query vector>]'::vector))\n        ->  Append\n              Subplans Removed: 63\n              ->  Bitmap Heap Scan on chunks_p0 chunks_1\n                    Recheck Cond: (repository_id = '0ca11117-0000-4000-8000-00000000f003'::uuid)\n                    Filter: ((embedding_model = 'text-embedding-ada-002'::text) AND (organization_id = (current_setting('app.current_tenant'::text, true))::uuid))\n                    ->  Bitmap Index Scan on chunks_p0_repository_id_file_path_idx\n                          Index Cond: (repository_id = '0ca11117-0000-4000-8000-00000000f003'::uuid)"
+  },
+  "mealie": {
+   "rows": 6149,
+   "served_by": "exact",
+   "plan": "Limit\n  ->  Sort\n        Sort Key: ((chunks.embedding <=> '[<the query vector>]'::vector))\n        ->  Append\n              Subplans Removed: 63\n              ->  Seq Scan on chunks_p0 chunks_1\n                    Filter: ((repository_id = '9e801ead-15a5-5cd5-800b-1551d550cdd1'::uuid) AND (embedding_model = 'text-embedding-ada-002'::text) AND (organization_id = (current_setting('app.current_tenant'::text, true))::uuid))"
+  },
+  "miniflux": {
+   "rows": 3600,
+   "served_by": "exact",
+   "plan": "Limit\n  ->  Sort\n        Sort Key: ((chunks.embedding <=> '[<the query vector>]'::vector))\n        ->  Append\n              Subplans Removed: 63\n              ->  Bitmap Heap Scan on chunks_p0 chunks_1\n                    Recheck Cond: (repository_id = 'e938bb80-f6ee-5a9a-bd3b-83d0746cca78'::uuid)\n                    Filter: ((embedding_model = 'text-embedding-ada-002'::text) AND (organization_id = (current_setting('app.current_tenant'::text, true))::uuid))\n                    ->  Bitmap Index Scan on chunks_p0_repository_id_file_path_idx\n                          Index Cond: (repository_id = 'e938bb80-f6ee-5a9a-bd3b-83d0746cca78'::uuid)"
+  }
+ }
+}

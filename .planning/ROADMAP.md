@@ -218,7 +218,7 @@ Plans:
   - call-site and import candidates, and the resolver;
   - reconciliation without `edge_kind` (SCIP has no notion of a call);
   - a `CYCLE`-safe traversal helper.
-- [x] 22.1-05: D2's recall test, seeded with real embeddings and at least one tenant large enough to use HNSW, filtering by repository. Then the operating numbers, measured: pool size, `max_job_duration`, OpenAI throughput. **Executed 2026-10-06, in review** (`22.1-05-SUMMARY.md`): P16 replaced by measurement (3 h 45 min, 5 s, one worker, 6 min grace), A-L3 fixed, $1.51 of the $3.00 cap spent; the recall test proves HNSW in use but **R3 fails at the default `ef_search`**, a decision for the user.
+- [x] 22.1-05: D2's recall test, seeded with real embeddings and at least one tenant large enough to use HNSW, filtering by repository. Then the operating numbers, measured: pool size, `max_job_duration`, OpenAI throughput. **Executed 2026-10-06, in review** (`22.1-05-SUMMARY.md`): P16 replaced by measurement (3 h 45 min, 5 s, one worker, 6 min grace), A-L3 fixed, $1.51 of the $3.00 cap spent; the recall test fails its rule: HNSW misses R3 at `ef_search` 40 and 100, and with the user's `ef_search = 100` fix the planner serves the large scope exactly (R1 fails), so the user decides next.
 
 ### Phase 22.2: Retrieval Quality
 

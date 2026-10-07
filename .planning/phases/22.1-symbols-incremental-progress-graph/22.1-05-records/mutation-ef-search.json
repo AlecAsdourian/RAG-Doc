@@ -1,0 +1,22 @@
+{
+ "mutated": {
+  "mutation_present": 1,
+  "original_present": 0,
+  "sha256": "54387867c42496a03a1e8f1067deef04e8f6315c05025d117dd799cd744254d8",
+  "exit": 1,
+  "lines": [
+   "E   AssertionError: hnsw.ef_search in the search's transaction: ['40']",
+   "C:\\Users\\Alec\\AppData\\Local\\Temp\\claude\\C--Users-Alec-Desktop-code-testtGSD\\d9e9d681-6cd2-4b2a-a813-c593a8957090\\scratchpad\\mut_ef\\services\\workers\\tests\\isolation\\test_query_engine_isolation.py:340: AssertionError: hnsw.ef_search in the search's transaction: ['40']",
+   "1 failed, 2 warnings in 7.03s"
+  ]
+ },
+ "restored": {
+  "mutation_present": 0,
+  "original_present": 1,
+  "sha256_matches_original": true,
+  "exit": 0,
+  "lines": [
+   "1 passed, 2 warnings in 7.07s"
+  ]
+ }
+}
