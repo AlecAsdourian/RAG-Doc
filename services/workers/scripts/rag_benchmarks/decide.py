@@ -20,11 +20,14 @@ schema `load_rule` checks (any failure is a refusal):
     metric      "mrr@<top_k>": every clause compares MRR at the cut
     variable    "embedding_model" or "chunker": the one thing the arms may differ in
     arms        record prefix -> the variable's declared value on that arm:
-                a model name, or {"chunker_version": ..., "chunker_variant": ...}
-                (either key or both), checked against every record header
+                a model name, or {"chunker_version": ...}, checked against
+                every record header. (A chunker variant is not declared
+                separately: 22.2-01's chunker version folds in the variant
+                22.2-04 adds, and no header records a variant on its own. A
+                key no header records could only refuse.)
     pair        {"baseline": arm, "candidate": arm}, for a rule applied on its own
-    after       (instead of pair) the id of a rule applied first; its verdict
-                chooses this rule's arms through
+    after       (instead of pair) the id of a rule applied first, on the same
+                set and corpora; its verdict chooses this rule's arms through
     arms_by_verdict  {"ADOPT": pair, "REJECT": pair}
     clauses     [{id, level: file|symbol, scope: pooled|each_corpus, min_delta}]
     allowance   the float-rounding allowance, 1e-9
@@ -46,19 +49,21 @@ IT REFUSES (exit 2, no verdict), before comparing anything, when:
      spec has no question in the set; or a symbol clause meets a question that
      names no symbol (the symbol MRR would not be over all the questions);
   2. a record's ranks are not what its own final list gives under
-     `scoring.ranks`, or a boosted chunk appears in neither leg (MRR@20 could
-     not be scored);
+     `scoring.ranks`, a final list holds more than the cut's `top_k` results,
+     or a boosted chunk appears in neither leg (MRR@20 could not be scored);
   3. a measuring connection (either leg, or the header's database connection)
-     is a superuser, bypasses RLS, or is unrecorded;
+     is a superuser, bypasses RLS, or is unrecorded; or the run's vector
+     backend is not pgvector, whose header records both legs;
   4. any query failed;
   5. two compared arms differ in anything but their declared variable:
-     corpus, commit, set, top_k, boost_config, exact_paths, harness_commit and
-     vector_backend must match; for a model comparison the chunk_set_digest
-     must; for a chunk comparison the embedding model and every question's
-     query-vector hash must. An arm whose header is not its declaration (the
-     model, the chunker version or variant), or not the rule's set and cut,
-     is refused here too. Every pair a rule could be judged on is checked,
-     both of an `after` rule's, so no verdict waits on an unchecked arm;
+     corpus, commit, set, top_k, boost_config, exact_paths, harness_commit,
+     retrieval_code_version, corpus_tree_digest and vector_backend must match;
+     for a model comparison the chunk_set_digest must; for a chunk comparison
+     the embedding model and every question's query-vector hash must. An arm
+     whose header is not its declaration (the model, or the chunker version),
+     or not the rule's set and cut, is refused here too. Every pair a rule
+     could be judged on is checked, both of an `after` rule's, so no verdict
+     waits on an unchecked arm;
   6. a question's cached vector, in its run's model's file, is missing, has
      another model or another text, or a hash other than the record's
      `query_vector_sha256`;
@@ -66,11 +71,17 @@ IT REFUSES (exit 2, no verdict), before comparing anything, when:
      the rule's JSON must be a strict ancestor of every commit that brought a
      question of the set into a corpus spec, read from the checkout's history
      (`main`'s, under QD12). It refuses when the rule or a spec is uncommitted
-     or differs from HEAD, when the two are in different repositories, and
-     when one commit adds both, since the order cannot then be proven;
+     or differs from HEAD, when the two are in different repositories, when
+     one commit adds both, and when a spec arrives at its path in the same
+     commit as its questions (a new file, or a rename: where the questions
+     were written first cannot then be read), since the order cannot then be
+     proven. Any edit to the rule's JSON after its questions, its description
+     included, refuses. A rebased branch rewrites the commits ancestry reads,
+     so protocol branches are merged, never rebased (QD12);
   8. a rule fails the schema, two rules share an id, or `after` names a rule
-     not applied before it.
-A malformed record is refused too, never read as a verdict.
+     not applied before it or one on another set or other corpora.
+Any input that cannot be read (a truncated `.gz`, malformed JSON, a record
+missing what is compared) is refused too, never read as a verdict.
 
 IT PRINTS, per rule, for the pair judged: per corpus and pooled, MRR, recall
 and rank-1 at the cut, for file and symbol; MRR@20, reported, from the
@@ -79,7 +90,9 @@ by chunk_id for its path and breadcrumb), or "unavailable" where a question has
 fewer than 20 ranked results; the per-question table of ranks per arm; the
 questions whose answer sits in a tie at the cut, at QD2's 2e-6, reported only;
 every clause, with its value, its threshold and whether it holds; and
-`VERDICT: ADOPT` or `VERDICT: REJECT`.
+`VERDICT: ADOPT` or `VERDICT: REJECT`. It also prints the order of record the
+order check verified (each commit that changed the rule, and each that brought
+the set's questions into a spec, with its date), for a protocol to cite.
 
 EXIT 0 when every rule run adopted, 1 when any rejected, 2 when refused.
 This script adopts nothing: adoption is the plan's code change, after the
@@ -112,7 +125,10 @@ from scoring import aggregate, ranks  # noqa: E402  (the harness's own scoring r
 
 VERDICTS = ("ADOPT", "REJECT")
 VARIABLES = ("embedding_model", "chunker")
-CHUNKER_KEYS = ("chunker_version", "chunker_variant")
+# What a chunker arm declares: the header's chunker_version, which names the
+# variant too (chunk_digest.py). A separate `chunker_variant` would need the
+# header to record one first (PR #67, review A, M3).
+CHUNKER_KEYS = ("chunker_version",)
 LEVELS = ("file", "symbol")
 SCOPES = ("pooled", "each_corpus")
 RULE_KEYS = {"rule", "protocol", "set", "corpora", "top_k", "metric", "variable", "arms", "clauses", "allowance"}
@@ -120,8 +136,10 @@ OPTIONAL_RULE_KEYS = {"pair", "after", "arms_by_verdict", "description"}
 CLAUSE_KEYS = {"id", "level", "scope", "min_delta"}
 MAX_ALLOWANCE = 1e-6  # the allowance is for float rounding only; a rank step is 0.05/45 ~ 1.1e-3
 # Refusal 5: what two compared arms must share, whatever the variable.
+# retrieval_code_version names the ranking code even when two arms share a
+# HEAD with uncommitted edits; corpus_tree_digest names the source read (22.2-01).
 SHARED_HEADER_KEYS = ("corpus", "commit", "set", "top_k", "boost_config", "exact_paths", "harness_commit",
-                      "vector_backend")
+                      "retrieval_code_version", "corpus_tree_digest", "vector_backend")
 QUESTION_KEYS = ("question", "set", "path", "symbol")
 TIE_TOLERANCE = 2e-6  # QD2, locked 2026-09-29: ties at a rank cut in a decision's report
 REPORT_DEPTH = 20     # MRR@20, reported, never judged
@@ -207,7 +225,8 @@ def schema_problems(rule, path: Path) -> List[str]:
             isinstance(declared, dict) and declared and set(declared) <= set(CHUNKER_KEYS)
             and all(isinstance(v, str) and v for v in declared.values())
         ):
-            problems.append(f"{where}: arm {arm} must declare {{chunker_version and/or chunker_variant}} as strings")
+            problems.append(f"{where}: arm {arm} must declare exactly {{\"chunker_version\": <string>}} "
+                            "(no header records a separate variant)")
     has_pair, has_after = "pair" in rule, "after" in rule
     if has_pair == has_after:
         problems.append(f"{where}: a rule has either pair, or after with arms_by_verdict")
@@ -265,14 +284,22 @@ def load_rules(paths: Sequence[Path]) -> List[dict]:
             continue
         rule["_path"] = Path(path).resolve()
         rules.append(rule)
-    seen: List[str] = []
+    seen: Dict[str, dict] = {}
     for rule in rules:
         if rule["rule"] in seen:
             problems.append(f"two rules are named {rule['rule']}")
         if "after" in rule and rule["after"] not in seen:
             problems.append(f"{rule['_path'].name}: after names {rule['after']!r}, which is not a rule applied "
                             f"before it (given: {[r['rule'] for r in rules]})")
-        seen.append(rule["rule"])
+        elif "after" in rule:
+            # The prior rule's verdict chooses this rule's arms, so it must have
+            # been judged on the same questions (PR #67, review A, N2).
+            prior = seen[rule["after"]]
+            for key in ("set", "corpora"):
+                if prior[key] != rule[key]:
+                    problems.append(f"{rule['_path'].name}: after names {rule['after']!r}, judged on {key} "
+                                    f"{prior[key]!r}, not this rule's {rule[key]!r}")
+        seen.setdefault(rule["rule"], rule)
     if problems:
         raise Refused(problems)
     return rules
@@ -315,10 +342,17 @@ def _history(cwd: Path, name: str) -> List[str]:
     return out.split() if out else []
 
 
+@functools.lru_cache(maxsize=None)
+def _date(cwd: Path, commit: str) -> str:
+    return git(cwd, "show", "-s", "--format=%cI", commit)
+
+
 def _committed_problems(path: Path, what: str) -> List[str]:
     try:
         top = git(path.parent, "rev-parse", "--show-toplevel")
         status = git(path.parent, "status", "--porcelain", "--", path.name)
+    except FileNotFoundError:
+        return [f"git is not installed, so the order of {what} {path.name} and its questions cannot be read"]
     except (subprocess.CalledProcessError, OSError):
         return [f"{what} {path} is not in a git checkout, so its order cannot be proven"]
     if status:
@@ -361,18 +395,23 @@ def question_commits(spec_path: Path, set_name: str) -> List[str]:
                                                             for p in _parents(cwd, c))]
 
 
-def order_problems(rule: dict, spec_paths: Mapping[str, Path]) -> List[str]:
-    """Refusal 7: was the rule committed, whole, before any of its questions?"""
+def order_problems(rule: dict, spec_paths: Mapping[str, Path]) -> Tuple[List[str], List[str]]:
+    """Refusal 7: was the rule committed, whole, before any of its questions?
+
+    Returns (problems, the order of record verified): each commit that changed
+    the rule and each that brought the set's questions into a spec, with its
+    date, so a protocol can cite the judge's own output (review A, N3)."""
     path = rule["_path"]
     problems = _committed_problems(path, "the rule")
     for corpus, spec in spec_paths.items():
         problems.extend(_committed_problems(spec, f"{corpus}'s spec"))
     if problems:
-        return [f"{rule['rule']}: {p}" for p in problems]
+        return [f"{rule['rule']}: {p}" for p in problems], []
     rule_top = git(path.parent, "rev-parse", "--show-toplevel")
     changes = rule_commits(path)
     if not changes:
-        return [f"{rule['rule']}: no commit in HEAD's history adds {path.name}"]
+        return [f"{rule['rule']}: no commit in HEAD's history adds {path.name}"], []
+    record = [f"  {rule['rule']}: {path.name} changed in {c[:12]} ({_date(path.parent, c)})" for c in changes]
     for corpus, spec in spec_paths.items():
         if git(spec.parent, "rev-parse", "--show-toplevel") != rule_top:
             problems.append(f"{rule['rule']}: {corpus}'s spec is not in the rule's repository, so their order "
@@ -383,6 +422,16 @@ def order_problems(rule: dict, spec_paths: Mapping[str, Path]) -> List[str]:
             problems.append(f"{rule['rule']}: no commit in HEAD's history brings a {rule['set']} question "
                             f"into {corpus}'s spec")
         for q in introduced:
+            record.append(f"  {rule['rule']}: {corpus}'s {rule['set']} questions arrived in {q[:12]} "
+                          f"({_date(spec.parent, q)})")
+            # A spec that arrives at this path in the commit that brings its
+            # questions (a new file, or a rename) hides where they were
+            # written: a `git mv` after the rule would make the move look like
+            # the questions' first commit (review A, I1).
+            if not any(_blob(spec.parent, p, spec.name) for p in _parents(spec.parent, q)):
+                problems.append(f"{rule['rule']}: commit {q[:12]} brings {corpus}'s spec to {spec.name} together "
+                                f"with its {rule['set']} questions (a new file or a rename), so where they were "
+                                "written first cannot be read; commit the spec at its path before its questions")
             for r in changes:
                 if r == q:
                     problems.append(f"{rule['rule']}: commit {r[:12]} changes the rule and adds {corpus}'s "
@@ -393,7 +442,7 @@ def order_problems(rule: dict, spec_paths: Mapping[str, Path]) -> List[str]:
                 if not ancestor:
                     problems.append(f"{rule['rule']}: the rule's commit {r[:12]} is not an ancestor of {q[:12]}, "
                                     f"which added {corpus}'s {rule['set']} questions: the rule came after them")
-    return problems
+    return problems, record
 
 
 # ---------------------------------------------------------------------------
@@ -481,7 +530,12 @@ def arm_problems(rule: dict, arm: str, corpus: str, run: Tuple[dict, Dict[str, d
         for key, value in declared.items():
             if header.get(key) != value:
                 problems.append(f"{name}: the header's {key} is {header.get(key)!r}; the rule declares {value!r}")
-    # 3: the measuring connections.
+    # 3: the measuring connections. connection_problems asks for the vector
+    # leg's identity only on pgvector, so the backend is required first
+    # (review A, M1): a decision is measured on what ships.
+    if header.get("vector_backend") != "pgvector":
+        problems.append(f"{name}: the run's vector backend is {header.get('vector_backend')!r}, not 'pgvector', "
+                        "so its vector leg's connection is not required to be recorded")
     for p in connection_problems(header) + database_connection_problems(header):
         if p.startswith("database"):
             p = "'s " + p
@@ -517,6 +571,12 @@ def arm_problems(rule: dict, arm: str, corpus: str, run: Tuple[dict, Dict[str, d
         top = rec["trace"].get("top")
         if not isinstance(top, list) or not all(isinstance(e, dict) for e in top):
             problems.append(f"{name}: {qid}: the final list is not a list of results")
+            continue
+        if len(top) > rule["top_k"]:
+            # ranks() scores the whole list, so a longer one would put a rank
+            # past the cut into MRR@k and recall@k (review A, M2).
+            problems.append(f"{name}: {qid}: the final list holds {len(top)} results, more than the cut's "
+                            f"top_k {rule['top_k']}")
             continue
         expected = ranks(exact_paths, rec["path"], rec.get("symbol"), top)
         if expected != (rec["file_rank"], rec.get("symbol_rank")):
@@ -625,10 +685,12 @@ def _agg_cells(records: List[dict], level: str, top_k: int) -> Tuple[str, float]
     return f"{agg['mrr']:.4f}  {agg['found']:>2}/{n:<2}  {agg['rank1']:>2}/{n:<2}", agg["mrr"]
 
 
-def mrr_at_depth(records: List[dict], level: str, exact_paths: bool) -> Optional[float]:
-    """MRR@20 from the ranking before the cut, or None when a question has fewer than 20 ranked results."""
+def mrr_at_depth(records: List[Tuple[dict, bool]], level: str) -> Optional[float]:
+    """MRR@20 from the ranking before the cut, or None when a question has
+    fewer than 20 ranked results. Each record comes with its own corpus's
+    `exact_paths`, so a pool of corpora is scored corpus by corpus (review A, N1)."""
     rrs = []
-    for rec in records:
+    for rec, exact_paths in records:
         if level == "symbol" and not rec.get("symbol"):
             continue
         ranking = boosted_ranking(rec)
@@ -676,8 +738,8 @@ def report(rule: dict, base_arm: str, cand_arm: str,
         for level in LEVELS:
             cells = []
             for arm in (base_arm, cand_arm):
-                recs = [r for c in corpora for r in _ordered(runs[(arm, c)][1])]
-                value = mrr_at_depth(recs, level, runs[(arm, corpora[0])][0]["exact_paths"])
+                recs = [(r, runs[(arm, c)][0]["exact_paths"]) for c in corpora for r in _ordered(runs[(arm, c)][1])]
+                value = mrr_at_depth(recs, level)
                 cells.append("unavailable (fewer than 20 ranked results)" if value is None else f"{value:.4f}")
             lines.append(f"  {label:<12} {level:<7} {cells[0]} -> {cells[1]}")
     lines.append(f"\n  Per question ({base_arm} -> {cand_arm}):")
@@ -714,8 +776,15 @@ def _vectors_arg(values: Sequence[str]) -> Dict[str, Path]:
     return out
 
 
-def gather(args) -> Tuple[List[dict], Dict[Tuple[str, str], Tuple[dict, Dict[str, dict]]]]:
-    """Load and check everything; raise Refused with every problem found."""
+# What reading an input can raise: a missing or unreadable file (OSError,
+# gzip.BadGzipFile among them), malformed JSON (ValueError), and a truncated
+# `.gz` (EOFError), which is neither (review A, I2).
+UNREADABLE = (OSError, ValueError, EOFError)
+
+
+def gather(args) -> Tuple[List[dict], Dict[Tuple[str, str], Tuple[dict, Dict[str, dict]]], List[str]]:
+    """Load and check everything; raise Refused with every problem found.
+    Returns the rules, the runs, and the order of record the order check verified."""
     rules = load_rules(args.rules)
     problems: List[str] = []
     vector_files = _vectors_arg(args.query_vectors)
@@ -723,26 +792,33 @@ def gather(args) -> Tuple[List[dict], Dict[Tuple[str, str], Tuple[dict, Dict[str
     for model, path in vector_files.items():
         try:
             vectors[model] = _open_json(path)
-        except (OSError, ValueError) as exc:
+        except UNREADABLE as exc:
             problems.append(f"--query-vectors {model}: {path} cannot be read ({type(exc).__name__})")
     runs: Dict[Tuple[str, str], Tuple[dict, Dict[str, dict]]] = {}
+    order_record: List[str] = []
     for rule in rules:
         spec_paths = {c: (args.specs / f"{c}.json").resolve() for c in rule["corpora"]}
         missing = [c for c, p in spec_paths.items() if not p.is_file()]
         if missing:
             problems.extend(f"{rule['rule']}: no spec {args.specs / (c + '.json')}" for c in missing)
             continue
-        problems.extend(order_problems(rule, spec_paths))
+        found, record = order_problems(rule, spec_paths)
+        problems.extend(found)
+        order_record.extend(record)
         arms = sorted({arm for _, pair in pairs_of(rule) for arm in pair.values()})
         for corpus in rule["corpora"]:
-            spec = spec_questions(spec_paths[corpus], rule["set"])
+            try:
+                spec = spec_questions(spec_paths[corpus], rule["set"])
+            except UNREADABLE as exc:
+                problems.append(f"{corpus}'s spec cannot be read ({type(exc).__name__})")
+                continue
             for arm in arms:
                 key = (arm, corpus)
                 if key not in runs:
                     try:
                         runs[key] = load_run(_find(args.records, f"{arm}-{corpus}.jsonl"))
-                    except (FileNotFoundError, ValueError) as exc:
-                        problems.append(f"{arm}-{corpus}: {exc}")
+                    except UNREADABLE as exc:
+                        problems.append(f"{arm}-{corpus}: cannot be read ({type(exc).__name__}: {str(exc)[:120]})")
                         continue
                 problems.extend(arm_problems(rule, arm, corpus, runs[key], spec, vectors))
             for _, pair in pairs_of(rule):
@@ -750,14 +826,15 @@ def gather(args) -> Tuple[List[dict], Dict[Tuple[str, str], Tuple[dict, Dict[str
                     problems.extend(pair_problems(rule, corpus, pair["baseline"], pair["candidate"], runs))
     if problems:
         raise Refused(list(dict.fromkeys(problems)))
-    return rules, runs
+    return rules, runs, list(dict.fromkeys(order_record))
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """Exit 0 (every rule adopted), 1 (any rejected) or 2 (refused). Input the
-    checks did not foresee is refused too, never read as a verdict. Nothing is
-    printed until every rule has been judged, so a refusal never follows a
-    verdict."""
+    checks did not foresee is refused too, never read as a verdict: any
+    exception at all exits 2, since 1 is REJECT's code and a script reading it
+    must never take a crash for a verdict (review A, I2). Nothing is printed
+    until every rule has been judged, so a refusal never follows a verdict."""
     try:
         code, lines = _main(argv)
     except Refused as refused:
@@ -765,8 +842,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         for problem in refused.problems:
             print(f"  - {problem}")
         return 2
-    except (KeyError, TypeError, ValueError, AttributeError, IndexError, OSError,
-            subprocess.CalledProcessError) as exc:
+    except Exception as exc:  # noqa: BLE001 (every failure is a refusal, never a verdict)
         print(f"REFUSED: the inputs could not be judged ({type(exc).__name__}: {str(exc)[:160]}).")
         return 2
     print("\n".join(lines))
@@ -781,8 +857,9 @@ def _main(argv: Optional[Sequence[str]] = None) -> Tuple[int, List[str]]:
     ap.add_argument("--query-vectors", nargs="+", required=True, metavar="MODEL=FILE")
     args = ap.parse_args(argv)
 
-    rules, runs = gather(args)
-    out: List[str] = []
+    rules, runs, order_record = gather(args)
+    out: List[str] = ["Order of record verified (every rule change precedes every question's first commit):",
+                      *order_record, ""]
     verdicts: Dict[str, str] = {}
     for rule in rules:
         if "pair" in rule:

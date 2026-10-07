@@ -17,6 +17,7 @@ import gzip
 import hashlib
 import importlib.util
 import json
+import os
 import pathlib
 import re
 import shutil
@@ -138,6 +139,7 @@ def header(corpus: str, arm: str) -> dict:
     chunker, model = ARMS[arm]
     return {"record": "run", "corpus": corpus, "commit": "e" * 40, "corpus_commit": "e" * 40, "set": SET,
             "top_k": 5, "boost_config": None, "exact_paths": True, "harness_commit": "f" * 40,
+            "retrieval_code_version": "1" * 16, "corpus_tree_digest": "2" * 64,
             "vector_backend": "pgvector", "embedding_model": model, "chunker_version": VERSION[chunker],
             "chunk_set_digest": DIGEST[chunker], "chunk_rows": 100, "chunk_models": {model: 100},
             "connections": {"fts": dict(APP_ROLE), "vector": dict(APP_ROLE)},
@@ -159,28 +161,50 @@ def _add_rules(repo: pathlib.Path) -> None:
     (rules / "chunk-shape-protocol.md").write_text("# a stand-in chunk-shape protocol\n", encoding="utf-8")
 
 
-def _add_specs(repo: pathlib.Path) -> None:
-    specs = repo / "specs"
+def _add_specs(repo: pathlib.Path, with_set: bool = True, where: str = "specs") -> None:
+    """The specs; `with_set=False` writes them without the shape-model questions,
+    as they stand before a decision set is written (the real specs predate it)."""
+    specs = repo / where
     specs.mkdir(exist_ok=True)
     for corpus in CORPORA:
-        (specs / f"{corpus}.json").write_text(json.dumps(spec(corpus), indent=1), encoding="utf-8")
+        content = spec(corpus)
+        if not with_set:
+            content["questions"] = [q for q in content["questions"] if q["set"] != SET]
+        (specs / f"{corpus}.json").write_text(json.dumps(content, indent=1), encoding="utf-8")
+
+
+def require_git(why: str) -> None:
+    """Skip where git is absent (python:3.11-slim, ISS-041), but fail on CI,
+    where a silent skip of every order and verdict test would keep the job
+    green (PR #67, review B, m6)."""
+    if shutil.which("git") is None:
+        message = f"git is not installed (e.g. python:3.11-slim): {why} (ISS-041)"
+        if os.environ.get("CI"):
+            pytest.fail(message + "; CI must have git, so this is not skipped there")
+        pytest.skip(message)
 
 
 def make_repo(repo: pathlib.Path, order: str) -> pathlib.Path:
     """A repository with the rules and the specs committed in `order`:
-    rule-first, questions-first, together, or merged (a branch with the rule,
-    then the questions, merged with a merge commit: QD12's protocol PR)."""
-    if shutil.which("git") is None:
-        pytest.skip("git is not installed (e.g. python:3.11-slim): decide.py reads a rule's order from git, "
-                    "so every judged run needs a repository (ISS-041)")
+    rule-first, questions-first, together, merged (a branch with the rule,
+    then the questions, merged with a merge commit: QD12's protocol PR), or
+    moved (questions written under rb/, then the rule, then the specs moved to
+    specs/ with `git mv`: review A's I1). The specs exist without the set
+    before any of it, as the real ones do."""
+    require_git("decide.py reads a rule's order from git, so every judged run needs a repository")
     repo.mkdir(parents=True)
     _git(repo, "init", "-q", "-b", "main")
     # In the repository's own config, so decide.py's calls read files as written.
     _git(repo, "config", "core.autocrlf", "false")
     (repo / "README").write_text("base\n", encoding="utf-8")
+    _add_specs(repo, with_set=False, where="rb" if order == "moved" else "specs")
     _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", "base")
-    if order == "rule-first":
+    _git(repo, "commit", "-q", "-m", "base, with the specs before the decision set")
+    if order == "moved":
+        _add_specs(repo, where="rb"); _git(repo, "add", "-A"); _git(repo, "commit", "-q", "-m", "questions")
+        _add_rules(repo); _git(repo, "add", "-A"); _git(repo, "commit", "-q", "-m", "rule")
+        _git(repo, "mv", "rb", "specs"); _git(repo, "commit", "-q", "-m", "move the specs")
+    elif order == "rule-first":
         _add_rules(repo); _git(repo, "add", "-A"); _git(repo, "commit", "-q", "-m", "rule")
         _add_specs(repo); _git(repo, "add", "-A"); _git(repo, "commit", "-q", "-m", "questions")
     elif order == "questions-first":
@@ -312,6 +336,12 @@ class TestTheCleanRun:
         assert "VERDICT: ADOPT (chunk-shape)" in out
         assert "VERDICT: REJECT (M2)" in out
         assert "Rules run: chunk-shape ADOPT, M2 REJECT" in out
+        # The order of record the check verified, for a protocol to cite (review A, N3).
+        rule_commit = _git(world.repo, "log", "--format=%h", "-n1", "--abbrev=12", "--", "rules/" + M2_RULE.name)
+        question_commit = _git(world.repo, "log", "--format=%h", "-n1", "--abbrev=12", "--", "specs/miniflux.json")
+        order = out.split("Order of record verified", 1)[1].split("=== RULE", 1)[0]
+        assert f"M2: {M2_RULE.name} changed in {rule_commit}" in order, order
+        assert f"M2: miniflux's shape-model questions arrived in {question_commit}" in order, order
         for clause in ("1", "2", "3"):
             assert clause_line(out, "M2", clause)
         assert "FAILS" in clause_line(out, "M2", "1") and "+0.000000" in clause_line(out, "M2", "1")
@@ -386,6 +416,27 @@ class TestTheCleanRun:
 
 def m2_rule() -> dict:
     return json.loads(M2_RULE.read_text(encoding="utf-8"))
+
+
+def test_pooled_mrr_at_20_scores_each_corpus_with_its_own_exact_paths(world, capsys):
+    """mealie matches paths as substrings here; miniflux, the first corpus, exactly.
+    A chunk at #6 whose path contains mealie's expected path counts for mealie
+    (1/6), not the answer at #8 (1/8), in mealie's line and in the pool (review A, N1)."""
+    for arm in ARMS:
+        world.edit(arm, "mealie", lambda h, r: h.update(exact_paths=False))
+    world.put("candidate-3small", "mealie", 0, 8, None)
+
+    def near_miss(h, r):
+        trace = r["me-01"]["trace"]
+        trace["vector"][5]["file_path"] = "vendor/" + r["me-01"]["path"]
+    world.edit("candidate-3small", "mealie", near_miss)
+    code, out = world.run(capsys)
+    assert code == 1, out
+    at20 = out.split("=== RULE M2", 1)[1].split("MRR@20", 1)[1].split("Per question", 1)[0]
+    mealie = next(ln for ln in at20.splitlines() if ln.strip().startswith("mealie") and " file " in ln)
+    pooled = next(ln for ln in at20.splitlines() if ln.strip().startswith("pooled") and " file " in ln)
+    assert f"-> {(14 + 1 / 6) / 15:.4f}" in mealie, mealie
+    assert f"-> {(44 + 1 / 6) / 45:.4f}" in pooled, pooled
 
 
 class TestTheBoundaries:
@@ -548,10 +599,12 @@ class TestRefusal1QuestionSets:
         assert "the arms differ" not in out, "every arm agrees, so only the check against the rule can refuse"
 
     def test_a_spec_with_no_question_in_the_set_is_refused(self, world, capsys):
-        rule = json.loads((world.repo / "rules" / M2_RULE.name).read_text(encoding="utf-8"))
-        rule["set"] = "keyword-leg"
-        (world.repo / "rules" / M2_RULE.name).write_text(json.dumps(rule), encoding="utf-8")
-        _git(world.repo, "commit", "-q", "-am", "an M2 on another set")
+        # Both rules move, since an after-rule must share its prior rule's set.
+        for name in (M2_RULE.name, "chunk-shape-rule.json"):
+            rule = json.loads((world.repo / "rules" / name).read_text(encoding="utf-8"))
+            rule["set"] = "keyword-leg"
+            (world.repo / "rules" / name).write_text(json.dumps(rule), encoding="utf-8")
+        _git(world.repo, "commit", "-q", "-am", "both rules on another set")
         refused(*world.run(capsys), "miniflux's spec has no question in set 'keyword-leg'")
 
 
@@ -567,8 +620,32 @@ class TestRefusal2Ranks:
         world.edit("current-ada", "mealie", drop)
         refused(*world.run(capsys), "current-ada-mealie: me-01: boosted chunk current-ada/me-01/25 is in neither leg")
 
+    def test_a_final_list_longer_than_the_cut_is_refused(self, world, capsys):
+        """A sixth result, consistent with the record's own ranks, would still be
+        scored by ranks() if allowed (review A, M2)."""
+        def longer(h, r):
+            top = _first(r)["trace"]["top"]
+            top.append({"chunk_id": "extra", "file_path": "pkg/elsewhere/extra.go", "breadcrumb": "Other.x",
+                        "score": 0.1})
+        world.edit("candidate-ada", "linkwarden", longer)
+        refused(*world.run(capsys), "candidate-ada-linkwarden: lw-01: the final list holds 6 results, more than the "
+                                    "cut's top_k 5")
+
 
 class TestRefusal3Connections:
+    def test_a_run_not_on_pgvector_is_refused(self, world, capsys):
+        """Every arm agrees, so only the backend check can refuse; off pgvector
+        the vector leg's connection would not be required (review A, M1)."""
+        def keyword_leg_only(h, r):
+            h["vector_backend"] = "qdrant"
+            del h["connections"]["vector"]
+        for arm in ARMS:
+            world.edit(arm, "mealie", keyword_leg_only)
+        code, out = world.run(capsys)
+        refused(code, out, "the run's vector backend is 'qdrant', not 'pgvector'")
+        assert "the arms differ" not in out
+
+
     @pytest.mark.parametrize("where, change, fragment", [
         ("fts", {"rolsuper": True}, "the run's fts connection was rag_doc_app (rolsuper=True"),
         ("vector", {"rolbypassrls": True}, "the run's vector connection was rag_doc_app (rolsuper=False, rolbypassrls=True"),
@@ -607,6 +684,7 @@ class TestRefusal5ArmsDiffer:
         ("corpus", "other"), ("commit", "9" * 40), ("set", "tuning"), ("top_k", 10),
         ("boost_config", {"breadcrumb_match_boost": 2.0}), ("exact_paths", False),
         ("harness_commit", "8" * 40), ("vector_backend", "qdrant"),
+        ("retrieval_code_version", "9" * 16), ("corpus_tree_digest", "8" * 64),   # review A, I3
     ])
     def test_arms_that_differ_in_a_shared_key_are_refused(self, world, capsys, key, value):
         world.edit("candidate-3small", "mealie", lambda h, r: h.update({key: value}))
@@ -693,6 +771,20 @@ class TestRefusal7Order:
         code, out = self._world(tmp_path, "together").run(capsys)
         refused(code, out, "changes the rule and adds miniflux's shape-model questions at once")
 
+    def test_specs_moved_after_the_rule_are_refused(self, tmp_path, capsys):
+        """Questions, then the rule, then `git mv` of the specs: at the new path
+        the move looks like the questions' first commit (review A, I1)."""
+        code, out = self._world(tmp_path, "moved").run(capsys)
+        refused(code, out, "together with its shape-model questions (a new file or a rename)")
+
+    def test_git_missing_at_run_time_is_named_as_such(self, world, capsys, monkeypatch):
+        def no_git(cwd, *args):
+            raise FileNotFoundError("git")
+        world.write()
+        monkeypatch.setattr(decide, "git", no_git)
+        refused(decide.main(world.argv()), capsys.readouterr().out,
+                f"git is not installed, so the order of the rule {M2_RULE.name} and its questions cannot be read")
+
     def test_a_rule_changed_after_its_questions_is_refused(self, world, capsys):
         rule_path = world.repo / "rules" / M2_RULE.name
         rule = json.loads(rule_path.read_text(encoding="utf-8"))
@@ -758,6 +850,27 @@ class TestRefusal8Schema:
         refused(*world.run(capsys, rules=list(reversed(world.rules()))),
                 "after names 'chunk-shape', which is not a rule applied before it")
 
+    def _chunk_rule_beside(self, world, change) -> pathlib.Path:
+        rule = json.loads(json.dumps(CHUNK_RULE))
+        change(rule)
+        path = world.root / "chunk-shape-rule.json"
+        path.write_text(json.dumps(rule), encoding="utf-8")
+        (world.root / "chunk-shape-protocol.md").write_text("# stand-in\n", encoding="utf-8")
+        return path
+
+    def test_a_chunker_variant_no_header_records_is_refused(self, world, capsys):
+        """The schema accepts only what a header records (review A, M3)."""
+        path = self._chunk_rule_beside(world, lambda r: r["arms"]["candidate-ada"].update(chunker_variant="b"))
+        refused(*world.run(capsys, rules=[path, world.repo / "rules" / M2_RULE.name]),
+                "arm candidate-ada must declare exactly {\"chunker_version\": <string>}")
+
+    @pytest.mark.parametrize("key, value", [("set", "keyword-leg"), ("corpora", ["miniflux", "mealie"])])
+    def test_an_after_rule_on_other_questions_is_refused(self, world, capsys, key, value):
+        """Its verdict would choose M2's arms from other questions (review A, N2)."""
+        path = self._chunk_rule_beside(world, lambda r: r.update({key: value}))
+        refused(*world.run(capsys, rules=[path, world.repo / "rules" / M2_RULE.name]),
+                f"after names 'chunk-shape', judged on {key} {value!r}, not this rule's")
+
     def test_the_committed_m2_rule_passes_the_schema(self):
         assert decide.schema_problems(m2_rule(), M2_RULE) == []
 
@@ -766,6 +879,39 @@ def test_a_malformed_record_is_refused_not_judged(world, capsys):
     world.edit("candidate-3small", "mealie", lambda h, r: _first(r)["trace"].update(boosted=[{"chunk_id": None}]))
     code, out = world.run(capsys)
     assert code == 2 and out.startswith("REFUSED") and "VERDICT" not in out, out
+    # Which refusal: the boosted entry has no score, a KeyError the checks did
+    # not foresee, refused by main's catch-all (review B, m5 d).
+    assert "the inputs could not be judged (KeyError: 'boosted_score')" in out, out
+
+
+class TestUnreadableInput:
+    """Nothing that cannot be read exits 1, REJECT's code (review A, I2)."""
+
+    @staticmethod
+    def _truncate(path: pathlib.Path) -> None:
+        data = path.read_bytes()
+        path.write_bytes(data[: len(data) // 2])
+
+    def test_a_truncated_record_is_refused(self, world, capsys):
+        world.write()
+        self._truncate(world.records / "candidate-3small-mealie.jsonl.gz")
+        refused(decide.main(world.argv()), capsys.readouterr().out, "candidate-3small-mealie: cannot be read (EOFError")
+
+    def test_a_truncated_query_vectors_file_is_refused(self, world, capsys):
+        world.write()
+        self._truncate(world.vector_files[SMALL])
+        refused(decide.main(world.argv()), capsys.readouterr().out,
+                f"--query-vectors {SMALL}: {world.vector_files[SMALL]} cannot be read (EOFError)")
+
+    def test_any_unforeseen_exception_exits_2(self, world, capsys, monkeypatch):
+        def broken(*args, **kwargs):
+            raise RuntimeError("nobody foresaw this")
+        world.write()
+        monkeypatch.setattr(decide, "report", broken)
+        code = decide.main(world.argv())
+        out = capsys.readouterr().out
+        assert code == 2 and out.startswith("REFUSED: the inputs could not be judged (RuntimeError"), out
+        assert "VERDICT" not in out
 
 
 # ---------------------------------------------------------------------------
