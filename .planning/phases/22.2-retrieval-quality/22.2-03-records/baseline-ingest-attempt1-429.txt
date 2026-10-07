@@ -1,0 +1,86 @@
+$ rag_quality_harness.py --corpus linkwarden --corpora-dir C:/Users/Alec/Desktop/code/rag-bench-corpora --clear --ingest
+[*] cleared linkwarden: runs=0 chunks=0
+[*] corpus linkwarden: 379 files, 1169 KiB, commit 952ac4540657cae3a67c3ca59433899d2fda8374
+[*] offline: chunker version e3d3175e3d756d3d, chunk set b1c7c1082197ed7473d579763192396e2a34c218bff0f87cdee7ca979590bc77 (991 rows), corpus tree 5c21c4b493e5e2b7ebbb662f6b7388df90d90119a23260308a7e43ef5ec0cf14
+[*] fixtures ready
+
+status            : failed
+files processed   : 379
+chunks created    : 991
+embeddings        : 0
+duration          : 16.9s
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/components/Icon.tsx (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/components/InputSelect/styles.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/components/TextInput.tsx (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/components/ui/button.tsx (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/components/ui/checkbox.tsx (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/components/ui/kbd.tsx (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/components/ui/separator.tsx (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/components/ui/tabs.tsx (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/lib/api/billing/stripeStoreReset.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/lib/client/icons.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/pages/api/v1/webhook/index.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/playwright.config.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/store/links.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/store/localSettings.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for packages/filesystem/index.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for packages/filesystem/s3Client.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for packages/lib/constants.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for packages/lib/meilisearchClient.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for packages/lib/transporter.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for packages/prisma/index.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for packages/types/global.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for packages/types/inputSelect.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/components/Icon.tsx (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/components/InputSelect/styles.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/components/TextInput.tsx (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/components/ui/button.tsx (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/components/ui/checkbox.tsx (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/components/ui/kbd.tsx (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/components/ui/separator.tsx (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/components/ui/tabs.tsx (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/lib/api/billing/stripeStoreReset.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/lib/client/icons.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/pages/api/v1/webhook/index.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/playwright.config.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/store/links.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/store/localSettings.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for packages/filesystem/index.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for packages/filesystem/s3Client.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for packages/lib/constants.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for packages/lib/meilisearchClient.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for packages/lib/transporter.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for packages/prisma/index.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for packages/types/global.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for packages/types/inputSelect.ts (typescript), falling back to fixed-size chunking
+ERROR workers.embeddings.embedding_generator Failed to generate embeddings for batch 7: Error code: 429 - {'error': {'message': 'Rate limit reached for text-embedding-ada-002 in organization org-<redacted> on tokens per min (TPM): Limit 1000000, Used 983016, Requested 32244. Please try again in 915ms. Visit https://platform.openai.com/account/rate-limits to learn more.', 'type': 'tokens', 'param': None, 'code': 'rate_limit_exceeded'}}
+ERROR workers.pipeline.ingestion_pipeline Pipeline failed: Error code: 429 - {'error': {'message': 'Rate limit reached for text-embedding-ada-002 in organization org-<redacted> on tokens per min (TPM): Limit 1000000, Used 983016, Requested 32244. Please try again in 915ms. Visit https://platform.openai.com/account/rate-limits to learn more.', 'type': 'tokens', 'param': None, 'code': 'rate_limit_exceeded'}}
+Traceback (most recent call last):
+  File "C:\Users\Alec\Desktop\code\testtGSD\.claude\worktrees\agent-ae467ac7a967d75bb\services\workers\workers\pipeline\ingestion_pipeline.py", line 124, in process_files
+    self.embedding_gen.generate_embeddings_for_chunks(all_chunks)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+  File "C:\Users\Alec\Desktop\code\testtGSD\.claude\worktrees\agent-ae467ac7a967d75bb\services\workers\workers\embeddings\embedding_generator.py", line 207, in generate_embeddings_for_chunks
+    embeddings = self.client.generate_embeddings_batch(batch_texts)
+  File "C:\Users\Alec\Desktop\code\testtGSD\.claude\worktrees\agent-ae467ac7a967d75bb\services\workers\workers\embeddings\openai_client.py", line 202, in generate_embeddings_batch
+    response = self.client.embeddings.create(
+        model=self.model, input=processed_texts
+    )
+  File "<scratch>\w2203-venv\Lib\site-packages\openai\resources\embeddings.py", line 113, in create
+    return self._post(
+           ~~~~~~~~~~^
+        "/embeddings",
+        ^^^^^^^^^^^^^^
+    ...<9 lines>...
+        cast_to=CreateEmbeddingResponse,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "<scratch>\w2203-venv\Lib\site-packages\openai\_base_client.py", line 1440, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<scratch>\w2203-venv\Lib\site-packages\openai\_base_client.py", line 1213, in request
+    raise self._make_status_error_from_response(err.response) from None
+openai.RateLimitError: Error code: 429 - {'error': {'message': 'Rate limit reached for text-embedding-ada-002 in organization org-<redacted> on tokens per min (TPM): Limit 1000000, Used 983016, Requested 32244. Please try again in 915ms. Visit https://platform.openai.com/account/rate-limits to learn more.', 'type': 'tokens', 'param': None, 'code': 'rate_limit_exceeded'}}
+FAILED: Error code: 429 - {'error': {'message': 'Rate limit reached for text-embedding-ada-002 in organization org-<redacted> on tokens per min (TPM): Limit 1000000, Used 983016, Requested 32244. Please try again in 915ms. Visit https://platform.openai.com/account/rate-limits to learn more.', 'type': 'tokens', 'param': None, 'code': 'rate_limit_exceeded'}}
+exit 1
+
