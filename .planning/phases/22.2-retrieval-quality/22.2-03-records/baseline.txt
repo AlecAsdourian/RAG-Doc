@@ -1,0 +1,158 @@
+22.2-03 Task 2: linkwarden's first ingest and its baseline, measured as rag_doc_app. The aggregates are reported, not judged.
+
+== precondition
+main 2c5ffe7 (PR #68 merged with a merge commit; the 30 questions on main before this ingest); 22.2-02 is on main (#66); chunker version e3d3175e3d756d3d
+this branch: feat/22.2-03-linkwarden-baseline, cut from 2c5ffe7; the harness ran from this worktree at a635402 (the header's harness_commit), which adds only check-fixed-chunker.txt and census-linkwarden.json to 2c5ffe7
+not on main and not used: 22.2-07's decide.py (PR #67) and 22.1-05's hnsw.ef_search change (PR #69); the header records hnsw.ef_search 40, the server default
+environment: Python 3.13.7, a fresh venv from services/workers/requirements.txt; OPENAI_API_KEY read from services/workers/.env into the child process only (164 characters, never printed)
+
+== the scratch database
+docker run -d --name w2203-pg -p 127.0.0.1::5432 pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b  (published on 127.0.0.1:56688; never compose, never port 5434)
+22.2-01-records/scratch_db.py: scratch database at 127.0.0.1:56688 (server 16.15 (Debian 16.15-1.pgdg12+2)): 18 migrations applied (000001_create_core_schema.up.sql .. 000018_ingestion_jobs_repository_recent.up.sql); rag_doc_app rolsuper=False rolbypassrls=False
+removed afterwards: docker rm -fv w2203-pg (docker ps -a shows no w2203 container)
+
+== the commands (baseline_run.py; logs baseline-ingest.txt, baseline-measure.txt, baseline-usage.txt)
+1. as the scratch superuser: rag_quality_harness.py --corpus linkwarden --corpora-dir C:/Users/Alec/Desktop/code/rag-bench-corpora --clear --ingest
+   -> 379 files, 991 chunks, offline chunk set b1c7c108..., status success
+2. as rag_doc_app (DSN option -c role=rag_doc_app): rag_quality_harness.py --corpus linkwarden --corpora-dir C:/Users/Alec/Desktop/code/rag-bench-corpora --measure --set all --query-vectors <scratch>/w2203-bench/vecs-linkwarden-ada-002.json --record <scratch>/w2203-bench/baseline-linkwarden.jsonl --json-out <scratch>/w2203-bench/baseline-linkwarden.summary.json --vector-tolerance 2e-6
+   -> the 30 questions embedded once (0 cached, 30 embedded) and written back; 0 failed queries
+   No --exact run: the plan does not call for one.
+
+== a first ingest attempt failed, and was rerun (baseline-ingest-attempt1-429.txt, baseline-usage-attempt1-429.txt)
+The first --clear --ingest stopped on an OpenAI 429 (tokens per minute) after 6 embedding batches: another session's re-embedding job was using the organisation's rate limit at the same time. Nothing was written (the rerun's --clear found runs=0 chunks=0). I waited for that job to finish and ran the ingest again. The failed attempt's 154,994 tokens were billed and are counted in the spend below. (The organisation id in its error text is redacted.)
+
+== the checks (baseline_checks.py)
+== the header
+PASS  chunk_set_digest b1c7c1082197ed74 = offline = census-linkwarden.json's
+PASS  chunk rows 991 = offline = census = visible to rag_doc_app
+PASS  chunk_models names one model: {'text-embedding-ada-002': 991}
+PASS  the query model text-embedding-ada-002 is the chunks' model
+PASS  fts connection: current_user rag_doc_app, rolsuper False, rolbypassrls False
+PASS  vector connection: current_user rag_doc_app, rolsuper False, rolbypassrls False
+PASS  chunker e3d3175e3d756d3d = census's, verified
+PASS  corpus commit 952ac4540657cae3a67c3ca59433899d2fda8374
+PASS  vector tolerance 2e-06 (QD2)
+PASS  breadcrumb column mismatches 0
+      harness_commit a635402ae300d741f5673a3ebc781965ac6de715, retrieval_code_version 7fcefd6af7bbb5d1, hnsw.ef_search 40, server 16.15 (Debian 16.15-1.pgdg12+2)
+== the queries
+PASS  30 questions recorded, 0 failed
+PASS  30 cached query vectors, one per question
+== the spend (text-embedding-ada-002 at $0.10 per million tokens)
+      baseline-usage-attempt1-429.txt: 6 batches, 154994 tokens, $0.015499
+      baseline-usage.txt: 11 batches, 248872 tokens, $0.024887
+PASS  total $0.040387 within the plan's $0.05 cap
+== the aggregates per set (reported, not judged)
+      set      level     n  recall@5  rank-1   MRR@5
+      tuning   file     15  14/15     13/15    0.880
+      tuning   symbol   15  13/15     10/15    0.756
+      holdout  file     15  12/15      8/15    0.627
+      holdout  symbol   15  12/15      8/15    0.627
+      all      file     30  26/30     21/30    0.753
+      all      symbol   30  25/30     18/30    0.691
+PASS  the record's ranks give the summary's file aggregates
+0 FAIL
+
+######## 2026-10-06, after PR #70's review (M1): baseline_checks.py hardened, and shown able to fail
+The section above is the first version's output. The hardened version also checks: the header's connections are exactly {fts, vector}; the usage logs' batch counts (attempt 1: 7 sent, 6 billed; the run: 11) and texts (991 ingest + 30 questions); the ingest's tokens equal the census's embedded_total_if_every_chunk; both ranks recomputed from trace.top with scoring.ranks, the table built from them; each row's (id, set, question, path, symbol) against the spec; top_k 5, set all and no boost config in the header and the summary. No new measurement: it reads the committed records.
+== baseline_checks.py on the committed records
+== the header
+PASS  chunk_set_digest b1c7c1082197ed74 = offline = census-linkwarden.json's
+PASS  chunk rows 991 = offline = census = visible to rag_doc_app
+PASS  chunk_models names one model: {'text-embedding-ada-002': 991}
+PASS  the query model text-embedding-ada-002 is the chunks' model
+PASS  the header records exactly the fts and vector connections: ['fts', 'vector']
+PASS  fts connection: current_user rag_doc_app, rolsuper False, rolbypassrls False
+PASS  vector connection: current_user rag_doc_app, rolsuper False, rolbypassrls False
+PASS  chunker e3d3175e3d756d3d = census's, verified
+PASS  corpus commit 952ac4540657cae3a67c3ca59433899d2fda8374 = the spec's pin
+PASS  vector tolerance 2e-06 (QD2)
+PASS  breadcrumb column mismatches 0
+PASS  header: top_k 5, set 'all', boost_config None
+PASS  summary: top_k 5, set 'all', boost_config None
+      harness_commit a635402ae300d741f5673a3ebc781965ac6de715, retrieval_code_version 7fcefd6af7bbb5d1, hnsw.ef_search 40, server 16.15 (Debian 16.15-1.pgdg12+2)
+== the questions against the spec
+PASS  30 rows' (id, set, question, path, symbol) equal the spec's 30, in order
+PASS  odd ids are tuning and even ids holdout
+== the queries
+PASS  30 questions recorded, 0 failed
+PASS  30 cached query vectors, one per question
+== the ranks, recomputed from each row's trace.top with scoring.ranks
+PASS  every trace.top has at most 5 results
+PASS  recorded file and symbol ranks equal the recomputed ones (mismatches: none)
+PASS  summary.json's ranks equal the recomputed ones (mismatches: none)
+== the spend (text-embedding-ada-002 at $0.10 per million tokens)
+PASS  attempt 1: 7 batches sent, 6 billed (expected 7 and 6; the last was the 429)
+PASS  the run: 11 batches sent, 11 billed (expected 11)
+PASS  the ingest embedded 991 texts = the census's 991 chunk rows
+PASS  the ingest's 248157 tokens = the census's embedded_total_if_every_chunk 248157
+PASS  the last batch is the 30 questions (30 texts)
+      attempt 1: 154994 tokens; the run: 248157 ingest + 715 questions; total 403866 tokens, $0.040387
+PASS  total $0.040387 within the plan's $0.05 cap
+== the aggregates per set, from the recomputed ranks (reported, not judged)
+      set      level     n  recall@5  rank-1   MRR@5
+      tuning   file     15  14/15     13/15    0.880
+      tuning   symbol   15  13/15     10/15    0.756
+      holdout  file     15  12/15      8/15    0.627
+      holdout  symbol   15  12/15      8/15    0.627
+      all      file     30  26/30     21/30    0.753
+PASS  all / file: the recomputed aggregates equal summary.json's
+      all      symbol   30  25/30     18/30    0.691
+PASS  all / symbol: the recomputed aggregates equal summary.json's
+0 FAIL
+
+== baseline_checks_vacuity.py: each of the review's five mutations, on scratch copies of the records, proven by bytes
+== the committed records: exit 0; 0 FAIL
+== mutation 1: connections = {}
+   baseline-linkwarden.jsonl.gz: committed sha256 9a3b5878bfc3e2a7, mutated copy c0d6dbf33e1be143, differs: True
+   the mutated field reads back as intended: True
+   FAIL  the header records exactly the fts and vector connections: []
+   baseline_checks.py exit 1; 1 FAIL
+== mutation 2: both usage files emptied
+   baseline-usage.txt: committed sha256 5b60146513a22a59, mutated copy e3b0c44298fc1c14, differs: True
+   baseline-usage-attempt1-429.txt: committed sha256 2e49c18c3329b61e, mutated copy e3b0c44298fc1c14, differs: True
+   the mutated field reads back as intended: True
+   FAIL  attempt 1: 0 batches sent, 0 billed (expected 7 and 6; the last was the 429)
+   FAIL  the run: 0 batches sent, 0 billed (expected 11)
+   FAIL  the ingest embedded 0 texts = the census's 991 chunk rows
+   FAIL  the ingest's 0 tokens = the census's embedded_total_if_every_chunk 248157
+   FAIL  the last batch is the 30 questions (0 texts)
+   FAIL  total $0.000000 within the plan's $0.05 cap
+   baseline_checks.py exit 1; 6 FAIL
+== mutation 3: every symbol_rank set to 1
+   baseline-linkwarden.jsonl.gz: committed sha256 9a3b5878bfc3e2a7, mutated copy 3186b5824e896151, differs: True
+   baseline-linkwarden.summary.json: committed sha256 f9cd819e5e314099, mutated copy 6c822e7d438ab236, differs: True
+   the mutated field reads back as intended: True
+   FAIL  recorded file and symbol ranks equal the recomputed ones (mismatches: ['lw-01', 'lw-04', 'lw-06', 'lw-08', 'lw-09', 'lw-10', 'lw-14', 'lw-15', 'lw-16', 'lw-17', 'lw-19', 'lw-26'])
+   FAIL  summary.json's ranks equal the recomputed ones (mismatches: ['lw-01', 'lw-04', 'lw-06', 'lw-08', 'lw-09', 'lw-10', 'lw-14', 'lw-15', 'lw-16', 'lw-17', 'lw-19', 'lw-26'])
+   baseline_checks.py exit 1; 2 FAIL
+== mutation 4: every row labelled tuning
+   baseline-linkwarden.jsonl.gz: committed sha256 9a3b5878bfc3e2a7, mutated copy d3316a884298cbdb, differs: True
+   the mutated field reads back as intended: True
+   FAIL  30 rows' (id, set, question, path, symbol) equal the spec's 30, in order
+   FAIL  odd ids are tuning and even ids holdout
+   baseline_checks.py exit 1; 2 FAIL
+== mutation 5: top_k = 50
+   baseline-linkwarden.jsonl.gz: committed sha256 9a3b5878bfc3e2a7, mutated copy c251f60b55582987, differs: True
+   baseline-linkwarden.summary.json: committed sha256 f9cd819e5e314099, mutated copy 1625217b3cd6ea83, differs: True
+   the mutated field reads back as intended: True
+   FAIL  header: top_k 50, set 'all', boost_config None
+   FAIL  summary: top_k 50, set 'all', boost_config None
+   baseline_checks.py exit 1; 2 FAIL
+== 5 of 5 mutations FAIL; the records directory is unchanged: True
+
+######## 2026-10-06, after PR #70's review (M2, N7): how the committed logs were made
+The logs were written by the first version of baseline_run.py, which wrote <out>/ingest.txt, <out>/measure.txt and <out>/usage.txt (appending) under <scratch>/w2203-bench, concatenated each child's stdout and then its stderr (so the chunker's WARNING lines follow the status block, out of time order), and did not redact org- ids. After the 429'd attempt, and before the rerun, its two logs were renamed by hand:
+  cd <scratch>/w2203-bench && mv ingest.txt ingest-attempt1-429.txt && mv usage.txt usage-attempt1-429.txt
+After the measure, the logs were copied into 22.2-03-records/ under these names:
+  cp ingest.txt baseline-ingest.txt; cp measure.txt baseline-measure.txt; cp usage.txt baseline-usage.txt
+  cp ingest-attempt1-429.txt baseline-ingest-attempt1-429.txt; cp usage-attempt1-429.txt baseline-usage-attempt1-429.txt
+and the organisation id in the 429 messages was redacted in the committed copy only (4 occurrences):
+  sed -i 's/org-[A-Za-z0-9]\{8,\}/org-<redacted>/g' baseline-ingest-attempt1-429.txt
+No other edit was made to any log. baseline_run.py now does the redaction, names the logs with --prefix (default baseline-), merges stderr into stdout, and guards against an empty secret; it was not rerun, so the logs above are the first version's output.
+
+######## 2026-10-06, after PR #70's review (M3): the census's provenance
+The census ran on 2c5ffe7's tree (main after #68; the worktree was at 2c5ffe7, changed only by the then-uncommitted check-fixed-chunker.txt, no code), before the ingest, and its output was committed in a635402:
+  cd services/workers && python scripts/rag_benchmarks/chunk_census.py --corpora C:/Users/Alec/Desktop/code/rag-bench-corpora --out <scratch>/w2203-census --only linkwarden
+  -> linkwarden: 379 files, 991 chunks, digest b1c7c1082197ed74, chunker e3d3175e3d756d3d, index/source 0.895, truncated 0, billed tokens 247081
+  then: cp <scratch>/w2203-census/census-linkwarden.json .planning/phases/22.2-retrieval-quality/22.2-03-records/census-linkwarden.json
+(The census's "billed tokens 247081" counts distinct content; the ingest embedded all 991 texts, 248157 tokens, the census's embedded_total_if_every_chunk.)

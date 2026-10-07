@@ -1,0 +1,11 @@
+22.2-03 Task 2, precondition and --check on the fixed chunker.
+main: 2c5ffe7 (the merge of PR #68, whose parents are 4051d9b, 22.2-02 merged as #66, and ba01406); this branch is cut from it
+chunker version: e3d3175e3d756d3d (22.2-02's, the same version Task 1's checks ran on)
+harness: services/workers/scripts/rag_quality_harness.py at 2c5ffe7
+corpora: C:/Users/Alec/Desktop/code/rag-bench-corpora; linkwarden at 952ac4540657cae3a67c3ca59433899d2fda8374
+environment: Python 3.13.7, a fresh venv from services/workers/requirements.txt (tree-sitter 0.25.2, tree-sitter-typescript 0.23.2); DATABASE_URL and OPENAI_API_KEY unset; no database, no OpenAI call; linkwarden not yet ingested
+== --corpus linkwarden --corpora-dir C:/Users/Alec/Desktop/code/rag-bench-corpora --check
+[*] check linkwarden: 379 files; questions: 15 tuning, 15 holdout, 0 confirm; 30 naming a symbol; 0 failures, 0 warnings
+exit 0
+
+0 failures and 0 warnings, so there is no symbol warning to resolve: no answer-key spelling correction (a), no replacement question (b), and no chunker bug (c). Nothing in the spec changes before the ingest.

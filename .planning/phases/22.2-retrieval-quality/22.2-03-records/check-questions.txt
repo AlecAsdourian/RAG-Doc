@@ -1,0 +1,39 @@
+harness: this branch's services/workers/scripts/rag_quality_harness.py (unchanged since main 4051d9b; chunker version e3d3175e3d756d3d, 22.2-02's fixed chunker)
+spec: services/workers/scripts/rag_benchmarks/linkwarden.json with the 30 questions of commit B, written by writer_runs.py from the two accepted writers' hand-back messages, verbatim and in the writers' order
+corpora: C:/Users/Alec/Desktop/code/rag-bench-corpora; linkwarden at 952ac4540657cae3a67c3ca59433899d2fda8374
+environment: Python 3.13.7, a fresh venv from services/workers/requirements.txt; DATABASE_URL and OPENAI_API_KEY unset; no database, no OpenAI call; linkwarden has never been ingested
+== --corpus linkwarden --corpora-dir C:/Users/Alec/Desktop/code/rag-bench-corpora --check
+[*] check linkwarden: 379 files; questions: 15 tuning, 15 holdout, 0 confirm; 30 naming a symbol; 0 failures, 0 warnings
+exit 0
+
+note: 0 warnings of either kind. No question names its symbol, and every answering symbol is the name of a chunk in its file on 22.2-02's chunker, so Task 2 has no symbol warning to resolve.
+
+== the spread across the whole set of 30 (package = the file's directory cut to its first four segments; at most 5 each)
+5 apps/web/lib/api
+4 apps/worker/lib
+4 packages/lib
+3 apps/worker/lib/preservationScheme
+3 apps/worker/workers
+3 packages/filesystem
+2 apps/web/lib/client
+2 apps/web/hooks
+1 apps/web/components
+1 packages/router
+1 apps/web/lib
+1 apps/web/lib/shared
+max 5 (apps/web/lib/api: lw-12, lw-13, lw-14, lw-23, lw-24); 12 packages; 30 distinct (path, symbol) pairs
+
+######## 2026-10-06, commit C: after the planner's spot-check (spot-check.md)
+change: lw-15's answer key only, symbol ClickAwayHandler -> useOutsideAlerter and its evidence (:55 -> :28), as the planner's record gives it; its question, path, id and set are unchanged; no other question changed
+harness, chunker, corpus and environment as above (chunker version e3d3175e3d756d3d; no database, no OpenAI call; linkwarden never ingested)
+== --corpus linkwarden --corpora-dir C:/Users/Alec/Desktop/code/rag-bench-corpora --check
+[*] check linkwarden: 379 files; questions: 15 tuning, 15 holdout, 0 confirm; 30 naming a symbol; 0 failures, 0 warnings
+exit 0
+note: useOutsideAlerter is named by a chunk of apps/web/components/ClickAwayHandler.tsx (no symbol warning), and lw-15's question does not contain it; the spread is unchanged, since the path is.
+
+######## 2026-10-06, after PR #68's review (finding 1): lw-15's cited line
+change: lw-15's evidence cites ClickAwayHandler.tsx:27 (the line `function useOutsideAlerter(` starts on) instead of :28; its path, symbol, question, id and set are unchanged; no other question changed. spot-check.md has a dated correction appended; its committed text is not rewritten.
+harness, chunker, corpus and environment as above (chunker version e3d3175e3d756d3d; no database, no OpenAI call; linkwarden never ingested)
+== --corpus linkwarden --corpora-dir C:/Users/Alec/Desktop/code/rag-bench-corpora --check
+[*] check linkwarden: 379 files; questions: 15 tuning, 15 holdout, 0 confirm; 30 naming a symbol; 0 failures, 0 warnings
+exit 0

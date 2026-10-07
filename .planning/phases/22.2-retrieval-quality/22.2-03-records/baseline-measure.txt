@@ -1,0 +1,71 @@
+$ rag_quality_harness.py --corpus linkwarden --corpora-dir C:/Users/Alec/Desktop/code/rag-bench-corpora --measure --set all --query-vectors <scratch>/w2203-bench/vecs-linkwarden-ada-002.json --record <scratch>/w2203-bench/baseline-linkwarden.jsonl --json-out <scratch>/w2203-bench/baseline-linkwarden.summary.json --vector-tolerance 2e-6
+[*] query vectors: 0 cached, 30 embedded now (text-embedding-ada-002) -> <scratch>\w2203-bench\vecs-linkwarden-ada-002.json
+[*] recording to <scratch>\w2203-bench\baseline-linkwarden.jsonl as rag_doc_app (rolsuper=False, rolbypassrls=False); vector backend: pgvector
+[*] header: chunker e3d3175e3d756d3d (verified: True), chunk set b1c7c1082197ed7473d579763192396e2a34c218bff0f87cdee7ca979590bc77 (991 rows with text-embedding-ada-002; rows per model {'text-embedding-ada-002': 991}), stored vectors ce4096e84d29d55f04faf3876aa51c8a, corpus commit 952ac4540657cae3a67c3ca59433899d2fda8374, tree 5c21c4b493e5e2b7, vector tolerance 2e-06
+wrote <scratch>\w2203-bench\baseline-linkwarden.jsonl
+
+[linkwarden / all]  30 questions, top_k=5
+
+file   symbol question                                                         top hit
+----------------------------------------------------------------------------------------------------------------------------------------
+MISS   MISS   How does the background archiver share out each batch of pendi   apps/worker/lib/preservationScheme/handleScreenshotAndPd
+#1     #1     Where are the headless browser's outgoing requests intercepted   apps/worker/lib/protectPageRequests.ts
+#1     #1     Before a page is turned into a single self-contained HTML file   apps/worker/lib/preservationScheme/sanitizeHtmlForMonoli
+#2     #2     What happens if submitting a saved page to the Internet Archiv   apps/worker/lib/archiveHandler.ts
+#1     #1     How often are subscribed news feeds checked for new entries, a   apps/worker/workers/rssPolling.ts
+MISS   MISS   How do saved bookmarks get pushed into the full-text search en   apps/web/lib/api/controllers/migration/importFromHTMLFil
+#1     #1     What decides whether a user is over their bookmark quota when    packages/lib/verifyCapacity.ts
+#5     #5     When someone clicks a bookmark, what decides whether they get    packages/lib/getOriginalFormat.ts
+#1     #3     What decides whether a resolved IP address counts as private o   packages/lib/ssrf.ts
+#5     #5     What happens when a stored snapshot is requested from the clou   packages/filesystem/fileExists.ts
+#1     #1     How is an archived file relocated to a new path, both when sto   packages/filesystem/moveFile.ts
+#1     #1     Where does the API check that a caller's login or API key hasn   apps/web/lib/api/verifyToken.ts
+#1     #1     How does the search box handle filters like 'tag:news' or a le   apps/web/lib/api/searchQueryBuilder.ts
+MISS   MISS   When a user combines several labels into one, what happens to    apps/web/lib/api/controllers/migration/importFromHTMLFil
+#1     #2     What decides whether clicking outside a popup closes it, espec   apps/web/components/ClickAwayHandler.tsx
+#2     #2     When several AI provider API keys are set in the environment a   apps/worker/workers/autoTagPreservedLinks.ts
+#5     MISS   How does the archiving worker tell whether a saved URL points    apps/worker/lib/preservationScheme/handleScreenshotAndPd
+#1     #1     Where is the single-file HTML snapshot of a page produced, and   apps/worker/lib/preservationScheme/handleMonolith.ts
+#1     #2     What happens to the headless browser in the default mode when    apps/worker/workers/linkProcessing.ts
+#1     #1     How is a cached endlessly-scrolling list trimmed back to just    packages/router/lib.ts
+#1     #1     Which MIME types of an uploaded file are accepted as a stored    packages/lib/getFormatFromContentType.ts
+#1     #1     When files live in cloud object storage, how does removing a w   packages/filesystem/removeFolder.ts
+#1     #1     How does the server look up whether a user is allowed to reach   apps/web/lib/api/getPermission.ts
+#1     #1     What happens to the ordered blocks on a user's home screen whe   apps/web/lib/api/controllers/collections/collectionId/de
+#1     #1     What size and quality are pictures shrunk to in the browser be   apps/web/lib/client/resizeImage.ts
+MISS   MISS   What decides whether clicking a saved bookmark shows its detai   apps/web/components/LinkDetails.tsx
+#1     #1     How does the web app copy text when the browser blocks the mod   apps/web/lib/copyToClipboard.ts
+#1     #1     How long does the app wait when grabbing a web page's title wh   apps/web/lib/shared/fetchTitleAndHeaders.ts
+#1     #1     When several collections are selected at once in the UI, what    apps/web/hooks/useCollectivePermissions.ts
+#1     #1     Where is the folded or expanded state of the side navigation p   apps/web/hooks/useSidebarCollapse.ts
+----------------------------------------------------------------------------------------------------------------------------------------
+
+recall@5 : 26/30 = 87%
+rank-1    : 21/30 = 70%
+MRR       : 0.753
+symbol level (30 questions): recall@5 25/30, rank-1 18/30, MRR 0.691
+wrote <scratch>\w2203-bench\baseline-linkwarden.summary.json
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/components/Icon.tsx (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/components/InputSelect/styles.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/components/TextInput.tsx (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/components/ui/button.tsx (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/components/ui/checkbox.tsx (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/components/ui/kbd.tsx (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/components/ui/separator.tsx (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/components/ui/tabs.tsx (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/lib/api/billing/stripeStoreReset.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/lib/client/icons.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/pages/api/v1/webhook/index.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/playwright.config.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/store/links.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for apps/web/store/localSettings.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for packages/filesystem/index.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for packages/filesystem/s3Client.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for packages/lib/constants.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for packages/lib/meilisearchClient.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for packages/lib/transporter.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for packages/prisma/index.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for packages/types/global.ts (typescript), falling back to fixed-size chunking
+WARNING workers.chunker.semantic_chunker Semantic parsing produced no chunks for packages/types/inputSelect.ts (typescript), falling back to fixed-size chunking
+exit 0
+
