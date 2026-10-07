@@ -1,0 +1,14 @@
+== python:3.12-slim, HEAD 525d898c795e (git archive), container w2207-tiktoken
+-- offline: TIKTOKEN_CACHE_DIR empty, HTTPS/HTTP to a dead proxy, NO_PROXY=localhost,127.0.0.1
+     12 ERROR tests/test_chunk_census.py
+     38 FAILED tests/ingest/test_handler.py
+      2 FAILED tests/ingest/test_progress_contract.py
+      7 FAILED tests/test_chunk_census.py
+      8 FAILED workers/embeddings/test_embeddings.py
+tests needing the download: 67
+download URLs in the tracebacks: openaipublic.blob.core.windows.net', openaipublic.blob.core.windows.net:443 
+55 failed, 584 passed, 99 skipped, 12 errors in 28.32s
+pytest exit 1
+-- online, the same command
+651 passed, 99 skipped in 40.95s
+pytest exit 0

@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import pathlib
+import shutil
 import sys
 from types import SimpleNamespace
 
@@ -26,6 +28,10 @@ COMPOSE_PG = "postgresql://coderag:hunter2@127.0.0.1:5434/coderag"
 
 
 NO_ENV: dict = {}
+
+# The worker images (python:3.11-slim) have no git; these tests build a git
+# checkout, so they skip there and run wherever git is installed (ISS-041).
+NO_GIT = "git is not installed (e.g. python:3.11-slim); this test builds a git checkout"
 
 
 class TestComposeGuard:
@@ -223,6 +229,11 @@ def _git(cwd, *args):
 @pytest.fixture
 def self_tree(tmp_path):
     """A tiny `self` tree, its own git checkout, with one Go and one Python file."""
+    if shutil.which("git") is None:
+        if os.environ.get("CI"):
+            # On CI a silent skip would keep the job green (PR #67, review B, m6).
+            pytest.fail(NO_GIT + "; CI must have git, so this is not skipped there")
+        pytest.skip(NO_GIT)
     root = tmp_path / "tree"
     (root / "services" / "backend" / "pkg" / "db").mkdir(parents=True)
     (root / "services" / "workers" / "workers" / "chunker").mkdir(parents=True)
@@ -369,3 +380,162 @@ class TestExactTieTail:
 
     def test_the_default_is_22_03s(self):
         assert harness.DEFAULT_VECTOR_TOLERANCE == 1e-5
+
+
+# ---------------------------------------------------------------------------
+# 22.2-07: the decision sets, their independence, and --list-targets
+# ---------------------------------------------------------------------------
+
+
+def _spec(questions):
+    return {"repository": "https://example.invalid/toy", "commit": "0" * 40,
+            "roots": [{"path": ".", "extensions": [".go"], "language": "go"}], "questions": questions}
+
+
+def _q(qid, set_name, path, symbol=None):
+    q = {"id": qid, "set": set_name, "question": f"the text of {qid}, which no target list may show", "path": path}
+    if symbol:
+        q["symbol"] = symbol
+    return q
+
+
+class TestDecisionSets:
+    def test_the_sets_are_named(self):
+        assert harness.DECISION_SETS == ("confirm", "shape-model", "keyword-leg")
+        assert harness.QUESTION_SETS == ("tuning", "holdout", "confirm", "shape-model", "keyword-leg")
+
+    def test_the_new_sets_validate(self):
+        harness.validate_spec(_spec([
+            _q("t1", "tuning", "a.go", "A.run"), _q("h1", "holdout", "b.go", "B.run"),
+            _q("c1", "confirm", "c.go", "C.run"), _q("s1", "shape-model", "d.go", "D.run"),
+            _q("k1", "keyword-leg", "e.go", "E.run"),
+        ]), "toy")
+
+    def test_an_unknown_set_is_still_refused(self):
+        with pytest.raises(SystemExit) as raised:
+            harness.validate_spec(_spec([_q("x1", "shape_model", "a.go", "A.run")]), "toy")
+        assert "x1: set must be one of tuning, holdout, confirm, shape-model, keyword-leg" in str(raised.value)
+
+    @pytest.mark.parametrize("first, second", [
+        (("t1", "tuning", "a.go", "Foo.bar"), ("s1", "shape-model", "a.go", "Foo.bar")),
+        (("h1", "holdout", "a.go", "Foo.bar"), ("k1", "keyword-leg", "a.go", "bar")),   # Class.method and method
+        (("s1", "shape-model", "a.go", "bar"), ("k1", "keyword-leg", "a.go", "Foo.bar")),  # two decision sets
+        (("c1", "confirm", "a.go", "Foo.bar"), ("s1", "shape-model", "a.go", "Foo.bar")),
+        (("t1", "tuning", "a.go", None), ("s1", "shape-model", "a.go", "Foo.bar")),     # no symbol: the file
+    ])
+    def test_a_decision_question_on_another_questions_target_is_refused_naming_both(self, first, second):
+        with pytest.raises(SystemExit) as raised:
+            harness.validate_spec(_spec([_q(*first), _q(*second)]), "toy")
+        message = str(raised.value)
+        assert f"{first[0]} ({first[1]}) and {second[0]} ({second[1]}) target one answer" in message, message
+        assert "a decision set's targets are its own" in message
+
+    def test_tuning_and_holdout_may_share_a_target(self):
+        harness.validate_spec(_spec([_q("t1", "tuning", "a.go", "Foo.bar"), _q("h1", "holdout", "a.go", "Foo.bar")]),
+                              "toy")
+
+    def test_the_same_name_in_another_file_is_another_target(self):
+        harness.validate_spec(_spec([_q("t1", "tuning", "app/api/a/route.ts", "handler"),
+                                     _q("s1", "shape-model", "app/api/b/route.ts", "handler")]), "toy")
+
+    def test_another_symbol_in_the_same_file_is_another_target(self):
+        harness.validate_spec(_spec([_q("t1", "tuning", "a.go", "Foo.bar"),
+                                     _q("s1", "shape-model", "a.go", "Foo.baz")]), "toy")
+
+    def test_every_committed_spec_validates_with_the_check_on(self, tmp_path):
+        names = sorted(p.stem for p in harness.BENCHMARKS_DIR.glob("*.json") if not p.stem.endswith("-rule"))
+        assert {"miniflux", "mealie"} <= set(names)
+        for name in names:
+            corpus = harness.load_corpus(name, tmp_path)
+            assert corpus.questions
+
+    def test_a_rule_file_is_not_listed_as_a_corpus(self, tmp_path):
+        with pytest.raises(SystemExit) as raised:
+            harness.load_corpus("no-such-corpus", tmp_path)
+        assert "embedding-model-rule" not in str(raised.value)
+
+
+class TestListTargets:
+    def test_it_prints_each_sets_targets_and_no_question_text(self, tmp_path, monkeypatch, capsys):
+        questions = [_q("t1", "tuning", "a.go", "Foo.bar"), _q("t2", "tuning", "b.go"),
+                     _q("s1", "shape-model", "c.go", "Baz.qux")]
+        (tmp_path / "toy.json").write_text(json.dumps(_spec(questions)), encoding="utf-8")
+        monkeypatch.setattr(harness, "BENCHMARKS_DIR", tmp_path)
+        harness.main(["--corpus", "toy", "--corpora-dir", str(tmp_path), "--list-targets"])
+        out = capsys.readouterr().out
+        assert "[tuning] 2\n  a.go :: Foo.bar\n  b.go :: (the file)\n[shape-model] 1\n  c.go :: Baz.qux" in out, out
+        assert "the text of" not in out and "usage:" not in out
+
+    def test_a_committed_spec_lists_every_target_and_no_text(self, tmp_path, capsys):
+        harness.main(["--corpus", "miniflux", "--corpora-dir", str(tmp_path), "--list-targets"])
+        out = capsys.readouterr().out
+        spec = json.loads((harness.BENCHMARKS_DIR / "miniflux.json").read_text(encoding="utf-8"))
+        for q in spec["questions"]:
+            assert f"  {q['path']} :: {q['symbol']}" in out
+            assert q["question"] not in out
+        assert sum(1 for line in out.splitlines() if " :: " in line) == len(spec["questions"])
+
+
+# ---------------------------------------------------------------------------
+# 22.2-07: --embedding-model reaches the pipeline, the engine and --exact
+# ---------------------------------------------------------------------------
+
+
+class _Recorder:
+    """Stands in for IngestionPipeline or QueryEngine: records its keyword arguments, connects to nothing."""
+
+    def __init__(self, calls, **kwargs):
+        calls.append(kwargs)
+        model = kwargs.get("embedding_model")
+        generator = SimpleNamespace(model=model, client=SimpleNamespace(
+            generate_embeddings_batch=lambda texts: [[0.5] for _ in texts]))
+        self.embedding_gen = generator
+        self.vector_retriever = SimpleNamespace(embedding_generator=generator)
+
+    def process_files(self, **kwargs):
+        return {"status": "success"}
+
+    def query(self, **kwargs):
+        return {"results": []}
+
+
+class TestEmbeddingModelArgument:
+    @pytest.fixture
+    def recorded(self, monkeypatch, tmp_path):
+        calls = []
+        monkeypatch.setattr(harness, "IngestionPipeline", lambda **kw: _Recorder(calls, **kw))
+        monkeypatch.setattr(harness, "QueryEngine", lambda **kw: _Recorder(calls, **kw))
+        monkeypatch.setattr(harness, "OPENAI", "not-a-real-key")
+        monkeypatch.setattr(harness, "PG", SCRATCH_PG)
+        monkeypatch.setattr(harness, "require_fetched", lambda corpus: None)
+        monkeypatch.setattr(harness, "collect_files", lambda corpus: [("a.py", "def f():\n    return 1\n", "python")])
+        monkeypatch.setattr(harness, "ensure_fixtures", lambda corpus: None)
+        monkeypatch.setattr(harness, "indexed_state", lambda corpus: (0, 0))
+        monkeypatch.setattr(harness, "do_exact", lambda corpus, questions, vectors, model, out, tolerance=None:
+                            calls.append({"do_exact_model": model}))
+        return calls
+
+    def _run(self, tmp_path, *flags):
+        harness.main(["--corpus", "self", "--corpora-dir", str(tmp_path), "--set", "tuning", *flags])
+
+    def test_with_no_flag_the_resolved_model_is_ada_002(self, recorded, tmp_path):
+        self._run(tmp_path, "--ingest", "--measure", "--query-vectors", str(tmp_path / "v.json"),
+                  "--exact", str(tmp_path / "x.json"))
+        models = [c.get("embedding_model", c.get("do_exact_model")) for c in recorded]
+        assert len(recorded) == 4 and set(models) == {"text-embedding-ada-002"}, recorded
+
+    def test_the_flag_reaches_the_pipeline_the_engine_and_exact(self, recorded, tmp_path):
+        self._run(tmp_path, "--ingest", "--measure", "--query-vectors", str(tmp_path / "v.json"),
+                  "--exact", str(tmp_path / "x.json"), "--embedding-model", "text-embedding-3-small")
+        models = [c.get("embedding_model", c.get("do_exact_model")) for c in recorded]
+        assert len(recorded) == 4 and set(models) == {"text-embedding-3-small"}, recorded
+
+    def test_the_query_vector_cache_refuses_the_other_models_vector(self, recorded, tmp_path):
+        """QueryVectors.ensure's refusal is unchanged: an ada-002 vector is not reused for 3-small."""
+        vectors = tmp_path / "v.json"
+        self._run(tmp_path, "--measure", "--query-vectors", str(vectors))
+        assert json.loads(vectors.read_text(encoding="utf-8"))["self-t01"]["model"] == "text-embedding-ada-002"
+        with pytest.raises(SystemExit) as raised:
+            self._run(tmp_path, "--measure", "--query-vectors", str(vectors),
+                      "--embedding-model", "text-embedding-3-small")
+        assert "was embedded with text-embedding-ada-002 and the engine uses text-embedding-3-small" in str(raised.value)

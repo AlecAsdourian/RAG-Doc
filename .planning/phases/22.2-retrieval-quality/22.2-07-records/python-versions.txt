@@ -1,0 +1,27 @@
+== python:3.11-slim, HEAD 525d898c795e (git archive), container w2207-py311
+Python 3.11.16
+git: not installed
+   86 skipped: git is not installed (e.g. python:3.11-slim): decide.py reads a rule's order from git, so every judged run needs a repository (ISS-041)
+    7 skipped: git is not installed (e.g. python:3.11-slim); this test builds a git checkout
+    5 skipped: docker compose is unavailable, so the resolved compose environment cannot be read: the docker CLI is not installed here
+    1 skipped: RAG_DOC_TINY_FS names no tiny filesystem; run in the container with --tmpfs
+651 passed, 99 skipped in 23.09s
+pytest exit 0
+
+== python:3.12-slim, HEAD 525d898c795e (git archive), container w2207-py312
+Python 3.12.14
+git version 2.47.3
+    5 skipped: docker compose is unavailable, so the resolved compose environment cannot be read: the docker CLI is not installed here
+    1 skipped: RAG_DOC_TINY_FS names no tiny filesystem; run in the container with --tmpfs
+744 passed, 6 skipped in 39.20s
+pytest exit 0
+
+== base 5bb8693 (before the fix), python:3.11-slim, tests/test_tripwire.py
+FAILED tests/test_tripwire.py::test_aggregate_gives_what_both_old_copies_gave_on_22_03s_records[mealie]
+1 failed, 30 passed in 1.00s
+pytest exit 1
+
+== base 5bb8693 (before the fix), python:3.12-slim, tests/test_tripwire.py
+31 passed in 0.95s
+pytest exit 0
+
