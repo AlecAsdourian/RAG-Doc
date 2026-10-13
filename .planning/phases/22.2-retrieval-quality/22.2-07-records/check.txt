@@ -1,0 +1,14 @@
+committed specs: linkwarden, mealie, miniflux
+
+$ python scripts/rag_quality_harness.py --corpus linkwarden --corpora-dir <corpora> --check
+[*] check linkwarden: 379 files; questions: 15 tuning, 15 holdout, 0 confirm, 0 shape-model, 0 keyword-leg; 30 naming a symbol; 0 failures, 0 warnings
+(exit 0)
+
+$ python scripts/rag_quality_harness.py --corpus mealie --corpora-dir <corpora> --check
+  WARN ml-22: the question names 'User', which flatters keyword search
+[*] check mealie: 390 files; questions: 15 tuning, 15 holdout, 15 confirm, 0 shape-model, 0 keyword-leg; 45 naming a symbol; 0 failures, 1 warnings
+(exit 0)
+
+$ python scripts/rag_quality_harness.py --corpus miniflux --corpora-dir <corpora> --check
+[*] check miniflux: 335 files; questions: 15 tuning, 15 holdout, 15 confirm, 0 shape-model, 0 keyword-leg; 45 naming a symbol; 0 failures, 0 warnings
+(exit 0)

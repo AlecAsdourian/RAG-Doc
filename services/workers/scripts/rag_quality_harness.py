@@ -46,6 +46,14 @@ its questions:
              questions nobody had looked at: read once, under a rule fixed
              before they were written (rag_benchmarks/*-protocol.md)
 
+The decision sets (22.2-07) are written after their rule, by blind writers,
+and read once by `rag_benchmarks/decide.py`: `confirm` (the boost protocol's,
+spent), `shape-model` (Phase 22.2's shared set for the chunk-shape and
+embedding-model decisions) and `keyword-leg` (22.2-06's). A decision-set
+question may not target an answer any other question of the corpus targets,
+in any set (`validate_spec`); `--list-targets` prints the targets a blind
+writer is given, never the questions.
+
 A change that lifts `tuning` and not `holdout` has been overfitted. `self`'s
 holdout set has been consulted for many configurations and is no longer blind
 (ISS-029); decide on a benchmark corpus's holdout set instead.
@@ -146,7 +154,6 @@ Ingestion costs OpenAI credits; measurement is cheap and re-runnable.
 """
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -170,6 +177,7 @@ import chunk_digest  # noqa: E402  (what a record measured: the digest and the c
 from scoring import aggregate, path_matches, ranks, symbol_matches  # noqa: E402
 from workers.chunker.semantic_chunker import SemanticChunker  # noqa: E402
 from workers.db import require_tenant  # noqa: E402
+from workers.embeddings import DEFAULT_EMBEDDING_MODEL  # noqa: E402
 from workers.pipeline.ingestion_pipeline import IngestionPipeline  # noqa: E402
 from workers.retrieval.query_engine import QueryEngine  # noqa: E402
 from workers.retrieval.vector_retriever import vector_literal  # noqa: E402
@@ -200,7 +208,10 @@ CORPUS_ROOTS = [
 ]
 SELF_EXCLUDE = [r"(^|/)test_[^/]*$", r"_test\.go$"]
 SKIP_PARTS = {"venv", "node_modules", "__pycache__", ".git", "testdata", "vendor"}
-QUESTION_SETS = ("tuning", "holdout", "confirm")
+# Sets a decision is judged on (22.2-07): each written after its rule, and
+# independent of every other question of the corpus (validate_spec).
+DECISION_SETS = ("confirm", "shape-model", "keyword-leg")
+QUESTION_SETS = ("tuning", "holdout") + DECISION_SETS
 
 # ---------------------------------------------------------------------------
 # TUNING SET. Each answer established by reading the code; the expected path is
@@ -394,7 +405,8 @@ def load_corpus(name: str, corpora_dir: Path, self_root: Path = REPO_ROOT,
 
     spec_path = BENCHMARKS_DIR / f"{name}.json"
     if not spec_path.exists():
-        known = sorted(p.stem for p in BENCHMARKS_DIR.glob("*.json"))
+        # A protocol's rule (`*-rule.json`, decide.py's) sits beside the specs and is not a corpus.
+        known = sorted(p.stem for p in BENCHMARKS_DIR.glob("*.json") if not p.stem.endswith("-rule"))
         sys.exit(f"no corpus named {name!r}; known corpora: self, {', '.join(known) or '(none)'}")
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
     validate_spec(spec, name)
@@ -444,8 +456,61 @@ def validate_spec(spec: dict, name: str) -> None:
             problems.append(f"{q.get('id')}: needs a question and a path")
         if "symbol" in q and not (isinstance(q["symbol"], str) and q["symbol"].strip()):
             problems.append(f"{q.get('id')}: a symbol, when given, must be a non-empty name")
+    problems.extend(independence_problems(spec.get("questions", [])))
     if problems:
         sys.exit(f"invalid spec rag_benchmarks/{name}.json:\n  " + "\n  ".join(problems))
+
+
+def same_target(a: Mapping, b: Mapping) -> bool:
+    """Whether two questions target one answer, as scoring identifies it.
+
+    Scoring finds an answer by its path and, at symbol level, its breadcrumb
+    (scoring.py), so a target is (path, symbol): the same when the paths are
+    equal and either symbol matches the other under `symbol_matches`
+    (`Class.method` and `method` in one file are one target). A question that
+    names no symbol is answered by its file alone, so it shares a target with
+    every question on that path. A bare-name reading of the boost protocol's
+    "no question targets a symbol any existing question targets" would refuse
+    unrelated questions, since names repeat across files (a `handler` in
+    nearly every Next.js API route); the same name in another file is another
+    answer (22.2-07).
+    """
+    if a.get("path") != b.get("path"):
+        return False
+    sa, sb = a.get("symbol"), b.get("symbol")
+    if not sa or not sb:
+        return True
+    return symbol_matches(sa, sb) or symbol_matches(sb, sa)
+
+
+def independence_problems(questions: Sequence[Mapping]) -> List[str]:
+    """A decision-set question may not target an answer any other question of
+    the corpus targets, in any set; so two decision sets never share one.
+    `tuning` and `holdout` questions may share targets with each other."""
+    problems = []
+    for i, a in enumerate(questions):
+        for b in questions[i + 1:]:
+            if (a.get("set") in DECISION_SETS or b.get("set") in DECISION_SETS) and same_target(a, b):
+                problems.append(
+                    f"{a.get('id')} ({a.get('set')}) and {b.get('id')} ({b.get('set')}) target one answer, "
+                    f"{a.get('path')} :: {a.get('symbol') or '(the file)'} / {b.get('symbol') or '(the file)'}; "
+                    "a decision set's targets are its own")
+    return problems
+
+
+def targets_by_set(corpus: "Corpus") -> List[str]:
+    """--list-targets: per set, the (path, symbol) each question targets, in
+    question order. What a blind writer is given to avoid; it never holds a
+    question's text."""
+    present = [s for s in QUESTION_SETS if any(q["set"] == s for q in corpus.questions)]
+    present += sorted({q["set"] for q in corpus.questions} - set(QUESTION_SETS))
+    lines = [f"targets of {corpus.name} at {corpus.commit or '(no commit)'}: (path, symbol) per question, "
+             "by set; no question text"]
+    for set_name in present:
+        targets = [(q["path"], q.get("symbol")) for q in corpus.questions if q["set"] == set_name]
+        lines.append(f"[{set_name}] {len(targets)}")
+        lines.extend(f"  {path} :: {symbol or '(the file)'}" for path, symbol in targets)
+    return lines
 
 
 def git(*args: str, cwd: Path) -> str:
@@ -598,7 +663,7 @@ def do_clear(corpus: Corpus) -> None:
         sys.exit("clear did not remove everything")
 
 
-def do_ingest(corpus: Corpus) -> None:
+def do_ingest(corpus: Corpus, embedding_model: str = DEFAULT_EMBEDDING_MODEL) -> None:
     require_fetched(corpus)
     files = collect_files(corpus)
     total_bytes = sum(len(c) for _, c, _ in files)
@@ -613,7 +678,8 @@ def do_ingest(corpus: Corpus) -> None:
     ensure_fixtures(corpus)
     print("[*] fixtures ready")
 
-    pipeline = IngestionPipeline(postgres_conn=PG, openai_api_key=OPENAI)
+    pipeline = IngestionPipeline(postgres_conn=PG, openai_api_key=OPENAI, embedding_model=embedding_model)
+    print(f"[*] embedding with {pipeline.embedding_gen.model}")
     # ingestion_runs.commit_sha is NOT NULL; a `self` tree whose commit is
     # unknown (an export, no --self-commit) is ingested as "harness", as before.
     stats = pipeline.process_files(
@@ -745,11 +811,9 @@ def refuse_compose(action: str, pg_dsn: str, allow_compose: bool,
         )
 
 
-def vector_sha256(vector: Sequence[float]) -> str:
-    """SHA-256 of the vector's JSON float list. Recorded per question; compare_runs.py
-    refuses two runs whose hashes differ, since different vectors make every
-    comparison meaningless."""
-    return hashlib.sha256(json.dumps(list(vector), separators=(",", ":")).encode("ascii")).hexdigest()
+# SHA-256 of a query vector's JSON float list, recorded per question. Defined
+# once, in chunk_digest.py, which decide.py checks cached vectors with (22.2-07).
+vector_sha256 = chunk_digest.vector_sha256
 
 
 class QueryVectors:
@@ -1078,12 +1142,14 @@ def run_header(corpus: Corpus, set_name: str, top_k: int, boost_config, model: s
 def do_measure(corpus: Corpus, set_name: str, top_k: int, boost_config=None,
                json_out: Optional[Path] = None, query_vectors: Optional[QueryVectors] = None,
                record: Optional[Path] = None,
-               vector_tolerance: float = DEFAULT_VECTOR_TOLERANCE) -> dict:
+               vector_tolerance: float = DEFAULT_VECTOR_TOLERANCE,
+               embedding_model: str = DEFAULT_EMBEDDING_MODEL) -> dict:
     questions = [q for q in corpus.questions if set_name == "all" or q["set"] == set_name]
     # boost_config goes straight to QueryEngine -> MetadataBooster, which merges
     # it over DEFAULT_CONFIG. Lets a ranking variant be measured without editing
     # library code, so several variants can run side by side against one build.
-    engine = QueryEngine(postgres_conn=PG, openai_api_key=OPENAI, boost_config=boost_config)
+    engine = QueryEngine(postgres_conn=PG, openai_api_key=OPENAI, boost_config=boost_config,
+                         embedding_model=embedding_model)
     model = engine.vector_retriever.embedding_generator.model
     if query_vectors is not None:
         # Embed whatever is missing through the engine's own client, BEFORE the
@@ -1267,6 +1333,13 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     ap.add_argument("--exact", type=Path, default=None,
                     help="write each question's exact-search nearest chunks (index scans off) "
                          "from the cached vectors (needs --query-vectors)")
+    ap.add_argument("--embedding-model", default=DEFAULT_EMBEDDING_MODEL,
+                    help="the model --ingest embeds chunks with and --measure and --exact embed and "
+                         "filter queries by; --query-vectors refuses another model's vector "
+                         f"(default {DEFAULT_EMBEDDING_MODEL}; 22.2-05 runs one arm per model)")
+    ap.add_argument("--list-targets", action="store_true",
+                    help="print, per set, the (path, symbol) each question targets, and no question "
+                         "text: the list a blind question writer is given")
     a = ap.parse_args(argv)
 
     _harness_commit_claim = checked_commit(REPO_ROOT, a.harness_commit, "--harness-commit")
@@ -1280,6 +1353,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     if (a.exact or a.record) and a.query_vectors is None:
         sys.exit("--exact and --record need --query-vectors")
     query_vectors = QueryVectors(a.query_vectors) if a.query_vectors else None
+    if a.list_targets:
+        print("\n".join(targets_by_set(corpus)))
     if a.fetch:
         do_fetch(corpus)
     if a.check:
@@ -1291,12 +1366,12 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         if runs or chunks:
             sys.exit(f"{corpus.name} is already indexed (runs={runs}, chunks={chunks}); re-indexing "
                      "without --clear would mix two indexes (ISS-027)")
-        do_ingest(corpus)
+        do_ingest(corpus, a.embedding_model)
     if a.exact:
         questions = [q for q in corpus.questions if a.set == "all" or q["set"] == a.set]
         if not OPENAI:
             sys.exit("OPENAI_API_KEY not set (needed to embed any question the cache is missing)")
-        engine = QueryEngine(postgres_conn=PG, openai_api_key=OPENAI)
+        engine = QueryEngine(postgres_conn=PG, openai_api_key=OPENAI, embedding_model=a.embedding_model)
         model = engine.vector_retriever.embedding_generator.model
         embedded = query_vectors.ensure(
             questions, engine.vector_retriever.embedding_generator.client.generate_embeddings_batch,
@@ -1307,9 +1382,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     if a.measure:
         if do_measure(corpus, a.set, a.top_k, a.boost_config, a.json_out,
                       query_vectors=query_vectors, record=a.record,
-                      vector_tolerance=a.vector_tolerance)["errors"]:
+                      vector_tolerance=a.vector_tolerance, embedding_model=a.embedding_model)["errors"]:
             sys.exit(2)
-    if not (a.fetch or a.check or a.clear or a.ingest or a.measure or a.exact):
+    if not (a.fetch or a.check or a.clear or a.ingest or a.measure or a.exact or a.list_targets):
         ap.print_help()
 
 

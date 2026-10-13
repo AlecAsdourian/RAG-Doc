@@ -11,6 +11,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 from workers.db import require_tenant
+from workers.embeddings.defaults import DEFAULT_EMBEDDING_MODEL
 from workers.embeddings.embedding_generator import EmbeddingGenerator
 
 from .errors import RETRIEVER_LABELS, RetrievalError
@@ -53,6 +54,7 @@ class QueryEngine:
         postgres_conn: str,
         openai_api_key: str,
         boost_config: Optional[Dict[str, Any]] = None,
+        embedding_model: str = DEFAULT_EMBEDDING_MODEL,
     ):
         """
         Initialize QueryEngine with all retrieval components.
@@ -63,6 +65,8 @@ class QueryEngine:
                 role every read runs as; in tests that is `rag_doc_app`.
             openai_api_key: OpenAI API key for embeddings
             boost_config: Optional boost configuration for MetadataBooster
+            embedding_model: The model queries are embedded with, and the
+                vector leg's filter on `chunks.embedding_model` (22.2-07).
         """
         self.postgres_conn = postgres_conn
         self.openai_api_key = openai_api_key
@@ -70,7 +74,7 @@ class QueryEngine:
         # One generator, shared with the vector leg: its `.model` is the model
         # filter on chunks.embedding_model (22-CONTEXT P4), read from here and
         # never copied.
-        self.embedding_generator = EmbeddingGenerator(api_key=openai_api_key)
+        self.embedding_generator = EmbeddingGenerator(api_key=openai_api_key, model=embedding_model)
 
         # Initialize all components
         self.fts_retriever = FTSRetriever(connection_string=postgres_conn)

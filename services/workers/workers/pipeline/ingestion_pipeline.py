@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Tuple
 from uuid import UUID
 
 from workers.chunker import SemanticChunker, Chunk
-from workers.embeddings import EmbeddingGenerator
+from workers.embeddings import DEFAULT_EMBEDDING_MODEL, EmbeddingGenerator
 from workers.storage import PostgresWriter
 
 logger = logging.getLogger(__name__)
@@ -19,6 +19,7 @@ class IngestionPipeline:
         self,
         postgres_conn: str,
         openai_api_key: str = None,
+        embedding_model: str = DEFAULT_EMBEDDING_MODEL,
     ):
         """
         Initialize ingestion pipeline.
@@ -29,9 +30,13 @@ class IngestionPipeline:
                 row-level security (DECISIONS.md D2; Qdrant was retired in
                 22-03 after the storage-move equivalence gate passed).
             openai_api_key: OpenAI API key (or uses OPENAI_API_KEY env var)
+            embedding_model: The model the chunks are embedded with. Every
+                row records it (the generator's `.model`), so the vector leg
+                of a QueryEngine with the same model reads exactly these
+                rows (22.2-07; 22.2-05 ingests one arm per model).
         """
         self.chunker = SemanticChunker()
-        self.embedding_gen = EmbeddingGenerator(api_key=openai_api_key)
+        self.embedding_gen = EmbeddingGenerator(api_key=openai_api_key, model=embedding_model)
         self.postgres = PostgresWriter(postgres_conn)
 
         logger.info("Ingestion pipeline initialized")

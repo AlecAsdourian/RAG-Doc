@@ -58,6 +58,15 @@ GRAMMAR_PACKAGES = (
 ChunkRow = Tuple[str, int, int, str, str, str, str]
 
 
+def vector_sha256(vector: Sequence[float]) -> str:
+    """SHA-256 of a query vector's JSON float list: what a record's
+    `query_vector_sha256` names. The harness records it per question,
+    `compare_runs.py` and `tripwire.py` refuse two runs whose hashes differ,
+    and `decide.py` checks it against the cached vector (22.2-07). One
+    definition, so the judge cannot drift from what the harness wrote."""
+    return hashlib.sha256(json.dumps(list(vector), separators=(",", ":")).encode("ascii")).hexdigest()
+
+
 def _sha(text: Optional[str]) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 

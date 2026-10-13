@@ -1,0 +1,351 @@
+## 1. the default arms
+$ decide.py --rules <tmp>\repo\rules\chunk-shape-rule.json <tmp>\repo\rules\embedding-model-rule.json --records <tmp>\records --specs <tmp>\repo\specs --query-vectors text-embedding-ada-002=<tmp>\vectors-ada.json text-embedding-3-small=<tmp>\vectors-3small.json.gz
+Order of record verified (every rule change precedes every question's first commit):
+  chunk-shape: chunk-shape-rule.json changed in 3628842691f2 (2026-10-06T18:30:43-07:00)
+  chunk-shape: miniflux's shape-model questions arrived in f74c9633e6e5 (2026-10-06T18:30:44-07:00)
+  chunk-shape: mealie's shape-model questions arrived in f74c9633e6e5 (2026-10-06T18:30:44-07:00)
+  chunk-shape: linkwarden's shape-model questions arrived in f74c9633e6e5 (2026-10-06T18:30:44-07:00)
+  M2: embedding-model-rule.json changed in 3628842691f2 (2026-10-06T18:30:43-07:00)
+  M2: miniflux's shape-model questions arrived in f74c9633e6e5 (2026-10-06T18:30:44-07:00)
+  M2: mealie's shape-model questions arrived in f74c9633e6e5 (2026-10-06T18:30:44-07:00)
+  M2: linkwarden's shape-model questions arrived in f74c9633e6e5 (2026-10-06T18:30:44-07:00)
+
+=== RULE chunk-shape (chunk-shape-rule.json, protocol chunk-shape-protocol.md)
+  variable chunker: baseline current-ada ({'chunker_version': 'cccccccccccccccc'}) vs candidate candidate-ada ({'chunker_version': 'dddddddddddddddd'}), its own pair; set shape-model, corpora miniflux, mealie, linkwarden
+  corpus       level   baseline MRR rec rank1   candidate MRR rec rank1  delta MRR
+  miniflux     file    1.0000  15/15  15/15     1.0000  15/15  15/15     +0.0000
+  miniflux     symbol  0.5000  15/15   0/15     0.5000  15/15   0/15     +0.0000
+  mealie       file    1.0000  15/15  15/15     1.0000  15/15  15/15     +0.0000
+  mealie       symbol  0.5000  15/15   0/15     0.5000  15/15   0/15     +0.0000
+  linkwarden   file    1.0000  15/15  15/15     1.0000  15/15  15/15     +0.0000
+  linkwarden   symbol  0.5000  15/15   0/15     0.5000  15/15   0/15     +0.0000
+  pooled       file    1.0000  45/45  45/45     1.0000  45/45  45/45     +0.0000
+  pooled       symbol  0.5000  45/45   0/45     0.5000  45/45   0/45     +0.0000
+  (MRR, recall and rank-1 at 5; pooled weights every question equally)
+
+  MRR@20, reported, never judged (from the ranking before the cut):
+  miniflux     file    1.0000 -> 1.0000
+  miniflux     symbol  0.5000 -> 0.5000
+  mealie       file    1.0000 -> 1.0000
+  mealie       symbol  0.5000 -> 0.5000
+  linkwarden   file    1.0000 -> 1.0000
+  linkwarden   symbol  0.5000 -> 0.5000
+  pooled       file    1.0000 -> 1.0000
+  pooled       symbol  0.5000 -> 0.5000
+
+  Per question (current-ada -> candidate-ada):
+  id             corpus       file           symbol
+  mf-01          miniflux     #1 -> #1       #2 -> #2
+  mf-02          miniflux     #1 -> #1       #2 -> #2
+  mf-03          miniflux     #1 -> #1       #2 -> #2
+  mf-04          miniflux     #1 -> #1       #2 -> #2
+  mf-05          miniflux     #1 -> #1       #2 -> #2
+  mf-06          miniflux     #1 -> #1       #2 -> #2
+  mf-07          miniflux     #1 -> #1       #2 -> #2
+  mf-08          miniflux     #1 -> #1       #2 -> #2
+  mf-09          miniflux     #1 -> #1       #2 -> #2
+  mf-10          miniflux     #1 -> #1       #2 -> #2
+  mf-11          miniflux     #1 -> #1       #2 -> #2
+  mf-12          miniflux     #1 -> #1       #2 -> #2
+  mf-13          miniflux     #1 -> #1       #2 -> #2
+  mf-14          miniflux     #1 -> #1       #2 -> #2
+  mf-15          miniflux     #1 -> #1       #2 -> #2
+  me-01          mealie       #1 -> #1       #2 -> #2
+  me-02          mealie       #1 -> #1       #2 -> #2
+  me-03          mealie       #1 -> #1       #2 -> #2
+  me-04          mealie       #1 -> #1       #2 -> #2
+  me-05          mealie       #1 -> #1       #2 -> #2
+  me-06          mealie       #1 -> #1       #2 -> #2
+  me-07          mealie       #1 -> #1       #2 -> #2
+  me-08          mealie       #1 -> #1       #2 -> #2
+  me-09          mealie       #1 -> #1       #2 -> #2
+  me-10          mealie       #1 -> #1       #2 -> #2
+  me-11          mealie       #1 -> #1       #2 -> #2
+  me-12          mealie       #1 -> #1       #2 -> #2
+  me-13          mealie       #1 -> #1       #2 -> #2
+  me-14          mealie       #1 -> #1       #2 -> #2
+  me-15          mealie       #1 -> #1       #2 -> #2
+  lw-01          linkwarden   #1 -> #1       #2 -> #2
+  lw-02          linkwarden   #1 -> #1       #2 -> #2
+  lw-03          linkwarden   #1 -> #1       #2 -> #2
+  lw-04          linkwarden   #1 -> #1       #2 -> #2
+  lw-05          linkwarden   #1 -> #1       #2 -> #2
+  lw-06          linkwarden   #1 -> #1       #2 -> #2
+  lw-07          linkwarden   #1 -> #1       #2 -> #2
+  lw-08          linkwarden   #1 -> #1       #2 -> #2
+  lw-09          linkwarden   #1 -> #1       #2 -> #2
+  lw-10          linkwarden   #1 -> #1       #2 -> #2
+  lw-11          linkwarden   #1 -> #1       #2 -> #2
+  lw-12          linkwarden   #1 -> #1       #2 -> #2
+  lw-13          linkwarden   #1 -> #1       #2 -> #2
+  lw-14          linkwarden   #1 -> #1       #2 -> #2
+  lw-15          linkwarden   #1 -> #1       #2 -> #2
+
+  Answers in a tie at the cut (|score difference| <= 2e-06), reported only:
+  (none)
+
+  Clauses:
+  clause 1: file MRR@5, pooled, delta >= 0 - 1e-09: pooled delta +0.000000 -> HOLDS
+VERDICT: ADOPT (chunk-shape)
+
+=== RULE M2 (embedding-model-rule.json, protocol embedding-model-protocol.md)
+  variable embedding_model: baseline candidate-ada (text-embedding-ada-002) vs candidate candidate-3small (text-embedding-3-small), chosen by chunk-shape's ADOPT; set shape-model, corpora miniflux, mealie, linkwarden
+  corpus       level   baseline MRR rec rank1   candidate MRR rec rank1  delta MRR
+  miniflux     file    1.0000  15/15  15/15     1.0000  15/15  15/15     +0.0000
+  miniflux     symbol  0.5000  15/15   0/15     0.5000  15/15   0/15     +0.0000
+  mealie       file    1.0000  15/15  15/15     1.0000  15/15  15/15     +0.0000
+  mealie       symbol  0.5000  15/15   0/15     0.5000  15/15   0/15     +0.0000
+  linkwarden   file    1.0000  15/15  15/15     1.0000  15/15  15/15     +0.0000
+  linkwarden   symbol  0.5000  15/15   0/15     0.5000  15/15   0/15     +0.0000
+  pooled       file    1.0000  45/45  45/45     1.0000  45/45  45/45     +0.0000
+  pooled       symbol  0.5000  45/45   0/45     0.5000  45/45   0/45     +0.0000
+  (MRR, recall and rank-1 at 5; pooled weights every question equally)
+
+  MRR@20, reported, never judged (from the ranking before the cut):
+  miniflux     file    1.0000 -> 1.0000
+  miniflux     symbol  0.5000 -> 0.5000
+  mealie       file    1.0000 -> 1.0000
+  mealie       symbol  0.5000 -> 0.5000
+  linkwarden   file    1.0000 -> 1.0000
+  linkwarden   symbol  0.5000 -> 0.5000
+  pooled       file    1.0000 -> 1.0000
+  pooled       symbol  0.5000 -> 0.5000
+
+  Per question (candidate-ada -> candidate-3small):
+  id             corpus       file           symbol
+  mf-01          miniflux     #1 -> #1       #2 -> #2
+  mf-02          miniflux     #1 -> #1       #2 -> #2
+  mf-03          miniflux     #1 -> #1       #2 -> #2
+  mf-04          miniflux     #1 -> #1       #2 -> #2
+  mf-05          miniflux     #1 -> #1       #2 -> #2
+  mf-06          miniflux     #1 -> #1       #2 -> #2
+  mf-07          miniflux     #1 -> #1       #2 -> #2
+  mf-08          miniflux     #1 -> #1       #2 -> #2
+  mf-09          miniflux     #1 -> #1       #2 -> #2
+  mf-10          miniflux     #1 -> #1       #2 -> #2
+  mf-11          miniflux     #1 -> #1       #2 -> #2
+  mf-12          miniflux     #1 -> #1       #2 -> #2
+  mf-13          miniflux     #1 -> #1       #2 -> #2
+  mf-14          miniflux     #1 -> #1       #2 -> #2
+  mf-15          miniflux     #1 -> #1       #2 -> #2
+  me-01          mealie       #1 -> #1       #2 -> #2
+  me-02          mealie       #1 -> #1       #2 -> #2
+  me-03          mealie       #1 -> #1       #2 -> #2
+  me-04          mealie       #1 -> #1       #2 -> #2
+  me-05          mealie       #1 -> #1       #2 -> #2
+  me-06          mealie       #1 -> #1       #2 -> #2
+  me-07          mealie       #1 -> #1       #2 -> #2
+  me-08          mealie       #1 -> #1       #2 -> #2
+  me-09          mealie       #1 -> #1       #2 -> #2
+  me-10          mealie       #1 -> #1       #2 -> #2
+  me-11          mealie       #1 -> #1       #2 -> #2
+  me-12          mealie       #1 -> #1       #2 -> #2
+  me-13          mealie       #1 -> #1       #2 -> #2
+  me-14          mealie       #1 -> #1       #2 -> #2
+  me-15          mealie       #1 -> #1       #2 -> #2
+  lw-01          linkwarden   #1 -> #1       #2 -> #2
+  lw-02          linkwarden   #1 -> #1       #2 -> #2
+  lw-03          linkwarden   #1 -> #1       #2 -> #2
+  lw-04          linkwarden   #1 -> #1       #2 -> #2
+  lw-05          linkwarden   #1 -> #1       #2 -> #2
+  lw-06          linkwarden   #1 -> #1       #2 -> #2
+  lw-07          linkwarden   #1 -> #1       #2 -> #2
+  lw-08          linkwarden   #1 -> #1       #2 -> #2
+  lw-09          linkwarden   #1 -> #1       #2 -> #2
+  lw-10          linkwarden   #1 -> #1       #2 -> #2
+  lw-11          linkwarden   #1 -> #1       #2 -> #2
+  lw-12          linkwarden   #1 -> #1       #2 -> #2
+  lw-13          linkwarden   #1 -> #1       #2 -> #2
+  lw-14          linkwarden   #1 -> #1       #2 -> #2
+  lw-15          linkwarden   #1 -> #1       #2 -> #2
+
+  Answers in a tie at the cut (|score difference| <= 2e-06), reported only:
+  (none)
+
+  Clauses:
+  clause 1: symbol MRR@5, pooled, delta >= 0.03 - 1e-09: pooled delta +0.000000 -> FAILS
+  clause 2: file MRR@5, pooled, delta >= 0 - 1e-09: pooled delta +0.000000 -> HOLDS
+  clause 3: file MRR@5, each_corpus, delta >= -0.11 - 1e-09: miniflux +0.000000 holds; mealie +0.000000 holds; linkwarden +0.000000 holds -> HOLDS
+VERDICT: REJECT (M2)
+
+Rules run: chunk-shape ADOPT, M2 REJECT
+(exit 1)
+
+## 2. candidate-3small +0.0333 at symbol level
+$ decide.py --rules <tmp>\repo\rules\chunk-shape-rule.json <tmp>\repo\rules\embedding-model-rule.json --records <tmp>\records --specs <tmp>\repo\specs --query-vectors text-embedding-ada-002=<tmp>\vectors-ada.json text-embedding-3-small=<tmp>\vectors-3small.json.gz
+Order of record verified (every rule change precedes every question's first commit):
+  chunk-shape: chunk-shape-rule.json changed in 933f78cc0239 (2026-10-06T18:30:45-07:00)
+  chunk-shape: miniflux's shape-model questions arrived in 80f8f799b0f5 (2026-10-06T18:30:45-07:00)
+  chunk-shape: mealie's shape-model questions arrived in 80f8f799b0f5 (2026-10-06T18:30:45-07:00)
+  chunk-shape: linkwarden's shape-model questions arrived in 80f8f799b0f5 (2026-10-06T18:30:45-07:00)
+  M2: embedding-model-rule.json changed in 933f78cc0239 (2026-10-06T18:30:45-07:00)
+  M2: miniflux's shape-model questions arrived in 80f8f799b0f5 (2026-10-06T18:30:45-07:00)
+  M2: mealie's shape-model questions arrived in 80f8f799b0f5 (2026-10-06T18:30:45-07:00)
+  M2: linkwarden's shape-model questions arrived in 80f8f799b0f5 (2026-10-06T18:30:45-07:00)
+
+=== RULE chunk-shape (chunk-shape-rule.json, protocol chunk-shape-protocol.md)
+  variable chunker: baseline current-ada ({'chunker_version': 'cccccccccccccccc'}) vs candidate candidate-ada ({'chunker_version': 'dddddddddddddddd'}), its own pair; set shape-model, corpora miniflux, mealie, linkwarden
+  corpus       level   baseline MRR rec rank1   candidate MRR rec rank1  delta MRR
+  miniflux     file    1.0000  15/15  15/15     1.0000  15/15  15/15     +0.0000
+  miniflux     symbol  0.5000  15/15   0/15     0.5000  15/15   0/15     +0.0000
+  mealie       file    1.0000  15/15  15/15     1.0000  15/15  15/15     +0.0000
+  mealie       symbol  0.5000  15/15   0/15     0.5000  15/15   0/15     +0.0000
+  linkwarden   file    1.0000  15/15  15/15     1.0000  15/15  15/15     +0.0000
+  linkwarden   symbol  0.5000  15/15   0/15     0.5000  15/15   0/15     +0.0000
+  pooled       file    1.0000  45/45  45/45     1.0000  45/45  45/45     +0.0000
+  pooled       symbol  0.5000  45/45   0/45     0.5000  45/45   0/45     +0.0000
+  (MRR, recall and rank-1 at 5; pooled weights every question equally)
+
+  MRR@20, reported, never judged (from the ranking before the cut):
+  miniflux     file    1.0000 -> 1.0000
+  miniflux     symbol  0.5000 -> 0.5000
+  mealie       file    1.0000 -> 1.0000
+  mealie       symbol  0.5000 -> 0.5000
+  linkwarden   file    1.0000 -> 1.0000
+  linkwarden   symbol  0.5000 -> 0.5000
+  pooled       file    1.0000 -> 1.0000
+  pooled       symbol  0.5000 -> 0.5000
+
+  Per question (current-ada -> candidate-ada):
+  id             corpus       file           symbol
+  mf-01          miniflux     #1 -> #1       #2 -> #2
+  mf-02          miniflux     #1 -> #1       #2 -> #2
+  mf-03          miniflux     #1 -> #1       #2 -> #2
+  mf-04          miniflux     #1 -> #1       #2 -> #2
+  mf-05          miniflux     #1 -> #1       #2 -> #2
+  mf-06          miniflux     #1 -> #1       #2 -> #2
+  mf-07          miniflux     #1 -> #1       #2 -> #2
+  mf-08          miniflux     #1 -> #1       #2 -> #2
+  mf-09          miniflux     #1 -> #1       #2 -> #2
+  mf-10          miniflux     #1 -> #1       #2 -> #2
+  mf-11          miniflux     #1 -> #1       #2 -> #2
+  mf-12          miniflux     #1 -> #1       #2 -> #2
+  mf-13          miniflux     #1 -> #1       #2 -> #2
+  mf-14          miniflux     #1 -> #1       #2 -> #2
+  mf-15          miniflux     #1 -> #1       #2 -> #2
+  me-01          mealie       #1 -> #1       #2 -> #2
+  me-02          mealie       #1 -> #1       #2 -> #2
+  me-03          mealie       #1 -> #1       #2 -> #2
+  me-04          mealie       #1 -> #1       #2 -> #2
+  me-05          mealie       #1 -> #1       #2 -> #2
+  me-06          mealie       #1 -> #1       #2 -> #2
+  me-07          mealie       #1 -> #1       #2 -> #2
+  me-08          mealie       #1 -> #1       #2 -> #2
+  me-09          mealie       #1 -> #1       #2 -> #2
+  me-10          mealie       #1 -> #1       #2 -> #2
+  me-11          mealie       #1 -> #1       #2 -> #2
+  me-12          mealie       #1 -> #1       #2 -> #2
+  me-13          mealie       #1 -> #1       #2 -> #2
+  me-14          mealie       #1 -> #1       #2 -> #2
+  me-15          mealie       #1 -> #1       #2 -> #2
+  lw-01          linkwarden   #1 -> #1       #2 -> #2
+  lw-02          linkwarden   #1 -> #1       #2 -> #2
+  lw-03          linkwarden   #1 -> #1       #2 -> #2
+  lw-04          linkwarden   #1 -> #1       #2 -> #2
+  lw-05          linkwarden   #1 -> #1       #2 -> #2
+  lw-06          linkwarden   #1 -> #1       #2 -> #2
+  lw-07          linkwarden   #1 -> #1       #2 -> #2
+  lw-08          linkwarden   #1 -> #1       #2 -> #2
+  lw-09          linkwarden   #1 -> #1       #2 -> #2
+  lw-10          linkwarden   #1 -> #1       #2 -> #2
+  lw-11          linkwarden   #1 -> #1       #2 -> #2
+  lw-12          linkwarden   #1 -> #1       #2 -> #2
+  lw-13          linkwarden   #1 -> #1       #2 -> #2
+  lw-14          linkwarden   #1 -> #1       #2 -> #2
+  lw-15          linkwarden   #1 -> #1       #2 -> #2
+
+  Answers in a tie at the cut (|score difference| <= 2e-06), reported only:
+  (none)
+
+  Clauses:
+  clause 1: file MRR@5, pooled, delta >= 0 - 1e-09: pooled delta +0.000000 -> HOLDS
+VERDICT: ADOPT (chunk-shape)
+
+=== RULE M2 (embedding-model-rule.json, protocol embedding-model-protocol.md)
+  variable embedding_model: baseline candidate-ada (text-embedding-ada-002) vs candidate candidate-3small (text-embedding-3-small), chosen by chunk-shape's ADOPT; set shape-model, corpora miniflux, mealie, linkwarden
+  corpus       level   baseline MRR rec rank1   candidate MRR rec rank1  delta MRR
+  miniflux     file    1.0000  15/15  15/15     1.0000  15/15  15/15     +0.0000
+  miniflux     symbol  0.5000  15/15   0/15     0.6000  15/15   3/15     +0.1000
+  mealie       file    1.0000  15/15  15/15     1.0000  15/15  15/15     +0.0000
+  mealie       symbol  0.5000  15/15   0/15     0.5000  15/15   0/15     +0.0000
+  linkwarden   file    1.0000  15/15  15/15     1.0000  15/15  15/15     +0.0000
+  linkwarden   symbol  0.5000  15/15   0/15     0.5000  15/15   0/15     +0.0000
+  pooled       file    1.0000  45/45  45/45     1.0000  45/45  45/45     +0.0000
+  pooled       symbol  0.5000  45/45   0/45     0.5333  45/45   3/45     +0.0333
+  (MRR, recall and rank-1 at 5; pooled weights every question equally)
+
+  MRR@20, reported, never judged (from the ranking before the cut):
+  miniflux     file    1.0000 -> 1.0000
+  miniflux     symbol  0.5000 -> 0.6000
+  mealie       file    1.0000 -> 1.0000
+  mealie       symbol  0.5000 -> 0.5000
+  linkwarden   file    1.0000 -> 1.0000
+  linkwarden   symbol  0.5000 -> 0.5000
+  pooled       file    1.0000 -> 1.0000
+  pooled       symbol  0.5000 -> 0.5333
+
+  Per question (candidate-ada -> candidate-3small):
+  id             corpus       file           symbol
+  mf-01          miniflux     #1 -> #1       #2 -> #1
+  mf-02          miniflux     #1 -> #1       #2 -> #1
+  mf-03          miniflux     #1 -> #1       #2 -> #1
+  mf-04          miniflux     #1 -> #1       #2 -> #2
+  mf-05          miniflux     #1 -> #1       #2 -> #2
+  mf-06          miniflux     #1 -> #1       #2 -> #2
+  mf-07          miniflux     #1 -> #1       #2 -> #2
+  mf-08          miniflux     #1 -> #1       #2 -> #2
+  mf-09          miniflux     #1 -> #1       #2 -> #2
+  mf-10          miniflux     #1 -> #1       #2 -> #2
+  mf-11          miniflux     #1 -> #1       #2 -> #2
+  mf-12          miniflux     #1 -> #1       #2 -> #2
+  mf-13          miniflux     #1 -> #1       #2 -> #2
+  mf-14          miniflux     #1 -> #1       #2 -> #2
+  mf-15          miniflux     #1 -> #1       #2 -> #2
+  me-01          mealie       #1 -> #1       #2 -> #2
+  me-02          mealie       #1 -> #1       #2 -> #2
+  me-03          mealie       #1 -> #1       #2 -> #2
+  me-04          mealie       #1 -> #1       #2 -> #2
+  me-05          mealie       #1 -> #1       #2 -> #2
+  me-06          mealie       #1 -> #1       #2 -> #2
+  me-07          mealie       #1 -> #1       #2 -> #2
+  me-08          mealie       #1 -> #1       #2 -> #2
+  me-09          mealie       #1 -> #1       #2 -> #2
+  me-10          mealie       #1 -> #1       #2 -> #2
+  me-11          mealie       #1 -> #1       #2 -> #2
+  me-12          mealie       #1 -> #1       #2 -> #2
+  me-13          mealie       #1 -> #1       #2 -> #2
+  me-14          mealie       #1 -> #1       #2 -> #2
+  me-15          mealie       #1 -> #1       #2 -> #2
+  lw-01          linkwarden   #1 -> #1       #2 -> #2
+  lw-02          linkwarden   #1 -> #1       #2 -> #2
+  lw-03          linkwarden   #1 -> #1       #2 -> #2
+  lw-04          linkwarden   #1 -> #1       #2 -> #2
+  lw-05          linkwarden   #1 -> #1       #2 -> #2
+  lw-06          linkwarden   #1 -> #1       #2 -> #2
+  lw-07          linkwarden   #1 -> #1       #2 -> #2
+  lw-08          linkwarden   #1 -> #1       #2 -> #2
+  lw-09          linkwarden   #1 -> #1       #2 -> #2
+  lw-10          linkwarden   #1 -> #1       #2 -> #2
+  lw-11          linkwarden   #1 -> #1       #2 -> #2
+  lw-12          linkwarden   #1 -> #1       #2 -> #2
+  lw-13          linkwarden   #1 -> #1       #2 -> #2
+  lw-14          linkwarden   #1 -> #1       #2 -> #2
+  lw-15          linkwarden   #1 -> #1       #2 -> #2
+
+  Answers in a tie at the cut (|score difference| <= 2e-06), reported only:
+  (none)
+
+  Clauses:
+  clause 1: symbol MRR@5, pooled, delta >= 0.03 - 1e-09: pooled delta +0.033333 -> HOLDS
+  clause 2: file MRR@5, pooled, delta >= 0 - 1e-09: pooled delta +0.000000 -> HOLDS
+  clause 3: file MRR@5, each_corpus, delta >= -0.11 - 1e-09: miniflux +0.000000 holds; mealie +0.000000 holds; linkwarden +0.000000 holds -> HOLDS
+VERDICT: ADOPT (M2)
+
+Rules run: chunk-shape ADOPT, M2 ADOPT
+(exit 0)
+
+## 3. a model arm with another chunk-set digest
+$ decide.py --rules <tmp>\repo\rules\chunk-shape-rule.json <tmp>\repo\rules\embedding-model-rule.json --records <tmp>\records --specs <tmp>\repo\specs --query-vectors text-embedding-ada-002=<tmp>\vectors-ada.json text-embedding-3-small=<tmp>\vectors-3small.json.gz
+REFUSED: nothing was compared, and there is no verdict.
+  - mealie: candidate-ada vs candidate-3small: a model comparison needs equal chunk-set digests (bbbbbbbbbbbbbbbb vs 9999999999999999): the arms embedded different chunk texts
+(exit 2)

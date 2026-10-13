@@ -7,6 +7,8 @@ from typing import List
 import tiktoken
 from openai import OpenAI, RateLimitError, APIError, AuthenticationError
 
+from .defaults import DEFAULT_EMBEDDING_MODEL
+
 logger = logging.getLogger(__name__)
 
 
@@ -16,7 +18,7 @@ class OpenAIEmbeddingClient:
     def __init__(
         self,
         api_key: str,
-        model: str = "text-embedding-ada-002",
+        model: str = DEFAULT_EMBEDDING_MODEL,
         max_retries: int = 3,
     ):
         """
@@ -24,7 +26,8 @@ class OpenAIEmbeddingClient:
 
         Args:
             api_key: OpenAI API key
-            model: Embedding model name (default: text-embedding-ada-002)
+            model: Embedding model name (default: DEFAULT_EMBEDDING_MODEL,
+                text-embedding-ada-002)
             max_retries: Maximum number of retry attempts for rate limiting
         """
         self.client = OpenAI(api_key=api_key)

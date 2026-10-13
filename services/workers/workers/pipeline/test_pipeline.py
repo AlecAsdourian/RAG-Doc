@@ -150,3 +150,55 @@ class TestIngestionPipeline:
         assert stats["status"] == "failed"
         assert "No chunks created" in stats.get("error", "")
         assert stats["chunks_created"] == 0
+
+
+class _FakeWriter:
+    """Stands in for PostgresWriter: captures what insert_chunks is given, writes nothing."""
+
+    def __init__(self, *args, **kwargs):
+        self.inserted = []
+
+    def create_ingestion_run(self, *args):
+        return uuid4()
+
+    def insert_chunks(self, organization_id, chunks, ingestion_run_id, repository_id, embeddings, embedding_model):
+        self.inserted.append({"chunks": chunks, "embeddings": embeddings, "embedding_model": embedding_model})
+        return {}
+
+    def complete_ingestion_run(self, *args, **kwargs):
+        pass
+
+    def close(self):
+        pass
+
+
+class TestTheEmbeddingModel:
+    """22.2-07: the model is an argument of IngestionPipeline, ada-002 by
+    default, and it is what every stored row records. No Postgres, no OpenAI:
+    the writer is a fake and the OpenAI client is patched; the chunker is real."""
+
+    def _pipeline(self, client_class, **kwargs):
+        client_class.return_value.count_tokens.return_value = 10
+        client_class.return_value.generate_embeddings_batch.side_effect = lambda texts: [[0.1, 0.2] for _ in texts]
+        return IngestionPipeline(postgres_conn="postgresql://test", openai_api_key="test-key", **kwargs)
+
+    @patch("workers.pipeline.ingestion_pipeline.PostgresWriter", _FakeWriter)
+    @patch("workers.embeddings.embedding_generator.OpenAIEmbeddingClient")
+    def test_the_default_is_ada_002(self, client_class):
+        pipeline = self._pipeline(client_class)
+        assert pipeline.embedding_gen.model == "text-embedding-ada-002"
+        assert client_class.call_args.kwargs["model"] == "text-embedding-ada-002"
+
+    @patch("workers.pipeline.ingestion_pipeline.PostgresWriter", _FakeWriter)
+    @patch("workers.embeddings.embedding_generator.OpenAIEmbeddingClient")
+    def test_a_given_model_reaches_the_generator_and_the_stored_rows(self, client_class):
+        pipeline = self._pipeline(client_class, embedding_model="text-embedding-3-small")
+        assert pipeline.embedding_gen.model == "text-embedding-3-small"
+        assert client_class.call_args.kwargs["model"] == "text-embedding-3-small"
+        stats = pipeline.process_files(
+            [("pkg/tool.py", "def run():\n    return 1\n\n\ndef stop():\n    return 0\n", "python")],
+            uuid4(), uuid4())
+        assert stats["status"] == "success", stats
+        (inserted,) = pipeline.postgres.inserted
+        assert inserted["chunks"], "the real chunker made chunks"
+        assert inserted["embedding_model"] == "text-embedding-3-small"

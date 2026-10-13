@@ -1,0 +1,27 @@
+{
+  "rule": "M2",
+  "protocol": "embedding-model-protocol.md",
+  "description": "Switch the default to text-embedding-3-small only if all three clauses hold; otherwise keep text-embedding-ada-002. The user's rule of 2026-09-29, both numbers confirmed that day (afa50b2); encoded here by 22.2-07, and tested against the protocol's Rule and Precision sections (tests/test_decide.py).",
+  "set": "shape-model",
+  "corpora": ["miniflux", "mealie", "linkwarden"],
+  "top_k": 5,
+  "metric": "mrr@5",
+  "variable": "embedding_model",
+  "arms": {
+    "current-ada": "text-embedding-ada-002",
+    "current-3small": "text-embedding-3-small",
+    "candidate-ada": "text-embedding-ada-002",
+    "candidate-3small": "text-embedding-3-small"
+  },
+  "after": "chunk-shape",
+  "arms_by_verdict": {
+    "ADOPT": {"baseline": "candidate-ada", "candidate": "candidate-3small"},
+    "REJECT": {"baseline": "current-ada", "candidate": "current-3small"}
+  },
+  "clauses": [
+    {"id": "1", "level": "symbol", "scope": "pooled", "min_delta": 0.03},
+    {"id": "2", "level": "file", "scope": "pooled", "min_delta": 0},
+    {"id": "3", "level": "file", "scope": "each_corpus", "min_delta": -0.11}
+  ],
+  "allowance": 1e-9
+}
